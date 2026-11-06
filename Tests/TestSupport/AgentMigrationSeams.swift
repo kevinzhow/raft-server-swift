@@ -5,6 +5,11 @@ import Foundation
 
 extension EmailLoginDirectory {
 
+    /// Appends one machine row with a fresh key and returns its id.
+    public func registerMachine(serverId: String, userId: String, name: String) -> String {
+        machinesAndComputersStore.registerMachine(serverId: serverId, userId: userId, name: name)
+    }
+
     public func enableAgentMigrationForTesting(serverId: String) {
         lock.lock()
         agentMigrationServers.insert(serverId)

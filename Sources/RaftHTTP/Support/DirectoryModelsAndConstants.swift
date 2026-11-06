@@ -954,33 +954,11 @@ extension EmailLoginDirectory {
         public var attachmentIds: [String]
     }
 
-    public enum AgentWakeStreamStart {
-        /// `cursorSeq` is the last hint seq already replayed; the stream then
-        /// only pushes hints newer than it.
-        case start(token: String, cursorSeq: Int?, firstFrame: String)
-        case refused(HTTPReply)
-    }
-
     public struct TimezoneObservation: Sendable {
         public var firstTimezone: String
         public var firstAt: Date
         public var lastTimezone: String
         public var lastAt: Date
-    }
-
-    enum WhenToUseError: Error {
-        case tooLong
-        case notSingleLine
-        case bareScopedPackage
-
-        var message: String {
-            switch self {
-            case .tooLong: return "whenToUse must be at most 160 characters"
-            case .notSingleLine: return "whenToUse must be a single line without control characters"
-            case .bareScopedPackage:
-                return "whenToUse must not contain a bare scoped package name like @scope/pkg; wrap it in backticks like `@scope/pkg`"
-            }
-        }
     }
 
     // MARK: Statics
@@ -1067,9 +1045,7 @@ extension EmailLoginDirectory {
     /// A `starting` row is observed, not re-dispatched, inside this window.
     static let migrationAutoStartLease: TimeInterval = 30
 
-    static let agentConnectionProviders: Set<String> = ["github"]
 
-    static let agentConnectionIDPattern = "^[A-Za-z0-9_.~-]{1,200}$"
 
     static let machineAPIKeyPrefix = "sk_machine_"
 
@@ -1089,8 +1065,6 @@ extension EmailLoginDirectory {
     ]
 
     static let scopeAttestationMaxChars = 16 * 1024
-
-    static let attachmentCommentsDisabledReply = json(403, "{\"error\":\"Attachment comments are not enabled on this server\",\"code\":\"attachment_comments_disabled\"}")
 
     static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
 

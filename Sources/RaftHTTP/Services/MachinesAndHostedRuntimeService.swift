@@ -1,175 +1,198 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// Machine registration surfaces and the hosted runtime: onboarding
-/// identity adoption, hosted usage/runtime/model state, provisioning retry
-/// and provider connections.
+// MARK: - Injected dependencies
+
+/// Everything the machine, hosted runtime and provider connection surface needs.
 ///
-/// These handlers were lifted from `EmailLogin+MachinesAndRuntime1.swift`.
+/// The hosted rows, the machine rows, the server rows and the account rows
+/// belong to their stores. The human session lookup, the realtime emitter and
+/// the provider relay belong to domains that have not migrated and stay behind
+/// closures; `live(directory:)` wires them at the composition root.
+struct MachinesAndHostedRuntimeDependencies: Sendable {
+    var sessionUserId: @Sendable (String?) -> String?
+    var emitRealtime: @Sendable (String, String, String?) -> Void
+    var oauth: OAuthLedger
+    var agents: AgentsRuntimeStore
+    var machines: MachinesAndComputersStore
+    var channels: ServersAndChannelsStore
+    var profiles: AuthProfileStore
+    /// The provider relay; `.unavailable` when none is configured.
+    var callProvider: @Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult
+    var connectionOrigin: @Sendable () -> String
 
-public struct MachinesAndHostedRuntimeService: Sendable {
-    public let directory: EmailLoginDirectory
-
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    static func live(directory source: EmailLoginDirectory) -> MachinesAndHostedRuntimeDependencies {
+        MachinesAndHostedRuntimeDependencies(
+            sessionUserId: { source.sessionUserId(authorization: $0) },
+            emitRealtime: { room, event, payload in
+                source.emitRealtime(room, event, payload)
+            },
+            oauth: source.oauth,
+            agents: source.agentsRuntimeStore,
+            machines: source.machinesAndComputersStore,
+            channels: source.serversAndChannelsStore,
+            profiles: source.authProfileStore,
+            callProvider: { request in
+                guard let relay = source.agentConnectionProvider else { return .unavailable }
+                return relay(request)
+            },
+            connectionOrigin: { source.agentConnectionOrigin }
+        )
     }
 }
 
-extension EmailLoginDirectory {
+// MARK: - Service
 
+/// Machine credential lookups, the onboarding identity adoption, the hosted
+/// runtime reads and writes, and the provider account connections.
+///
+/// The service owns the orchestration and returns the published DTOs; every
+/// refusal is a `MachinesAndHostedRuntimeError`. It builds no HTTP reply, header
+/// set or response body. The provisioning retry and the hosted model change are
+/// one `AgentsRuntimeStore` critical section each.
+public struct MachinesAndHostedRuntimeService: Sendable {
+    private let dependencies: MachinesAndHostedRuntimeDependencies
+
+    private static let connectionProviders: Set<String> = ["github"]
+
+    /// Production wiring.
+    public init(directory: EmailLoginDirectory) {
+        self.init(dependencies: .live(directory: directory))
+    }
+
+    init(dependencies: MachinesAndHostedRuntimeDependencies) {
+        self.dependencies = dependencies
+    }
+
+    // MARK: - Machine credential lookups
+
+    /// The Machine a bearer token authenticates (a Machine key, else a live
+    /// Computer key's Machine).
     public func machineIdForCredential(authorization: String?) -> String? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        lock.lock()
-        defer { lock.unlock() }
-        if let machine = machines.first(where: { $0.apiKey == token }) { return machine.id }
-        if let computer = computers.first(where: { $0.apiKey == token && $0.revokedAt == nil }) {
-            return computer.machineId
-        }
-        return nil
+        return dependencies.machines.machineId(forToken: String(authorization.dropFirst("Bearer ".count)))
     }
 
     func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
-        lock.lock()
-        let bound = agentMachineIds[agent.id]
-        let machineServer = machines.first { $0.id == machineId }?.serverId
-        lock.unlock()
+        let bound = dependencies.agents.agentMachineIds[agent.id]
+        let machineServer = dependencies.machines.machineServerId(machineId: machineId)
         guard machineServer == agent.serverId else { return false }
         if let bound { return bound == machineId }
         return true
     }
 
     public func machineAPIKey(machineId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return machines.first { $0.id == machineId }?.apiKey
+        dependencies.machines.machineAPIKey(machineId: machineId)
     }
 
     public func bumpMachineStatusVersion(machineId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        let next = (machineStatusVersions[machineId] ?? 0) + 1
-        machineStatusVersions[machineId] = next
-        return next
+        dependencies.machines.bumpMachineStatusVersion(machineId: machineId)
     }
 
     public func setMachineOnline(machineId: String, online: Bool) {
-        lock.lock()
-        machineOnline[machineId] = online
-        lock.unlock()
+        dependencies.machines.setMachineOnline(machineId: machineId, online: online)
     }
 
-    func onboardingAdoptionState(
-        serverId: String,
-        agentId: String
-    ) -> (agent: OAuthLedger.AgentRuntimeInfo, role: String, changes: [OnboardingAdoptionChange])? {
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return nil
-        }
-        let role = oauth.agentRole(serverId: serverId, agentId: agentId) ?? "member"
-        var changes: [OnboardingAdoptionChange] = []
+    public func enableHostedModelPicker(serverId: String) {
+        dependencies.agents.enableHostedModelPicker(serverId: serverId)
+    }
+
+    // MARK: - Onboarding identity adoption
+
+    private struct AdoptionState {
+        var agent: OAuthLedger.AgentRuntimeInfo
+        var role: String
+        var changes: [OnboardingAdoptionChangeDTO]
+    }
+
+    private func adoptionState(serverId: String, agentId: String) -> AdoptionState? {
+        guard let agent = dependencies.oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
+        else { return nil }
+        let role = dependencies.oauth.agentRole(serverId: serverId, agentId: agentId) ?? "member"
+        var changes: [OnboardingAdoptionChangeDTO] = []
         if agent.name != "Cindy" {
-            changes.append(OnboardingAdoptionChange(field: "name", before: agent.name, after: "Cindy"))
+            changes.append(OnboardingAdoptionChangeDTO(field: "name", before: agent.name, after: "Cindy"))
         }
         if agent.displayName != "Cindy" {
-            changes.append(OnboardingAdoptionChange(field: "displayName", before: agent.displayName, after: "Cindy"))
+            changes.append(OnboardingAdoptionChangeDTO(field: "displayName", before: agent.displayName, after: "Cindy"))
         }
         if agent.description != "Onboarding Assistant" {
-            changes.append(OnboardingAdoptionChange(field: "role", before: agent.description, after: "Onboarding Assistant"))
+            changes.append(OnboardingAdoptionChangeDTO(field: "role", before: agent.description, after: "Onboarding Assistant"))
         }
         if role != "admin" {
-            changes.append(OnboardingAdoptionChange(field: "serverRole", before: role, after: "admin"))
+            changes.append(OnboardingAdoptionChangeDTO(field: "serverRole", before: role, after: "admin"))
         }
         if agent.avatarUrl != "pixel:mug" {
-            changes.append(OnboardingAdoptionChange(field: "avatarUrl", before: agent.avatarUrl, after: "pixel:mug"))
+            changes.append(OnboardingAdoptionChangeDTO(field: "avatarUrl", before: agent.avatarUrl, after: "pixel:mug"))
         }
-        return (agent, role, changes)
+        return AdoptionState(agent: agent, role: role, changes: changes)
     }
 
-    func onboardingAdoptionJSON(
-        canAdopt: Bool,
-        changes: [OnboardingAdoptionChange],
-        appliedChanges: [OnboardingAdoptionChange]? = nil,
-        agent: OAuthLedger.AgentRuntimeInfo? = nil,
-        role: String? = nil
-    ) -> String {
-        func changesJSON(_ values: [OnboardingAdoptionChange]) -> String {
-            values.map { change in
-                let before = change.before.map(jsonString) ?? "null"
-                let after = change.after.map(jsonString) ?? "null"
-                return "{\"field\":\(jsonString(change.field)),\"before\":\(before),\"after\":\(after)}"
-            }.joined(separator: ",")
+    /// The caller must be an owner/admin or the agent's creator, and the agent
+    /// must be this server's onboarding agent.
+    private func adoptionActor(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> AdoptionState {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw MachinesAndHostedRuntimeError.unauthorized
         }
-        var body = "{\"canAdopt\":\(canAdopt),\"changes\":[\(changesJSON(changes))]"
-        if let appliedChanges {
-            body += ",\"appliedChanges\":[\(changesJSON(appliedChanges))]"
+        guard let state = adoptionState(serverId: serverId, agentId: agentId) else {
+            throw MachinesAndHostedRuntimeError.agentNotFound
         }
-        if let agent {
-            let description = agent.description.map(jsonString) ?? "null"
-            let avatar = agent.avatarUrl.map(jsonString) ?? "null"
-            body += ",\"agent\":{\"id\":\(jsonString(agent.id)),\"name\":\(jsonString(agent.name)),\"displayName\":\(jsonString(agent.displayName)),\"description\":\(description),\"avatarUrl\":\(avatar),\"serverRole\":\(jsonString(role ?? "member"))}"
+        let memberRole = dependencies.oauth.memberRole(serverId: serverId, userId: userId)
+        guard memberRole == "owner" || memberRole == "admin" || state.agent.creatorUserId == userId else {
+            throw MachinesAndHostedRuntimeError.authorityRequired(
+                "The `editAgents` capability or human creator authority is required to edit agents"
+            )
         }
-        return body + "}"
+        guard dependencies.channels.serverOnboardingSettings[serverId]?.agentId == agentId else {
+            throw MachinesAndHostedRuntimeError.notOnboardingAgent
+        }
+        return state
     }
 
-    public func onboardingIdentityAdoption(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let state = onboardingAdoptionState(serverId: serverId, agentId: agentId) else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || state.agent.creatorUserId == userId
-        else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to edit agents\"}")
-        }
-        lock.lock()
-        let onboardingAgentId = serverOnboardingSettings[serverId]?.agentId
-        lock.unlock()
-        guard onboardingAgentId == agentId else {
-            return Self.json(400, "{\"error\":\"Agent is not this server's onboarding agent\"}")
-        }
-        return Self.json(200, onboardingAdoptionJSON(canAdopt: !state.changes.isEmpty, changes: state.changes))
+    public func onboardingIdentityAdoption(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> OnboardingAdoptionResponse {
+        let state = try adoptionActor(authorization: authorization, serverId: serverId, agentId: agentId)
+        return OnboardingAdoptionResponse(canAdopt: !state.changes.isEmpty, changes: state.changes)
     }
 
-    public func adoptOnboardingIdentity(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let state = onboardingAdoptionState(serverId: serverId, agentId: agentId) else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || state.agent.creatorUserId == userId
-        else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to edit agents\"}")
-        }
-        lock.lock()
-        let onboardingAgentId = serverOnboardingSettings[serverId]?.agentId
-        lock.unlock()
-        guard onboardingAgentId == agentId else {
-            return Self.json(400, "{\"error\":\"Agent is not this server's onboarding agent\"}")
+    public func adoptOnboardingIdentity(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> OnboardingAdoptionResponse {
+        let state = try adoptionActor(authorization: authorization, serverId: serverId, agentId: agentId)
+        func summary(_ agent: OAuthLedger.AgentRuntimeInfo, role: String) -> OnboardingAdoptionResponse.AgentSummary {
+            OnboardingAdoptionResponse.AgentSummary(
+                id: agent.id,
+                name: agent.name,
+                displayName: agent.displayName,
+                description: agent.description,
+                avatarUrl: agent.avatarUrl,
+                serverRole: role
+            )
         }
         let changes = state.changes
         guard !changes.isEmpty else {
-            return Self.json(200, onboardingAdoptionJSON(
+            return OnboardingAdoptionResponse(
                 canAdopt: false,
                 changes: [],
                 appliedChanges: [],
-                agent: state.agent,
-                role: state.role
-            ))
+                agent: summary(state.agent, role: state.role)
+            )
         }
-        if oauth.serverAgents(serverId: serverId).contains(where: { $0.id != agentId && $0.name == "Cindy" }) {
-            return Self.json(409, "{\"error\":\"Agent name is already taken\"}")
+        if dependencies.oauth.serverAgents(serverId: serverId).contains(where: {
+            $0.id != agentId && $0.name == "Cindy"
+        }) {
+            throw MachinesAndHostedRuntimeError.nameTaken
         }
-        oauth.adoptAgentIdentity(
+        dependencies.oauth.adoptAgentIdentity(
             serverId: serverId,
             agentId: agentId,
             name: "Cindy",
@@ -178,37 +201,59 @@ extension EmailLoginDirectory {
             avatarUrl: "pixel:mug",
             role: "admin"
         )
-        emitRealtime("server:\(serverId)", "agent:updated", "{\"agentId\":\(jsonString(agentId))}")
-        let updated = oauth.agentRuntimeInfo(id: agentId) ?? state.agent
-        return Self.json(200, onboardingAdoptionJSON(
+        dependencies.emitRealtime(
+            "server:\(serverId)",
+            "agent:updated",
+            OrderedJSON.object([OrderedJSONField("agentId", agentId)]).render()
+        )
+        let updated = dependencies.oauth.agentRuntimeInfo(id: agentId) ?? state.agent
+        return OnboardingAdoptionResponse(
             canAdopt: false,
             changes: [],
             appliedChanges: changes,
-            agent: updated,
-            role: "admin"
-        ))
+            agent: summary(updated, role: "admin")
+        )
     }
 
-    public func agentHostedUsage(authorization: String?, serverId: String, agentId: String, query: String?) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+    // MARK: - Hosted runtime
+
+    /// The agent of this server the caller may manage: an owner, an admin or the
+    /// agent's human creator. `denial` names the action in the 403.
+    private func managedAgent(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        denial: String
+    ) throws -> OAuthLedger.AgentRuntimeInfo {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw MachinesAndHostedRuntimeError.unauthorized
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || agent.creatorUserId == userId
+        guard let agent = dependencies.oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
         else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to view cloud agent usage\"}")
+            throw MachinesAndHostedRuntimeError.agentNotFound
         }
-        lock.lock()
-        let hosted = hostedRuntimes[agentId]
-        let body = hostedUsage[agentId]
-        lock.unlock()
-        guard hosted != nil else {
-            return Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}")
+        let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId)
+        guard role == "owner" || role == "admin" || agent.creatorUserId == userId else {
+            throw MachinesAndHostedRuntimeError.authorityRequired(
+                "The `editAgents` capability or human creator authority is required to \(denial)"
+            )
         }
+        return agent
+    }
+
+    public func agentHostedUsage(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        query: String?
+    ) throws -> HostedUsageResponse {
+        _ = try managedAgent(
+            authorization: authorization, serverId: serverId, agentId: agentId,
+            denial: "view cloud agent usage"
+        )
+        let snapshot = dependencies.agents.hostedSnapshot(agentId: agentId)
+        guard snapshot.runtime != nil else { throw MachinesAndHostedRuntimeError.hostedRuntimeMissing }
         var params: [String: String] = [:]
         for pair in (query ?? "").split(separator: "&") {
             let item = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
@@ -217,288 +262,249 @@ extension EmailLoginDirectory {
             params[name] = value
         }
         let bucket = params["bucket"] ?? "1d"
-        guard ["1h", "1d"].contains(bucket) else {
-            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
-        }
+        guard ["1h", "1d"].contains(bucket) else { throw MachinesAndHostedRuntimeError.usageInvalidQuery }
         let now = Date()
         func parse(_ name: String) -> Date? {
             guard let raw = params[name], !raw.isEmpty else { return nil }
-            return Self.isoDate(raw)
+            return EmailLoginDirectory.isoDate(raw)
         }
-        if params["from"] != nil, parse("from") == nil {
-            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
-        }
-        if params["to"] != nil, parse("to") == nil {
-            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
-        }
+        if params["from"] != nil, parse("from") == nil { throw MachinesAndHostedRuntimeError.usageInvalidQuery }
+        if params["to"] != nil, parse("to") == nil { throw MachinesAndHostedRuntimeError.usageInvalidQuery }
         let from = parse("from") ?? now.addingTimeInterval(-7 * 24 * 60 * 60)
         let to = parse("to") ?? now
         guard to >= from, to.timeIntervalSince(from) <= 31 * 24 * 60 * 60 else {
-            return Self.json(400, "{\"error\":\"Invalid usage query\",\"code\":\"hosted_runtime_usage_invalid_query\"}")
+            throw MachinesAndHostedRuntimeError.usageInvalidQuery
         }
-        guard let body else {
-            return Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_usage_not_ready\"}")
-        }
-        return Self.json(200, body)
+        guard let body = snapshot.usage else { throw MachinesAndHostedRuntimeError.usageNotReady }
+        return HostedUsageResponse(rawJSON: body)
     }
 
-    public func agentHostedRuntime(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || agent.creatorUserId == userId
-        else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to view cloud agent status\"}")
-        }
-        lock.lock()
-        let hosted = hostedRuntimes[agentId]
-        lock.unlock()
-        guard let hosted else {
-            return Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}")
-        }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let model = hosted.model.map(jsonString) ?? "null"
-        return Self.json(200, "{\"hostedRuntime\":{\"agentId\":\(jsonString(agentId)),\"provider\":\(jsonString(hosted.provider)),\"model\":\(model),\"state\":\(jsonString(hosted.state)),\"retryNeedsModel\":\(hosted.retryNeedsModel),\"createdAt\":\(jsonString(formatter.string(from: hosted.createdAt)))},\"onboardingSetup\":null}")
+    private func statusResponse(
+        agentId: String,
+        row: HostedRuntimeRow,
+        includesOnboardingSetup: Bool
+    ) -> HostedRuntimeStatusResponse {
+        HostedRuntimeStatusResponse(
+            agentId: agentId,
+            provider: row.provider,
+            model: row.model,
+            state: row.state,
+            retryNeedsModel: row.retryNeedsModel,
+            createdAt: EmailLoginDirectory.isoString(row.createdAt),
+            includesOnboardingSetup: includesOnboardingSetup
+        )
     }
 
-    public func enableHostedModelPicker(serverId: String) {
-        lock.lock()
-        hostedModelPickerServers.insert(serverId)
-        lock.unlock()
+    public func agentHostedRuntime(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> HostedRuntimeStatusResponse {
+        _ = try managedAgent(
+            authorization: authorization, serverId: serverId, agentId: agentId,
+            denial: "view cloud agent status"
+        )
+        guard let hosted = dependencies.agents.hostedRuntimeRow(agentId: agentId) else {
+            throw MachinesAndHostedRuntimeError.hostedRuntimeMissing
+        }
+        return statusResponse(agentId: agentId, row: hosted, includesOnboardingSetup: true)
+    }
+
+    /// A `model` body member: a model id, or `null` for the default. Anything
+    /// else (an empty or oversized id, a non-string) is refused.
+    private enum ModelRequest {
+        case absent
+        case value(String?)
+        case invalid
+    }
+
+    private func modelRequest(_ body: LegacyJSONObjectBody?) -> ModelRequest {
+        guard let raw = body?["model"] else { return .absent }
+        if raw.isNull { return .value(nil) }
+        if let value = raw.legacyString,
+           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           value.count <= 200 {
+            return .value(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return .invalid
     }
 
     public func retryAgentProvisioning(
         authorization: String?,
         serverId: String,
         agentId: String,
-        body: String
-    ) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        body: LegacyJSONObjectBody?
+    ) throws -> HostedRuntimeStatusResponse {
+        _ = try managedAgent(
+            authorization: authorization, serverId: serverId, agentId: agentId,
+            denial: "retry provisioning"
+        )
+        guard dependencies.agents.hostedRuntimeRow(agentId: agentId) != nil else {
+            throw MachinesAndHostedRuntimeError.hostedRuntimeMissing
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return Self.json(404, "{\"error\":\"Agent not found\"}")
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || agent.creatorUserId == userId
-        else {
-            return Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to retry provisioning\"}")
-        }
-        lock.lock()
-        let hosted = hostedRuntimes[agentId]
-        lock.unlock()
-        guard let hosted else {
-            return Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
         var modelProvided = false
         var providedModel: String?
-        if let raw = object?["model"] {
-            modelProvided = true
-            if raw is NSNull {
-                providedModel = nil
-            } else if let value = raw as? String,
-                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      value.count <= 200 {
-                providedModel = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                return Self.json(400, "{\"error\":\"`model` must be a model id or null\",\"code\":\"hosted_runtime_model_invalid\"}")
-            }
-        }
-        if modelProvided, hosted.retryNeedsModel {
-            lock.lock()
-            let picker = hostedModelPickerServers.contains(serverId)
-            let state = hostedModels[agentId]
-            lock.unlock()
-            if let providedModel, providedModel != Self.hostedDefaultModel, !picker {
-                return Self.json(403, "{\"error\":\"This server does not pick a cloud agent model\",\"code\":\"model_picker_disabled\"}")
-            }
-            let picked = providedModel == Self.hostedDefaultModel && !picker ? nil : providedModel
-            if let picked {
-                if state?.locked == true {
-                    return Self.json(409, "{\"error\":\"An administrator has set this agent's model\",\"code\":\"hosted_runtime_model_locked\"}")
-                }
-                guard state?.models.contains(where: { $0.id == picked }) == true else {
-                    return Self.json(422, "{\"error\":\"The provider does not offer this model\",\"code\":\"hosted_runtime_model_not_offered\"}")
-                }
-            }
-        }
-        switch hosted.state {
-        case "failed":
-            if hosted.retryNeedsModel, !modelProvided {
-                return Self.json(409, "{\"error\":\"The provider refused the picked model; retry with `model` set to an offered id, or null for the default\",\"code\":\"hosted_runtime_model_required\"}")
-            }
-        case "provisioning", "deleting":
+        switch modelRequest(body) {
+        case .absent:
             break
-        default:
-            return Self.json(409, "{\"error\":\"Nothing to retry\",\"code\":\"hosted_runtime_nothing_to_retry\"}")
+        case .value(let model):
+            modelProvided = true
+            providedModel = model
+        case .invalid:
+            throw MachinesAndHostedRuntimeError.modelInvalid
         }
-        lock.lock()
-        hostedRuntimes[agentId] = (hosted.provider, hosted.model, "provisioning", false, hosted.createdAt)
-        if modelProvided, var state = hostedModels[agentId] {
-            let picked = providedModel == Self.hostedDefaultModel && hostedModelPickerServers.contains(serverId) == false ? nil : providedModel
-            if let picked, let option = state.models.first(where: { $0.id == picked }) {
-                state.model = option.id
-                state.label = option.label
-                state.source = "chosen"
-            } else if picked == nil {
-                state.model = state.defaultModel
-                state.label = state.defaultLabel
-                state.source = "default"
-            }
-            hostedModels[agentId] = state
+        let outcome = dependencies.agents.retryHostedProvisioning(
+            agentId: agentId,
+            serverId: serverId,
+            modelProvided: modelProvided,
+            providedModel: providedModel,
+            defaultModel: EmailLoginDirectory.hostedDefaultModel
+        )
+        switch outcome {
+        case .missing:
+            throw MachinesAndHostedRuntimeError.hostedRuntimeMissing
+        case .pickerDisabled:
+            throw MachinesAndHostedRuntimeError.modelPickerDisabled
+        case .modelLocked:
+            throw MachinesAndHostedRuntimeError.modelLocked
+        case .modelNotOffered:
+            throw MachinesAndHostedRuntimeError.modelNotOffered
+        case .modelRequired:
+            throw MachinesAndHostedRuntimeError.modelRequired
+        case .nothingToRetry:
+            throw MachinesAndHostedRuntimeError.nothingToRetry
+        case .retried(let row):
+            return statusResponse(agentId: agentId, row: row, includesOnboardingSetup: false)
         }
-        let updated = hostedRuntimes[agentId]!
-        lock.unlock()
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let modelJSON = updated.model.map(jsonString) ?? "null"
-        return Self.json(200, "{\"hostedRuntime\":{\"agentId\":\(jsonString(agentId)),\"provider\":\(jsonString(updated.provider)),\"model\":\(modelJSON),\"state\":\(jsonString(updated.state)),\"retryNeedsModel\":\(updated.retryNeedsModel),\"createdAt\":\(jsonString(formatter.string(from: updated.createdAt)))}}")
     }
 
-    /// Shared guard for the hosted model reads and writes: agent membership,
-    /// owner/admin/creator authority, an existing hosted runtime, and an
-    /// active provision. Returns the agent id or the reply to send.
-
-    func hostedModelGuard(
+    /// Shared guard for the hosted model read and write: authority, an existing
+    /// hosted runtime, and an active provision with a model state.
+    private func hostedModelAgent(
         authorization: String?,
         serverId: String,
         agentId: String,
         action: String
-    ) -> HostedModelGuardResult {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
+    ) throws {
+        _ = try managedAgent(
+            authorization: authorization, serverId: serverId, agentId: agentId,
+            denial: "\(action) a cloud agent's model"
+        )
+        let snapshot = dependencies.agents.hostedSnapshot(agentId: agentId)
+        guard let hosted = snapshot.runtime else { throw MachinesAndHostedRuntimeError.hostedRuntimeMissing }
+        guard hosted.state == "active", snapshot.models != nil else {
+            throw MachinesAndHostedRuntimeError.modelNotReady
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return .refused(Self.json(404, "{\"error\":\"Agent not found\"}"))
-        }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner"
-                || oauth.memberRole(serverId: serverId, userId: userId) == "admin"
-                || agent.creatorUserId == userId
-        else {
-            return .refused(Self.json(403, "{\"error\":\"The `editAgents` capability or human creator authority is required to \(action) a cloud agent's model\"}"))
-        }
-        lock.lock()
-        let hosted = hostedRuntimes[agentId]
-        let models = hostedModels[agentId]
-        lock.unlock()
-        guard let hosted else {
-            return .refused(Self.json(404, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"hosted_runtime_missing\"}"))
-        }
-        guard hosted.state == "active", models != nil else {
-            return .refused(Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_model_not_ready\"}"))
-        }
-        return .allowed(agentId)
     }
 
-    func hostedModelView(_ state: HostedModelState, picker: Bool) -> String {
-        let models = state.models.map { model in
-            "{\"id\":\(jsonString(model.id)),\"label\":\(jsonString(model.label)),\"provider\":\(jsonString(model.provider))}"
-        }.joined(separator: ",")
-        let defaultModel = state.defaultModel.map(jsonString) ?? "null"
-        let defaultLabel = state.defaultLabel.map(jsonString) ?? "null"
-        let model = state.model.map(jsonString) ?? "null"
-        let label = state.label.map(jsonString) ?? "null"
-        return "{\"models\":[\(models)],\"default\":\(defaultModel),\"defaultLabel\":\(defaultLabel),\"model\":\(model),\"label\":\(label),\"source\":\(jsonString(state.source)),\"locked\":\(state.locked),\"picker\":\(picker)}"
+    private func modelView(_ state: HostedModelState, picker: Bool) -> HostedModelViewResponse {
+        HostedModelViewResponse(
+            models: state.models.map {
+                HostedModelViewResponse.Option(id: $0.id, label: $0.label, provider: $0.provider)
+            },
+            defaultModel: state.defaultModel,
+            defaultLabel: state.defaultLabel,
+            model: state.model,
+            label: state.label,
+            source: state.source,
+            locked: state.locked,
+            picker: picker
+        )
     }
 
-    public func agentHostedModel(authorization: String?, serverId: String, agentId: String) -> HTTPReply {
-        switch hostedModelGuard(authorization: authorization, serverId: serverId, agentId: agentId, action: "view") {
-        case .refused(let reply):
-            return reply
-        case .allowed(let id):
-            lock.lock()
-            let state = hostedModels[id]
-            let picker = hostedModelPickerServers.contains(serverId)
-            lock.unlock()
-            guard let state else {
-                return Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_model_not_ready\"}")
-            }
-            return Self.json(200, hostedModelView(state, picker: picker))
+    public func agentHostedModel(
+        authorization: String?,
+        serverId: String,
+        agentId: String
+    ) throws -> HostedModelViewResponse {
+        try hostedModelAgent(authorization: authorization, serverId: serverId, agentId: agentId, action: "view")
+        guard let state = dependencies.agents.hostedSnapshot(agentId: agentId).models else {
+            throw MachinesAndHostedRuntimeError.modelNotReady
         }
+        return modelView(state, picker: dependencies.agents.hostedModelPickerEnabled(serverId: serverId))
     }
 
     public func setAgentHostedModel(
         authorization: String?,
         serverId: String,
         agentId: String,
-        body: String
-    ) -> HTTPReply {
-        switch hostedModelGuard(authorization: authorization, serverId: serverId, agentId: agentId, action: "change") {
-        case .refused(let reply):
-            return reply
-        case .allowed(let id):
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            guard let raw = object?["model"] else {
-                return Self.json(400, "{\"error\":\"`model` must be a model id or null\",\"code\":\"hosted_runtime_model_invalid\"}")
-            }
-            let requested: String?
-            if raw is NSNull {
-                requested = nil
-            } else if let value = raw as? String,
-                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      value.count <= 200 {
-                requested = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                return Self.json(400, "{\"error\":\"`model` must be a model id or null\",\"code\":\"hosted_runtime_model_invalid\"}")
-            }
-            lock.lock()
-            let picker = hostedModelPickerServers.contains(serverId)
-            lock.unlock()
-            if let requested, requested != Self.hostedDefaultModel, !picker {
-                return Self.json(403, "{\"error\":\"This server does not pick a cloud agent model\",\"code\":\"model_picker_disabled\"}")
-            }
-            let picked: String?
-            if let requested, requested == Self.hostedDefaultModel, !picker {
-                picked = nil
-            } else {
-                picked = requested
-            }
-            lock.lock()
-            guard var state = hostedModels[id] else {
-                lock.unlock()
-                return Self.json(409, "{\"error\":\"The cloud runtime is not ready\",\"code\":\"hosted_runtime_model_not_ready\"}")
-            }
-            if let picked {
-                if state.locked {
-                    lock.unlock()
-                    return Self.json(409, "{\"error\":\"An administrator has set this agent's model\",\"code\":\"hosted_runtime_model_locked\"}")
-                }
-                guard let option = state.models.first(where: { $0.id == picked }) else {
-                    lock.unlock()
-                    return Self.json(422, "{\"error\":\"The provider does not offer this model\",\"code\":\"hosted_runtime_model_not_offered\"}")
-                }
-                state.model = option.id
-                state.label = option.label
-                state.source = "chosen"
-            } else {
-                state.model = state.defaultModel
-                state.label = state.defaultLabel
-                state.source = "default"
-            }
-            hostedModels[id] = state
-            lock.unlock()
-            return Self.json(200, hostedModelView(state, picker: picker))
+        body: LegacyJSONObjectBody?
+    ) throws -> HostedModelViewResponse {
+        try hostedModelAgent(authorization: authorization, serverId: serverId, agentId: agentId, action: "change")
+        let requested: String?
+        switch modelRequest(body) {
+        case .absent, .invalid:
+            throw MachinesAndHostedRuntimeError.modelInvalid
+        case .value(let model):
+            requested = model
+        }
+        let outcome = dependencies.agents.changeHostedModel(
+            agentId: agentId,
+            serverId: serverId,
+            requested: requested,
+            defaultModel: EmailLoginDirectory.hostedDefaultModel
+        )
+        switch outcome {
+        case .notReady:
+            throw MachinesAndHostedRuntimeError.modelNotReady
+        case .pickerDisabled:
+            throw MachinesAndHostedRuntimeError.modelPickerDisabled
+        case .modelLocked:
+            throw MachinesAndHostedRuntimeError.modelLocked
+        case .modelNotOffered:
+            throw MachinesAndHostedRuntimeError.modelNotOffered
+        case .changed(let state, let picker):
+            return modelView(state, picker: picker)
         }
     }
 
-    func agentConnectionProviderCall(
+    // MARK: - Provider account connections
+
+    private struct ConnectionActor {
+        var userId: String
+        var role: String
+    }
+
+    private func loadConnectionActor(
+        authorization: String?,
+        serverId: String,
+        agentId: String,
+        provider: String
+    ) throws -> ConnectionActor {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw MachinesAndHostedRuntimeError.unauthorized
+        }
+        guard Self.connectionProviders.contains(provider) else {
+            throw MachinesAndHostedRuntimeError.connectionProviderUnknown
+        }
+        guard let agent = dependencies.oauth.agentRuntimeInfo(id: agentId),
+              agent.serverId == serverId, !agent.deleted
+        else {
+            throw MachinesAndHostedRuntimeError.agentNotFound
+        }
+        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId),
+              role != "guest",
+              role == "owner" || role == "admin" || agent.creatorUserId == userId
+        else {
+            throw MachinesAndHostedRuntimeError.connectionForbidden
+        }
+        guard let hosted = dependencies.agents.hostedRuntimeRow(agentId: agentId) else {
+            throw MachinesAndHostedRuntimeError.connectionNotProviderBacked
+        }
+        guard hosted.state == "active" else {
+            throw MachinesAndHostedRuntimeError.connectionAgentNotActive(state: hosted.state)
+        }
+        return ConnectionActor(userId: userId, role: role)
+    }
+
+    private func providerCall(
         method: String,
         action: String,
         provider: String,
         agentId: String,
         body: String? = nil
     ) -> AgentConnectionProviderResult {
-        let relay = agentConnectionProvider
-        guard let relay else { return .unavailable }
-        return relay(AgentConnectionProviderRequest(
+        dependencies.callProvider(AgentConnectionProviderRequest(
             method: method,
             action: action,
             provider: provider,
@@ -507,89 +513,12 @@ extension EmailLoginDirectory {
         ))
     }
 
-    func loadAgentForConnection(
-        authorization: String?,
-        serverId: String,
-        agentId: String,
-        provider: String
-    ) -> AgentConnectionLoadResult {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return .refused(Self.json(401, "{\"error\":\"Unauthorized\"}"))
-        }
-        guard Self.agentConnectionProviders.contains(provider) else {
-            return .refused(Self.json(404, "{\"error\":\"Unknown connection provider\",\"code\":\"agent_connection_provider_unknown\"}"))
-        }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), agent.serverId == serverId, !agent.deleted else {
-            return .refused(Self.json(404, "{\"error\":\"Agent not found\"}"))
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
-              role != "guest",
-              role == "owner" || role == "admin" || agent.creatorUserId == userId
-        else {
-            return .refused(Self.json(403, "{\"error\":\"Only the agent's creator or a server owner/admin can manage its connections\",\"code\":\"agent_connection_forbidden\"}"))
-        }
-        lock.lock()
-        let hosted = hostedRuntimes[agentId]
-        lock.unlock()
-        guard let hosted else {
-            return .refused(Self.json(400, "{\"error\":\"Agent is not a cloud agent\",\"code\":\"agent_connection_not_provider_backed\"}"))
-        }
-        guard hosted.state == "active" else {
-            return .refused(Self.json(409, "{\"error\":\"The agent is not provisioned on its provider yet\",\"code\":\"agent_connection_agent_not_active\",\"state\":\(jsonString(hosted.state))}"))
-        }
-        return .loaded(agentId: agentId, userId: userId, role: role)
+    private func memberIdentity(serverId: String, userId: String) -> String? {
+        guard dependencies.oauth.memberRole(serverId: serverId, userId: userId) != nil else { return nil }
+        return dependencies.profiles.accounts.values.first { $0.id == userId }?.name
     }
 
-    func connectionMemberIdentity(serverId: String, userId: String) -> (name: String, displayName: String)? {
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else { return nil }
-        lock.lock()
-        let account = accounts.values.first { $0.id == userId }
-        lock.unlock()
-        guard let account else { return nil }
-        return (account.name, account.name)
-    }
-
-    func connectionUserJSON(serverId: String, userId: String) -> String {
-        let identity = connectionMemberIdentity(serverId: serverId, userId: userId)
-        let name = identity.map { jsonString($0.name) } ?? "null"
-        let displayName = identity.map { jsonString($0.displayName) } ?? "null"
-        return "{\"id\":\(jsonString(userId)),\"name\":\(name),\"displayName\":\(displayName)}"
-    }
-
-    func connectionStatusJSON(
-        _ parsed: HostedConnectionStatusRecord,
-        provider: String,
-        serverId: String,
-        userId: String,
-        role: String
-    ) -> String {
-        let connectedBy: String
-        if parsed.connected, let id = parsed.connectedBy {
-            let identity = connectionMemberIdentity(serverId: serverId, userId: id)
-            let name = identity.map { jsonString($0.displayName) } ?? "null"
-            connectedBy = "{\"id\":\(jsonString(id)),\"name\":\(name)}"
-        } else {
-            connectedBy = "null"
-        }
-        let connectors = parsed.connectors.map { connector -> String in
-            let creator: String
-            if let creatorId = connector.creatorRaftUserId {
-                creator = connectionUserJSON(serverId: serverId, userId: creatorId)
-            } else {
-                creator = "null"
-            }
-            let canManage = role == "owner" || role == "admin" || connector.creatorRaftUserId == userId
-            let createdAt = connector.createdAt.map(jsonString) ?? "null"
-            return "{\"id\":\(jsonString(connector.id)),\"account\":\(jsonString(connector.account)),\"createdAt\":\(createdAt),\"creator\":\(creator),\"current\":\(connector.current),\"canManage\":\(canManage)}"
-        }.joined(separator: ",")
-        let scopes = parsed.scopes.map { jsonString($0) }.joined(separator: ",")
-        let account = parsed.connected ? (parsed.account.map(jsonString) ?? "null") : "null"
-        let connectedAt = parsed.connected ? (parsed.connectedAt.map(jsonString) ?? "null") : "null"
-        let connectorId = parsed.connectorId.map(jsonString) ?? "null"
-        return "{\"provider\":\(jsonString(provider)),\"supported\":true,\"connected\":\(parsed.connected),\"account\":\(account),\"connectedAt\":\(connectedAt),\"connectedBy\":\(connectedBy),\"scopes\":[\(scopes)],\"connectorId\":\(connectorId),\"connectors\":[\(connectors)]}"
-    }
-
-    func redactProviderMessage(_ message: String?) -> String? {
+    private func redactProviderMessage(_ message: String?) -> String? {
         guard let message else { return nil }
         var value = message
         for pattern in [
@@ -602,78 +531,122 @@ extension EmailLoginDirectory {
         return value
     }
 
-    func agentConnectionProviderFailure(_ result: AgentConnectionProviderResult, thisServer: Bool = true) -> HTTPReply {
+    private func statusResponse(
+        _ parsed: HostedConnectionStatusRecord,
+        provider: String,
+        serverId: String,
+        actor: ConnectionActor
+    ) -> ProviderConnectionStatusResponse {
+        var connectedBy: ProviderConnectionStatusResponse.Person?
+        if parsed.connected, let id = parsed.connectedBy {
+            connectedBy = .init(id: id, name: memberIdentity(serverId: serverId, userId: id))
+        }
+        let connectors = parsed.connectors.map { connector -> ProviderConnectionStatusResponse.Connector in
+            var creator: ProviderConnectionStatusResponse.Person?
+            if let creatorId = connector.creatorRaftUserId {
+                let name = memberIdentity(serverId: serverId, userId: creatorId)
+                creator = .init(id: creatorId, name: name, displayName: name, includesDisplayName: true)
+            }
+            let canManage = actor.role == "owner" || actor.role == "admin"
+                || connector.creatorRaftUserId == actor.userId
+            return .init(
+                id: connector.id,
+                account: connector.account,
+                createdAt: connector.createdAt,
+                creator: creator,
+                current: connector.current,
+                canManage: canManage
+            )
+        }
+        return ProviderConnectionStatusResponse(
+            provider: provider,
+            connected: parsed.connected,
+            account: parsed.connected ? parsed.account : nil,
+            connectedAt: parsed.connected ? parsed.connectedAt : nil,
+            connectedBy: connectedBy,
+            scopes: parsed.scopes,
+            connectorId: parsed.connectorId,
+            connectors: connectors
+        )
+    }
+
+    private func isSuccess(_ status: Int) -> Bool { (200..<300).contains(status) }
+
+    private func providerFailure(_ result: AgentConnectionProviderResult) -> MachinesAndHostedRuntimeError {
         switch result {
         case .unavailable:
-            return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":null,\"providerMessage\":null,\"providerStatus\":null}")
+            return .connectionProviderError(providerCode: nil, providerMessage: nil, providerStatus: nil)
         case .empty(let status):
-            return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":null,\"providerMessage\":null,\"providerStatus\":\(status)}")
+            return .connectionProviderError(providerCode: nil, providerMessage: nil, providerStatus: status)
         case .response(let status, let body):
-            let parts = Self.providerErrorParts(body)
+            let parts = AgentConnectionProviderPayload.providerErrorParts(body)
             let message = redactProviderMessage(parts.message)
             if (400..<500).contains(status) {
-                let error = message ?? "The provider refused the request"
-                return Self.json(409, "{\"error\":\(jsonString(error)),\"code\":\"agent_connection_provider_refused\",\"providerCode\":\(parts.code.map(jsonString) ?? "null"),\"providerMessage\":\(message.map(jsonString) ?? "null"),\"providerStatus\":\(status)}")
+                return .connectionProviderRefused(
+                    message: message ?? "The provider refused the request",
+                    providerCode: parts.code,
+                    providerMessage: message,
+                    providerStatus: status
+                )
             }
-            return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\(parts.code.map(jsonString) ?? "null"),\"providerMessage\":\(message.map(jsonString) ?? "null"),\"providerStatus\":\(status)}")
+            return .connectionProviderError(providerCode: parts.code, providerMessage: message, providerStatus: status)
         }
+    }
+
+    private func missingAtProvider(_ message: String?) -> MachinesAndHostedRuntimeError {
+        .connectionAgentMissingAtProvider(providerMessage: redactProviderMessage(message))
     }
 
     /// A 404 from the provider may mean the connections route is missing
     /// (unsupported) or that the provider no longer knows the agent. Only the
     /// agent lookup can tell them apart.
-    func agentConnection404Reply(
+    private func notFoundFailure(
         provider: String,
         agentId: String,
         body: String,
         connectorScoped: Bool = false
-    ) -> HTTPReply {
-        let lookup = agentConnectionProviderCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
+    ) -> MachinesAndHostedRuntimeError {
+        let lookup = providerCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
         switch lookup {
-        case .response(let status, _) where (200..<300).contains(status):
-            if connectorScoped {
-                return Self.json(404, "{\"error\":\"That connection does not exist on this server\",\"code\":\"agent_connection_connector_not_found\"}")
-            }
-            return Self.json(409, "{\"error\":\"The provider does not support connections\",\"code\":\"agent_connection_unsupported\"}")
+        case .response(let status, _) where isSuccess(status):
+            return connectorScoped ? .connectionConnectorNotFound : .connectionUnsupported
         case .response(let status, let lookupBody) where status == 404:
-            return agentConnectionMissingReply(providerMessage: Self.providerErrorParts(lookupBody).message ?? Self.providerErrorParts(body).message)
+            return missingAtProvider(
+                AgentConnectionProviderPayload.providerErrorParts(lookupBody).message
+                    ?? AgentConnectionProviderPayload.providerErrorParts(body).message
+            )
         default:
-            return agentConnectionProviderFailure(lookup)
+            return providerFailure(lookup)
         }
     }
 
-    func agentConnectionMissingReply(providerMessage: String?) -> HTTPReply {
-        let message = redactProviderMessage(providerMessage)
-        return Self.json(409, "{\"error\":\"This agent no longer exists at its provider; connections are unavailable. Recreate the agent.\",\"code\":\"agent_connection_agent_missing_at_provider\",\"providerMessage\":\(message.map(jsonString) ?? "null")}")
-    }
-
-    func agentConnectionStatus404Reply(provider: String, agentId: String) -> HTTPReply {
-        let lookup = agentConnectionProviderCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
-        switch lookup {
-        case .response(let status, _) where (200..<300).contains(status):
-            return Self.json(200, "{\"provider\":\(jsonString(provider)),\"supported\":false}")
-        case .response(let status, let lookupBody) where status == 404:
-            return agentConnectionMissingReply(providerMessage: Self.providerErrorParts(lookupBody).message)
-        default:
-            return agentConnectionProviderFailure(lookup)
-        }
-    }
-
-    func pendingInvalidReply(providerCode: String? = nil, message: String? = nil) -> HTTPReply {
-        Self.json(404, "{\"error\":\"The connection link expired or is invalid; start again\",\"code\":\"agent_connection_pending_invalid\",\"providerCode\":\(providerCode.map(jsonString) ?? "null"),\"providerMessage\":\(redactProviderMessage(message).map(jsonString) ?? "null")}")
-    }
-
-    func agentConnectionStatusFailure(_ result: AgentConnectionProviderResult, provider: String, agentId: String, serverId: String, userId: String, role: String) -> HTTPReply {
+    private func statusReply(
+        _ result: AgentConnectionProviderResult,
+        provider: String,
+        agentId: String,
+        serverId: String,
+        actor: ConnectionActor
+    ) throws -> ProviderConnectionStatusReply {
         switch result {
-        case .response(let status, let body) where (200..<300).contains(status):
-            guard let parsed = Self.parseConnectionStatus(body) else {
-                return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\"invalid_response\",\"providerMessage\":null,\"providerStatus\":\(status)}")
+        case .response(let status, let body) where isSuccess(status):
+            guard let parsed = AgentConnectionProviderPayload.parseConnectionStatus(body) else {
+                throw MachinesAndHostedRuntimeError.connectionProviderError(
+                    providerCode: "invalid_response", providerMessage: nil, providerStatus: status
+                )
             }
-            return Self.json(200, connectionStatusJSON(parsed, provider: provider, serverId: serverId, userId: userId, role: role))
+            return .status(statusResponse(parsed, provider: provider, serverId: serverId, actor: actor))
         case .response(let status, _) where status == 404:
-            return agentConnectionStatus404Reply(provider: provider, agentId: agentId)
+            let lookup = providerCall(method: "GET", action: "agentLookup", provider: provider, agentId: agentId)
+            switch lookup {
+            case .response(let lookupStatus, _) where isSuccess(lookupStatus):
+                return .unsupported(provider: provider)
+            case .response(let lookupStatus, let lookupBody) where lookupStatus == 404:
+                throw missingAtProvider(AgentConnectionProviderPayload.providerErrorParts(lookupBody).message)
+            default:
+                throw providerFailure(lookup)
+            }
         default:
-            return agentConnectionProviderFailure(result)
+            throw providerFailure(result)
         }
     }
 
@@ -682,14 +655,12 @@ extension EmailLoginDirectory {
         serverId: String,
         agentId: String,
         provider: String
-    ) -> HTTPReply {
-        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
-        case .refused(let reply):
-            return reply
-        case .loaded(_, let userId, let role):
-            let result = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
-            return agentConnectionStatusFailure(result, provider: provider, agentId: agentId, serverId: serverId, userId: userId, role: role)
-        }
+    ) throws -> ProviderConnectionStatusReply {
+        let actor = try loadConnectionActor(
+            authorization: authorization, serverId: serverId, agentId: agentId, provider: provider
+        )
+        let result = providerCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+        return try statusReply(result, provider: provider, agentId: agentId, serverId: serverId, actor: actor)
     }
 
     public func startAgentConnection(
@@ -697,48 +668,44 @@ extension EmailLoginDirectory {
         serverId: String,
         agentId: String,
         provider: String,
-        body: String
-    ) -> HTTPReply {
-        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
-        case .refused(let reply):
-            return reply
-        case .loaded(_, let userId, _):
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            let rawAccess = object?["access"]
-            let access: String?
-            if rawAccess == nil || rawAccess is NSNull {
-                access = nil
-            } else if let value = rawAccess as? String, value == "private" {
-                access = "private"
-            } else {
-                return Self.json(400, "{\"error\":\"access must be \\\"private\\\" when present\",\"code\":\"agent_connection_invalid\"}")
+        body: LegacyJSONObjectBody?
+    ) throws -> ProviderConnectionStartResponse {
+        let actor = try loadConnectionActor(
+            authorization: authorization, serverId: serverId, agentId: agentId, provider: provider
+        )
+        var access: String?
+        if let rawAccess = body?["access"], !rawAccess.isNull {
+            guard rawAccess.legacyString == "private" else {
+                throw MachinesAndHostedRuntimeError.connectionAccessInvalid
             }
-            lock.lock()
-            let origin = agentConnectionOrigin
-            lock.unlock()
-            var bodyJSON = "{\"returnUrl\":\(jsonString("\(origin)/api/connections/callback/\(serverId)/\(agentId)")),\"initiatedBy\":{\"raftUserId\":\(jsonString(userId))}"
-            if let access {
-                bodyJSON += ",\"access\":\(jsonString(access))"
+            access = "private"
+        }
+        let origin = dependencies.connectionOrigin()
+        var members = [
+            OrderedJSONField("returnUrl", "\(origin)/api/connections/callback/\(serverId)/\(agentId)"),
+            OrderedJSONField("initiatedBy", .object([OrderedJSONField("raftUserId", actor.userId)])),
+        ]
+        if let access { members.append(OrderedJSONField("access", access)) }
+        let result = providerCall(
+            method: "POST", action: "start", provider: provider, agentId: agentId,
+            body: OrderedJSON.object(members).render()
+        )
+        switch result {
+        case .response(let status, let responseBody) where isSuccess(status):
+            guard let start = AgentConnectionProviderPayload.parseConnectionStart(responseBody) else {
+                throw MachinesAndHostedRuntimeError.connectionProviderError(
+                    providerCode: "invalid_connection_url", providerMessage: nil, providerStatus: status
+                )
             }
-            bodyJSON += "}"
-            let result = agentConnectionProviderCall(method: "POST", action: "start", provider: provider, agentId: agentId, body: bodyJSON)
-            switch result {
-            case .response(let status, let responseBody) where (200..<300).contains(status):
-                guard let parsed = (try? JSONSerialization.jsonObject(with: Data(responseBody.utf8))) as? [String: Any],
-                      let url = parsed["url"] as? String,
-                      let parsedURL = URL(string: url),
-                      parsedURL.scheme == "http" || parsedURL.scheme == "https"
-                else {
-                    return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\"invalid_connection_url\",\"providerMessage\":null,\"providerStatus\":\(status)}")
-                }
-                let expiresAt = (parsed["expiresAt"] as? String).map(jsonString) ?? "\"\""
-                let scopes = ((parsed["scopes"] as? [Any])?.compactMap { $0 as? String } ?? []).map(jsonString).joined(separator: ",")
-                return Self.json(200, "{\"url\":\(jsonString(parsedURL.absoluteString)),\"expiresAt\":\(expiresAt),\"scopes\":[\(scopes)]}")
-            case .response(let status, let responseBody) where status == 404:
-                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody)
-            default:
-                return agentConnectionProviderFailure(result)
-            }
+            return ProviderConnectionStartResponse(
+                url: start.url,
+                expiresAt: start.expiresAt ?? "",
+                scopes: start.scopes
+            )
+        case .response(let status, let responseBody) where status == 404:
+            throw notFoundFailure(provider: provider, agentId: agentId, body: responseBody)
+        default:
+            throw providerFailure(result)
         }
     }
 
@@ -747,33 +714,40 @@ extension EmailLoginDirectory {
         serverId: String,
         agentId: String,
         provider: String,
-        body: String
-    ) -> HTTPReply {
-        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
-        case .refused(let reply):
-            return reply
-        case .loaded(_, let userId, let role):
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            guard let pending = object?["pending"] as? String, !pending.isEmpty else {
-                return Self.json(400, "{\"error\":\"pending is required\",\"code\":\"agent_connection_invalid\"}")
+        body: LegacyJSONObjectBody?
+    ) throws -> ProviderConnectionStatusResponse {
+        let actor = try loadConnectionActor(
+            authorization: authorization, serverId: serverId, agentId: agentId, provider: provider
+        )
+        guard let pending = body?.string("pending"), !pending.isEmpty else {
+            throw MachinesAndHostedRuntimeError.connectionInvalid("pending is required")
+        }
+        guard AgentConnectionProviderPayload.isIdentifier(pending) else {
+            throw MachinesAndHostedRuntimeError.connectionPendingInvalid(providerCode: nil, providerMessage: nil)
+        }
+        let requestBody = OrderedJSON.object([
+            OrderedJSONField("pending", pending),
+            OrderedJSONField("raftUserId", actor.userId),
+        ]).render()
+        let result = providerCall(
+            method: "POST", action: "confirm", provider: provider, agentId: agentId, body: requestBody
+        )
+        switch result {
+        case .response(let status, let responseBody) where isSuccess(status):
+            guard let parsed = AgentConnectionProviderPayload.parseConnectionStatus(responseBody) else {
+                throw MachinesAndHostedRuntimeError.connectionProviderError(
+                    providerCode: "invalid_response", providerMessage: nil, providerStatus: status
+                )
             }
-            guard Self.isAgentConnectionIdentifier(pending) else {
-                return pendingInvalidReply()
-            }
-            let requestBody = "{\"pending\":\(jsonString(pending)),\"raftUserId\":\(jsonString(userId))}"
-            let result = agentConnectionProviderCall(method: "POST", action: "confirm", provider: provider, agentId: agentId, body: requestBody)
-            switch result {
-            case .response(let status, let responseBody) where (200..<300).contains(status):
-                guard let parsed = Self.parseConnectionStatus(responseBody) else {
-                    return Self.json(502, "{\"error\":\"The provider could not complete the request\",\"code\":\"agent_connection_provider_error\",\"providerCode\":\"invalid_response\",\"providerMessage\":null,\"providerStatus\":\(status)}")
-                }
-                return Self.json(200, connectionStatusJSON(parsed, provider: provider, serverId: serverId, userId: userId, role: role))
-            case .response(let status, let responseBody) where status == 404:
-                let parts = Self.providerErrorParts(responseBody)
-                return pendingInvalidReply(providerCode: parts.code, message: parts.message)
-            default:
-                return agentConnectionProviderFailure(result)
-            }
+            return statusResponse(parsed, provider: provider, serverId: serverId, actor: actor)
+        case .response(let status, let responseBody) where status == 404:
+            let parts = AgentConnectionProviderPayload.providerErrorParts(responseBody)
+            throw MachinesAndHostedRuntimeError.connectionPendingInvalid(
+                providerCode: parts.code,
+                providerMessage: redactProviderMessage(parts.message)
+            )
+        default:
+            throw providerFailure(result)
         }
     }
 
@@ -782,47 +756,64 @@ extension EmailLoginDirectory {
         serverId: String,
         agentId: String,
         provider: String,
-        body: String
-    ) -> HTTPReply {
-        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
-        case .refused(let reply):
-            return reply
-        case .loaded(_, let userId, let role):
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-            guard let connectorId = object?["connectorId"] as? String, Self.isAgentConnectionIdentifier(connectorId) else {
-                return Self.json(400, "{\"error\":\"connectorId is required\",\"code\":\"agent_connection_invalid\"}")
-            }
-            let statusResult = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
-            guard case .response(let statusCode, let statusBody) = statusResult,
-                  (200..<300).contains(statusCode)
-            else {
-                if case .response(404, let body) = statusResult {
-                    return agentConnection404Reply(provider: provider, agentId: agentId, body: body)
-                }
-                return agentConnectionProviderFailure(statusResult)
-            }
-            guard let parsed = Self.parseConnectionStatus(statusBody),
-                  let connector = parsed.connectors.first(where: { $0.id == connectorId })
-            else {
-                return Self.json(404, "{\"error\":\"That connection does not exist on this server\",\"code\":\"agent_connection_connector_not_found\"}")
-            }
-            let isManager = role == "owner" || role == "admin"
-            guard isManager || connector.creatorRaftUserId == userId else {
-                return Self.json(403, "{\"error\":\"Only the connection's creator or a server admin can assign or disconnect it\",\"code\":\"agent_connection_connector_forbidden\"}")
-            }
-            let actingRole = connector.creatorRaftUserId == userId ? "creator" : "admin"
-            let requestBody = "{\"connectorId\":\(jsonString(connectorId)),\"actingRaftUserId\":\(jsonString(userId)),\"actingRole\":\(jsonString(actingRole))}"
-            let result = agentConnectionProviderCall(method: "PUT", action: "assign", provider: provider, agentId: agentId, body: requestBody)
-            switch result {
-            case .response(let status, _) where (200..<300).contains(status):
-                let refreshed = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
-                return agentConnectionStatusFailure(refreshed, provider: provider, agentId: agentId, serverId: serverId, userId: userId, role: role)
-            case .response(let status, let responseBody) where status == 404:
-                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody, connectorScoped: true)
-            default:
-                return agentConnectionProviderFailure(result)
-            }
+        body: LegacyJSONObjectBody?
+    ) throws -> ProviderConnectionStatusReply {
+        let actor = try loadConnectionActor(
+            authorization: authorization, serverId: serverId, agentId: agentId, provider: provider
+        )
+        guard let connectorId = body?.string("connectorId"),
+              AgentConnectionProviderPayload.isIdentifier(connectorId)
+        else {
+            throw MachinesAndHostedRuntimeError.connectionInvalid("connectorId is required")
         }
+        let connector = try connectorForAction(
+            provider: provider, agentId: agentId, connectorId: connectorId, actor: actor
+        )
+        let actingRole = connector.creatorRaftUserId == actor.userId ? "creator" : "admin"
+        let requestBody = OrderedJSON.object([
+            OrderedJSONField("connectorId", connectorId),
+            OrderedJSONField("actingRaftUserId", actor.userId),
+            OrderedJSONField("actingRole", actingRole),
+        ]).render()
+        let result = providerCall(
+            method: "PUT", action: "assign", provider: provider, agentId: agentId, body: requestBody
+        )
+        switch result {
+        case .response(let status, _) where isSuccess(status):
+            let refreshed = providerCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+            return try statusReply(refreshed, provider: provider, agentId: agentId, serverId: serverId, actor: actor)
+        case .response(let status, let responseBody) where status == 404:
+            throw notFoundFailure(provider: provider, agentId: agentId, body: responseBody, connectorScoped: true)
+        default:
+            throw providerFailure(result)
+        }
+    }
+
+    /// Reads the provider status, finds `connectorId` and checks the caller may
+    /// act on it.
+    private func connectorForAction(
+        provider: String,
+        agentId: String,
+        connectorId: String,
+        actor: ConnectionActor
+    ) throws -> HostedConnectionConnectorRecord {
+        let statusResult = providerCall(method: "GET", action: "status", provider: provider, agentId: agentId)
+        guard case .response(let statusCode, let statusBody) = statusResult, isSuccess(statusCode) else {
+            if case .response(404, let body) = statusResult {
+                throw notFoundFailure(provider: provider, agentId: agentId, body: body)
+            }
+            throw providerFailure(statusResult)
+        }
+        guard let parsed = AgentConnectionProviderPayload.parseConnectionStatus(statusBody),
+              let connector = parsed.connectors.first(where: { $0.id == connectorId })
+        else {
+            throw MachinesAndHostedRuntimeError.connectionConnectorNotFound
+        }
+        let isManager = actor.role == "owner" || actor.role == "admin"
+        guard isManager || connector.creatorRaftUserId == actor.userId else {
+            throw MachinesAndHostedRuntimeError.connectionConnectorForbidden
+        }
+        return connector
     }
 
     public func disconnectAgentConnection(
@@ -830,22 +821,20 @@ extension EmailLoginDirectory {
         serverId: String,
         agentId: String,
         provider: String
-    ) -> HTTPReply {
-        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
-        case .refused(let reply):
-            return reply
-        case .loaded:
-            let result = agentConnectionProviderCall(method: "DELETE", action: "disconnect", provider: provider, agentId: agentId)
-            switch result {
-            case .response(let status, let responseBody) where status == 404:
-                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody)
-            case .response(let status, _) where (200..<300).contains(status):
-                return Self.json(204, "")
-            case .empty(let status) where (200..<300).contains(status):
-                return Self.json(204, "")
-            default:
-                return agentConnectionProviderFailure(result)
-            }
+    ) throws -> NoContentResponse {
+        _ = try loadConnectionActor(
+            authorization: authorization, serverId: serverId, agentId: agentId, provider: provider
+        )
+        let result = providerCall(method: "DELETE", action: "disconnect", provider: provider, agentId: agentId)
+        switch result {
+        case .response(let status, let responseBody) where status == 404:
+            throw notFoundFailure(provider: provider, agentId: agentId, body: responseBody)
+        case .response(let status, _) where isSuccess(status):
+            return NoContentResponse()
+        case .empty(let status) where isSuccess(status):
+            return NoContentResponse()
+        default:
+            throw providerFailure(result)
         }
     }
 
@@ -855,50 +844,38 @@ extension EmailLoginDirectory {
         agentId: String,
         provider: String,
         connectorId: String
-    ) -> HTTPReply {
-        switch loadAgentForConnection(authorization: authorization, serverId: serverId, agentId: agentId, provider: provider) {
-        case .refused(let reply):
-            return reply
-        case .loaded(_, let userId, let role):
-            guard Self.isAgentConnectionIdentifier(connectorId) else {
-                return Self.json(400, "{\"error\":\"connectorId is required\",\"code\":\"agent_connection_invalid\"}")
-            }
-            let statusResult = agentConnectionProviderCall(method: "GET", action: "status", provider: provider, agentId: agentId)
-            guard case .response(let statusCode, let statusBody) = statusResult,
-                  (200..<300).contains(statusCode)
-            else {
-                if case .response(404, let body) = statusResult {
-                    return agentConnection404Reply(provider: provider, agentId: agentId, body: body)
-                }
-                return agentConnectionProviderFailure(statusResult)
-            }
-            guard let parsed = Self.parseConnectionStatus(statusBody),
-                  let connector = parsed.connectors.first(where: { $0.id == connectorId })
-            else {
-                return Self.json(404, "{\"error\":\"That connection does not exist on this server\",\"code\":\"agent_connection_connector_not_found\"}")
-            }
-            let isManager = role == "owner" || role == "admin"
-            guard isManager || connector.creatorRaftUserId == userId else {
-                return Self.json(403, "{\"error\":\"Only the connection's creator or a server admin can assign or disconnect it\",\"code\":\"agent_connection_connector_forbidden\"}")
-            }
-            let actingRole = connector.creatorRaftUserId == userId ? "creator" : "admin"
-            let requestBody = "{\"actingRaftUserId\":\(jsonString(userId)),\"actingRole\":\(jsonString(actingRole))}"
-            let result = agentConnectionProviderCall(method: "DELETE", action: "disconnectConnector", provider: provider, agentId: agentId, body: requestBody)
-            switch result {
-            case .response(let status, let responseBody) where status == 502:
-                let failed = (try? JSONSerialization.jsonObject(with: Data(responseBody.utf8))) as? [String: Any]
-                let failedCount = (failed?["failed"] as? [Any])?.count ?? 0
-                return Self.json(502, "{\"error\":\"Disconnect partially completed; retry to finish\",\"code\":\"agent_connection_connector_disconnect_partial\",\"failedCount\":\(failedCount)}")
-            case .response(let status, let responseBody) where status == 404:
-                return agentConnection404Reply(provider: provider, agentId: agentId, body: responseBody, connectorScoped: true)
-            case .response(let status, _) where (200..<300).contains(status):
-                return Self.json(204, "")
-            case .empty(let status) where (200..<300).contains(status):
-                return Self.json(204, "")
-            default:
-                return agentConnectionProviderFailure(result)
-            }
+    ) throws -> NoContentResponse {
+        let actor = try loadConnectionActor(
+            authorization: authorization, serverId: serverId, agentId: agentId, provider: provider
+        )
+        guard AgentConnectionProviderPayload.isIdentifier(connectorId) else {
+            throw MachinesAndHostedRuntimeError.connectionInvalid("connectorId is required")
+        }
+        let connector = try connectorForAction(
+            provider: provider, agentId: agentId, connectorId: connectorId, actor: actor
+        )
+        let actingRole = connector.creatorRaftUserId == actor.userId ? "creator" : "admin"
+        let requestBody = OrderedJSON.object([
+            OrderedJSONField("actingRaftUserId", actor.userId),
+            OrderedJSONField("actingRole", actingRole),
+        ]).render()
+        let result = providerCall(
+            method: "DELETE", action: "disconnectConnector", provider: provider, agentId: agentId,
+            body: requestBody
+        )
+        switch result {
+        case .response(let status, let responseBody) where status == 502:
+            throw MachinesAndHostedRuntimeError.connectionConnectorDisconnectPartial(
+                failedCount: AgentConnectionProviderPayload.failedConnectorCount(responseBody)
+            )
+        case .response(let status, let responseBody) where status == 404:
+            throw notFoundFailure(provider: provider, agentId: agentId, body: responseBody, connectorScoped: true)
+        case .response(let status, _) where isSuccess(status):
+            return NoContentResponse()
+        case .empty(let status) where isSuccess(status):
+            return NoContentResponse()
+        default:
+            throw providerFailure(result)
         }
     }
-
 }

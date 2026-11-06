@@ -47,63 +47,6 @@ public struct ReactionMutationRequestDTO: Codable, Sendable, Equatable, Messagin
     }
 }
 
-/// `POST /api/read-mutations` request body.
-///
-/// The route fingerprints the payload as `kind:scopeId:throughSeq` and replays
-/// an identical body with `ALREADY_ADMITTED`, so the round trip must preserve
-/// the shape of `throughSeq`: upstream reads a JSON number with
-/// `as? NSNumber` first and a string second, and the two spellings fingerprint
-/// the same but still have to re-encode as the spelling that arrived.
-public struct ReadMutationAckRequestDTO: Codable, Sendable, Equatable, MessagingAndChannelsRequestDTO {
-    public var mutationId: String
-    public var kind: String
-    public var scopeId: String?
-    public var throughSeq: ThroughSeq?
-
-    public init(
-        mutationId: String,
-        kind: String,
-        scopeId: String? = nil,
-        throughSeq: ThroughSeq? = nil
-    ) {
-        self.mutationId = mutationId
-        self.kind = kind
-        self.scopeId = scopeId
-        self.throughSeq = throughSeq
-    }
-
-    /// `throughSeq` accepts a decimal JSON number or its string spelling.
-    /// Anything else fails to decode and keeps the raw parser.
-    public enum ThroughSeq: Codable, Sendable, Equatable {
-        case number(Int)
-        case string(String)
-
-        public init(from decoder: any Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let value = try? container.decode(Int.self) {
-                self = .number(value)
-                return
-            }
-            if let value = try? container.decode(String.self) {
-                self = .string(value)
-                return
-            }
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "throughSeq must be a decimal number or a string"
-            )
-        }
-
-        public func encode(to encoder: any Encoder) throws {
-            var container = encoder.singleValueContainer()
-            switch self {
-            case .number(let value): try container.encode(value)
-            case .string(let value): try container.encode(value)
-            }
-        }
-    }
-}
-
 /// `PATCH /api/tasks/:taskId/status` request body.
 ///
 /// `status` is the only key the route reads and it must be one of the five

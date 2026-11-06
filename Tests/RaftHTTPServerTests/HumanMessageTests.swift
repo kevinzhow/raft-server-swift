@@ -98,7 +98,7 @@ private func deleteJSON(
     accounts.addAccount(id: userId, email: "messages-app-ref-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: userId)
-    accounts.allowComposerResourceReferences(serverId: serverId)
+    accounts.allowComposerResourceReferencesForTesting(serverId: serverId)
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",

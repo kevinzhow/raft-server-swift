@@ -843,7 +843,7 @@ extension EmailLoginDirectory {
 
     /// Agent migration status, cancellation, provider position and the external
     /// diagnostics view. The service owns the three published operations; the
-    /// directory supplies the two migration stores, the OAuth ledger, and the
+    /// directory supplies the agent runtime store (both migration families), the OAuth ledger, and the
     /// realtime/cancel relay seams the unmigrated migration domains own.
     public var agentMigrationStatus: AgentMigrationStatusService {
         let accounts = self
@@ -851,7 +851,6 @@ extension EmailLoginDirectory {
             sessionUserId: { accounts.sessionUserId(authorization: $0) },
             oauth: oauth,
             agents: agentsRuntimeStore,
-            machines: machinesAndComputersStore,
             emitRealtime: { room, event, payload in
                 accounts.emitRealtime(room, event, payload)
             },

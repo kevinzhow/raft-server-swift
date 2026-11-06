@@ -146,6 +146,17 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         set { state.agentIntegrationLogins = newValue }
     }
 
+    /// Records the agent's login into a service unless one exists. The lookup and
+    /// the insert are one critical section, so two concurrent first logins cannot
+    /// both report `logged_in`. Returns whether the login already existed.
+    func recordAgentIntegrationLogin(key: String, record: AgentIntegrationLoginRecord) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if storage.agentIntegrationLogins[key] != nil { return true }
+        storage.agentIntegrationLogins[key] = record
+        return false
+    }
+
     var providerConnectionsEnabledServers: Set<String> {
         get { state.providerConnectionsEnabledServers }
         set { state.providerConnectionsEnabledServers = newValue }
@@ -300,7 +311,7 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         defer { lock.unlock() }
         guard let existing = storage.agentApiIdempotencyKeys.first(where: {
             $0.agentId == agentId && $0.route == route && $0.key == key
-        }), now.timeIntervalSince(existing.createdAt) < EmailLoginDirectory.agentApiIdempotencyTTL
+        }), now.timeIntervalSince(existing.createdAt) < Self.agentApiIdempotencyTTL
         else {
             return .none
         }
@@ -490,5 +501,170 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         sendCommitLock.lock()
         defer { sendCommitLock.unlock() }
         return try body()
+    }
+}
+
+// MARK: - Managed MCP lifecycle: provider connection sections
+
+/// The fields `PATCH /api/provider-connections/:id` may change. A `nil` member
+/// leaves the stored value untouched.
+struct ProviderConnectionPatch: Sendable, Equatable {
+    var name: String?
+    var endpointUrl: String?
+    var supportsImageInput: Bool?
+    /// A non-empty replacement API key (the credential rotates).
+    var rotatesCredential: Bool
+}
+
+extension ManagedMCPAndCardsStore {
+    /// Whether the provider-connections surface is enabled for the server.
+    func isProviderConnectionsEnabled(serverId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.providerConnectionsEnabledServers.contains(serverId)
+    }
+
+    /// The server's provider connections, in creation order.
+    func providerConnections(serverId: String) -> [ProviderConnection] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.providerConnections.filter { $0.serverId == serverId }
+    }
+
+    func insertProviderConnection(_ connection: ProviderConnection) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.providerConnections.append(connection)
+    }
+
+    /// Applies a patch in one critical section and answers the stored row, or
+    /// `nil` when the connection is not the server's.
+    func patchProviderConnection(
+        id: String,
+        serverId: String,
+        patch: ProviderConnectionPatch,
+        now: Date
+    ) -> ProviderConnection? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.providerConnections.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
+            return nil
+        }
+        if let name = patch.name { storage.providerConnections[index].name = name }
+        if let endpoint = patch.endpointUrl { storage.providerConnections[index].endpointUrl = endpoint }
+        if let supports = patch.supportsImageInput { storage.providerConnections[index].supportsImageInput = supports }
+        if patch.rotatesCredential {
+            storage.providerConnections[index].credentialVersion += 1
+            storage.providerConnections[index].status = "unchecked"
+            storage.providerConnections[index].hasCredential = true
+        }
+        storage.providerConnections[index].updatedAt = now
+        return storage.providerConnections[index]
+    }
+
+    /// Rotates the credential in one critical section and answers the stored
+    /// row, or `nil` when the connection is not the server's.
+    func rotateProviderCredential(id: String, serverId: String, now: Date) -> ProviderConnection? {
+        patchProviderConnection(
+            id: id,
+            serverId: serverId,
+            patch: ProviderConnectionPatch(rotatesCredential: true),
+            now: now
+        )
+    }
+
+    /// Whether the connection exists and the agent assignments it carries, from
+    /// one snapshot.
+    func providerAssignments(serverId: String, connectionId: String) -> (known: Bool, assignments: [ProviderAssignment]) {
+        lock.lock()
+        defer { lock.unlock() }
+        let known = storage.providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
+        let assignments = storage.providerAssignments.filter { $0.connectionId == connectionId && $0.serverId == serverId }
+        return (known, assignments)
+    }
+}
+
+// MARK: - Managed MCP control plane (ManagedMCPControlPlaneService)
+
+extension ManagedMCPAndCardsStore {
+    /// How long an agent-api idempotency key keeps replaying its first reply.
+    static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
+
+    func appendManagedMCPServer(_ record: ManagedMCPServerRecord) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.managedMCPServers.append(record)
+    }
+
+    /// Applies `mutate` to one server row inside the critical section and
+    /// returns the stored row, or nil when the row is absent. A throw from
+    /// `mutate` keeps the edits it already made (the legacy handler wrote each
+    /// member in place and refused part-way) and then propagates.
+    func updateManagedMCPServer(
+        serverId: String,
+        id: String,
+        _ mutate: (inout ManagedMCPServerRecord) throws -> Void
+    ) rethrows -> ManagedMCPServerRecord? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.managedMCPServers.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
+            return nil
+        }
+        var record = storage.managedMCPServers[index]
+        defer { storage.managedMCPServers[index] = record }
+        try mutate(&record)
+        return record
+    }
+
+    /// Removes one server row; false when no row matched.
+    func removeManagedMCPServer(serverId: String, id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let before = storage.managedMCPServers.count
+        storage.managedMCPServers.removeAll { $0.id == id && $0.serverId == serverId }
+        return storage.managedMCPServers.count != before
+    }
+
+    /// Result of replacing an agent's assignment set.
+    enum ManagedMCPAssignmentWrite: Sendable, Equatable {
+        case stored
+        case unknownServer
+    }
+
+    /// Replaces the whole assignment set of one agent. Every entry must name a
+    /// server of `serverId`; the first unknown entry refuses the write and
+    /// leaves the stored set untouched.
+    func replaceManagedMCPAssignments(
+        serverId: String,
+        agentId: String,
+        entries: [(mcpServerId: String?, enabled: Bool, allowedTools: [String]?)]
+    ) -> ManagedMCPAssignmentWrite {
+        lock.lock()
+        defer { lock.unlock() }
+        let serverIds = Set(storage.managedMCPServers.filter { $0.serverId == serverId }.map(\.id))
+        var stored: [String: (enabled: Bool, allowedTools: [String]?)] = [:]
+        for entry in entries {
+            guard let id = entry.mcpServerId, serverIds.contains(id) else { return .unknownServer }
+            stored[id] = (entry.enabled, entry.allowedTools)
+        }
+        storage.managedMCPAssignments[agentId] = stored
+        return .stored
+    }
+
+    /// Sets one assignment of one agent; unknown when the server row is absent.
+    func setManagedMCPAssignment(
+        serverId: String,
+        agentId: String,
+        mcpServerId: String,
+        enabled: Bool,
+        allowedTools: [String]?
+    ) -> ManagedMCPAssignmentWrite {
+        lock.lock()
+        defer { lock.unlock() }
+        guard storage.managedMCPServers.contains(where: { $0.id == mcpServerId && $0.serverId == serverId }) else {
+            return .unknownServer
+        }
+        storage.managedMCPAssignments[agentId, default: [:]][mcpServerId] = (enabled, allowedTools)
+        return .stored
     }
 }

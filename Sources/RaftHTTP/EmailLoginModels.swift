@@ -103,11 +103,6 @@ struct ExternalAvatarAsset {
         var active: Bool
     }
 
-enum AnnouncementContext {
-        case success(String?)
-        case failure(HTTPReply)
-    }
-
 struct ResumeAllAgentsContext {
         var targets: [String]
         var dispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)?
@@ -178,11 +173,6 @@ struct TaskRecord {
         var superseded: Bool = false
         var requiresResourceReceipt: Bool = false
         var resourceReceiptJSON: String? = nil
-    }
-
-enum ManagedMCPControlAuth {
-        case ok(userId: String, role: String)
-        case refused(HTTPReply)
     }
 
 struct AgentInboxRow {
@@ -325,29 +315,6 @@ struct HostedConnectionConnectorRecord {
         var creatorRaftUserId: String?
         var createdAt: String?
         var current: Bool
-    }
-
-enum AgentConnectionLoadResult {
-        case loaded(agentId: String, userId: String, role: String)
-        case refused(HTTPReply)
-    }
-
-enum HostedModelGuardResult {
-        case allowed(String)
-        case refused(HTTPReply)
-    }
-
-struct OnboardingAdoptionChange {
-        var field: String
-        var before: String?
-        var after: String?
-    }
-
-struct MigrationArrivalContext {
-        var supportRef: String
-        var sourceMachineId: String
-        var agentId: String
-        var archiveCallback: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?
     }
 
 struct AttachedComputer {

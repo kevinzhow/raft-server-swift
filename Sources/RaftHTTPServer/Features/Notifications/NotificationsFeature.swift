@@ -42,23 +42,31 @@ public struct NotificationsFeature: RouteCollection, Sendable {
         let slackBridge = app.grouped("api", "slack-bridge")
         let v2 = app.grouped("api", "v2")
 
-        announcements.post(":announcementId", "dismiss") { request -> Response in
-            routeResponse(services.emailAccounts.dismissAnnouncement(
-                authorization: request.headers[.authorization],
-                announcementId: request.parameters.get("announcementId") ?? "",
-                query: request.url.query,
-                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        announcements.post(":announcementId", "dismiss") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPOAuth.dismissAnnouncement(
+                    authorization: request.headers[.authorization],
+                    announcementId: request.parameters.get("announcementId") ?? "",
+                    query: request.url.query,
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
-        announcements.get("active") { request -> Response in
-            routeResponse(services.emailAccounts.activeAnnouncements(
-                authorization: request.headers[.authorization],
-                after: desktopQuery(request.url.query, "after"),
-                query: request.url.query
-            ))
+        announcements.get("active") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPOAuth.activeAnnouncements(
+                    authorization: request.headers[.authorization],
+                    after: desktopQuery(request.url.query, "after"),
+                    query: request.url.query
+                )
+            }
         }
-        announcements.get("images", ":imageId") { request -> Response in
-            routeResponse(services.emailAccounts.announcementImage(id: request.parameters.get("imageId") ?? ""))
+        announcements.get("images", ":imageId") { request async throws -> Response in
+            try await respond(headers: { $0.headers }) {
+                try services.emailAccounts.managedMCPOAuth.announcementImage(
+                    id: request.parameters.get("imageId") ?? ""
+                )
+            }
         }
         avatars.get("pixel", ":file") { request -> Response in
             let file = request.parameters.get("file") ?? ""
@@ -103,8 +111,12 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        externalAvatars.get(":file") { request -> Response in
-            routeResponse(services.emailAccounts.externalAvatar(file: request.parameters.get("file") ?? ""))
+        externalAvatars.get(":file") { request async throws -> Response in
+            try await respond(headers: { $0.headers }) {
+                try services.emailAccounts.managedMCPOAuth.externalAvatar(
+                    file: request.parameters.get("file") ?? ""
+                )
+            }
         }
         featureFlags.post("evaluate") { request async throws -> Response in
             // Typed bodies go through the DTO; a body the typed decoder rejects
@@ -287,44 +299,51 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        push.get("delivery-status") { request -> Response in
-            routeResponse(services.emailAccounts.pushDeliveryStatus(
-                authorization: request.headers[.authorization],
-                installationId: desktopQuery(request.url.query, "installationId")
-            ))
+        push.get("delivery-status") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPPush.pushDeliveryStatus(
+                    authorization: request.headers[.authorization],
+                    installationId: desktopQuery(request.url.query, "installationId")
+                )
+            }
         }
         push.post("family-revoke") { request async throws -> Response in
-            let body: String
-            if let typed = try? await request.content.decode(PushFamilyRevokeDTO.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText()
+            let body = await jsonRequestBody(PushFamilyRevokeRequest.self, request)
+            let response = try await respond(status: 204, headers: .standard()) {
+                try services.emailAccounts.managedMCPPush.revokePushFamily(body: body)
             }
-            let reply = services.emailAccounts.revokePushFamily(body: body)
-            if reply.status == 204 {
-                publishFamilyRevoke(body: body, services: services)
+            if response.status == .noContent {
+                publishFamilyRevoke(capability: body?.capability, services: services)
             }
-            return routeResponse(reply)
+            return response
         }
         push.post("registrations") { request async throws -> Response in
-            routeResponse(services.emailAccounts.registerPushDevice(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPPush.registerPushDevice(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
-        push.delete("registrations", ":installationId") { request -> Response in
-            routeResponse(services.emailAccounts.unbindPushInstallation(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                installationId: request.parameters.get("installationId") ?? ""
-            ))
+        push.delete("registrations", ":installationId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPPush.unbindPushInstallation(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    installationId: request.parameters.get("installationId") ?? ""
+                )
+            }
         }
         push.post("subscribe") { request async throws -> Response in
-            routeResponse(services.emailAccounts.recordWebPushSubscription(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(WebPushSubscribeRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPPush.recordWebPushSubscription(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         releaseNotes.get { request in
             routeResponse(ReleaseNotes.list(
@@ -376,12 +395,15 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             try await respond(status: 503) { services.emailAccounts.joinLinksAndInvites.slackBridgeUnavailable() }
         }
         v2.post("messages") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createHumanMessage(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                contract: "v2"
-            ))
+            let body = await jsonRequestBody(HumanMessageCreateRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.humanMessageCreate.createHumanMessage(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    contract: .v2
+                )
+            }
         }
         app.get("api", "version") { request in
             vaporResponse(APIVersion.reply(
@@ -513,10 +535,9 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
     return (channelId, image)
 }
 
-private func publishFamilyRevoke(body: String, services: FallbackServices) {
+private func publishFamilyRevoke(capability: String?, services: FallbackServices) {
     guard let hub = services.realtime,
-          let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-          let capability = object["capability"] as? String,
+          let capability,
           let target = services.emailAccounts.familyRevokeTarget(capability: capability)
     else { return }
     hub.revokeFamily(userId: target.userId, familyId: target.familyId)

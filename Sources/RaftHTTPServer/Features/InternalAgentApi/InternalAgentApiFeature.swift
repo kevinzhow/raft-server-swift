@@ -43,50 +43,65 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         let app = routes
         let agentApi = app.grouped("internal", "agent-api")
 
-        agentApi.delete("reminders", ":reminderId") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderCancel(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? ""
-            ))
+        agentApi.delete("reminders", ":reminderId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderCancel(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? ""
+                )
+            }
         }
         agentApi.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderSnooze(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderSnoozeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderSnooze(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
         agentApi.patch("reminders", ":reminderId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderUpdate(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderUpdate(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
-        agentApi.get("reminders", ":reminderId", "log") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderLog(
-                authorization: request.headers[.authorization],
-                reminderId: request.parameters.get("reminderId") ?? ""
-            ))
+        agentApi.get("reminders", ":reminderId", "log") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderLog(
+                    authorization: request.headers[.authorization],
+                    reminderId: request.parameters.get("reminderId") ?? ""
+                )
+            }
         }
-        agentApi.get("reminders") { request -> Response in
-            routeResponse(services.emailAccounts.agentApiReminderList(
-                authorization: request.headers[.authorization],
-                status: desktopQuery(request.url.query, "status")
-            ))
+        agentApi.get("reminders") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderList(
+                    authorization: request.headers[.authorization],
+                    status: desktopQuery(request.url.query, "status")
+                )
+            }
         }
         agentApi.post("reminders") { request async throws -> Response in
-            let reply = services.emailAccounts.agentApiReminderCreate(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            )
-            if let reminderId = reminderIdFromReply(reply),
-               let agentId = services.emailAccounts.agentIdForReminderTesting(reminderId: reminderId) {
-                publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
+            let body = await jsonRequestBody(ReminderCreateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                let created = try services.emailAccounts.managedMCPAgentCatalog.agentApiReminderCreate(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+                publishReminderEvent(
+                    event: "reminder:scheduled", reminderId: created.reminder.id,
+                    agentId: created.ownerAgentId, services: services
+                )
+                return created
             }
-            return routeResponse(reply)
         }
-        agentApi.get("users", "info") { request -> Response in
+        agentApi.get("users", "info") { request async throws -> Response in
             var name = ""
             var limit: String?
             var offset: String?
@@ -95,14 +110,16 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit = components.queryItems?.first { $0.name == "limit" }?.value
                 offset = components.queryItems?.first { $0.name == "offset" }?.value
             }
-            return routeResponse(services.emailAccounts.agentUserInfo(
-                authorization: request.headers[.authorization],
-                name: name,
-                limit: limit,
-                offset: offset
-            ))
+            return try await respond(headers: { $0.headers }) {
+                try services.emailAccounts.managedMCPOAuth.agentUserInfo(
+                    authorization: request.headers[.authorization],
+                    name: name,
+                    limit: limit,
+                    offset: offset
+                )
+            }
         }
-        agentApi.get("users", ":name", "channels") { request -> Response in
+        agentApi.get("users", ":name", "channels") { request async throws -> Response in
             let name = request.parameters.get("name") ?? ""
             var limit: String?
             var offset: String?
@@ -110,12 +127,14 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit = components.queryItems?.first { $0.name == "limit" }?.value
                 offset = components.queryItems?.first { $0.name == "offset" }?.value
             }
-            return routeResponse(services.emailAccounts.agentUserChannels(
-                authorization: request.headers[.authorization],
-                name: name,
-                limit: limit,
-                offset: offset
-            ))
+            return try await respond {
+                try services.emailAccounts.managedMCPOAuth.agentUserChannels(
+                    authorization: request.headers[.authorization],
+                    name: name,
+                    limit: limit,
+                    offset: offset
+                )
+            }
         }
         agentApi.get() { request -> Response in
             routeResponse(services.emailAccounts.agentApiIdentity(
@@ -253,29 +272,35 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 authorization: request.headers[.authorization]
             ))
         }
-        agentApi.get("history") { request -> Response in
-            routeResponse(services.emailAccounts.agentHistory(
-                authorization: request.headers[.authorization],
-                channelRef: desktopQuery(request.url.query, "channel"),
-                before: desktopQuery(request.url.query, "before"),
-                after: desktopQuery(request.url.query, "after"),
-                around: desktopQuery(request.url.query, "around"),
-                limit: desktopQuery(request.url.query, "limit"),
-                consume: desktopQuery(request.url.query, "consume"),
-                unread: desktopQuery(request.url.query, "unread") == "true"
-            ))
+        agentApi.get("history") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.history(
+                    authorization: request.headers[.authorization],
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    before: desktopQuery(request.url.query, "before"),
+                    after: desktopQuery(request.url.query, "after"),
+                    around: desktopQuery(request.url.query, "around"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    consume: desktopQuery(request.url.query, "consume"),
+                    unread: desktopQuery(request.url.query, "unread") == "true"
+                )
+            }
         }
-        agentApi.get("assistant", "owner-inbox") { request -> Response in
-            routeResponse(services.emailAccounts.agentAssistantOwnerInbox(
-                authorization: request.headers[.authorization],
-                rawQuery: request.url.query
-            ))
+        agentApi.get("assistant", "owner-inbox") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentSurface.agentAssistantOwnerInbox(
+                    authorization: request.headers[.authorization],
+                    rawQuery: request.url.query
+                )
+            }
         }
-        agentApi.get("assistant", "owner-messages") { request -> Response in
-            routeResponse(services.emailAccounts.agentAssistantOwnerMessages(
-                authorization: request.headers[.authorization],
-                channelId: desktopQuery(request.url.query, "channelId") ?? ""
-            ))
+        agentApi.get("assistant", "owner-messages") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentSurface.agentAssistantOwnerMessages(
+                    authorization: request.headers[.authorization],
+                    channelId: desktopQuery(request.url.query, "channelId") ?? ""
+                )
+            }
         }
         agentApi.get("inbox", "conversations") { request async throws -> Response in
             try await respond {
@@ -287,17 +312,21 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("attachments", ":attachmentId", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentCommentsList(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
-            ))
+        agentApi.get("attachments", ":attachmentId", "comments") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.agentAttachmentCommentsList(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+            }
         }
-        agentApi.post("attachments", ":attachmentId", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.agentAttachmentCommentCreate(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("attachmentId") ?? ""
-            ))
+        agentApi.post("attachments", ":attachmentId", "comments") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.agentAttachmentCommentCreate(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("attachmentId") ?? ""
+                )
+            }
         }
         agentApi.get("attachments", ":attachmentId") { request -> Response in
             routeResponse(services.emailAccounts.agentAttachmentDownload(
@@ -318,10 +347,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("integrations", "app") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppList(
-                authorization: request.headers[.authorization]
-            ))
+        agentApi.get("integrations", "app") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationAppList(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         agentApi.post("integrations", "app", "prepare") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationAppPrepareRequest.self, request)
@@ -333,30 +364,40 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.post("integrations", "app", "update") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppUpdate(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationAppUpdate(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
-        agentApi.get("integrations", "app", "status") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppStatus(
-                authorization: request.headers[.authorization],
-                client: desktopQuery(request.url.query, "client"),
-                card: desktopQuery(request.url.query, "card")
-            ))
+        agentApi.get("integrations", "app", "status") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationAppStatus(
+                    authorization: request.headers[.authorization],
+                    client: desktopQuery(request.url.query, "client"),
+                    card: desktopQuery(request.url.query, "card")
+                )
+            }
         }
-        agentApi.get("integrations", "marketplace") { request -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationMarketplace(
-                authorization: request.headers[.authorization],
-                query: desktopQuery(request.url.query, "query"),
-                limit: desktopQuery(request.url.query, "limit")
-            ))
+        agentApi.get("integrations", "marketplace") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationMarketplace(
+                    authorization: request.headers[.authorization],
+                    query: desktopQuery(request.url.query, "query"),
+                    limit: desktopQuery(request.url.query, "limit")
+                )
+            }
         }
         agentApi.post("integrations", "login") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationLogin(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.agentIntegrationApps.agentIntegrationLogin(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("integrations", "token") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationToken(
@@ -565,17 +606,21 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agentApi.get("messages", ":messageId", "mention-deliveries") { request -> Response in
-            routeResponse(services.emailAccounts.agentMentionDeliveries(
-                authorization: request.headers[.authorization],
-                messageRef: request.parameters.get("messageId") ?? ""
-            ))
+        agentApi.get("messages", ":messageId", "mention-deliveries") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentMessageLookup.agentMentionDeliveries(
+                    authorization: request.headers[.authorization],
+                    messageRef: request.parameters.get("messageId") ?? ""
+                )
+            }
         }
-        agentApi.get("messages", ":messageId", "resolve") { request -> Response in
-            routeResponse(services.emailAccounts.agentMessageResolve(
-                authorization: request.headers[.authorization],
-                messageRef: request.parameters.get("messageId") ?? ""
-            ))
+        agentApi.get("messages", ":messageId", "resolve") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentMessageLookup.agentMessageResolve(
+                    authorization: request.headers[.authorization],
+                    messageRef: request.parameters.get("messageId") ?? ""
+                )
+            }
         }
         agentApi.get("search") { request async throws -> Response in
             try await respond {
@@ -661,53 +706,62 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 limit: desktopQuery(request.url.query, "limit")
             ))
         }
-        agentApi.get("wake-hints", "stream") { request -> Response in
-            switch services.emailAccounts.beginAgentWakeHintsStream(
-                authorization: request.headers[.authorization],
-                since: request.headers[HTTPField.Name("Last-Event-ID")!] ?? desktopQuery(request.url.query, "since")
-            ) {
-            case .refused(let reply):
-                return routeResponse(reply)
-            case .start(let token, let cursorSeq, let firstFrame):
-                var headers = HTTPFields()
-                headers[.contentType] = "text/event-stream"
-                headers[.cacheControl] = "no-cache, no-transform"
-                headers[HTTPField.Name("X-Accel-Buffering")!] = "no"
-                let pollMs = services.nodeEnv == "test" ? 50 : 1_000
-                // Tests bound the loop so a streaming task cannot outlive the suite.
-                let boundedTicks = services.nodeEnv == "test" ? 200 : Int.max
-                var response = Response(status: .ok, headers: headers)
-                response.body = Response.Body { writer in
-                    try await writer.write(firstFrame)
-                    var cursor = cursorSeq
-                    var ticks = 0
-                    while !Task.isCancelled {
-                        try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
-                        services.emailAccounts.refreshAgentWakeStreamCredential(token: token)
-                        guard let batch = services.emailAccounts.agentWakeStreamBatch(token: token, after: cursor) else { return }
-                        if batch.frames.isEmpty {
-                            try await writer.write(": heartbeat\n\n")
-                        } else {
-                            try await writer.write(batch.frames)
-                            cursor = batch.cursorSeq
-                        }
-                        ticks += 1
-                        if ticks >= boundedTicks { return }
+        agentApi.get("wake-hints", "stream") { request async throws -> Response in
+            // The refusal projects through `respond`; the open stream is the one
+            // reply `respond` cannot express (a chunked SSE body).
+            var started: AgentWakeStreamStart?
+            let refusal = try await respond { () throws -> OkResponse in
+                started = try services.emailAccounts.agentSurface.beginAgentWakeHintsStream(
+                    authorization: request.headers[.authorization],
+                    since: request.headers[HTTPField.Name("Last-Event-ID")!] ?? desktopQuery(request.url.query, "since")
+                )
+                return OkResponse()
+            }
+            guard let started else { return refusal }
+            let token = started.token
+            var headers = HTTPFields()
+            headers[.contentType] = "text/event-stream"
+            headers[.cacheControl] = "no-cache, no-transform"
+            headers[HTTPField.Name("X-Accel-Buffering")!] = "no"
+            let pollMs = services.nodeEnv == "test" ? 50 : 1_000
+            // Tests bound the loop so a streaming task cannot outlive the suite.
+            let boundedTicks = services.nodeEnv == "test" ? 200 : Int.max
+            var response = Response(status: .ok, headers: headers)
+            response.body = Response.Body { writer in
+                try await writer.write(started.firstFrame)
+                var cursor = started.cursorSeq
+                var ticks = 0
+                while !Task.isCancelled {
+                    try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
+                    services.emailAccounts.agentSurface.recordAgentCredentialUse(token: token)
+                    guard let batch = services.emailAccounts.agentSurface.agentWakeStreamBatch(token: token, after: cursor) else { return }
+                    if batch.frames.isEmpty {
+                        try await writer.write(": heartbeat\n\n")
+                    } else {
+                        try await writer.write(batch.frames)
+                        cursor = batch.cursorSeq
                     }
+                    ticks += 1
+                    if ticks >= boundedTicks { return }
                 }
-                return response
+            }
+            return response
+        }
+        agentApi.get("mention-actions", "pending") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.humanMessageCreate.agentMentionActionsPending(
+                    authorization: request.headers[.authorization]
+                )
             }
         }
-        agentApi.get("mention-actions", "pending") { request -> Response in
-            routeResponse(services.emailAccounts.agentMentionActionsPending(
-                authorization: request.headers[.authorization]
-            ))
-        }
         agentApi.post("mention-actions", "execute") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentMentionActionsExecute(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(MentionActionsRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.humanMessageCreate.agentMentionActionsExecute(
+                    authorization: request.headers[.authorization],
+                    body
+                )
+            }
         }
         agentApi.get("events") { request -> Response in
             routeResponse(services.emailAccounts.agentThirdPartyEvents(authorization: request.headers[.authorization]))
@@ -722,10 +776,12 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             }
         }
         agentApi.put("push-webhook") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putAgentPushWebhook(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            try await respond {
+                try services.emailAccounts.agentSurface.putAgentPushWebhook(
+                    authorization: request.headers[.authorization],
+                    body: await jsonRequestBody(LegacyJSONObjectBody.self, request)
+                )
+            }
         }
         agentApi.post("upload") { request async throws -> Response in
             guard let contentType = request.headers[.contentType],
@@ -829,23 +885,15 @@ private func jsonString(_ value: String) -> String {
     return String(text.dropFirst().dropLast())
 }
 
-private func reminderIdFromReply(_ reply: HTTPReply) -> String? {
-    guard reply.status == 200, let data = reply.body.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let reminder = object["reminder"] as? [String: Any]
-    else { return nil }
-    return reminder["reminderId"] as? String ?? reminder["id"] as? String
-}
-
 private func publishReminderEvent(
-    _ reply: HTTPReply, event: String, reminderId: String, agentId: String, services: FallbackServices
+    event: String, reminderId: String, agentId: String, services: FallbackServices
 ) {
-    guard reply.status == 200, let hub = services.realtime,
+    guard let hub = services.realtime,
           let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
     else { return }
     var recipients: Set<String> = []
     if let creator = agent.creatorUserId { recipients.insert(creator) }
-    for member in services.emailAccounts.serverMemberRoles(serverId: agent.serverId)
+    for member in services.emailAccounts.oauth.memberRoles(serverId: agent.serverId)
     where member.role == "owner" || member.role == "admin" {
         recipients.insert(member.userId)
     }

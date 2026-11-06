@@ -264,11 +264,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         }
 
         channels.post("saved") { request async throws -> Response in
-            routeResponse(services.emailAccounts.saveChannelMessage(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(SaveChannelMessageRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.saveChannelMessage(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         channels.get("saved") { request -> Response in
@@ -359,20 +362,24 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post(":channelId", "unread") { request -> Response in
-            routeResponse(services.emailAccounts.markChannelUnread(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        channels.post(":channelId", "unread") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPOAuth.markChannelUnread(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
 
-        channels.get("unread") { request -> Response in
-            routeResponse(services.emailAccounts.channelUnread(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                summary: desktopQuery(request.url.query, "summary") == "1"
-            ))
+        channels.get("unread") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try services.emailAccounts.managedMCPOAuth.channelUnread(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    summary: desktopQuery(request.url.query, "summary") == "1"
+                )
+            }
         }
 
         channels.get(":channelId", "message-display-settings") { request -> Response in
@@ -383,12 +390,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post(":channelId", "conversation-read-all") { request -> Response in
-            routeResponse(services.emailAccounts.conversationReadAll(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        channels.post(":channelId", "conversation-read-all") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.conversationReadAll(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
 
         channels.patch(":channelId", "message-display-settings") { request async throws -> Response in
@@ -430,11 +439,13 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.post("joint-invites", ":inviteId", "accept") { request -> Response in
-            routeResponse(services.emailAccounts.acceptJointChannelInvite(
-                authorization: request.headers[.authorization],
-                inviteId: request.parameters.get("inviteId") ?? ""
-            ))
+        channels.post("joint-invites", ":inviteId", "accept") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.acceptJointChannelInvite(
+                    authorization: request.headers[.authorization],
+                    inviteId: request.parameters.get("inviteId") ?? ""
+                )
+            }
         }
 
         channels.post(":channelId", "threads") { request async throws -> Response in
@@ -520,52 +531,67 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.get(":channelId", "notification-settings") { request -> Response in
-            routeResponse(services.emailAccounts.channelNotificationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? ""
-            ))
+        channels.get(":channelId", "notification-settings") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPOAuth.channelNotificationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
         }
 
         channels.patch(":channelId", "notification-settings") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchChannelNotificationSettings(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPOAuth.patchChannelNotificationSettings(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body
+                )
+            }
         }
 
         channels.patch(":channelId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchChannelRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPChannelRoutes.patchChannel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body
+                )
+            }
         }
 
         channels.post { request async throws -> Response in
-            let reply = services.emailAccounts.createChannelRoute(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            )
-            services.channelMessaging.publishCreatedChannel(
-                status: reply.status,
-                replyBody: reply.body,
-                authorization: request.headers[.authorization]
-            )
-            return routeResponse(reply)
+            let body = await jsonRequestBody(ManagedMCPChannelCreateRequest.self, request)
+            return try await respond {
+                let created = try services.emailAccounts.managedMCPChannelRoutes.createChannel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+                // Only a successful create reaches here; the room grant and the
+                // `channel:updated` frame read the published reply body.
+                services.channelMessaging.publishCreatedChannel(
+                    status: 200,
+                    replyBody: created.jsonBody.render(),
+                    authorization: request.headers[.authorization]
+                )
+                return created
+            }
         }
 
-        channels.get { request -> Response in
-            routeResponse(services.emailAccounts.listChannels(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                archived: desktopQuery(request.url.query, "archived")
-            ))
+        channels.get { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.listChannels(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    archived: desktopQuery(request.url.query, "archived")
+                )
+            }
         }
     }
 }

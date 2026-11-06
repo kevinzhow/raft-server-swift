@@ -666,3 +666,197 @@ extension TasksAndRemindersStore {
         return .reassigned(storage.taskRecords[index])
     }
 }
+
+// MARK: - App reminder ledger (ManagedMCPAgentCatalogService)
+
+/// Result of one version-bound reminder write. The store decides; the service
+/// maps a refusal to its published status and body.
+enum ReminderMutationOutcome: Sendable {
+    case ok(version: Int)
+    case notFound
+    case conflict(currentVersion: Int)
+    case invalid(String)
+}
+
+/// The columns the reminder summary projections print.
+struct ReminderRow: Sendable, Equatable {
+    var id: String
+    var status: String
+    var version: Int
+    var title: String
+    var fireAt: Date
+}
+
+extension TasksAndRemindersStore {
+    /// A plain scheduled reminder without an event row (the legacy list seed).
+    func addReminder(serverId: String, ownerAgentId: String, title: String, fireAt: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.reminderRecords.append(ReminderRecord(
+            id: UUID().uuidString.lowercased(),
+            serverId: serverId,
+            ownerAgentId: ownerAgentId,
+            title: title,
+            fireAt: fireAt
+        ))
+    }
+
+    /// Appends one scheduled reminder and its `scheduled` event in one critical
+    /// section and returns the new id.
+    func createReminder(
+        serverId: String, ownerAgentId: String, title: String, fireAt: Date,
+        notes: String? = nil, recurrenceJSON: String? = nil,
+        channelId: String? = nil, threadId: String? = nil,
+        actorType: String = "agent", actorId: String? = nil
+    ) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let reminder = ReminderRecord(
+            id: UUID().uuidString.lowercased(), serverId: serverId, ownerAgentId: ownerAgentId,
+            title: title, fireAt: fireAt, status: "scheduled", version: 1, notes: notes,
+            recurrenceJSON: recurrenceJSON, channelId: channelId, threadId: threadId,
+            createdAt: Date(), updatedAt: Date()
+        )
+        storage.reminderRecords.append(
+            appendReminderEventLocked(reminder, type: "scheduled", actorType: actorType, actorId: actorId)
+        )
+        return reminder.id
+    }
+
+    func reminderRow(id: String) -> ReminderRow? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let reminder = storage.reminderRecords.first(where: { $0.id == id }) else { return nil }
+        return ReminderRow(
+            id: reminder.id, status: reminder.status, version: reminder.version,
+            title: reminder.title, fireAt: reminder.fireAt
+        )
+    }
+
+    func ownerAgentId(reminderId: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.reminderRecords.first(where: { $0.id == reminderId })?.ownerAgentId
+    }
+
+    func reminders(ownedBy agentIds: Set<String>) -> [ReminderRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.reminderRecords.filter { agentIds.contains($0.ownerAgentId) }
+    }
+
+    /// Reminders of one owner on one server; `statuses == nil` lists every status.
+    func reminders(serverId: String, ownerAgentId: String, statuses: Set<String>?) -> [ReminderRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.reminderRecords.filter { reminder in
+            reminder.serverId == serverId && reminder.ownerAgentId == ownerAgentId
+                && (statuses == nil || statuses!.contains(reminder.status))
+        }.map {
+            ReminderRow(id: $0.id, status: $0.status, version: $0.version, title: $0.title, fireAt: $0.fireAt)
+        }
+    }
+
+    /// Event types and versions, newest first.
+    func reminderEventLog(reminderId: String) -> [(eventType: String, version: Int)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.reminderEvents.filter { $0.reminderId == reminderId }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map { ($0.type, $0.version) }
+    }
+
+    func cancelReminder(reminderId: String, ownerAgentId: String, expectedVersion: Int?) -> ReminderMutationOutcome {
+        mutateReminder(reminderId: reminderId, ownerAgentId: ownerAgentId, expectedVersion: expectedVersion, type: "canceled") { reminder in
+            reminder.status = "canceled"
+        }
+    }
+
+    func snoozeReminder(
+        reminderId: String, ownerAgentId: String, expectedVersion: Int?, fireAt: Date
+    ) -> ReminderMutationOutcome {
+        mutateReminder(reminderId: reminderId, ownerAgentId: ownerAgentId, expectedVersion: expectedVersion, type: "snoozed") { reminder in
+            reminder.status = "scheduled"
+            reminder.fireAt = fireAt
+        }
+    }
+
+    func updateReminder(
+        reminderId: String, ownerAgentId: String, expectedVersion: Int?,
+        title: String?, fireAt: Date?, notes: String?
+    ) -> ReminderMutationOutcome {
+        guard title != nil || fireAt != nil || notes != nil else {
+            return .invalid("no update fields")
+        }
+        return mutateReminder(reminderId: reminderId, ownerAgentId: ownerAgentId, expectedVersion: expectedVersion, type: "updated") { reminder in
+            if let title { reminder.title = title }
+            if let fireAt { reminder.fireAt = fireAt }
+            if let notes { reminder.notes = notes }
+        }
+    }
+
+    /// The version-bound write: owner match, status refusals, version compare,
+    /// mutation and event append are one critical section. A `nil`
+    /// `expectedVersion` binds to the row's current version, so the check and
+    /// the write cannot be split by a concurrent mutation.
+    func mutateReminder(
+        reminderId: String, ownerAgentId: String, expectedVersion: Int?, type: String,
+        mutate: (inout ReminderRecord) -> Void
+    ) -> ReminderMutationOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = storage.reminderRecords.firstIndex(where: { $0.id == reminderId && $0.ownerAgentId == ownerAgentId }) else {
+            return .notFound
+        }
+        if type == "updated", storage.reminderRecords[index].status == "fired" {
+            return .invalid("cannot update a fired reminder; snooze it back to scheduled first")
+        }
+        if type == "snoozed", storage.reminderRecords[index].status == "canceled" {
+            return .invalid("cannot snooze a canceled reminder")
+        }
+        guard (expectedVersion ?? storage.reminderRecords[index].version) == storage.reminderRecords[index].version else {
+            return .conflict(currentVersion: storage.reminderRecords[index].version)
+        }
+        var reminder = storage.reminderRecords[index]
+        mutate(&reminder)
+        reminder.version += 1
+        let updated = appendReminderEventLocked(reminder, type: type, actorType: "agent", actorId: ownerAgentId)
+        storage.reminderRecords[index] = updated
+        return .ok(version: updated.version)
+    }
+
+    /// Appends the event row for `reminder` and returns the stamped record.
+    /// The caller holds `lock`.
+    private func appendReminderEventLocked(
+        _ reminder: ReminderRecord, type: String, actorType: String, actorId: String? = nil,
+        fireAt: Date? = nil
+    ) -> ReminderRecord {
+        var updated = reminder
+        updated.updatedAt = Date()
+        storage.reminderEvents.append(ReminderEvent(
+            reminderId: reminder.id, serverId: reminder.serverId, ownerAgentId: reminder.ownerAgentId,
+            type: type, version: updated.version, actorType: actorType, actorId: actorId,
+            createdAt: updated.updatedAt, fireAt: fireAt
+        ))
+        return updated
+    }
+}
+
+// MARK: - Agent delete cleanup
+
+extension TasksAndRemindersStore {
+    /// Drops the agent's reminders and returns its claimed tasks to the pool, in
+    /// one critical section.
+    func releaseAgentWork(agentId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.reminderRecords.removeAll { $0.ownerAgentId == agentId }
+        for index in storage.taskRecords.indices where
+            storage.taskRecords[index].assigneeType == "agent" && storage.taskRecords[index].assigneeId == agentId {
+            storage.taskRecords[index].assigneeId = nil
+            storage.taskRecords[index].assigneeType = nil
+            storage.taskRecords[index].claimedAt = nil
+            storage.taskRecords[index].revision += 1
+        }
+    }
+}

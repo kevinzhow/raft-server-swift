@@ -12,7 +12,7 @@ import Foundation
 struct RuntimeFormsAndProbesDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var emitRealtime: @Sendable (String, String, String?) -> Void
-    /// `registerMachine` of the unmigrated hosted-migration domain.
+    /// `MachinesAndComputersStore.registerMachine`, the machine row insert.
     var registerMachine: @Sendable (_ serverId: String, _ userId: String, _ name: String) -> String
     /// `machineAPIKey` of the unmigrated hosted-runtime domain.
     var machineAPIKey: @Sendable (_ machineId: String) -> String?
@@ -30,7 +30,7 @@ struct RuntimeFormsAndProbesDependencies: Sendable {
                 source.emitRealtime(room, event, payload)
             },
             registerMachine: { serverId, userId, name in
-                source.registerMachine(serverId: serverId, userId: userId, name: name)
+                source.machinesAndComputersStore.registerMachine(serverId: serverId, userId: userId, name: name)
             },
             machineAPIKey: { source.machineAPIKey(machineId: $0) },
             oauth: source.oauth,
@@ -177,6 +177,18 @@ public struct RuntimeFormsAndProbesService: Sendable {
     /// Keyed lookup the `/daemon/connect` handshake uses by machine id.
     public func machineCredential(id: String) -> MachineCredentialIdentity? {
         dependencies.machines.machineCredentialIdentity(id: id)
+    }
+
+    /// Keyed lookup shared by `/daemon/connect` and the legacy machine surface.
+    /// A row that was adopted into a Computer attachment carries its migration
+    /// stamp so the connect handshake refuses the legacy key immediately, with
+    /// no TTL window.
+    public func machineCredential(apiKey: String) -> MachineCredentialIdentity? {
+        dependencies.machines.machine(apiKey: apiKey).map {
+            MachineCredentialIdentity(
+                machineId: $0.id, serverId: $0.serverId, legacyKeyMigratedAt: $0.legacyKeyMigratedAt
+            )
+        }
     }
 
     public func serverExists(id: String) -> Bool {

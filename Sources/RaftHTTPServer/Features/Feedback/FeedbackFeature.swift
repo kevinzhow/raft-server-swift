@@ -29,18 +29,13 @@ public struct FeedbackFeature: RouteCollection, Sendable {
         let tickets = feedback.grouped("tickets")
 
         api.post("app-installation", "agent-reminder-messages") { request async throws -> Response in
-            // Typed bodies go through the DTO; anything that does not decode
-            // keeps the raw-body path so the existing validator owns the reply.
-            let body: String
-            if let typed = try? await request.content.decode(AppAgentReminderMessageRequest.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText()
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPOAuth.appAgentReminderMessage(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.appAgentReminderMessage(
-                authorization: request.headers[.authorization],
-                body: body
-            ))
         }
         tickets.post(":ticketId", "close") { request async throws -> Response in
             let body = await jsonRequestBody(FeedbackTicketCloseRequest.self, request)

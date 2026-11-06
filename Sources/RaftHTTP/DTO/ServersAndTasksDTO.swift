@@ -30,21 +30,6 @@ public extension ServersRequestDTO {
     }
 }
 
-/// `POST /api/servers` request body.
-///
-/// `name` and `slug` are required strings; a missing key or a non-string value
-/// keeps the raw path and its `Invalid server request` 400. The directory trims
-/// both and rejects empty values, so whitespace handling stays there.
-public struct ServerCreateRequestDTO: Codable, Sendable, Equatable, ServersRequestDTO {
-    public var name: String
-    public var slug: String
-
-    public init(name: String, slug: String) {
-        self.name = name
-        self.slug = slug
-    }
-}
-
 /// `POST /api/servers/:id/setup-reset` request body.
 ///
 /// The reset selects its target by path and reads no fields, so the accepted

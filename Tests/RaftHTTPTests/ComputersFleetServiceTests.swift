@@ -274,7 +274,7 @@ private func bearer(_ accounts: EmailLoginDirectory) -> String {
     #expect(untouched.description == nil)
     let rotated = try service.rotateServerMachineKey(authorization: authorization, serverId: serverId, machineId: machineId)
     #expect(rotated.apiKey.hasPrefix("sk_machine_"))
-    #expect(accounts.machineCredential(apiKey: rotated.apiKey)?.machineId == machineId)
+    #expect(accounts.runtimeFormsAndProbes.machineCredential(apiKey: rotated.apiKey)?.machineId == machineId)
     #expect(throws: ComputersFleetError.unauthorized) {
         try service.rotateServerMachineKey(authorization: nil, serverId: serverId, machineId: machineId)
     }

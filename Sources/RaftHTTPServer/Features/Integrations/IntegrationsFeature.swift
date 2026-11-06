@@ -31,79 +31,104 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         let providerConnections = app.grouped("api", "provider-connections")
         let appInstallation = app.grouped("api", "app-installation")
 
-        mcp.get("servers") { request -> Response in
-            routeResponse(services.emailAccounts.listManagedMCPServers(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        mcp.get("servers") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPControlPlane.listServers(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
         mcp.post("servers") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createManagedMCPServer(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPServerCreateRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.managedMCPControlPlane.createServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         mcp.post("servers", "test-configuration") { request async throws -> Response in
-            routeResponse(services.emailAccounts.testManagedMCPConfiguration(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPTestConfigurationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.testConfiguration(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         mcp.patch("servers", ":id") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchManagedMCPServer(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                serverIdPath: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPServerPatchRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.patchServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
 
-        mcp.delete("servers", ":id") { request -> Response in
-            routeResponse(services.emailAccounts.deleteManagedMCPServer(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                serverIdPath: request.parameters.get("id") ?? ""
-            ))
+        mcp.delete("servers", ":id") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPControlPlane.deleteServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? ""
+                )
+            }
         }
 
-        mcp.get("oauth", "callback") { _ -> Response in
-            routeResponse(services.emailAccounts.managedMCPOAuthCallback())
+        mcp.get("oauth", "callback") { _ async throws -> Response in
+            try await respond(status: { _ in ManagedMCPOAuthCallbackPage.status }, headers: { $0.headers }) {
+                services.emailAccounts.managedMCPControlPlane.oauthCallbackPage()
+            }
         }
 
-        mcp.get("oauth", "client-metadata") { _ -> Response in
-            routeResponse(services.emailAccounts.managedMCPOAuthClientMetadata())
+        mcp.get("oauth", "client-metadata") { _ async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                services.emailAccounts.managedMCPControlPlane.oauthClientMetadata()
+            }
         }
 
-        mcp.get("agents", ":agentId") { request -> Response in
-            routeResponse(services.emailAccounts.managedMCPAgentCatalog(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        mcp.get("agents", ":agentId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPControlPlane.agentCatalog(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
         mcp.put("agents", ":agentId", "assignments") { request async throws -> Response in
-            routeResponse(services.emailAccounts.setManagedMCPAssignments(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPAssignmentsRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.setAssignments(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    body: body
+                )
+            }
         }
 
         mcp.put("agents", ":agentId", "assignments", ":mcpServerId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.setSingleManagedMCPAssignment(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                agentId: request.parameters.get("agentId") ?? "",
-                mcpServerId: request.parameters.get("mcpServerId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ManagedMCPSingleAssignmentRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPControlPlane.setSingleAssignment(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    agentId: request.parameters.get("agentId") ?? "",
+                    mcpServerId: request.parameters.get("mcpServerId") ?? "",
+                    body: body
+                )
+            }
         }
 
         integrations.get("clients") { request async throws -> Response in
@@ -116,104 +141,115 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.post("requests", ":requestId", "approve") { request async throws -> Response in
-            if let body = try? await request.content.decode(AgentAccessRequestApproveDTO.self) {
-                return routeResponse(services.emailAccounts.approveAgentAccessRequest(
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.approveAgentAccessRequest(
                     authorization: request.headers[.authorization],
                     requestId: request.parameters.get("requestId") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.approveAgentAccessRequest(
-                authorization: request.headers[.authorization],
-                requestId: request.parameters.get("requestId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
         }
 
         integrations.post("agents", ":agentId", "grants") { request async throws -> Response in
-            if let body = try? await request.content.decode(AgentGrantCreateDTO.self) {
-                return routeResponse(services.emailAccounts.createAgentGrant(
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
+                try services.emailAccounts.integrationsAndAppAccess.createAgentGrant(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.createAgentGrant(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
         }
 
-        integrations.get("agents", ":agentId", "grants") { request -> Response in
-            routeResponse(services.emailAccounts.agentGrantList(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        integrations.get("agents", ":agentId", "grants") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentGrantList(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
-        integrations.get("agents", ":agentId", "grantable-apps") { request -> Response in
-            routeResponse(services.emailAccounts.agentGrantableApps(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? ""
-            ))
+        integrations.get("agents", ":agentId", "grantable-apps") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentGrantableApps(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
         }
 
-        integrations.get("agents", ":agentId", "events") { request -> Response in
-            routeResponse(services.emailAccounts.agentAppEvents(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                limit: desktopQuery(request.url.query, "limit"),
-                before: desktopQuery(request.url.query, "before")
-            ))
+        integrations.get("agents", ":agentId", "events") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentAppEvents(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    limit: desktopQuery(request.url.query, "limit"),
+                    before: desktopQuery(request.url.query, "before")
+                )
+            }
         }
 
-        integrations.get("agents", ":agentId", "events", ":eventId") { request -> Response in
-            routeResponse(services.emailAccounts.agentAppEventDetail(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                eventId: request.parameters.get("eventId") ?? ""
-            ))
+        integrations.get("agents", ":agentId", "events", ":eventId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.agentAppEventDetail(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    eventId: request.parameters.get("eventId") ?? ""
+                )
+            }
         }
 
-        integrations.post("grants", ":grantId", "revoke") { request -> Response in
-            routeResponse(services.emailAccounts.revokeAgentGrant(
-                authorization: request.headers[.authorization],
-                grantId: request.parameters.get("grantId") ?? ""
-            ))
+        integrations.post("grants", ":grantId", "revoke") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.revokeAgentGrant(
+                    authorization: request.headers[.authorization],
+                    grantId: request.parameters.get("grantId") ?? ""
+                )
+            }
         }
 
-        integrations.get("clients", ":clientId", "setup") { request -> Response in
-            routeResponse(services.emailAccounts.integrationClientSetup(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? ""
-            ))
+        integrations.get("clients", ":clientId", "setup") { request async throws -> Response in
+            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                try services.emailAccounts.integrationsAndAppAccess.integrationClientSetup(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
         }
 
         integrations.patch("clients", ":clientId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.updateIntegrationClientSetup(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.updateIntegrationClientSetup(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    body: body
+                )
+            }
         }
 
-        integrations.post("marketplace", ":clientId", "install") { request -> Response in
-            routeResponse(services.emailAccounts.installMarketplaceClient(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? ""
-            ))
+        integrations.post("marketplace", ":clientId", "install") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.installMarketplaceClient(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
         }
 
-        integrations.delete("marketplace", ":clientId", "install") { request -> Response in
-            routeResponse(services.emailAccounts.uninstallMarketplaceClient(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                clientId: request.parameters.get("clientId") ?? ""
-            ))
+        integrations.delete("marketplace", ":clientId", "install") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.integrationsAndAppAccess.uninstallMarketplaceClient(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
         }
 
         integrations.get("marketplace") { request async throws -> Response in
@@ -283,33 +319,41 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             ))
         }
 
-        providerConnections.get() { request -> Response in
-            routeResponse(services.emailAccounts.listProviderConnections(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        providerConnections.get() { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.listProviderConnections(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
-        providerConnections.post(":id", "test") { request -> Response in
-            routeResponse(services.emailAccounts.retiredProviderProbe(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        providerConnections.post(":id", "test") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.retiredProviderProbe(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
-        providerConnections.get(":id", "models") { request -> Response in
-            routeResponse(services.emailAccounts.retiredProviderProbe(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-            ))
+        providerConnections.get(":id", "models") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.retiredProviderProbe(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
         }
 
-        providerConnections.get(":id", "agents") { request -> Response in
-            routeResponse(services.emailAccounts.listAssignedProviderAgents(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? ""
-            ))
+        providerConnections.get(":id", "agents") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.listAssignedProviderAgents(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? ""
+                )
+            }
         }
 
         providerConnections.delete(":id", "agents", ":agentId") { request async throws -> Response in
@@ -334,37 +378,38 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         providerConnections.patch(":id") { request async throws -> Response in
-            if let body = try? await request.content.decode(ProviderConnectionToggleDTO.self) {
-                return routeResponse(services.emailAccounts.patchProviderConnection(
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.patchProviderConnection(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     connectionId: request.parameters.get("id") ?? "",
-                    body: body.encodedBody()
-                ))
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.patchProviderConnection(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
         }
 
         providerConnections.post(":id", "credentials", "rotate") { request async throws -> Response in
-            routeResponse(services.emailAccounts.rotateProviderConnectionCredential(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                connectionId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPProviderConnections.rotateProviderConnectionCredential(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? "",
+                    body: body
+                )
+            }
         }
 
         providerConnections.post() { request async throws -> Response in
-            routeResponse(services.emailAccounts.createProviderConnection(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.managedMCPProviderConnections.createProviderConnection(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
         }
 
         appInstallation.get("server") { request -> Response in

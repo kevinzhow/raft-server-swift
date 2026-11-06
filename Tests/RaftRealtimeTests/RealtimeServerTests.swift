@@ -253,12 +253,12 @@ struct RealtimeTransportTests {
     accounts.realtimeEmitter = { room, event, payload in
         box.append(room: room, event: event, payload: payload)
     }
-    let reply = accounts.createHumanMessage(
-        body: "{\"channelId\":\"\(channel)\",\"content\":\"hello over the wire\"}",
+    let created = try accounts.humanMessageCreate.createHumanMessage(
+        HumanMessageCreateRequest(channelId: channel, content: "hello over the wire"),
         authorization: "Bearer \(token)",
         serverId: serverId
     )
-    #expect(reply.status == 200)
+    #expect(created.messageJSON.contains("\"content\":\"hello over the wire\""))
     let event = try #require(box.events.first { $0.event == "message:new" })
     #expect(event.room == "channel:\(channel)")
     #expect(event.payload?.contains("\"content\":\"hello over the wire\"") == true)

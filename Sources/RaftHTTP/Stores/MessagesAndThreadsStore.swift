@@ -602,6 +602,21 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         return nil
     }
 
+    /// One critical section for an attachment comment: the comment row and the
+    /// host-thread message row it posts as. The sequence is the server-wide
+    /// `rows.count + 1` the shared append stamps, so a concurrent comment can
+    /// never take the same sequence or land between the two writes. Returns the
+    /// stamped sequence.
+    func appendAttachmentComment(_ record: AttachmentCommentRecord, message: StoredHumanMessage) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.attachmentCommentRecords[record.attachmentId, default: []].append(record)
+        var stored = message
+        stored.seq = storage.humanMessageRows.count + 1
+        storage.humanMessageRows.append(stored)
+        return stored.seq
+    }
+
     // MARK: - Agent delivery ack
 
     /// Message rows plus the legacy thread-follow rows the delivery ack reads,
@@ -986,5 +1001,617 @@ extension MessagesAndThreadsStore {
         let key = "\(channelId)\n\(agentId)"
         let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
         storage.agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
+    }
+}
+
+// MARK: - Managed MCP lifecycle: read-state sections
+
+/// One advanced read-all scope: the new cursor position and the version the
+/// published body reports.
+struct ReadAllScopeResult: Sendable, Equatable {
+    let scopeId: String
+    let maxReadSeq: Int
+    let readStateVersion: Int
+}
+
+/// What a stored read-mutation answers for the same mutation id.
+enum ReadMutationReplay: Sendable, Equatable {
+    /// Same id, different payload.
+    case payloadMismatch
+    /// A channel read-all whose cursor already moved.
+    case alreadyTerminal(scopeId: String, cursor: Int)
+    case alreadyAdmitted
+}
+
+/// Result of the locked check-then-insert of one read mutation.
+enum ReadMutationAdmission: Sendable, Equatable {
+    case admitted(authoritySeq: Int)
+    case replay(ReadMutationReplay)
+}
+
+/// The authority frontier the principal can observe, from one snapshot.
+struct ReadMutationFrontierSnapshot: Sendable, Equatable {
+    struct Item: Sendable, Equatable {
+        let mutationId: String
+        let authoritySeq: Int
+        let state: String
+    }
+
+    let snapshotUpperAuthoritySeq: Int
+    let lastTerminalAuthoritySeq: Int
+    let items: [Item]
+    let scopeCursors: [(scopeId: String, maxReadSeq: Int)]?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.snapshotUpperAuthoritySeq == rhs.snapshotUpperAuthoritySeq
+            && lhs.lastTerminalAuthoritySeq == rhs.lastTerminalAuthoritySeq
+            && lhs.items == rhs.items
+            && (lhs.scopeCursors?.map { "\($0.scopeId)\n\($0.maxReadSeq)" })
+                == (rhs.scopeCursors?.map { "\($0.scopeId)\n\($0.maxReadSeq)" })
+    }
+}
+
+extension MessagesAndThreadsStore {
+    /// Marks the channel and every followed thread under it read for `userId`.
+    ///
+    /// The scope derivation (the user's follows whose parent message sits in the
+    /// channel), each scope's latest sequence and the cursor writes are one
+    /// critical section, so two concurrent read-alls cannot interleave a cursor
+    /// read with another request's write.
+    func advanceConversationReadAll(userId: String, channelId: String) -> [ReadAllScopeResult] {
+        lock.lock()
+        defer { lock.unlock() }
+        var scopeIds = [channelId]
+        for (_, follow) in storage.threadFollows where follow.userId == userId && follow.parentMessageId != "" {
+            guard let parentRow = storage.humanMessageRows.first(where: { $0.id == follow.parentMessageId }),
+                  parentRow.channelId == channelId
+            else { continue }
+            if !scopeIds.contains(follow.threadChannelId) { scopeIds.append(follow.threadChannelId) }
+        }
+        return scopeIds.map { scope in
+            let latest = storage.humanMessageRows.filter { $0.channelId == scope }.map(\.seq).max() ?? 0
+            let key = "\(userId)\n\(scope)"
+            let previous = storage.userChannelReadCursors[key] ?? 0
+            let version = previous + 1
+            storage.userChannelReadCursors[key] = max(previous, latest)
+            return ReadAllScopeResult(scopeId: scope, maxReadSeq: latest, readStateVersion: version)
+        }
+    }
+
+    /// Whether `userId` already owns a read cursor for `scopeId`.
+    func hasUserReadCursor(userId: String, scopeId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.userChannelReadCursors["\(userId)\n\(scopeId)"] != nil
+    }
+
+    /// The replay a stored mutation answers, without writing.
+    func readMutationReplay(
+        key: String,
+        fingerprint: String,
+        userId: String
+    ) -> ReadMutationReplay? {
+        lock.lock()
+        defer { lock.unlock() }
+        return readMutationReplayLocked(key: key, fingerprint: fingerprint, userId: userId)
+    }
+
+    private func readMutationReplayLocked(
+        key: String,
+        fingerprint: String,
+        userId: String
+    ) -> ReadMutationReplay? {
+        guard let existing = storage.readMutationRecords[key] else { return nil }
+        guard existing.fingerprint == fingerprint else { return .payloadMismatch }
+        let cursor = storage.userChannelReadCursors["\(userId)\n\(existing.scopeId ?? "")"] ?? 0
+        if existing.kind == "channel_read_all", cursor > 0 {
+            return .alreadyTerminal(scopeId: existing.scopeId ?? "", cursor: cursor)
+        }
+        return .alreadyAdmitted
+    }
+
+    /// Admits one read mutation: the existing-id check, the per-principal
+    /// authority sequence bump and the record insert are one critical section,
+    /// so two requests with the same mutation id cannot both be admitted.
+    func admitReadMutation(
+        key: String,
+        sequenceKey: String,
+        userId: String,
+        fingerprint: String,
+        record: (_ authoritySeq: Int) -> ReadMutationRecord
+    ) -> ReadMutationAdmission {
+        lock.lock()
+        defer { lock.unlock() }
+        if let replay = readMutationReplayLocked(key: key, fingerprint: fingerprint, userId: userId) {
+            return .replay(replay)
+        }
+        let seq = (storage.readMutationAuthoritySeq[sequenceKey] ?? 0) + 1
+        storage.readMutationAuthoritySeq[sequenceKey] = seq
+        storage.readMutationRecords[key] = record(seq)
+        storage.readMutationOrder.append(key)
+        return .admitted(authoritySeq: seq)
+    }
+
+    /// The principal's mutation frontier and requested scope cursors from one
+    /// snapshot.
+    func readMutationFrontier(userId: String, scopeIds: [String]?) -> ReadMutationFrontierSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        let sequences = storage.readMutationAuthoritySeq.filter {
+            $0.key.hasSuffix("\n\(userId)") || $0.key.contains("\n\(userId)")
+        }
+        let upper = sequences.values.max() ?? 0
+        let keys = storage.readMutationOrder.filter { storage.readMutationRecords[$0]?.principalId == userId }
+        let records = keys.compactMap { storage.readMutationRecords[$0] }
+        var lastTerminal = 0
+        let items = records.map { record -> ReadMutationFrontierSnapshot.Item in
+            if record.state != "admitted" { lastTerminal = max(lastTerminal, record.authoritySeq) }
+            return ReadMutationFrontierSnapshot.Item(
+                mutationId: record.mutationId, authoritySeq: record.authoritySeq, state: record.state
+            )
+        }
+        let cursors = scopeIds.map { ids in
+            ids.map { scope in
+                (scopeId: scope, maxReadSeq: storage.userChannelReadCursors["\(userId)\n\(scope)"] ?? 0)
+            }
+        }
+        return ReadMutationFrontierSnapshot(
+            snapshotUpperAuthoritySeq: upper,
+            lastTerminalAuthoritySeq: lastTerminal,
+            items: items,
+            scopeCursors: cursors
+        )
+    }
+
+    /// Drops the follow rows of every thread in `threadChannelIds` whose
+    /// follower is not in `keepUserIds`, in one critical section.
+    func removeThreadFollows(
+        inThreads threadChannelIds: Set<String>,
+        exceptUsers keepUserIds: Set<String>
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        for (key, follow) in storage.threadFollows
+        where threadChannelIds.contains(follow.threadChannelId) && !keepUserIds.contains(follow.userId) {
+            storage.threadFollows.removeValue(forKey: key)
+        }
+    }
+
+    /// The stored external-avatar asset and the storage-availability flag from
+    /// one snapshot.
+    func externalAvatarSnapshot(id: String) -> (asset: ExternalAvatarAsset?, storageAvailable: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (storage.externalAvatarAssets[id], storage.externalAvatarStorageAvailable)
+    }
+
+    /// Thread-unread facts the summary builds from, from one snapshot.
+    func threadUnreadFacts(channelId: String) -> [StoredHumanMessage] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.humanMessageRows.filter { $0.channelId == channelId }
+    }
+
+    /// Whether `userId` follows the thread and has not archived it to Done.
+    func followsActiveThread(serverId: String, userId: String, threadChannelId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
+            && !storage.inboxDoneScopes.contains("\(userId)\n\(threadChannelId)")
+    }
+
+    /// The mention rows that target `userId` in `channelId`.
+    func userMentionExists(channelId: String, userId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.storedMentions.contains {
+            $0.channelId == channelId && $0.targetType == "user" && $0.targetId == userId
+        }
+    }
+}
+
+// MARK: - Agent history reads (AgentHistoryService)
+
+/// One locked read of an agent's unread position in a channel.
+struct AgentUnreadPosition: Sendable, Equatable {
+    var priorSeq: Int
+    var settleMs: Int
+    var pendingDeferred: Int?
+}
+
+/// The per-page facts a history row projects from the human message rows.
+struct AgentHistoryAnnotations: Sendable {
+    var external: [String: (messageId: String?, provider: String?, actor: String?)]
+    var mentionedIds: Set<String>
+}
+
+extension MessagesAndThreadsStore {
+    /// The agent's read cursor for one channel (0 before the first read).
+    func agentReadSeq(channelId: String, agentId: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+    }
+
+    /// Cursor, settle window and any deferred advance, read together.
+    func agentUnreadPosition(channelId: String, agentId: String) -> AgentUnreadPosition {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        return AgentUnreadPosition(
+            priorSeq: storage.agentChannelReadCursors[key]?.seq ?? 0,
+            settleMs: storage.readPositionSettleMs,
+            pendingDeferred: storage.deferredUnreadAdvance[key]
+        )
+    }
+
+    /// Moves the cursor to `seq` and bumps its version in one critical section.
+    /// The history read writes the page maximum as given (no `max` against the
+    /// previous value); callers decide whether the move is admissible.
+    func setAgentReadCursor(channelId: String, agentId: String, seq: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        let version = storage.agentChannelReadCursors[key]?.version ?? 0
+        storage.agentChannelReadCursors[key] = (seq, version + 1)
+    }
+
+    /// Settles a deferred advance: the cursor moves and the deferred mark is
+    /// cleared in one critical section.
+    func commitDeferredUnreadAdvance(channelId: String, agentId: String, seq: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = "\(channelId)\n\(agentId)"
+        let version = storage.agentChannelReadCursors[key]?.version ?? 0
+        storage.agentChannelReadCursors[key] = (seq, version + 1)
+        storage.deferredUnreadAdvance.removeValue(forKey: key)
+    }
+
+    func clearDeferredUnreadAdvance(channelId: String, agentId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.deferredUnreadAdvance.removeValue(forKey: "\(channelId)\n\(agentId)")
+    }
+
+    func deferUnreadAdvance(channelId: String, agentId: String, seq: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.deferredUnreadAdvance["\(channelId)\n\(agentId)"] = seq
+    }
+
+    /// External-projection facts and agent mentions for one history page, from
+    /// one snapshot of the rows.
+    func historyAnnotations(messageIds: Set<String>, agentId: String) -> AgentHistoryAnnotations {
+        lock.lock()
+        defer { lock.unlock() }
+        let external: [String: (messageId: String?, provider: String?, actor: String?)] = Dictionary(
+            uniqueKeysWithValues: storage.humanMessageRows.filter { messageIds.contains($0.id) }.map {
+                ($0.id, ($0.externalMessageId, $0.externalProvider, $0.externalSenderName))
+            }
+        )
+        let mentioned = Set(
+            storage.storedMentions
+                .filter { $0.targetType == "agent" && $0.targetId == agentId }
+                .map(\.messageId)
+        )
+        return AgentHistoryAnnotations(external: external, mentionedIds: mentioned)
+    }
+}
+
+// MARK: - Human message create: mention rows, thread follows, forward commit
+
+/// What a human mention-action resolution has to do to another store once the
+/// mention row itself has been claimed.
+enum MentionActionEffect: Sendable, Equatable {
+    /// The agent target receives the message in its delivery ledger.
+    case deliver(agentId: String, messageId: String)
+    /// The agent target is added to the channel's agent roster and receives the message.
+    case addAgent(channelId: String, agentId: String, messageId: String)
+    /// The human target becomes a channel member.
+    case addMember(channelId: String, userId: String)
+}
+
+/// One resolved id of a mention-action batch: the published result row and the
+/// cross-store effects its claim implies.
+struct MentionActionStep: Sendable, Equatable {
+    var result: MentionActionResult
+    var effects: [MentionActionEffect]
+}
+
+/// One outsider mention that needs a stored resolution row beside the message.
+struct PendingMentionCandidate: Sendable, Equatable {
+    var type: String
+    var id: String
+    var name: String
+}
+
+/// A mentioned member of a thread whose follow row the reply writes.
+struct ThreadMentionFollowTarget: Sendable, Equatable {
+    var userId: String
+    /// Whether the parent channel lists the user as a member. A suppressed
+    /// follow is reactivated only for a parent member.
+    var isParentMember: Bool
+}
+
+extension MessagesAndThreadsStore {
+    /// Resolution rows for the outsider mentions a send leaves pending, in one
+    /// critical section: a mention that already has a row for this
+    /// `(message, target)` reuses it, otherwise one row is appended. Two
+    /// concurrent identical sends therefore cannot append two rows for one
+    /// target.
+    func resolvePendingMentionRows(
+        messageId: String,
+        channelId: String,
+        candidates: [PendingMentionCandidate]
+    ) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        var ids: [String] = []
+        for candidate in candidates {
+            if let existing = storage.storedMentions.first(where: {
+                $0.messageId == messageId && $0.targetType == candidate.type && $0.targetId == candidate.id
+            }) {
+                ids.append(existing.id)
+                continue
+            }
+            let id = UUID().uuidString.lowercased()
+            let senderId = storage.humanMessageRows.first { $0.id == messageId }?.senderId ?? ""
+            storage.storedMentions.append(StoredMention(
+                id: id,
+                messageId: messageId,
+                channelId: channelId,
+                senderId: senderId,
+                targetType: candidate.type,
+                targetId: candidate.id,
+                handle: candidate.name,
+                notifiableAtSend: false,
+                notifiedAt: nil,
+                notifiedByType: nil,
+                notifiedById: nil,
+                notifiedAction: nil
+            ))
+            ids.append(id)
+        }
+        return ids
+    }
+
+    /// The follow rows a thread reply writes, in one critical section: the
+    /// sender's follow, then each mentioned member's follow. A mentioned member
+    /// with an unfollow suppression row is reactivated only when `isParentMember`
+    /// holds; otherwise the suppression stays and no follow is written.
+    func applyThreadReplyFollows(
+        serverId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        senderId: String,
+        mentioned: [ThreadMentionFollowTarget]
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        func key(_ userId: String) -> String { "\(serverId)\n\(userId)\n\(threadChannelId)" }
+        storage.threadFollows[key(senderId)] = (
+            serverId: serverId,
+            userId: senderId,
+            threadChannelId: threadChannelId,
+            parentMessageId: parentMessageId
+        )
+        for target in mentioned {
+            if storage.threadUnfollows[key(target.userId)] != nil {
+                guard target.isParentMember else { continue }
+                storage.threadUnfollows.removeValue(forKey: key(target.userId))
+            }
+            storage.threadFollows[key(target.userId)] = (
+                serverId: serverId,
+                userId: target.userId,
+                threadChannelId: threadChannelId,
+                parentMessageId: parentMessageId
+            )
+        }
+    }
+
+    /// `POST /api/messages/mention-actions/execute`: every id of the batch is
+    /// decided and claimed in one critical section. The decision closures are
+    /// pure over snapshots the caller took beforehand, so no other store's lock
+    /// is taken while this one is held.
+    func applyUserMentionActions(
+        ids: [String],
+        action: String,
+        userId: String,
+        now: Date,
+        inScope: (StoredMention) -> Bool,
+        targetCanRead: (StoredMention) -> Bool,
+        senderStillInChannel: (StoredMention) -> Bool
+    ) -> [MentionActionStep] {
+        lock.lock()
+        defer { lock.unlock() }
+        var steps: [MentionActionStep] = []
+        for id in ids {
+            guard let index = storage.storedMentions.firstIndex(where: { $0.id == id }),
+                  inScope(storage.storedMentions[index]),
+                  storage.storedMentions[index].senderId == userId
+            else {
+                steps.append(MentionActionStep(
+                    result: MentionActionResult(resolutionId: id, action: action, status: "not_found"),
+                    effects: []
+                ))
+                continue
+            }
+            let mention = storage.storedMentions[index]
+            if action == "notify" {
+                if !targetCanRead(mention) {
+                    steps.append(MentionActionStep(
+                        result: MentionActionResult(
+                            resolutionId: id,
+                            action: "notify",
+                            status: "no_permission",
+                            reason: "target_lacks_read_access"
+                        ),
+                        effects: []
+                    ))
+                    continue
+                }
+                var effects: [MentionActionEffect] = []
+                if mention.notifiedAt == nil {
+                    storage.storedMentions[index].notifiedAt = now
+                    storage.storedMentions[index].notifiedByType = "user"
+                    storage.storedMentions[index].notifiedById = userId
+                    storage.storedMentions[index].notifiedAction = "notify_only"
+                    if mention.targetType == "agent" {
+                        effects.append(.deliver(agentId: mention.targetId, messageId: mention.messageId))
+                    }
+                }
+                steps.append(MentionActionStep(
+                    result: MentionActionResult(
+                        resolutionId: id,
+                        action: "notify",
+                        status: "queued",
+                        deduped: [id]
+                    ),
+                    effects: effects
+                ))
+            } else if mention.notifiedAction == "add" {
+                steps.append(MentionActionStep(
+                    result: MentionActionResult(
+                        resolutionId: id,
+                        action: "add",
+                        status: "delivered",
+                        reason: "already_delivered",
+                        deduped: [id]
+                    ),
+                    effects: []
+                ))
+            } else if !senderStillInChannel(mention) {
+                steps.append(MentionActionStep(
+                    result: MentionActionResult(
+                        resolutionId: id,
+                        action: "add",
+                        status: "no_permission",
+                        reason: "sender_lacks_channel_access"
+                    ),
+                    effects: []
+                ))
+            } else {
+                storage.storedMentions[index].notifiedAt = now
+                storage.storedMentions[index].notifiedByType = "user"
+                storage.storedMentions[index].notifiedById = userId
+                storage.storedMentions[index].notifiedAction = "add"
+                let effect: MentionActionEffect = mention.targetType == "agent"
+                    ? .addAgent(channelId: mention.channelId, agentId: mention.targetId, messageId: mention.messageId)
+                    : .addMember(channelId: mention.channelId, userId: mention.targetId)
+                steps.append(MentionActionStep(
+                    result: MentionActionResult(
+                        resolutionId: id,
+                        action: "add",
+                        status: "delivered",
+                        deduped: [id]
+                    ),
+                    effects: [effect]
+                ))
+            }
+        }
+        return steps
+    }
+
+    /// `POST /internal/agent-api/mention-actions/execute`: the batch for one
+    /// agent in one critical section. A `notify` marks every still-unnotified
+    /// row of the same `(message, target)` and reports the deduplicated ids.
+    func applyAgentMentionActions(
+        ids: [String],
+        action: String,
+        agentId: String,
+        now: Date,
+        inScope: (StoredMention) -> Bool,
+        targetCanRead: (StoredMention) -> Bool,
+        senderStillInChannel: (StoredMention) -> Bool
+    ) -> [MentionActionResult] {
+        lock.lock()
+        defer { lock.unlock() }
+        var results: [MentionActionResult] = []
+        for id in ids {
+            guard let index = storage.storedMentions.firstIndex(where: { $0.id == id }),
+                  storage.storedMentions[index].senderId == agentId,
+                  inScope(storage.storedMentions[index]),
+                  storage.humanMessageRows.contains(where: { $0.id == storage.storedMentions[index].messageId })
+            else {
+                results.append(MentionActionResult(resolutionId: id, action: action, status: "not_found"))
+                continue
+            }
+            let mention = storage.storedMentions[index]
+            if action == "notify" {
+                guard targetCanRead(mention) else {
+                    results.append(MentionActionResult(
+                        resolutionId: id,
+                        action: "notify",
+                        status: "no_permission",
+                        reason: "target_lacks_read_access"
+                    ))
+                    continue
+                }
+                var deduped = [id]
+                for other in storage.storedMentions.indices
+                where storage.storedMentions[other].messageId == mention.messageId
+                    && storage.storedMentions[other].targetType == mention.targetType
+                    && storage.storedMentions[other].targetId == mention.targetId
+                    && storage.storedMentions[other].notifiedAt == nil {
+                    storage.storedMentions[other].notifiedAt = now
+                    storage.storedMentions[other].notifiedByType = "agent"
+                    storage.storedMentions[other].notifiedById = agentId
+                    storage.storedMentions[other].notifiedAction = "notify_only"
+                    if storage.storedMentions[other].id != id { deduped.append(storage.storedMentions[other].id) }
+                }
+                results.append(MentionActionResult(
+                    resolutionId: id,
+                    action: "notify",
+                    status: "queued",
+                    deduped: deduped
+                ))
+            } else if senderStillInChannel(mention) {
+                results.append(MentionActionResult(
+                    resolutionId: id,
+                    action: "add",
+                    status: "no_permission",
+                    reason: "add_requires_human_member_authority"
+                ))
+            } else {
+                results.append(MentionActionResult(
+                    resolutionId: id,
+                    action: "add",
+                    status: "no_permission",
+                    reason: "sender_lacks_channel_access"
+                ))
+            }
+        }
+        return results
+    }
+
+    /// The forward commit: the bundle metadata, the forward record, the
+    /// projected attachment ids on the message row and the attachment copies
+    /// land together. Returns the message row as the destination publishes it,
+    /// or nil when the row is gone.
+    func commitForward(
+        messageId: String,
+        bundle: [EmailLoginDirectory.ForwardedSource],
+        record: StoredForwardRecord,
+        projections: [(attachment: ChannelAttachment, id: String, position: Int)],
+        destinationChannelId: String
+    ) -> StoredHumanMessage? {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.forwardedBundles[messageId] = bundle
+        storage.forwardRecords[messageId] = record
+        if let index = storage.humanMessageRows.firstIndex(where: { $0.id == messageId }) {
+            storage.humanMessageRows[index].attachmentIds = projections.map(\.id)
+        }
+        for projection in projections {
+            var copy = projection.attachment
+            copy.id = projection.id
+            copy.channelId = destinationChannelId
+            copy.messageId = messageId
+            copy.messagePosition = projection.position
+            storage.channelAttachments[copy.id] = copy
+        }
+        guard var message = storage.humanMessageRows.first(where: { $0.id == messageId }) else { return nil }
+        message.channelId = destinationChannelId
+        return message
     }
 }

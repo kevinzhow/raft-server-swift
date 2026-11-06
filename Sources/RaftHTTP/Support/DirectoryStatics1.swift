@@ -205,56 +205,6 @@ extension EmailLoginDirectory {
         return Self.json(200, body)
     }
 
-    static func forwardTargetScore(_ query: String, _ candidate: String) -> Int {
-        if candidate.isEmpty { return 0 }
-        if candidate == query { return 400 }
-        if candidate.hasPrefix(query) { return 300 }
-        if candidate.range(of: " \(query)") != nil { return 250 }
-        if let range = candidate.range(of: query) {
-            let index = candidate.distance(from: candidate.startIndex, to: range.lowerBound)
-            return max(1, 150 - index)
-        }
-        return 0
-    }
-
-    static func forwardTargetJSON(
-        type: String,
-        channelType: String?,
-        id: String,
-        title: String,
-        subtitle: String,
-        avatarUrl: String?,
-        channelId: String?,
-        joined: Bool?,
-        dmExists: Bool?,
-        canForwardNow: Bool,
-        requiredAction: String?
-    ) -> String {
-        let channelTypeJSON = channelType.map { jsonString($0) } ?? "null"
-        let avatarJSON = avatarUrl.map { jsonString($0) } ?? "null"
-        let channelJSON = channelId.map { jsonString($0) } ?? "null"
-        let joinedJSON = joined.map { $0 ? "true" : "false" } ?? "null"
-        let dmJSON = dmExists.map { $0 ? "true" : "false" } ?? "null"
-        let requiredJSON = requiredAction.map { jsonString($0) } ?? "null"
-        return "{\"type\":\(jsonString(type)),\"channelType\":\(channelTypeJSON),\"id\":\(jsonString(id)),\"title\":\(jsonString(title)),\"subtitle\":\(jsonString(subtitle)),\"avatarUrl\":\(avatarJSON),\"channelId\":\(channelJSON),\"joined\":\(joinedJSON),\"dmExists\":\(dmJSON),\"canForwardNow\":\(canForwardNow ? "true" : "false"),\"requiredAction\":\(requiredJSON)}"
-    }
-
-    static func forwardMessageReply(message: StoredHumanMessage, record: StoredForwardRecord, outcome: String) -> HTTPReply {
-        let items = forwardItemsJSON(record.items)
-        var body = "{\"id\":\(jsonString(message.id)),\"messageType\":\"chat\",\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))]"
-        if let randomId = message.randomId {
-            body += ",\"randomId\":\(jsonString(randomId))"
-        }
-        body += ",\"actionMetadata\":{\"kind\":\"forwarded-bundle\",\"destinationTargetId\":\(jsonString(record.destinationTargetId)),\"forwardedItems\":[\(items)]}}"
-        var reply = json(200, body)
-        reply.headers["X-Raft-Forward-Outcome"] = outcome
-        return reply
-    }
-
-    static func forwardItemsJSON(_ items: [ForwardItemRecord]) -> String {
-        items.map { forwardItemJSON($0) }.joined(separator: ",")
-    }
-
     static func forwardAttachmentSnapshotsJSON(_ snapshots: [ForwardAttachmentSnapshot]) -> String {
         snapshots.map { snap in
             let width = snap.width.map(String.init) ?? "null"
@@ -290,40 +240,6 @@ extension EmailLoginDirectory {
         return "{\"sourceMessageId\":null,\"sourceIsThreadParent\":\(parent),\"contentSnapshot\":\(jsonString(item.contentSnapshot)),\"sourceServerId\":null,\"sourceTargetId\":null,\"sourceThreadId\":null,\"parentChannelId\":null,\"sourceTargetSnapshot\":{\"id\":null,\"type\":\(jsonString(type)),\"label\":\"\",\"labelVisibility\":\"restricted\"},\"attachmentSnapshots\":[\(attachments)],\"attachmentPolicy\":\(jsonString(item.attachmentPolicy)),\"provenanceState\":\"original_unavailable\"}"
     }
 
-    static func forwardDestinationIds(_ value: Any?) -> [String]? {
-        guard let rows = value as? [Any], !rows.isEmpty else { return nil }
-        var ids: [String] = []
-        var seen = Set<String>()
-        for row in rows {
-            guard let raw = row as? String else { return nil }
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard ServerScope.isUUID(id) else { return nil }
-            if seen.insert(id).inserted {
-                ids.append(id)
-            }
-        }
-        if ids.isEmpty || ids.count > 10 { return nil }
-        return ids
-    }
-
-    static func forwardSourceIds(_ value: Any?) -> [String]? {
-        guard let rows = value as? [Any], !rows.isEmpty, rows.count <= 20 else { return nil }
-        var ids: [String] = []
-        for row in rows {
-            guard let raw = row as? String else { return nil }
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard ServerScope.isUUID(id), !ids.contains(id) else { return nil }
-            ids.append(id)
-        }
-        return ids
-    }
-
-    static func pendingMentionExpiry() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date().addingTimeInterval(7 * 24 * 60 * 60))
-    }
-
     static func mentionBindingConflict(_ mentions: [MentionInput]) -> Bool {
         var byName: [String: String] = [:]
         for mention in mentions where mention.type == "user" || mention.type == "agent" {
@@ -345,18 +261,6 @@ extension EmailLoginDirectory {
         return handles
     }
 
-    static func mentionInputs(_ value: Any?) -> [MentionInput] {
-        guard let rows = value as? [Any] else { return [] }
-        return rows.compactMap { row in
-            guard let object = row as? [String: Any],
-                  let type = object["type"] as? String,
-                  let id = object["id"] as? String,
-                  let name = object["name"] as? String
-            else { return nil }
-            return MentionInput(type: type, id: id, name: name)
-        }
-    }
-
     static func previewBase64URL(_ data: Data) -> String {
         data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
@@ -368,22 +272,6 @@ extension EmailLoginDirectory {
         var base64 = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while base64.count % 4 != 0 { base64 += "=" }
         return Data(base64Encoded: base64)
-    }
-
-    static func mentionDeliveryFields(handle: String, terminalCode: String?) -> String {
-        guard let terminalCode, terminalCode != "INSTRUMENT_FAILED" else {
-            return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"unknown\""
-        }
-        let category: String
-        switch terminalCode {
-        case "QUOTA_LIMITED":
-            category = "quota"
-        case "DELIVERY_REJECTED":
-            category = "runtime_error"
-        default:
-            category = "unclassified"
-        }
-        return "\"targetHandle\":\(jsonString(handle)),\"outcome\":\"lost\",\"reasonCategory\":\(jsonString(category))"
     }
 
     static func parsePageCursor(_ raw: String?) -> PageCursor {
@@ -639,45 +527,6 @@ extension EmailLoginDirectory {
         return json(200, body)
     }
 
-    static func appReferenceIds(_ content: String) -> [String] {
-        var ids: [String] = []
-        for match in content.matches(of: /<app:([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+)>/) {
-            let id = String(match.1)
-            if !ids.contains(id) { ids.append(id) }
-        }
-        return ids
-    }
-
-    static func parseOptionalIanaTimezone(_ value: Any?) -> String? {
-        guard let raw = value as? String else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed.count > 128 { return nil }
-        if trimmed != "UTC" && !trimmed.contains("/") { return nil }
-        if trimmed == "UTC" { return "UTC" }
-        guard let zone = TimeZone(identifier: trimmed) else { return nil }
-        let canonical = zone.identifier
-        if canonical != "UTC" && !canonical.contains("/") { return nil }
-        return canonical
-    }
-
-    static func humanMessageBodyIsValid(_ body: String) -> Bool {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let channelId = object["channelId"] as? String,
-              ServerScope.isUUID(channelId)
-        else { return false }
-        if let attachments = object["attachmentIds"] {
-            guard let ids = attachments as? [Any] else { return false }
-            for id in ids {
-                guard let string = id as? String, ServerScope.isUUID(string) else { return false }
-            }
-        }
-        if object["asTask"] != nil {
-            guard object["asTask"] is Bool else { return false }
-        }
-        return true
-    }
-
     static func featureFlagKey(_ value: Any) -> String? {
         guard let string = value as? String else { return nil }
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -757,143 +606,11 @@ extension EmailLoginDirectory {
         return context
     }
 
-    static func deprecatedRuntimeReply(_ runtime: String) -> HTTPReply {
-        Self.json(400, "{\"error\":\"Runtime is deprecated and cannot be selected: \(runtime)\"}")
-    }
-
-    static func runtimeConfigStructureError(_ config: [String: Any]) -> HTTPReply? {
-        if let model = config["model"] as? [String: Any],
-           model["kind"] as? String == "custom",
-           (model["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return Self.json(400, "{\"error\":\"runtimeConfig.model.name is required\"}")
-        }
-        guard let provider = config["provider"] as? [String: Any],
-              provider["kind"] as? String == "custom"
-        else { return nil }
-        let runtime = config["runtime"] as? String ?? ""
-        if runtime == "cursor" {
-            return Self.json(400, "{\"error\":\"runtimeConfig.provider is not supported for runtime: cursor\"}")
-        }
-        if (provider["apiKey"] as? String ?? "").isEmpty {
-            return Self.json(400, "{\"error\":\"runtimeConfig.provider.apiKey is required\"}")
-        }
-        return nil
-    }
-
-    static func validatedEnvVars(_ value: Any?) -> (env: [String: String]?, error: String?) {
-        guard let value, !(value is NSNull) else { return (nil, nil) }
-        guard let object = value as? [String: Any] else {
-            return (nil, "envVars must be an object")
-        }
-        var env: [String: String] = [:]
-        for (key, raw) in object {
-            guard let text = raw as? String else {
-                return (nil, "envVars keys and values must be strings")
-            }
-            guard key.wholeMatch(of: /^[A-Za-z_][A-Za-z0-9_]*$/) != nil else {
-                return (nil, "Invalid env var key \"\(key)\": must match [A-Za-z_][A-Za-z0-9_]*")
-            }
-            guard !key.contains("\0"), !text.contains("\0") else {
-                return (nil, "envVars keys and values must not contain null bytes")
-            }
-            env[key] = text
-        }
-        return (env, nil)
-    }
-
-    static func normalizeRuntimeConfig(_ raw: [String: Any]) -> [String: Any] {
-        var config = raw
-        if config["version"] == nil { config["version"] = 1 }
-        if config["mode"] == nil { config["mode"] = ["kind": "default"] }
-        if config["reasoningEffort"] == nil { config["reasoningEffort"] = NSNull() }
-        var userEnv: [String: String] = [:]
-        if let env = config["envVars"] as? [String: String] {
-            for (key, value) in env where !key.hasPrefix("ANTHROPIC_") {
-                userEnv[key] = value
-            }
-        }
-        config["envVars"] = userEnv
-        return config
-    }
-
-    static func derivedAgentEnvVars(_ config: [String: Any], userEnv: [String: String]) -> [String: String] {
-        var env = userEnv
-        if config["runtime"] as? String == "claude" {
-            if let provider = config["provider"] as? [String: Any], provider["kind"] as? String == "custom" {
-                if let apiUrl = provider["apiUrl"] as? String { env["ANTHROPIC_BASE_URL"] = apiUrl }
-                if let apiKey = provider["apiKey"] as? String { env["ANTHROPIC_API_KEY"] = apiKey }
-            }
-            if let model = config["model"] as? [String: Any], model["kind"] as? String == "custom",
-               let name = model["name"] as? String {
-                env["ANTHROPIC_CUSTOM_MODEL_OPTION"] = name
-            }
-        }
-        return env
-    }
-
-    static func privateJSON(_ body: String) -> HTTPReply {
-        HTTPReply(
-            status: 200,
-            headers: [
-                "X-Robots-Tag": AppFallback.robotsTag,
-                "Content-Type": AppFallback.jsonContentType,
-                "Cache-Control": "private, no-store",
-                "Content-Length": String(Data(body.utf8).count),
-            ],
-            body: body
-        )
-    }
-
     static func serializeJSON(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
             return "{}"
         }
         return String(decoding: data, as: UTF8.self)
-    }
-
-    static func redactedRuntimeConfigJSON(_ raw: String?) -> String? {
-        guard let raw, let data = raw.data(using: .utf8),
-              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return raw }
-        if var provider = object["provider"] as? [String: Any], provider["apiKey"] != nil {
-            provider["apiKey"] = ""
-            object["provider"] = provider
-        }
-        guard let redacted = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return raw
-        }
-        return String(decoding: redacted, as: UTF8.self)
-    }
-
-    static func agentModel(from runtimeConfigJSON: String?, external: Bool) -> String {
-        if external { return "external" }
-        guard let runtimeConfigJSON,
-              let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any],
-              let model = config["model"] as? [String: Any]
-        else { return "" }
-        return (model["name"] as? String) ?? (model["id"] as? String) ?? ""
-    }
-
-    static func agentRuntimeJSON(
-        id: String,
-        name: String,
-        runtime: String,
-        runtimeConfigJSON: String,
-        envVarsJSON: String,
-        external: Bool,
-        includeEnvVars: Bool = true
-    ) -> String {
-        let config = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any] ?? [:]
-        let model: String
-        if external {
-            model = "external"
-        } else {
-            model = (config["model"] as? [String: Any])?["name"] as? String
-                ?? (config["model"] as? [String: Any])?["id"] as? String
-                ?? ""
-        }
-        let env = includeEnvVars ? (envVarsJSON.isEmpty ? "{}" : envVarsJSON) : "null"
-        return "{\"id\":\(jsonString(id)),\"name\":\(jsonString(name)),\"runtime\":\(jsonString(runtime)),\"model\":\(jsonString(model)),\"external\":\(external),\"machineId\":null,\"reasoningEffort\":null,\"envVars\":\(env),\"runtimeConfig\":\(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)}"
     }
 
 }

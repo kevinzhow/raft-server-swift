@@ -50,55 +50,72 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         let computer = app.grouped("internal", "computer")
         let machine = app.grouped("internal", "machine")
 
-        agent.get("reminders") { request -> Response in
-            routeResponse(services.emailAccounts.legacyReminderList(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                status: desktopQuery(request.url.query, "status")
-            ))
+        agent.get("reminders") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderList(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    status: desktopQuery(request.url.query, "status")
+                )
+            }
         }
         agent.post("reminders") { request async throws -> Response in
             let agentId = request.parameters.get("agentId") ?? ""
-            let reply = services.emailAccounts.legacyReminderCreate(
-                authorization: request.headers[.authorization],
-                agentId: agentId,
-                body: try await request.bodyText(default: "{}")
-            )
-            if let reminderId = reminderIdFromReply(reply) {
-                publishReminderEvent(reply, event: "reminder:scheduled", reminderId: reminderId, agentId: agentId, services: services)
+            let body = await jsonRequestBody(ReminderCreateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                let created = try services.emailAccounts.managedMCPAgentCatalog.legacyReminderCreate(
+                    authorization: request.headers[.authorization],
+                    agentId: agentId,
+                    body: body
+                )
+                publishReminderEvent(
+                    event: "reminder:scheduled", reminderId: created.reminder.id, agentId: agentId,
+                    services: services
+                )
+                return created
             }
-            return routeResponse(reply)
         }
         agent.delete("reminders", ":reminderId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyReminderCancel(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderCancelRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderCancel(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
         agent.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyReminderSnooze(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderSnoozeRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderSnooze(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
         agent.patch("reminders", ":reminderId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.legacyReminderUpdate(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(ReminderUpdateRequest.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderUpdate(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? "",
+                    body: body
+                )
+            }
         }
-        agent.get("reminders", ":reminderId", "log") { request -> Response in
-            routeResponse(services.emailAccounts.legacyReminderLog(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                reminderId: request.parameters.get("reminderId") ?? ""
-            ))
+        agent.get("reminders", ":reminderId", "log") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPAgentCatalog.legacyReminderLog(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    reminderId: request.parameters.get("reminderId") ?? ""
+                )
+            }
         }
         agent.post("send") { request async throws -> Response in
             let body = await jsonRequestBody(AgentSendRequest.self, request)
@@ -193,21 +210,25 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("channels", ":channelId", "join") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                join: true
-            ))
+        agent.post("channels", ":channelId", "join") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.agentChannelMembershipFromMachine(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    join: true
+                )
+            }
         }
-        agent.post("channels", ":channelId", "leave") { request -> Response in
-            routeResponse(services.emailAccounts.agentChannelMembershipFromMachine(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId") ?? "",
-                channelId: request.parameters.get("channelId") ?? "",
-                join: false
-            ))
+        agent.post("channels", ":channelId", "leave") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.agentChannelMembershipFromMachine(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    join: false
+                )
+            }
         }
         agent.get("channel-members") { request async throws -> Response in
             try await respond {
@@ -219,17 +240,19 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("history") { request -> Response in
-            routeResponse(services.emailAccounts.agentHistory(
-                authorization: request.headers[.authorization],
-                agentId: request.parameters.get("agentId"),
-                channelRef: desktopQuery(request.url.query, "channel"),
-                before: desktopQuery(request.url.query, "before"),
-                after: desktopQuery(request.url.query, "after"),
-                around: desktopQuery(request.url.query, "around"),
-                limit: desktopQuery(request.url.query, "limit"),
-                consume: desktopQuery(request.url.query, "consume")
-            ))
+        agent.get("history") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHistory.history(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId"),
+                    channelRef: desktopQuery(request.url.query, "channel"),
+                    before: desktopQuery(request.url.query, "before"),
+                    after: desktopQuery(request.url.query, "after"),
+                    around: desktopQuery(request.url.query, "around"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    consume: desktopQuery(request.url.query, "consume")
+                )
+            }
         }
         agent.post("tasks") { request async throws -> Response in
             // The published handler accepted a raw JSON body, so the typed
@@ -418,93 +441,140 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
         // The resumable control manifest is the one JSON surface allowed past the
         // 100 KB global parser: 512 KB manifest plus envelope headroom.
         computer.on(.post, "agent-migrations", "by-id", ":migrationId", "resumable", "control", maxBodySize: "640kb") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putMigrationControlManifest(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            // The route publishes the manifest text exactly as sent, so the
+            // service takes the raw body.
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.putMigrationControlManifest(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    body: try await request.bodyText(default: "{}")
+                )
+            }
         }
-        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "control") { request -> Response in
-            routeResponse(services.emailAccounts.getMigrationControlManifest(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "control") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.getMigrationControlManifest(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "chunks", ":chunkIndex", "receipt") { request async throws -> Response in
-            routeResponse(services.emailAccounts.putMigrationChunkReceipt(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                chunkIndex: Int(request.parameters.get("chunkIndex") ?? "") ?? -1,
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationChunkReceiptRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.putMigrationChunkReceipt(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    chunkIndex: Int(request.parameters.get("chunkIndex") ?? "") ?? -1,
+                    request: body
+                )
+            }
         }
-        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "chunks") { request -> Response in
-            routeResponse(services.emailAccounts.migrationChunkStatus(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.get("agent-migrations", "by-id", ":migrationId", "resumable", "chunks") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.migrationChunkStatus(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
-        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "upload-complete") { request -> Response in
-            routeResponse(services.emailAccounts.completeMigrationUpload(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "upload-complete") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.completeMigrationUpload(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
-        computer.get("agent-migrations", "by-id", ":migrationId") { request -> Response in
-            routeResponse(services.emailAccounts.getMigrationTargetView(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? ""
-            ))
+        computer.get("agent-migrations", "by-id", ":migrationId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.getMigrationTargetView(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? ""
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "start-transfer") { request async throws -> Response in
-            routeResponse(services.emailAccounts.startMigrationTransfer(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationGenerationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.startMigrationTransfer(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "flip-machine") { request async throws -> Response in
-            routeResponse(services.emailAccounts.flipMigrationMachine(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationGenerationRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.flipMigrationMachine(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "arrived") { request async throws -> Response in
-            routeResponse(await services.emailAccounts.completeMigrationArrival(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationArrivalRequest.self, request)
+            return try await respond {
+                try await services.emailAccounts.agentHostedMigration.completeMigrationArrival(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "transport-lost") { request async throws -> Response in
-            routeResponse(services.emailAccounts.markMigrationTransportLostFromComputer(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationTransportLostRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.markMigrationTransportLostFromComputer(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "cancel-ack") { request async throws -> Response in
-            routeResponse(services.emailAccounts.acknowledgeMigrationCancellation(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationCancelAckRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.acknowledgeMigrationCancellation(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-quiesced") { request async throws -> Response in
-            routeResponse(services.emailAccounts.recordMigrationSourceQuiesced(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = try await migrationBody(MigrationSourceQuiescedRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.agentHostedMigration.recordMigrationSourceQuiesced(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    request: body
+                )
+            }
         }
         computer.post("agent-migrations", "by-id", ":migrationId", "resumable", "source-progress") { request async throws -> Response in
-            routeResponse(services.emailAccounts.recordMigrationSourceProgress(
-                authorization: request.headers[.authorization],
-                migrationRef: request.parameters.get("migrationId") ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
+            // The progress body is stored as sent, so the service takes the raw text.
+            try await respond {
+                try services.emailAccounts.agentHostedMigration.recordMigrationSourceProgress(
+                    authorization: request.headers[.authorization],
+                    migrationRef: request.parameters.get("migrationId") ?? "",
+                    body: try await request.bodyText(default: "{}")
+                )
+            }
         }
+    }
+
+    /// Decodes one typed migration callback body even when the client omitted a
+    /// JSON `Content-Type`: the retired handlers parsed the raw body regardless
+    /// of the header. A body that is not JSON reads as the empty request, which
+    /// is the `?? [:]` the old parser used.
+    private func migrationBody<T: Decodable>(_ type: T.Type, _ request: Request) async throws -> T {
+        if let decoded = try? await request.content.decode(type) { return decoded }
+        let empty = try JSONDecoder().decode(type, from: Data("{}".utf8))
+        guard let data = try await request.body.collect() else { return empty }
+        return (try? JSONDecoder().decode(type, from: data)) ?? empty
     }
 }
 
@@ -583,23 +653,15 @@ private func jsonString(_ value: String) -> String {
     return String(text.dropFirst().dropLast())
 }
 
-private func reminderIdFromReply(_ reply: HTTPReply) -> String? {
-    guard reply.status == 200, let data = reply.body.data(using: .utf8),
-          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-          let reminder = object["reminder"] as? [String: Any]
-    else { return nil }
-    return reminder["reminderId"] as? String ?? reminder["id"] as? String
-}
-
 private func publishReminderEvent(
-    _ reply: HTTPReply, event: String, reminderId: String, agentId: String, services: FallbackServices
+    event: String, reminderId: String, agentId: String, services: FallbackServices
 ) {
-    guard reply.status == 200, let hub = services.realtime,
+    guard let hub = services.realtime,
           let agent = services.emailAccounts.oauth.agentRuntimeInfo(id: agentId)
     else { return }
     var recipients: Set<String> = []
     if let creator = agent.creatorUserId { recipients.insert(creator) }
-    for member in services.emailAccounts.serverMemberRoles(serverId: agent.serverId)
+    for member in services.emailAccounts.oauth.memberRoles(serverId: agent.serverId)
     where member.role == "owner" || member.role == "admin" {
         recipients.insert(member.userId)
     }

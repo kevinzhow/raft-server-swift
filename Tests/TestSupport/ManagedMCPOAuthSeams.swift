@@ -46,7 +46,7 @@ extension EmailLoginDirectory {
 
     public func addAnnouncementImageForTesting(id: String, announcementId: String, contentType: String, bytes: Data) {
         lock.lock()
-        announcementImageAssets[id] = AnnouncementImageAsset(
+        notificationsStore.announcementImageAssets[id] = AnnouncementImageAsset(
             id: id,
             announcementId: announcementId,
             contentType: contentType,
@@ -63,7 +63,7 @@ extension EmailLoginDirectory {
         active: Bool = true
     ) {
         lock.lock()
-        externalAvatarAssets[id] = ExternalAvatarAsset(
+        messagesAndThreadsStore.externalAvatarAssets[id] = ExternalAvatarAsset(
             id: id,
             contentType: contentType,
             bytes: bytes,
@@ -75,13 +75,13 @@ extension EmailLoginDirectory {
 
     public func setExternalAvatarStorageAvailableForTesting(_ available: Bool) {
         lock.lock()
-        externalAvatarStorageAvailable = available
+        messagesAndThreadsStore.externalAvatarStorageAvailable = available
         lock.unlock()
     }
 
     public func setAnnouncementImageStorageAvailableForTesting(_ available: Bool) {
         lock.lock()
-        announcementImageStorageAvailable = available
+        notificationsStore.announcementImageStorageAvailable = available
         lock.unlock()
     }
 

@@ -294,10 +294,13 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         me.post("complete-profile") { request async throws -> Response in
-            routeResponse(services.emailAccounts.completeProfile(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = try await rawJSON(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPLifecycle.completeProfile(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         me.post("timezone-observation") { request async throws -> Response in
             let body = (try await jsonBody(TimezoneObservationRequest.self, request))

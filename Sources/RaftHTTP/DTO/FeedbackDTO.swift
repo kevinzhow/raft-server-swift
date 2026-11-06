@@ -20,23 +20,6 @@ public struct FeedbackSubmissionResponse: Codable, Sendable, Equatable {
     }
 }
 
-/// `POST /api/app-installation/agent-reminder-messages` request body.
-///
-/// The service still validates the raw body for parity with the upstream
-/// handler; this struct documents the accepted contract and gives a typed
-/// decoder to callers that already own the body.
-public struct AppAgentReminderMessageRequest: Codable, Sendable, Equatable {
-    public var agentId: String
-    public var idempotencyKey: String
-    public var text: String
-
-    public init(agentId: String, idempotencyKey: String, text: String) {
-        self.agentId = agentId
-        self.idempotencyKey = idempotencyKey
-        self.text = text
-    }
-}
-
 /// `POST /api/product-feedback/tickets/:ticketId/close` request body.
 public struct FeedbackTicketCloseRequest: Codable, Sendable, Equatable {
     public var reason: String
@@ -108,16 +91,6 @@ public struct EnrollmentGrantRequestDTO: Codable, Sendable, Equatable {
         self.publicKey = publicKey
         self.nonce = nonce
         self.attestation = attestation
-    }
-}
-
-/// `POST /api/push/family-revoke` request body. The capability is
-/// `<familyId>.<nonce>`; the service owns the validation and revocation.
-public struct PushFamilyRevokeDTO: Codable, Sendable, Equatable {
-    public var capability: String?
-
-    public init(capability: String? = nil) {
-        self.capability = capability
     }
 }
 

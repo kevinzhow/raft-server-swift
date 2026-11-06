@@ -60,6 +60,123 @@ extension EmailLoginDirectory {
         InboxAndWakeService(directory: self)
     }
 
+    /// Machine credential lookups, the onboarding identity adoption, the hosted
+    /// runtime and the provider account connections. The directory supplies its
+    /// stores; the session lookup, the realtime emitter and the provider relay
+    /// enter as closures.
+    public var machinesAndHostedRuntime: MachinesAndHostedRuntimeService {
+        MachinesAndHostedRuntimeService(directory: self)
+    }
+
+    public func machineIdForCredential(authorization: String?) -> String? {
+        machinesAndHostedRuntime.machineIdForCredential(authorization: authorization)
+    }
+
+    func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
+        machinesAndHostedRuntime.canMachineServeAgent(machineId: machineId, agent: agent)
+    }
+
+    public func machineAPIKey(machineId: String) -> String? {
+        machinesAndHostedRuntime.machineAPIKey(machineId: machineId)
+    }
+
+    public func bumpMachineStatusVersion(machineId: String) -> Int {
+        machinesAndHostedRuntime.bumpMachineStatusVersion(machineId: machineId)
+    }
+
+    public func setMachineOnline(machineId: String, online: Bool) {
+        machinesAndHostedRuntime.setMachineOnline(machineId: machineId, online: online)
+    }
+
+    public func enableHostedModelPicker(serverId: String) {
+        machinesAndHostedRuntime.enableHostedModelPicker(serverId: serverId)
+    }
+
+    /// Agent records and their private surfaces: creation, listing, the profile
+    /// patch, credentials, the wake-hint stream and the assistant-owner reads.
+    /// The directory supplies its stores; the session lookup, the realtime
+    /// emitter, the hosted provider flag, the wake-hint projection and the role
+    /// notice enter as closures.
+    public var agentSurface: AgentPrivateSurfaceService {
+        AgentPrivateSurfaceService(directory: self)
+    }
+
+    func recordAgentCredentialUse(token: String) {
+        agentSurface.recordAgentCredentialUse(token: token)
+    }
+
+    func assistantOwnerFor(agentId: String, serverId: String) -> String? {
+        agentSurface.assistantOwner(agentId: agentId, serverId: serverId)
+    }
+
+    func assistantOwnerRaw(_ agentId: String) -> String? {
+        agentSurface.assistantOwnerRaw(agentId: agentId)
+    }
+
+    /// The content-free wake hints of one agent. The projection spans the
+    /// channel, message, joint and suppression ledgers, so it still runs under
+    /// the directory lock.
+    func pendingWakeHints(
+        agentId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        sinceSeq: Int?,
+        limit: Int
+    ) -> [AgentWakeHintRow] {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingWakeHintRowsLocked(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
+            .rows.map { AgentWakeHintRow(seq: $0.seq, json: $0.json) }
+    }
+
+    /// A real server-role change on an agent posts a system notice into the
+    /// actor's DM with the agent (creating the DM when needed). The account,
+    /// channel and message ledgers change together, so this stays one directory
+    /// critical section.
+    func postAgentRoleNotice(
+        serverId: String,
+        actorUserId: String,
+        agentId: String,
+        agentName: String,
+        from: String,
+        to: String
+    ) {
+        lock.lock()
+        let actorName = accounts.values.first { $0.id == actorUserId }?.name ?? "Someone"
+        var dmId = postableChannels.first { _, channel in
+            channel.serverId == serverId && channel.kind == "dm"
+                && channel.memberIds.contains(actorUserId) && channel.memberIds.contains(agentId)
+        }?.key
+        if dmId == nil {
+            dmId = oauth.createDirectChannel(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId)
+            if let created = dmId {
+                postableChannels[created] = PostableChannel(serverId: serverId, memberIds: [actorUserId, agentId], kind: "dm", name: "dm")
+                oauth.addChannelAgent(channelId: created, agentId: agentId)
+                oauth.addChannelHuman(channelId: created, userId: actorUserId)
+            }
+        }
+        if let dmId {
+            appendHumanMessageLocked(StoredHumanMessage(
+                id: UUID().uuidString.lowercased(),
+                channelId: dmId,
+                senderId: actorUserId,
+                content: "@\(actorName) changed @\(agentName)'s server role from \(from) to \(to).",
+                messageType: "system",
+                senderType: "user",
+                actionKind: "agent.server_role_changed"
+            ))
+        }
+        lock.unlock()
+    }
+
+    /// Human message create, the sender-side mention actions and the forward
+    /// write. The directory supplies the message, channel, agent and profile
+    /// stores and the OAuth ledger; the message append, mention resolution and
+    /// the forwarded-item projection still belong to unmigrated domains and
+    /// enter as closures.
+    public var humanMessageCreate: HumanMessageCreateService {
+        HumanMessageCreateService(directory: self)
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }
@@ -248,6 +365,48 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Machine-migration transport (the Computer callbacks), agent machine
+    /// assignment and agent credentials. The agent, machine and OAuth rows come
+    /// from their stores; the session lookup, the realtime emitter, the agent
+    /// credential mint and the migration-receipt DM (message-send domain) enter
+    /// as closures.
+    public var agentHostedMigration: AgentHostedMigrationService {
+        AgentHostedMigrationService(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            dependencies: AgentHostedMigrationDependencies(
+                sessionUserId: { [self] in sessionUserId(authorization: $0) },
+                emitRealtime: { [self] room, event, payload in emitRealtime(room, event, payload) },
+                mintAgentCredential: { [self] agentId, scopes, name in
+                    mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+                },
+                createMigrationReceiptDm: { [self] agentId, serverId, supportRef in
+                    messageSend.createMigrationReceiptDm(agentId: agentId, serverId: serverId, supportRef: supportRef)
+                }
+            )
+        )
+    }
+
+    /// Migrating an agent (hosted and Computer), the hosted confirmation, the
+    /// private agent surfaces, scopes, workspace tree/read, archived workspace,
+    /// delete and the runtime verbs. The session lookup and the realtime emitter
+    /// enter as closures.
+    public var agentMachineMigrationControl: AgentMachineMigrationControlService {
+        AgentMachineMigrationControlService(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            tasks: tasksAndRemindersStore,
+            oauth: oauth,
+            dependencies: AgentMachineMigrationControlDependencies(
+                sessionUserId: { [self] in sessionUserId(authorization: $0) },
+                emitRealtime: { [self] room, event, payload in emitRealtime(room, event, payload) }
+            )
+        )
+    }
+
     /// The Computer-key lookup `/daemon/connect` and the Computer fleet share.
     public func computerCredential(apiKey: String) -> ComputerCredentialLookup {
         machinesAndComputersStore.computerCredential(apiKey: apiKey)
@@ -322,5 +481,305 @@ extension EmailLoginDirectory {
                 }
             )
         )
+    }
+
+    /// Read mutations, joint-invite accept, the channel list, profile
+    /// completion and the server create/details/analytics routes. The human
+    /// session lookup belongs to the unmigrated auth domain and enters as a
+    /// closure.
+    public var managedMCPLifecycle: ManagedMCPLifecycleService {
+        ManagedMCPLifecycleService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            oauth: oauth,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore
+        )
+    }
+
+    /// Provider connections (list, create, patch, rotate, retired probe,
+    /// assigned agents).
+    public var managedMCPProviderConnections: ManagedMCPProviderConnectionsService {
+        ManagedMCPProviderConnectionsService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            oauth: oauth,
+            providers: managedMCPAndCardsStore
+        )
+    }
+
+    /// Push registration, browser subscription, delivery status, unbind and the
+    /// family-revoke capability.
+    public var managedMCPPush: ManagedMCPPushService {
+        ManagedMCPPushService(
+            oauth: oauth,
+            profiles: authProfileStore,
+            notifications: notificationsStore
+        )
+    }
+
+    /// Announcements, external avatars, channel unread and notification
+    /// settings, the agent user lookups and the app-installation reminder
+    /// write. The session lookup, the agent credential resolution, the guest
+    /// visibility rule and the human-message append belong to unmigrated
+    /// domains and enter as closures.
+    public var managedMCPOAuth: ManagedMCPOAuthService {
+        ManagedMCPOAuthService(dependencies: ManagedMCPOAuthDependencies(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            agentIdentity: { [self] authorization, capability in
+                switch feedbackLocators.identityResolution(authorization: authorization, capability: capability) {
+                case .success(let agentId, let serverId):
+                    return (agentId: agentId, serverId: serverId)
+                case .missingAuthorization, .invalidAccessToken, .capabilityNotAuthorized,
+                     .invalidAgentCredential:
+                    return nil
+                }
+            },
+            agentScopes: { [self] in feedbackLocators.credentialScopes(authorization: $0) },
+            guestDeniedHiddenChannel: { [self] channelId, serverId, userId in
+                guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId)
+            },
+            appendMessage: { [self] message in
+                lock.lock()
+                defer { lock.unlock() }
+                appendHumanMessageLocked(message)
+            },
+            oauth: oauth,
+            notifications: notificationsStore,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            feedback: feedbackStore,
+            profiles: authProfileStore,
+            now: { Date() }
+        ))
+    }
+
+    /// `PATCH /api/channels/:id` and `POST /api/channels`. The channel
+    /// visibility predicate belongs to the channel-agent routes and enters as a
+    /// closure.
+    public var managedMCPChannelRoutes: ManagedMCPChannelRoutesService {
+        ManagedMCPChannelRoutesService(
+            sessionUserId: { [self] in sessionUserId(authorization: $0) },
+            channelActorCanSee: { [self] channelId, userId in
+                channelActorCanSee(channelId: channelId, userId: userId)
+            },
+            oauth: oauth,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            profiles: authProfileStore
+        )
+    }
+
+    /// App reminders (owner list, internal machine routes, agent-api routes)
+    /// and the saved-message write. The reminder ledger, machine keys and
+    /// agent credentials come from their stores; the session lookup and the
+    /// agent capability decision belong to other domains and enter as closures.
+    public var managedMCPAgentCatalog: ManagedMCPAgentCatalogService {
+        ManagedMCPAgentCatalogService(
+            reminders: tasksAndRemindersStore,
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            dependencies: ManagedMCPAgentCatalogDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                deniedCapability: { [feedbackLocators] authorization, capability in
+                    switch feedbackLocators.capabilityDecision(authorization: authorization, capability: capability) {
+                    case .allowed: nil
+                    case .denied(let denied): denied
+                    }
+                }
+            )
+        )
+    }
+
+    /// The managed MCP control plane (`/api/mcp/*`). The server rows live in
+    /// `ManagedMCPAndCardsStore`; the session lookup and the public origin come
+    /// from the profile domain as closures.
+    public var managedMCPControlPlane: ManagedMCPControlPlaneService {
+        ManagedMCPControlPlaneService(
+            servers: managedMCPAndCardsStore,
+            oauth: oauth,
+            dependencies: ManagedMCPControlPlaneDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                serverURL: { [authProfileStore] in authProfileStore.serverURL }
+            )
+        )
+    }
+
+    /// The agent history read and the machine channel join/leave. The read
+    /// cursors live in the message store; the thread lookups belong to the
+    /// action-card helpers and the read-update hook is the notifications
+    /// store's, so they enter as closures.
+    public var agentHistory: AgentHistoryService {
+        AgentHistoryService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore,
+            accounts: authProfileStore,
+            feedback: feedbackStore,
+            oauth: oauth,
+            actionCardPrepare: actionCardPrepare,
+            channelMembership: channelMembership,
+            dependencies: AgentHistoryDependencies(
+                threadByAnchor: { [self] parentId, anchorMessageId in
+                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                },
+                threadById: { [self] parentId, suffix in
+                    agentHistoryThreadById(parentId: parentId, suffix: suffix)
+                },
+                threadByAnchorPrefix: { [self] parentId, suffix in
+                    agentHistoryThreadByAnchorPrefix(parentId: parentId, suffix: suffix)
+                },
+                agentReadUpdated: { [notificationsStore] serverId, channelId, agentId, seq in
+                    notificationsStore.onAgentReadUpdated?(serverId, channelId, agentId, seq)
+                }
+            )
+        )
+    }
+
+    // MARK: - Integrations and app access
+
+    /// Setup declarations, Marketplace installs, agent grants and the app event
+    /// feed. The OAuth ledger owns every row; only the human session lookup
+    /// belongs to an unmigrated domain.
+    public var integrationsAndAppAccess: IntegrationsAndAppAccessService {
+        IntegrationsAndAppAccessService(
+            oauth: oauth,
+            sessionUserId: { [self] authorization in
+                sessionUserId(authorization: authorization)
+            }
+        )
+    }
+
+    /// Scoped attachment comments. The session, the agent credential, the
+    /// feature-flag gate, the attachment visibility rules, the thread lookup and
+    /// the mention-row writer belong to unmigrated domains and enter as closures.
+    public var attachmentComments: AttachmentCommentsService {
+        AttachmentCommentsService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            dependencies: AttachmentCommentsDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                commentsEnabled: { [self] serverId, userId in
+                    attachmentCommentsEnabled(serverId: serverId, userId: userId)
+                },
+                visibleAttachment: { [self] userId, serverId, attachment in
+                    visibleAttachment(userId: userId, serverId: serverId, attachment: attachment)
+                },
+                visibleAttachmentUnlocked: { [self] userId, serverId, attachment in
+                    visibleAttachmentUnlocked(userId: userId, serverId: serverId, attachment: attachment)
+                },
+                agentCredential: { [self] authorization in
+                    agentCredentialAgent(authorization)
+                },
+                agentVisibleAttachment: { [self] agentId, serverId, attachmentId in
+                    agentVisibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
+                },
+                agentHistoryThread: { [self] parentId, anchorMessageId in
+                    agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
+                },
+                recordMemberMentionRows: { [self] messageId, channelId, mentions in
+                    recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
+                }
+            )
+        )
+    }
+
+    /// The agent integration-app surface. The agent credential and the
+    /// Marketplace install card (target resolution plus card write, both owned by
+    /// the action-card domain) enter as closures.
+    public var agentIntegrationApps: AgentIntegrationAppsService {
+        AgentIntegrationAppsService(
+            oauth: oauth,
+            logins: managedMCPAndCardsStore,
+            dependencies: AgentIntegrationAppsDependencies(
+                agentCredential: { [self] authorization in
+                    agentCredentialAgent(authorization)
+                },
+                prepareMarketplaceInstallCard: { [self] agent, client, scopes, target in
+                    guard let resolved = actionCardTarget(
+                        serverId: agent.serverId, agentId: agent.id, target: target
+                    ) else { return nil }
+                    return actionCardIntegrationRegister.prepareMarketplaceInstallCard(
+                        serverId: agent.serverId,
+                        agent: agent,
+                        client: client,
+                        scopes: scopes,
+                        target: resolved
+                    )
+                }
+            )
+        )
+    }
+
+    /// The agent mention-delivery and message-resolve lookups. The agent
+    /// credential and the shared message-visibility rule (owned by the migrated
+    /// search service) enter as closures.
+    public var agentMessageLookup: AgentMessageLookupService {
+        let search = searchMentions
+        return AgentMessageLookupService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            dependencies: AgentMessageLookupDependencies(
+                agentCredential: { [self] authorization in
+                    agentCredentialAgent(authorization)
+                },
+                messageVisible: { channelId, serverId, agentId in
+                    search.messageVisible(messageChannelId: channelId, serverId: serverId, viewer: .agent(agentId))
+                }
+            )
+        )
+    }
+
+    // MARK: - Attachment-comment helpers with callers in other domains
+    //
+    // Moved unchanged from the retired integrations extension: the feature-flag
+    // gate is read by search and the profile/files accessor, and the two chip
+    // projections are read by search and the auth-core human message surface.
+
+    /// Feature flag gate shared by the attachment-comment routes. It answers
+    /// before body validation so a disabled server sees one uniform 403.
+    public func attachmentCommentsEnabled(serverId: String, userId: String? = nil) -> Bool {
+        evaluateFeatureFlagKey(
+            key: "attachment_comments_v0",
+            userId: userId ?? "",
+            serverId: serverId,
+            platform: nil,
+            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
+        ).enabled
+    }
+
+    /// Attachment projection with the scoped comment count; a viewer who cannot
+    /// use attachment comments always observes zero, never a hint.
+    func messageAttachmentsJSONLocked(_ ids: [String], commentsVisible: Bool) -> String {
+        ids.map { id -> String in
+            let count = commentsVisible ? (attachmentCommentRecords[id]?.count ?? 0) : 0
+            return "{\"id\":\(jsonString(id)),\"commentCount\":\(count)}"
+        }.joined(separator: ",")
+    }
+
+    /// Scoped commentRef projection. Callers hold the directory lock. The chip
+    /// payload carries the host coordinates the client routes with; it is only
+    /// emitted to viewers who may see the scoped comment.
+    func commentRefJSONLocked(messageId: String) -> String? {
+        for (attachmentId, records) in attachmentCommentRecords {
+            guard let record = records.first(where: { $0.id == messageId }),
+                  let hostMessageId = record.hostMessageId,
+                  let hostChannelId = record.hostChannelId
+            else { continue }
+            let threadJSON = record.threadChannelId.map(jsonString) ?? "null"
+            return "{\"attachmentId\":\(jsonString(attachmentId)),\"hostMessageId\":\(jsonString(hostMessageId)),\"hostSource\":{\"type\":\"channel\",\"routeKind\":\"channel\",\"channelId\":\(jsonString(hostChannelId)),\"rootThreadChannelId\":\(threadJSON)}}"
+        }
+        return nil
     }
 }

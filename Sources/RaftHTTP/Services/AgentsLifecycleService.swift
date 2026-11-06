@@ -998,7 +998,7 @@ extension EmailLoginDirectory {
         guard kind == "antiproton" else {
             return Self.json(404, "{\"error\":\"Unknown runtime provider\"}")
         }
-        let available = hostedProviderAvailable(serverId: serverId)
+        let available = agentsRuntimeStore.hostedProviderAvailable(serverId: serverId)
         return Self.json(200, "{\"kind\":\"antiproton\",\"available\":\(available)}")
     }
 

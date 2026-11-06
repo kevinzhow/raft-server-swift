@@ -34,60 +34,64 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let attachments = routes.grouped("api", "attachments")
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
-        let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
-        let inboxRealtime = ReactionsRealtimeService(directory: services.emailAccounts)
+        let humanMessageCreate = services.emailAccounts.humanMessageCreate
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
-            // A typed body re-encodes through the DTO so the directory's
-            // fingerprinting parser reads the same keys; a body that does not
-            // decode keeps the raw path and its published error codes.
-            if let body = try? await request.content.decode(ReadMutationAckRequestDTO.self) {
-                return routeResponse(inboxRealtime.acknowledgeReadMutation(
-                    body,
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
+            return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
+                try services.emailAccounts.managedMCPLifecycle.postReadMutation(
                     authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
-                ))
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.postReadMutation(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                body: try await request.bodyText(default: "{}")
-            ))
         }
-        readMutations.get("frontier") { request -> Response in
-            routeResponse(services.emailAccounts.readMutationFrontier(
-                authorization: request.headers[.authorization],
-                scopeIds: desktopQuery(request.url.query, "scopeIds")
-            ))
+        readMutations.get("frontier") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPLifecycle.readMutationFrontier(
+                    authorization: request.headers[.authorization],
+                    scopeIds: desktopQuery(request.url.query, "scopeIds")
+                )
+            }
         }
         messages.post("mention-actions", "execute") { request async throws -> Response in
-            routeResponse(humanMessageCreate.executeMentionActions(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(MentionActionsRequest.self, request)
+            return try await respond {
+                try humanMessageCreate.executeMentionActions(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         messages.post { request async throws -> Response in
             // requireAuth runs before the body check. An invalid body writes nothing.
-            routeResponse(humanMessageCreate.createHumanMessage(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(HumanMessageCreateRequest.self, request)
+            return try await respond {
+                try humanMessageCreate.createHumanMessage(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
-        messages.get("forward", "targets", "search") { request -> Response in
-            routeResponse(humanMessageCreate.searchForwardTargets(
-                query: desktopQuery(request.url.query, "q"),
-                limit: desktopQuery(request.url.query, "limit"),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        messages.get("forward", "targets", "search") { request async throws -> Response in
+            try await respond {
+                try humanMessageCreate.searchForwardTargets(
+                    query: desktopQuery(request.url.query, "q"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
-        messages.get("forward", "enabled") { request -> Response in
-            routeResponse(humanMessageCreate.messageForwardEnabled(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        messages.get("forward", "enabled") { request async throws -> Response in
+            try await respond {
+                try humanMessageCreate.messageForwardEnabled(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         attachments.get(":id", "url") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
@@ -107,11 +111,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         messages.post("forward") { request async throws -> Response in
-            routeResponse(humanMessageCreate.forwardHumanMessage(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(HumanMessageForwardRequest.self, request)
+            return try await respond(headers: { $0.headers }) {
+                try humanMessageCreate.forwardHumanMessage(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         messages.get(":messageId", "mention-deliveries") { request async throws -> Response in
             try await respond {
@@ -177,27 +184,34 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        attachments.get("comments", "counts") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentCommentCounts(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "server_id") ?? "",
-                ids: desktopQuery(request.url.query, "ids")
-            ))
+        attachments.get("comments", "counts") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.attachmentCommentCounts(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "server_id") ?? "",
+                    ids: desktopQuery(request.url.query, "ids")
+                )
+            }
         }
-        attachments.get(":id", "comments") { request -> Response in
-            routeResponse(services.emailAccounts.attachmentCommentsList(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                attachmentId: request.parameters.get("id") ?? ""
-            ))
+        attachments.get(":id", "comments") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.attachmentComments.attachmentCommentsList(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    attachmentId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         attachments.post(":id", "comments") { request async throws -> Response in
-            routeResponse(services.emailAccounts.createAttachmentComment(
-                authorization: request.headers[.authorization],
-                attachmentId: request.parameters.get("id") ?? "",
-                body: try await request.bodyText(default: "{}"),
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            return try await respond {
+                try services.emailAccounts.attachmentComments.createAttachmentComment(
+                    authorization: request.headers[.authorization],
+                    attachmentId: request.parameters.get("id") ?? "",
+                    body: body,
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         actions.post("migration-export") { _ -> Response in
             routeResponse(HTTPReply(
