@@ -31,6 +31,8 @@ import VaporTesting
             headers[HTTPField.Name("X-Server-Id")!] = serverId
             let deleted = try await client.delete(URI(string: "/api/channels/\(channelId)"), headers: headers)
             #expect(deleted.status == .ok)
+            #expect(deleted.body.string == "{\"ok\":true}")
+            #expect(deleted.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
             let channelRead = try await client.get(URI(string: "/api/messages/channel/\(channelId)"), headers: headers)
             #expect(channelRead.status == .notFound, "deleted channel deep-links are cloaked")
             let threadRead = try await client.get(URI(string: "/api/messages/channel/\(thread)"), headers: headers)
@@ -65,6 +67,7 @@ import VaporTesting
             #expect(before.status == .ok, "fixture attachment must be readable before deletion")
             let deleted = try await client.delete(URI(string: "/api/channels/\(channelId)"), headers: headers)
             #expect(deleted.status == .ok)
+            #expect(deleted.body.string == "{\"ok\":true}")
             let search = try await client.get(URI(string: "/api/messages/search?q=deletedmarker"), headers: headers)
             #expect(search.status == .ok)
             #expect(!(search.body.string ?? "").contains(channelId), "deleted channel search hits are excluded")

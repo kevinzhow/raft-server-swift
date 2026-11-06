@@ -132,12 +132,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             return response
         }
 
-        channels.delete(":channelId") { request -> Response in
-            routeResponse(services.emailAccounts.deleteChannel(
-                channelId: request.parameters.get("channelId") ?? "",
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        channels.delete(":channelId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.searchMentions.deleteChannel(
+                    channelId: request.parameters.get("channelId") ?? "",
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
 
         channels.delete("threads", ":threadId", "followers", "agents", ":agentId") { request -> Response in

@@ -62,7 +62,7 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
         )
     }
 
-    _ = accounts.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
+    _ = try accounts.searchMentions.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
 
     #expect(accounts.taskStatusForTesting(taskId: todo) == "closed")
     #expect(accounts.taskCompletedAtForTesting(taskId: todo) != nil)
@@ -98,7 +98,7 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
         taskId: task,
         body: "{\"status\":\"in_review\"}"
     )
-    _ = accounts.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
+    _ = try accounts.searchMentions.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
     accounts.reopenTaskForTesting(taskId: task, status: "in_review")
 
     try await withApp { app in
@@ -117,7 +117,7 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     let f = makeOrphanFixture("004")
     let accounts = f.accounts
     let task = accounts.addTask(channelId: f.channelId, title: "orphan no reopen", description: nil)
-    _ = accounts.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
+    _ = try accounts.searchMentions.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
     accounts.reopenTaskForTesting(taskId: task, status: "in_review")
 
     try await withApp { app in
@@ -139,7 +139,7 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     let f = makeOrphanFixture("005")
     let accounts = f.accounts
     let task = accounts.addTask(channelId: f.channelId, title: "orphan to delete", description: nil)
-    _ = accounts.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
+    _ = try accounts.searchMentions.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
 
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
@@ -160,7 +160,7 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     accounts.addPostableChannel(serverId: f.serverId, channelId: f.channelId, memberId: memberId, name: "orphan-006")
     accounts.oauth.addChannelHuman(channelId: f.channelId, userId: memberId)
     let task = accounts.addTask(channelId: f.channelId, title: "owner orphan", description: nil)
-    _ = accounts.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
+    _ = try accounts.searchMentions.deleteChannel(channelId: f.channelId, authorization: "Bearer \(f.ownerToken)", serverId: f.serverId)
     let memberToken = accounts.mintAccessTokenForTesting(userId: memberId)
 
     try await withApp { app in

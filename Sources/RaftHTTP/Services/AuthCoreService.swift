@@ -840,9 +840,7 @@ extension EmailLoginDirectory {
             managedMCP: managedMCPAndCardsStore,
             oauth: oauth,
             searchVisible: { [self] messageChannelId, serverId, viewer in
-                lock.lock()
-                defer { lock.unlock() }
-                return messageSearchVisibleLocked(
+                searchMentions.messageVisible(
                     messageChannelId: messageChannelId,
                     serverId: serverId,
                     viewer: viewer
@@ -879,6 +877,15 @@ extension EmailLoginDirectory {
                 assistantOwnerFor(agentId: agentId, serverId: serverId)
             }
         )
+    }
+
+    /// Message search, the stored context fallback, the shared message
+    /// visibility policy and channel soft-delete. The directory supplies the
+    /// domain stores and the OAuth ledger; the not-yet-migrated session,
+    /// machine/agent credential, attachment/action-card and thread-summary
+    /// projections enter as closures.
+    public var searchMentions: SearchMentionsService {
+        SearchMentionsService(directory: self)
     }
 
     /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`

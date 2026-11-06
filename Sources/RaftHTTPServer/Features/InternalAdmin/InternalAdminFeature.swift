@@ -282,17 +282,19 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("search") { request -> Response in
-            routeResponse(services.emailAccounts.searchAgentMessages(
-                agentId: request.parameters.get("agentId") ?? "",
-                query: desktopQuery(request.url.query, "q"),
-                limit: desktopQuery(request.url.query, "limit"),
-                authorization: request.headers[.authorization],
-                sender: desktopQuery(request.url.query, "sender"),
-                after: desktopQuery(request.url.query, "after"),
-                before: desktopQuery(request.url.query, "before"),
-                sort: desktopQuery(request.url.query, "sort")
-            ))
+        agent.get("search") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.searchMentions.searchAgentMessages(
+                    agentId: request.parameters.get("agentId") ?? "",
+                    query: desktopQuery(request.url.query, "q"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    authorization: request.headers[.authorization],
+                    sender: desktopQuery(request.url.query, "sender"),
+                    after: desktopQuery(request.url.query, "after"),
+                    before: desktopQuery(request.url.query, "before"),
+                    sort: desktopQuery(request.url.query, "sort")
+                )
+            }
         }
         computer.post("preflight") { request -> Response in
             routeResponse(services.emailAccounts.computerPreflight(

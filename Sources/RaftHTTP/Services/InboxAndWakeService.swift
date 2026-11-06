@@ -214,7 +214,7 @@ extension EmailLoginDirectory {
         guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
               message.senderType == "user",
               message.senderId == userId,
-              messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId)),
+              searchMentions.messageVisible(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId)),
               postableChannels[message.channelId]?.serverId == serverId
         else {
             return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
