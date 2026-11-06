@@ -847,46 +847,6 @@ extension EmailLoginDirectory {
         public var optedOutAt: Date?
     }
 
-    public struct NativeNotificationIntent: Sendable {
-        public var recipientUserId: String
-        public var eventKey: String
-        public var serverId: String
-        public var kind: String
-        public var channelId: String
-        public var threadId: String?
-        public var parentChannelId: String?
-        public var parentMessageId: String?
-        public var messageId: String
-        public var title: String
-        public var body: String
-        public var createdAt: Date
-
-        public init(recipientUserId: String, eventKey: String, serverId: String, kind: String, channelId: String, threadId: String?, parentChannelId: String?, parentMessageId: String?, messageId: String, title: String, body: String, createdAt: Date) {
-            self.recipientUserId = recipientUserId
-            self.eventKey = eventKey
-            self.serverId = serverId
-            self.kind = kind
-            self.channelId = channelId
-            self.threadId = threadId
-            self.parentChannelId = parentChannelId
-            self.parentMessageId = parentMessageId
-            self.messageId = messageId
-            self.title = title
-            self.body = body
-            self.createdAt = createdAt
-        }
-    }
-
-    public struct NativeEnrollmentGrantRecord: Sendable {
-        public var secretHash: String
-        public var json: String
-    }
-
-    public enum NativeStreamOpen: Sendable {
-        case closed(HTTPReply)
-        case streaming(userId: String, cursorSeq: Int, replay: [(seq: Int, frame: String)])
-    }
-
     public struct MobileAppEmailJourney: Equatable, Sendable {
         public var userId: String
         public var email: String

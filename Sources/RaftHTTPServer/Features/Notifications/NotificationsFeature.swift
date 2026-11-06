@@ -139,93 +139,93 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 deps: services.mobile
             ))
         }
-        notifications.delete("credentials", "current") { request -> Response in
-            routeResponse(services.emailAccounts.deleteCurrentNativeNotificationCredential(
-                authorization: request.headers[.authorization]
-            ))
+        notifications.delete("credentials", "current") { request async throws -> Response in
+            try await respond(status: 204, headers: .exact(["X-Robots-Tag": AppFallback.robotsTag])) {
+                try services.emailAccounts.nativeNotifications.deleteCurrentCredential(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
         notifications.post("credentials", "rotate") { request async throws -> Response in
-            let body: String
-            if let typed = try? await request.content.decode(RotateNotificationCredentialDTO.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText()
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.nativeNotifications.rotateCredential(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.rotateNativeNotificationCredential(
-                authorization: request.headers[.authorization],
-                body: body
-            ))
         }
-        notifications.get("devices") { request -> Response in
-            routeResponse(services.emailAccounts.listNativeNotificationDevices(
-                authorization: request.headers[.authorization]
-            ))
+        notifications.get("devices") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.nativeNotifications.listDevices(
+                    authorization: request.headers[.authorization]
+                )
+            }
         }
-        notifications.delete("devices", ":deviceId") { request -> Response in
-            routeResponse(services.emailAccounts.revokeNativeNotificationDevice(
-                authorization: request.headers[.authorization],
-                deviceId: request.parameters.get("deviceId") ?? ""
-            ))
+        notifications.delete("devices", ":deviceId") { request async throws -> Response in
+            try await respond(status: 204, headers: .exact(["X-Robots-Tag": AppFallback.robotsTag])) {
+                try services.emailAccounts.nativeNotifications.revokeDevice(
+                    authorization: request.headers[.authorization],
+                    deviceId: request.parameters.get("deviceId") ?? ""
+                )
+            }
         }
         notifications.post("enrollment-exchanges") { request async throws -> Response in
-            let body: String
-            if let typed = try? await request.content.decode(EnrollmentExchangeDTO.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText()
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.nativeNotifications.exchangeEnrollmentGrant(body: body)
             }
-            return routeResponse(services.emailAccounts.exchangeNativeEnrollmentGrant(body: body))
         }
         notifications.post("enrollment-grants") { request async throws -> Response in
-            let body: String
-            if let typed = try? await request.content.decode(EnrollmentGrantRequestDTO.self) {
-                body = FeedbackJSONCoding.string(typed)
-            } else {
-                body = try await request.bodyText()
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.nativeNotifications.issueEnrollmentGrant(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
             }
-            return routeResponse(services.emailAccounts.issueNativeEnrollmentGrant(
-                body: body,
-                authorization: request.headers[.authorization]
-            ))
         }
-        notifications.get("stream") { request -> Response in
-            let accounts = services.emailAccounts
+        notifications.get("stream") { request async throws -> Response in
+            let native = services.emailAccounts.nativeNotifications
             let authorization = request.headers[.authorization]
-            switch accounts.beginNativeNotificationStream(
-                authorization: authorization,
-                lastEventId: request.headers[HTTPField.Name("Last-Event-ID")!]
-            ) {
-            case .closed(let reply):
-                return routeResponse(reply)
-            case .streaming(let userId, let cursor, let replay):
-                var headers = HTTPFields()
-                headers[.contentType] = "text/event-stream"
-                headers[.cacheControl] = "no-cache, no-store"
-                var response = Response(status: .ok, headers: headers)
-                let pollMs = min(5_000, max(250, accounts.nativeNotificationStreamPollMs))
-                let invokeWriteHook = services.nodeEnv == "test"
-                response.body = Response.Body { writer in
-                    var cursorSeq = cursor
-                    for item in replay {
+            // The refusal projects through `respond`; the open stream is the one
+            // reply `respond` cannot express (a chunked SSE body).
+            var opened: NativeNotificationStreamStart?
+            let refusal = try await respond { () throws -> OkResponse in
+                opened = try native.beginStream(
+                    authorization: authorization,
+                    lastEventId: request.headers[HTTPField.Name("Last-Event-ID")!]
+                )
+                return OkResponse()
+            }
+            guard let opened else { return refusal }
+            var headers = HTTPFields()
+            headers[.contentType] = "text/event-stream"
+            headers[.cacheControl] = "no-cache, no-store"
+            var response = Response(status: .ok, headers: headers)
+            let pollMs = min(5_000, max(250, native.streamPollMs))
+            let invokeWriteHook = services.nodeEnv == "test"
+            response.body = Response.Body { writer in
+                var cursorSeq = opened.cursorSeq
+                for item in opened.replay {
+                    try await writer.write(item.frame)
+                    cursorSeq = item.seq
+                }
+                while !Task.isCancelled {
+                    if !native.isCredentialLive(authorization: authorization) { return }
+                    let batch = native.frames(userId: opened.userId, after: cursorSeq)
+                    for (index, item) in batch.enumerated() {
+                        if invokeWriteHook {
+                            await native.liveWriteHook?(index, batch.count)
+                        }
+                        if !native.isCredentialLive(authorization: authorization) { return }
                         try await writer.write(item.frame)
                         cursorSeq = item.seq
                     }
-                    while !Task.isCancelled {
-                        if !accounts.nativeNotificationCredentialIsLive(authorization: authorization) { return }
-                        let batch = accounts.nativeNotificationFrames(userId: userId, after: cursorSeq)
-                        for (index, item) in batch.enumerated() {
-                            if invokeWriteHook {
-                                await accounts.nativeNotificationLiveWriteHook?(index, batch.count)
-                            }
-                            if !accounts.nativeNotificationCredentialIsLive(authorization: authorization) { return }
-                            try await writer.write(item.frame)
-                            cursorSeq = item.seq
-                        }
-                        try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
-                    }
+                    try await Task.sleep(nanoseconds: UInt64(pollMs) * 1_000_000)
                 }
-                return response
             }
+            return response
         }
         productEvents.post("batch") { request async throws -> Response in
             routeResponse(services.emailAccounts.clientEventsBatch(

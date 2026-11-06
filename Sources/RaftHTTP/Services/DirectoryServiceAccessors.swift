@@ -680,8 +680,8 @@ extension EmailLoginDirectory {
                 agentCredential: { [self] authorization in
                     agentCredentialAgent(authorization)
                 },
-                agentVisibleAttachment: { [self] agentId, serverId, attachmentId in
-                    agentVisibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
+                agentVisibleAttachment: { [agentAttachments] agentId, serverId, attachmentId in
+                    agentAttachments.visibleAttachment(agentId: agentId, serverId: serverId, attachmentId: attachmentId)
                 },
                 agentHistoryThread: { [self] parentId, anchorMessageId in
                     agentHistoryThread(parentId: parentId, anchorMessageId: anchorMessageId)
@@ -781,5 +781,42 @@ extension EmailLoginDirectory {
             return "{\"attachmentId\":\(jsonString(attachmentId)),\"hostMessageId\":\(jsonString(hostMessageId)),\"hostSource\":{\"type\":\"channel\",\"routeKind\":\"channel\",\"channelId\":\(jsonString(hostChannelId)),\"rootThreadChannelId\":\(threadJSON)}}"
         }
         return nil
+    }
+
+    // MARK: - Native notifications, agent attachments and integration tokens
+
+    /// Native notification enrollment, devices, credentials, the stream open and
+    /// the event ledger. The rows live in the notifications store's native
+    /// store; the kill switch and attestation policy in the notifications store;
+    /// the sessions come from the profile store.
+    public var nativeNotifications: NativeNotificationsService {
+        NativeNotificationsService(
+            rows: notificationsStore.native,
+            settings: notificationsStore,
+            profiles: authProfileStore
+        )
+    }
+
+    /// The agent attachment download, the minted download URL and the shared
+    /// agent visibility rule. The credential decision belongs to the feedback
+    /// locator service.
+    public var agentAttachments: AgentAttachmentsService {
+        AgentAttachmentsService(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            locators: feedbackLocators
+        )
+    }
+
+    /// `POST /internal/agent-api/integrations/token`.
+    public var agentIntegrationTokens: AgentIntegrationTokenService {
+        AgentIntegrationTokenService(
+            agents: agentsRuntimeStore,
+            grants: managedMCPAndCardsStore,
+            profiles: authProfileStore,
+            oauth: oauth
+        )
     }
 }

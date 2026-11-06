@@ -69,8 +69,8 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 @Test func nativeNotificationKillSwitchClosesTheStreamAndPersistsNothing() async throws {
     let accounts = EmailLoginDirectory()
     accounts.nativeNotificationsEnabled = false
-    let inserted = accounts.persistNativeNotificationIntents([
-        EmailLoginDirectory.NativeNotificationIntent(
+    let inserted = accounts.nativeNotifications.persist([
+        NativeNotificationIntent(
             recipientUserId: "11111111-1111-4111-8111-111111111184",
             eventKey: "disabled:native-kill",
             serverId: "33333333-3333-4333-8333-333333333382",
@@ -135,7 +135,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             #expect(records.first?.secretHash != grant)
             #expect(records.first?.json.contains(grant) == false)
 
-            let transcript = EmailLoginDirectory.enrollmentProofTranscript(
+            let transcript = NativeNotificationCredentials.enrollmentProofTranscript(
                 grant: grant,
                 appId: native.appId,
                 protocolVersion: native.protocolVersion,
@@ -205,7 +205,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             #expect(noProof.status == .forbidden)
 
             let alteredNonce = base64url(Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
-            let alteredTranscript = EmailLoginDirectory.enrollmentProofTranscript(
+            let alteredTranscript = NativeNotificationCredentials.enrollmentProofTranscript(
                 grant: grant,
                 appId: native.appId,
                 protocolVersion: native.protocolVersion,
@@ -221,7 +221,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
             let grantId = grant.split(separator: ".").dropFirst().first.map(String.init) ?? ""
             accounts.expireNativeEnrollmentGrant(id: grantId)
-            let validTranscript = EmailLoginDirectory.enrollmentProofTranscript(
+            let validTranscript = NativeNotificationCredentials.enrollmentProofTranscript(
                 grant: grant,
                 appId: native.appId,
                 protocolVersion: native.protocolVersion,
@@ -239,7 +239,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             let secondGranted = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: native.body, authorization: authorization)
             #expect(secondGranted.status == .created)
             let secondGrant = ((try JSONSerialization.jsonObject(with: Data(bodyText(secondGranted).utf8)) as? [String: Any])?["grant"] as? String) ?? ""
-            let secondTranscript = EmailLoginDirectory.enrollmentProofTranscript(
+            let secondTranscript = NativeNotificationCredentials.enrollmentProofTranscript(
                 grant: secondGrant,
                 appId: native.appId,
                 protocolVersion: native.protocolVersion,
@@ -320,7 +320,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             let authorization = "Bearer \(token)"
             let granted = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: native.body, authorization: authorization)
             let grant = ((try JSONSerialization.jsonObject(with: Data(bodyText(granted).utf8)) as? [String: Any])?["grant"] as? String) ?? ""
-            let transcript = EmailLoginDirectory.enrollmentProofTranscript(
+            let transcript = NativeNotificationCredentials.enrollmentProofTranscript(
                 grant: grant, appId: native.appId, protocolVersion: native.protocolVersion, appVersion: native.appVersion,
                 releaseChannel: native.releaseChannel, appInstanceId: native.appInstanceId, publicKey: native.publicKey, nonce: native.nonce
             )
@@ -337,7 +337,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
 
             let beforeId = "44444444-4444-4444-8444-444444444410"
             let before = notificationIntent(userId: userId, serverId: serverId, channelId: channelId, messageId: beforeId, body: "before connect")
-            _ = accounts.persistNativeNotificationIntents([before, before])
+            _ = accounts.nativeNotifications.persist([before, before])
             #expect(accounts.nativeNotificationEventCount(eventKey: before.eventKey) == 1)
 
             var streamHeaders = HTTPFields()
@@ -353,7 +353,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
                 }
             }
             let afterId = "44444444-4444-4444-8444-444444444411"
-            _ = accounts.persistNativeNotificationIntents([
+            _ = accounts.nativeNotifications.persist([
                 notificationIntent(userId: userId, serverId: serverId, channelId: channelId, messageId: afterId, body: "after connect"),
             ])
             let firstText = await buffer.wait(until: { $0.contains("after connect") }, timeoutMs: 2_000)
@@ -366,7 +366,7 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             #expect(target.wholeMatch(of: /^raft:\/\/v1\/servers\/[0-9a-f-]{36}\/channels\/[0-9a-f-]{36}\/messages\/[0-9a-f-]{36}$/) != nil)
             reader.cancel()
 
-            _ = accounts.persistNativeNotificationIntents([
+            _ = accounts.nativeNotifications.persist([
                 notificationIntent(userId: userId, serverId: serverId, channelId: channelId, messageId: "44444444-4444-4444-8444-444444444412", body: "replay one"),
                 notificationIntent(userId: userId, serverId: serverId, channelId: channelId, messageId: "44444444-4444-4444-8444-444444444413", body: "replay two"),
             ])
@@ -387,20 +387,20 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
             replayReader.cancel()
 
             let dormant = notificationIntent(userId: foreignId, serverId: serverId, channelId: channelId, messageId: "44444444-4444-4444-8444-444444444414", body: "dormant foreign")
-            #expect(accounts.persistNativeNotificationIntents([dormant]) == 0)
+            #expect(accounts.nativeNotifications.persist([dormant]) == 0)
             let foreignLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"native-foreign-189@slock.test\",\"password\":\"password123\"}")
             let foreignToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(foreignLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
             let foreignNative = makeNativeBinding()
             let foreignGranted = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: foreignNative.body, authorization: "Bearer \(foreignToken)")
             let foreignGrant = ((try JSONSerialization.jsonObject(with: Data(bodyText(foreignGranted).utf8)) as? [String: Any])?["grant"] as? String) ?? ""
-            let foreignTranscript = EmailLoginDirectory.enrollmentProofTranscript(
+            let foreignTranscript = NativeNotificationCredentials.enrollmentProofTranscript(
                 grant: foreignGrant, appId: foreignNative.appId, protocolVersion: foreignNative.protocolVersion, appVersion: foreignNative.appVersion,
                 releaseChannel: foreignNative.releaseChannel, appInstanceId: foreignNative.appInstanceId, publicKey: foreignNative.publicKey, nonce: foreignNative.nonce
             )
             let foreignProof = base64url(try foreignNative.privateKey.signature(for: foreignTranscript))
             let foreignExchanged = try await postJSON(client, path: "/api/notifications/enrollment-exchanges", body: "{\"grant\":\(jsonString(foreignGrant)),\"proof\":\(jsonString(foreignProof))}")
             #expect(foreignExchanged.status == .created)
-            _ = accounts.persistNativeNotificationIntents([
+            _ = accounts.nativeNotifications.persist([
                 notificationIntent(userId: foreignId, serverId: serverId, channelId: channelId, messageId: "44444444-4444-4444-8444-444444444415", body: "foreign"),
             ])
             let foreignEventId = accounts.nativeNotificationEventIDs(recipientUserId: foreignId).first ?? ""
@@ -426,8 +426,8 @@ private func postJSON(_ client: any Client, path: String, body: String, authoriz
     }
 }
 
-private func notificationIntent(userId: String, serverId: String, channelId: String, messageId: String, body: String) -> EmailLoginDirectory.NativeNotificationIntent {
-    EmailLoginDirectory.NativeNotificationIntent(
+private func notificationIntent(userId: String, serverId: String, channelId: String, messageId: String, body: String) -> NativeNotificationIntent {
+    NativeNotificationIntent(
         recipientUserId: userId,
         eventKey: "stream-test:\(messageId)",
         serverId: serverId,
@@ -544,7 +544,7 @@ private func waitForTask(_ task: Task<Void, Error>, timeoutMs: Int) async -> Boo
                 let refreshToken = loginBody?["refreshToken"] as? String ?? ""
                 let granted = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: native.body, authorization: "Bearer \(token)")
                 let grant = ((try JSONSerialization.jsonObject(with: Data(bodyText(granted).utf8)) as? [String: Any])?["grant"] as? String) ?? ""
-                let transcript = EmailLoginDirectory.enrollmentProofTranscript(
+                let transcript = NativeNotificationCredentials.enrollmentProofTranscript(
                     grant: grant, appId: native.appId, protocolVersion: native.protocolVersion, appVersion: native.appVersion,
                     releaseChannel: native.releaseChannel, appInstanceId: native.appInstanceId, publicKey: native.publicKey, nonce: native.nonce
                 )
@@ -560,7 +560,7 @@ private func waitForTask(_ task: Task<Void, Error>, timeoutMs: Int) async -> Boo
                     calls.add()
                     if eventCount != 2 || index != 1 { return }
                     if revocation == "credential" {
-                        _ = accounts.revokeCurrentNativeCredential(credential)
+                        _ = accounts.nativeNotifications.revokeCredential(opaque: credential)
                     } else {
                         let logout = try? await postJSON(client, path: "/api/auth/logout", body: "{\"refreshToken\":\(jsonString(refreshToken))}")
                         if logout?.status != .ok { calls.noteLogoutFailed() }
@@ -572,7 +572,7 @@ private func waitForTask(_ task: Task<Void, Error>, timeoutMs: Int) async -> Boo
                         buffer.append(utf8Chunk(span))
                     }
                 }
-                _ = accounts.persistNativeNotificationIntents([
+                _ = accounts.nativeNotifications.persist([
                     notificationIntent(userId: userId, serverId: serverId, channelId: channelId, messageId: firstMessage, body: "first allowed"),
                     notificationIntent(userId: userId, serverId: serverId, channelId: channelId, messageId: secondMessage, body: "second revoked"),
                 ])
@@ -630,7 +630,7 @@ private final class HookLog: @unchecked Sendable {
             let token = loginBody?["accessToken"] as? String ?? ""
             let authorization = "Bearer \(token)"
             let enrolled = try await enrollNotificationDevice(client, accounts: accounts, bodyAuthorization: authorization)
-            let transcript = EmailLoginDirectory.rotationProofTranscript(credential: enrolled.credential, deviceId: enrolled.deviceId)
+            let transcript = NativeNotificationCredentials.rotationProofTranscript(credential: enrolled.credential, deviceId: enrolled.deviceId)
             let proof = base64url(try enrolled.privateKey.signature(for: transcript))
             var rotateHeaders = HTTPFields()
             rotateHeaders[.authorization] = "Bearer \(enrolled.credential)"
@@ -749,7 +749,7 @@ private final class HookLog: @unchecked Sendable {
                     body: "event \(index)"
                 )
             }
-            #expect(accounts.persistNativeNotificationIntents(intents) == 514)
+            #expect(accounts.nativeNotifications.persist(intents) == 514)
             let ids = accounts.nativeNotificationEventIDs(recipientUserId: userId)
             #expect(ids.count == 514)
             let cursor = ids[0]
@@ -783,7 +783,7 @@ private func enrollNotificationDevice(_ client: any Client, accounts: EmailLogin
     let native = makeNativeBinding()
     let granted = try await postJSON(client, path: "/api/notifications/enrollment-grants", body: native.body, authorization: bodyAuthorization)
     let grant = ((try JSONSerialization.jsonObject(with: Data(bodyText(granted).utf8)) as? [String: Any])?["grant"] as? String) ?? ""
-    let transcript = EmailLoginDirectory.enrollmentProofTranscript(
+    let transcript = NativeNotificationCredentials.enrollmentProofTranscript(
         grant: grant, appId: native.appId, protocolVersion: native.protocolVersion, appVersion: native.appVersion,
         releaseChannel: native.releaseChannel, appInstanceId: native.appInstanceId, publicKey: native.publicKey, nonce: native.nonce
     )
