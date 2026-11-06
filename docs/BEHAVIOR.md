@@ -2119,3 +2119,9 @@ RFC 074 personal assistant：
 - 同 message/target 的并发重复 mention batch 只留下一个可通知行，`mentionTarget=self` 实际搜索可读回；资格、个人 mention 与频道可见性判断保持原规则。
 - Legacy profile read 仍只按旧 read-scope predicate 返回，revoked credential 的 use recorder 仍拒绝盖戳；live credential 入口保留拒绝撤销凭证。Unsubscribe 的 opt-out 先可见、cancel 回调锁外且可重入，之后重新匹配仍 scheduled 的 journey；HTML、签名、locale 与状态字节不变。
 - Auth/OAuth/native/mobile-email 的 typed 部署配置按操作取得活的 owner cohort；并发整值替换不混出不同版本字段。Root 字段代理与全局锁删除后，旧 HTTP/帧、验证顺序、task full/summary 字节以及 callback 热替换合同继续成立。
+
+### Daemon timer 与传输生命周期
+
+- RuntimeChildGuard handover 只返回一次已有事件，并使后续 orphan/escalation 工作失效；默认十秒 timer 不再误杀已交接的真实子进程。cap 超限仍按原顺序记录、SIGTERM，并在五秒后对忽略 TERM 的真实子进程升级 SIGKILL。已获准执行的 signal 属于在途操作，handover 不等待 killer callback 退出；重复/过期/不可取消 timer 与同步 schedule/cancel/log 重入不复活终态。
+- HTTP 完成保持一次，install 前先完成也会缓存并返回原结果；parser、EOF 和 deadline 的状态均归 channel loop。connect/CONNECT/TLS silence 与 headers 的旧 timeout 分类、单 lane 驱逐规则保持，完整 headers 之后的慢 EOF/chunked body 不被原 headers deadline 截断。
+- 合法 CRLF chunk-size 逐行解析显式去掉 CRLF（Swift 的一个 Character），LF fallback 保留；分两次送来的 Unicode 500 error body 按原字节完整返回。此项的真实红测是 CRLF parser 失败，不是动态 data-race 或 TSan 证据。

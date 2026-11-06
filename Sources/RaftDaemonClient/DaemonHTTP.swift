@@ -1,6 +1,7 @@
 import Foundation
 import NIOCore
 import NIOPosix
+import Synchronization
 
 /// HTTP/1.1 fetch used by `daemonFetch`.
 ///
@@ -28,20 +29,23 @@ enum DaemonHTTP {
         let proxy = dispatcher.proxyURL.flatMap(Endpoint.init)
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let box = CompletionBox()
-        let handler = ExchangeHandler(
-            target: target,
-            proxy: proxy,
-            method: method,
-            connectTimeoutMs: dispatcher.connectTimeoutMs,
-            headersTimeoutMs: dispatcher.headersTimeoutMs,
-            box: box
-        )
         let host = proxy?.host ?? target.host
         let port = proxy?.port ?? target.port
         let bootstrap = ClientBootstrap(group: group)
             .connectTimeout(.milliseconds(Int64(dispatcher.connectTimeoutMs)))
             .channelInitializer { channel in
-                channel.pipeline.addHandler(handler)
+                channel.eventLoop.preconditionInEventLoop()
+                return channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(ExchangeHandler(
+                        target: target,
+                        proxy: proxy,
+                        method: method,
+                        connectTimeoutMs: dispatcher.connectTimeoutMs,
+                        headersTimeoutMs: dispatcher.headersTimeoutMs,
+                        box: box,
+                        eventLoop: channel.eventLoop
+                    ))
+                }
             }
         // `EventLoopFuture.get()` resumes on the event loop. Waiting for
         // `shutdownGracefully` from that same thread joins the thread and
@@ -71,7 +75,7 @@ private func shutdownOffLoop(_ group: MultiThreadedEventLoopGroup) async {
     }
 }
 
-private struct Endpoint {
+private struct Endpoint: Sendable {
     var host: String
     var port: Int
     var scheme: String
@@ -97,34 +101,36 @@ private struct Endpoint {
 /// Resumes the fetch exactly once, and only from a dispatch queue.
 /// Resuming on the event loop parks the caller on the thread that must
 /// later shut the group down.
-private final class CompletionBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<Result<DaemonFetchResponse, DaemonFetchFailure>, Never>?
-    private var result: Result<DaemonFetchResponse, DaemonFetchFailure>?
+private final class CompletionBox: Sendable {
+    private typealias Continuation = CheckedContinuation<Result<DaemonFetchResponse, DaemonFetchFailure>, Never>
+
+    private struct State: Sendable {
+        var continuation: Continuation?
+        var result: Result<DaemonFetchResponse, DaemonFetchFailure>?
+    }
+
+    private let state = Mutex(State())
 
     func install(_ continuation: CheckedContinuation<Result<DaemonFetchResponse, DaemonFetchFailure>, Never>) {
-        lock.lock()
-        if let result {
-            lock.unlock()
-            DispatchQueue.global().async {
-                continuation.resume(returning: result)
-            }
-            return
+        let result = state.withLock { state -> Result<DaemonFetchResponse, DaemonFetchFailure>? in
+            if let result = state.result { return result }
+            state.continuation = continuation
+            return nil
         }
-        self.continuation = continuation
-        lock.unlock()
+        guard let result else { return }
+        DispatchQueue.global().async {
+            continuation.resume(returning: result)
+        }
     }
 
     func finish(_ result: Result<DaemonFetchResponse, DaemonFetchFailure>) {
-        lock.lock()
-        if self.result != nil {
-            lock.unlock()
-            return
+        let continuation = state.withLock { state -> Continuation? in
+            guard state.result == nil else { return nil }
+            state.result = result
+            let continuation = state.continuation
+            state.continuation = nil
+            return continuation
         }
-        self.result = result
-        let continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
         guard let continuation else { return }
         DispatchQueue.global().async {
             continuation.resume(returning: result)
@@ -132,7 +138,10 @@ private final class CompletionBox: @unchecked Sendable {
     }
 }
 
-private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable {
+// Constructed and installed on one channel's event loop. All parser state,
+// completion decisions and deadlines are confined to that same loop. Only the
+// checked completion box crosses back to the awaiting fetch task.
+private final class ExchangeHandler: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
@@ -142,11 +151,12 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
     private let connectTimeoutMs: Int
     private let headersTimeoutMs: Int
     private let box: CompletionBox
+    private let eventLoop: any EventLoop
     private var buffer = ByteBuffer()
     private var phase: Phase
     private var timerGeneration = 0
     private var done = false
-    private let stateLock = NSLock()
+    private var timer: Scheduled<Void>?
     private var status = 0
     private var headers: [String: String] = [:]
     private var body = Data()
@@ -174,7 +184,8 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
         method: String,
         connectTimeoutMs: Int,
         headersTimeoutMs: Int,
-        box: CompletionBox
+        box: CompletionBox,
+        eventLoop: any EventLoop
     ) {
         self.target = target
         self.proxy = proxy
@@ -182,12 +193,16 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
         self.connectTimeoutMs = connectTimeoutMs
         self.headersTimeoutMs = headersTimeoutMs
         self.box = box
+        self.eventLoop = eventLoop
+        eventLoop.preconditionInEventLoop()
         self.phase = proxy == nil ? .headers : .connect
     }
 
     func channelActive(context: ChannelHandlerContext) {
+        eventLoop.preconditionInEventLoop()
+        guard !done else { return }
         if proxy != nil {
-            arm(after: connectTimeoutMs, error: .connectTimeout)
+            arm(context, after: connectTimeoutMs, error: .connectTimeout)
             write(context, "CONNECT \(target.host):\(target.port) HTTP/1.1\r\nHost: \(target.host):\(target.port)\r\n\r\n")
         } else {
             sendRequest(context)
@@ -195,16 +210,21 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        eventLoop.preconditionInEventLoop()
+        guard !done else { return }
         var inbound = unwrapInboundIn(data)
         buffer.writeBuffer(&inbound)
         pump(context)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        eventLoop.preconditionInEventLoop()
         fail(DaemonFetchFailure.connectTimeout)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
+        eventLoop.preconditionInEventLoop()
+        guard !done else { return }
         if phase == .body, status != 0 {
             consumeBody(context)
             if !done { succeed() }
@@ -311,7 +331,7 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
 
     private func sendRequest(_ context: ChannelHandlerContext) {
         phase = .headers
-        arm(after: headersTimeoutMs, error: .headersTimeout)
+        arm(context, after: headersTimeoutMs, error: .headersTimeout)
         write(context, "\(method) \(target.path) HTTP/1.1\r\nHost: \(target.host):\(target.port)\r\nConnection: close\r\n\r\n")
     }
 
@@ -320,29 +340,28 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
         context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
     }
 
-    private func arm(after milliseconds: Int, error: DaemonFetchFailure) {
-        stateLock.lock()
-        timerGeneration += 1
+    private func arm(_ context: ChannelHandlerContext, after milliseconds: Int, error: DaemonFetchFailure) {
+        eventLoop.preconditionInEventLoop()
+        disarmTimer()
         let token = timerGeneration
-        stateLock.unlock()
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(milliseconds)) { [weak self] in
-            guard let self else { return }
-            self.stateLock.lock()
-            let matches = self.timerGeneration == token && !self.done
-            if matches {
-                self.done = true
-                self.timerGeneration += 1
-            }
-            self.stateLock.unlock()
-            guard matches else { return }
-            self.box.finish(.failure(error))
+        let handler = NIOLoopBound(self, eventLoop: eventLoop)
+        let channel = context.channel
+        timer = eventLoop.scheduleTask(in: .milliseconds(Int64(milliseconds))) {
+            let handler = handler.value
+            guard handler.timerGeneration == token, !handler.done else { return }
+            // This task has already fired. Do not cancel its own promise when
+            // finish disarms the deadline; stale ready tasks still use the token.
+            handler.timer = nil
+            handler.fail(error)
+            channel.close(promise: nil)
         }
     }
 
     private func disarmTimer() {
-        stateLock.lock()
+        eventLoop.preconditionInEventLoop()
         timerGeneration += 1
-        stateLock.unlock()
+        timer?.cancel()
+        timer = nil
     }
 
     private func takeLine() -> String? {
@@ -354,8 +373,13 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
                 let length = index - start + 1
                 guard let bytes = buffer.readBytes(length: length) else { return nil }
                 var text = String(decoding: bytes, as: UTF8.self)
-                if text.hasSuffix("\n") { text.removeLast() }
-                if text.hasSuffix("\r") { text.removeLast() }
+                // CRLF is one Swift Character, so an LF-only suffix check
+                // does not remove the terminator from a chunk-size line.
+                if text.hasSuffix("\r\n") {
+                    text.removeLast()
+                } else if text.hasSuffix("\n") {
+                    text.removeLast()
+                }
                 return text
             }
             index += 1
@@ -414,14 +438,10 @@ private final class ExchangeHandler: ChannelInboundHandler, @unchecked Sendable 
     }
 
     private func finish(_ result: Result<DaemonFetchResponse, DaemonFetchFailure>) {
-        stateLock.lock()
-        if done {
-            stateLock.unlock()
-            return
-        }
+        eventLoop.preconditionInEventLoop()
+        guard !done else { return }
         done = true
-        timerGeneration += 1
-        stateLock.unlock()
+        disarmTimer()
         box.finish(result)
     }
 }

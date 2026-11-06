@@ -127,6 +127,65 @@ struct FetchWireSuite {
     await origin.stop()
     await proxy.stop()
 }
+@Test func timeoutAndPeerCloseRacesCompleteOnceWithoutEvictingSiblingLanes() async throws {
+    let origin = try await ScriptedOrigin.start(slowDelayMs: 100, status: 500, body: "{\"error\":\"race\"}")
+    let pool = DaemonFetchPool()
+    let env = ["SLOCK_DAEMON_FETCH_PRE_RESPONSE_TIMEOUT_MS": "100"]
+    let target = "http://127.0.0.1:\(origin.port)"
+    let sibling = pool.buildIsolatedFetchDispatcher(target, isolationKey: "unrelated", environment: env)
+    await withTaskGroup(of: Void.self) { group in
+        for index in 0..<16 {
+            group.addTask {
+                let lane = "boundary-\(index)"
+                let before = pool.buildIsolatedFetchDispatcher(target, isolationKey: lane, environment: env)
+                do {
+                    let response = try await pool.perform("\(target)/late", method: "GET", environment: env, isolationKey: lane)
+                    #expect(response.status == 500)
+                    #expect(response.body == "{\"error\":\"race\"}")
+                    #expect(pool.buildIsolatedFetchDispatcher(target, isolationKey: lane, environment: env) == before)
+                } catch let error as DaemonFetchFailure {
+                    #expect(error.code == "UND_ERR_HEADERS_TIMEOUT")
+                    #expect(pool.buildIsolatedFetchDispatcher(target, isolationKey: lane, environment: env) != before)
+                } catch {
+                    Issue.record("unexpected fetch failure: \(error)")
+                }
+            }
+        }
+    }
+    #expect(pool.buildIsolatedFetchDispatcher(target, isolationKey: "unrelated", environment: env) == sibling)
+    await origin.stop()
+}
+
+@Test func peerCloseBeforeHeadersReturnsTheHeadersErrorAndOnlyEvictsItsLane() async throws {
+    let origin = try await ScriptedOrigin.start(slowDelayMs: 0)
+    let pool = DaemonFetchPool()
+    let env = ["SLOCK_DAEMON_FETCH_PRE_RESPONSE_TIMEOUT_MS": "1000"]
+    let target = "http://127.0.0.1:\(origin.port)"
+    let before = pool.buildIsolatedFetchDispatcher(target, isolationKey: "closed", environment: env)
+    let sibling = pool.buildIsolatedFetchDispatcher(target, isolationKey: "other", environment: env)
+    let failure = await #expect(throws: DaemonFetchFailure.self) {
+        try await pool.perform("\(target)/close", method: "GET", environment: env, isolationKey: "closed")
+    }
+    #expect(failure?.code == "UND_ERR_HEADERS_TIMEOUT")
+    #expect(pool.buildIsolatedFetchDispatcher(target, isolationKey: "closed", environment: env) != before)
+    #expect(pool.buildIsolatedFetchDispatcher(target, isolationKey: "other", environment: env) == sibling)
+    await origin.stop()
+}
+
+@Test(arguments: ["eof", "chunks"])
+func slowErrorBodiesKeepTheirBytesAfterTheHeadersDeadlineAndPeerClose(framing: String) async throws {
+    let body = "{\"error\":\"不变🛶\"}"
+    let origin = try await ScriptedOrigin.start(slowDelayMs: 450, status: 500, body: body)
+    let pool = DaemonFetchPool()
+    let env = ["SLOCK_DAEMON_FETCH_PRE_RESPONSE_TIMEOUT_MS": "150"]
+    let target = "http://127.0.0.1:\(origin.port)"
+    let before = pool.buildIsolatedFetchDispatcher(target, isolationKey: framing, environment: env)
+    let response = try await pool.perform("\(target)/\(framing)", method: "GET", environment: env, isolationKey: framing)
+    #expect(response.status == 500)
+    #expect(response.body == body)
+    #expect(pool.buildIsolatedFetchDispatcher(target, isolationKey: framing, environment: env) == before)
+    await origin.stop()
+}
 }
 
 private final class ScriptedOrigin {
@@ -192,9 +251,51 @@ private final class OriginHandler: ChannelInboundHandler, @unchecked Sendable {
         let text = String(buffer: buffer)
         answered = true
         if text.contains(" /hang ") || hangOnly { return }
+        if text.contains(" /close ") {
+            context.close(promise: nil)
+            return
+        }
         let payload = body
         let head = "HTTP/1.1 \(status) OK\r\nContent-Length: \(payload.utf8.count)\r\nConnection: close\r\n\r\n"
         let delay = slowDelayMs
+        let channel = context.channel
+        if text.contains(" /late ") {
+            _ = context.eventLoop.scheduleTask(in: .milliseconds(Int64(delay))) {
+                let reply = channel.allocator.buffer(string: head + payload)
+                channel.writeAndFlush(reply).whenComplete { _ in channel.close(promise: nil) }
+            }
+            return
+        }
+        if text.contains(" /eof ") {
+            let headers = channel.allocator.buffer(string: "HTTP/1.1 \(status) OK\r\nConnection: close\r\n\r\n")
+            context.writeAndFlush(wrapOutboundOut(headers), promise: nil)
+            _ = context.eventLoop.scheduleTask(in: .milliseconds(Int64(delay))) {
+                let rest = channel.allocator.buffer(string: payload)
+                channel.writeAndFlush(rest).whenComplete { _ in channel.close(promise: nil) }
+            }
+            return
+        }
+        if text.contains(" /chunks ") {
+            let headers = channel.allocator.buffer(string: "HTTP/1.1 \(status) OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+            context.writeAndFlush(wrapOutboundOut(headers), promise: nil)
+            let bytes = Array(payload.utf8)
+            let split = bytes.count / 2
+            _ = context.eventLoop.scheduleTask(in: .milliseconds(Int64(delay))) {
+                var chunk = channel.allocator.buffer(capacity: bytes.count + 32)
+                chunk.writeString("\(String(split, radix: 16))\r\n")
+                chunk.writeBytes(bytes.prefix(split))
+                chunk.writeString("\r\n")
+                channel.writeAndFlush(chunk, promise: nil)
+            }
+            _ = context.eventLoop.scheduleTask(in: .milliseconds(Int64(delay * 2))) {
+                var chunk = channel.allocator.buffer(capacity: bytes.count + 32)
+                chunk.writeString("\(String(bytes.count - split, radix: 16))\r\n")
+                chunk.writeBytes(bytes.dropFirst(split))
+                chunk.writeString("\r\n0\r\n\r\n")
+                channel.writeAndFlush(chunk).whenComplete { _ in channel.close(promise: nil) }
+            }
+            return
+        }
         if delay == 0 {
             let message = context.channel.allocator.buffer(string: head + payload)
             context.writeAndFlush(self.wrapOutboundOut(message), promise: nil)
@@ -204,7 +305,6 @@ private final class OriginHandler: ChannelInboundHandler, @unchecked Sendable {
         let headers = context.channel.allocator.buffer(string: head)
         context.writeAndFlush(self.wrapOutboundOut(headers), promise: nil)
         let loop = context.eventLoop
-        let channel = context.channel
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(delay)) {
             loop.execute {
                 let rest = channel.allocator.buffer(string: payload)

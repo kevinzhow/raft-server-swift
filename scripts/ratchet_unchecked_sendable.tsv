@@ -1,7 +1,6 @@
 Sources/RaftDaemonClient/AgentStartCoordinator.swift	1
 Sources/RaftDaemonClient/ChatBridgeRequest.swift	1
 Sources/RaftDaemonClient/DaemonClient.swift	1
-Sources/RaftDaemonClient/DaemonHTTP.swift	2
 Sources/RaftDaemonClient/DaemonLog.swift	1
 Sources/RaftDaemonClient/DaemonReconnectLoop.swift	1
 Sources/RaftDaemonClient/DaemonTurnSummary.swift	1
@@ -19,7 +18,6 @@ Sources/RaftDaemonClient/RaftDiskJanitor.swift	2
 Sources/RaftDaemonClient/RecentDeliveryIds.swift	1
 Sources/RaftDaemonClient/ReminderInboxDefinition.swift	1
 Sources/RaftDaemonClient/RuntimeAccountUsageCollector.swift	1
-Sources/RaftDaemonClient/RuntimeChildGuard.swift	1
 Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1
 Sources/RaftDaemonClient/RuntimeNotificationState.swift	2
 Sources/RaftDaemonClient/RuntimeProgressState.swift	1
