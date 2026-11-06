@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The OpenCode model listing through the injected probe-child runner, plus the
 /// matching synchronous path. Both resolve the same Windows executable, pass
@@ -14,16 +15,36 @@ public struct ProbeCleanup: Sendable, Equatable {
     }
 }
 
-public final class ProbeChildError: Error, @unchecked Sendable {
+public final class ProbeChildError: Error, Sendable {
+    struct Snapshot: Sendable {
+        var code: String?
+        var status: Int?
+        var cleanup: ProbeCleanup?
+    }
+
     public let message: String
-    public var code: String?
-    public var status: Int?
-    public var cleanup: ProbeCleanup?
+    private let state: Mutex<Snapshot>
+
+    // Independent setters remain independent mutations; compound readers use
+    // snapshot() once and never hold the mutex while throwing or calling code.
+    public var code: String? {
+        get { state.withLock { $0.code } }
+        set { state.withLock { $0.code = newValue } }
+    }
+    public var status: Int? {
+        get { state.withLock { $0.status } }
+        set { state.withLock { $0.status = newValue } }
+    }
+    public var cleanup: ProbeCleanup? {
+        get { state.withLock { $0.cleanup } }
+        set { state.withLock { $0.cleanup = newValue } }
+    }
+
+    func snapshot() -> Snapshot { state.withLock { $0 } }
+
     public init(_ message: String, code: String? = nil, status: Int? = nil, cleanup: ProbeCleanup? = nil) {
         self.message = message
-        self.code = code
-        self.status = status
-        self.cleanup = cleanup
+        self.state = Mutex(Snapshot(code: code, status: status, cleanup: cleanup))
     }
 }
 
@@ -116,7 +137,8 @@ public enum OpenCodeModelsCommand {
             let stdout = try deps.execFileSyncFn(executable, args)
             return .init(status: 0, stdout: stdout, errorMessage: nil)
         } catch let error as ProbeChildError {
-            return .init(status: error.status, stdout: "", errorMessage: error.status == nil ? error.message : nil)
+            let snapshot = error.snapshot()
+            return .init(status: snapshot.status, stdout: "", errorMessage: snapshot.status == nil ? error.message : nil)
         } catch {
             return .init(status: nil, stdout: "", errorMessage: (error as NSError).domain == "opencode.resolve" ? error.localizedDescription : nil)
         }
@@ -146,10 +168,12 @@ public enum OpenCodeModelsCommand {
         let executable: String
         do {
             executable = try await resolveAsync(deps: deps, runProbeChild: runProbeChild)
-        } catch let error as ProbeChildError where error.code == "ABORT_ERR" {
-            throw error
+        } catch let error as ProbeChildError {
+            let snapshot = error.snapshot()
+            if snapshot.code == "ABORT_ERR" { throw error }
+            return .init(status: nil, stdout: "", errorMessage: error.message)
         } catch {
-            return .init(status: nil, stdout: "", errorMessage: (error as? ProbeChildError)?.message ?? resolveFailure)
+            return .init(status: nil, stdout: "", errorMessage: resolveFailure)
         }
         do {
             let versionOutput = try await runProbeChild(executable, ["--version"], options(home: home, timeoutMs: modelsTimeoutMs))
@@ -159,10 +183,10 @@ public enum OpenCodeModelsCommand {
                 options(home: home, timeoutMs: modelsTimeoutMs)
             )
             return .init(status: 0, stdout: listing.stdout, errorMessage: nil)
-        } catch let error as ProbeChildError where error.code == "ABORT_ERR" {
-            throw error
         } catch let error as ProbeChildError {
-            if let status = error.status {
+            let snapshot = error.snapshot()
+            if snapshot.code == "ABORT_ERR" { throw error }
+            if let status = snapshot.status {
                 return .init(status: status, stdout: "", errorMessage: nil)
             }
             return .init(status: nil, stdout: "", errorMessage: error.message)

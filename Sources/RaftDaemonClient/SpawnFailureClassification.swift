@@ -1,20 +1,74 @@
 import Foundation
+import Synchronization
 
 /// Typed agent launch failures: every failure the daemon can name carries a
 /// stable code, and classification decides by code only — message text never
 /// decides. Ported from the upstream daemon classifier.
-public final class SpawnFailureError: Error, @unchecked Sendable {
-    public var code: String
-    public var message: String
-    public var cause: SpawnFailureError?
-    public var reason: String?
-    public var model: String?
-    public var runtimeId: String?
-    public var status: Int?
-    public var materializationKind: String?
-    public var recordedMajor: Int?
-    public var installedVersion: String?
-    public var failures: Int?
+public final class SpawnFailureError: Error, Sendable {
+    struct Snapshot: Sendable {
+        var code: String
+        var message: String
+        var cause: SpawnFailureError?
+        var reason: String?
+        var model: String?
+        var runtimeId: String?
+        var status: Int?
+        var materializationKind: String?
+        var recordedMajor: Int?
+        var installedVersion: String?
+        var failures: Int?
+    }
+
+    private let state: Mutex<Snapshot>
+
+    // Setters are individual mutations, not a transaction across properties.
+    // Compound consumers capture one snapshot rather than combining getters.
+    public var code: String {
+        get { state.withLock { $0.code } }
+        set { state.withLock { $0.code = newValue } }
+    }
+    public var message: String {
+        get { state.withLock { $0.message } }
+        set { state.withLock { $0.message = newValue } }
+    }
+    public var cause: SpawnFailureError? {
+        get { state.withLock { $0.cause } }
+        set { state.withLock { $0.cause = newValue } }
+    }
+    public var reason: String? {
+        get { state.withLock { $0.reason } }
+        set { state.withLock { $0.reason = newValue } }
+    }
+    public var model: String? {
+        get { state.withLock { $0.model } }
+        set { state.withLock { $0.model = newValue } }
+    }
+    public var runtimeId: String? {
+        get { state.withLock { $0.runtimeId } }
+        set { state.withLock { $0.runtimeId = newValue } }
+    }
+    public var status: Int? {
+        get { state.withLock { $0.status } }
+        set { state.withLock { $0.status = newValue } }
+    }
+    public var materializationKind: String? {
+        get { state.withLock { $0.materializationKind } }
+        set { state.withLock { $0.materializationKind = newValue } }
+    }
+    public var recordedMajor: Int? {
+        get { state.withLock { $0.recordedMajor } }
+        set { state.withLock { $0.recordedMajor = newValue } }
+    }
+    public var installedVersion: String? {
+        get { state.withLock { $0.installedVersion } }
+        set { state.withLock { $0.installedVersion = newValue } }
+    }
+    public var failures: Int? {
+        get { state.withLock { $0.failures } }
+        set { state.withLock { $0.failures = newValue } }
+    }
+
+    func snapshot() -> Snapshot { state.withLock { $0 } }
 
     public init(
         code: String,
@@ -29,17 +83,11 @@ public final class SpawnFailureError: Error, @unchecked Sendable {
         installedVersion: String? = nil,
         failures: Int? = nil
     ) {
-        self.code = code
-        self.message = message
-        self.cause = cause
-        self.reason = reason
-        self.model = model
-        self.runtimeId = runtimeId
-        self.status = status
-        self.materializationKind = materializationKind
-        self.recordedMajor = recordedMajor
-        self.installedVersion = installedVersion
-        self.failures = failures
+        self.state = Mutex(Snapshot(
+            code: code, message: message, cause: cause, reason: reason, model: model,
+            runtimeId: runtimeId, status: status, materializationKind: materializationKind,
+            recordedMajor: recordedMajor, installedVersion: installedVersion, failures: failures
+        ))
     }
 
     public static func versionTooOld(displayName: String, actualVersion: String, testedGoodVersion: String) -> SpawnFailureError {
@@ -131,21 +179,38 @@ public enum SpawnFailureClassifier {
         "probe_failed": "lookup_failed",
     ]
 
+    private struct ErrorSnapshots {
+        let root: SpawnFailureError.Snapshot?
+        let cause: SpawnFailureError.Snapshot?
+
+        init(_ error: SpawnFailureError?) {
+            let root = error?.snapshot()
+            self.root = root
+            // Keep the original root + direct-cause bound. Never acquire two
+            // node locks together or resample the root through a self-cause.
+            if let cause = root?.cause {
+                self.cause = cause === error ? root : cause.snapshot()
+            } else {
+                self.cause = nil
+            }
+        }
+    }
+
     public static func spawnFailureCode(of error: SpawnFailureError?) -> String? {
-        guard let error else { return nil }
-        if !error.code.isEmpty { return error.code }
-        return nil
+        guard let code = error?.snapshot().code, !code.isEmpty else { return nil }
+        return code
     }
 
     public static func classify(_ error: SpawnFailureError?) -> SpawnFailureClassification {
-        let detail = error?.message ?? "unknown error"
-        let rawCode = error?.code ?? ""
+        let snapshots = ErrorSnapshots(error)
+        let detail = snapshots.root?.message ?? "unknown error"
+        let rawCode = snapshots.root?.code ?? ""
         let reason = rawCode == "ENOENT" ? "runtime_not_found" : (rawCode.isEmpty ? "runtime_spawn_failed" : rawCode)
         switch reason {
         case "runtime_version_too_old":
             return .init(reason: reason, detail: detail, userMessage: detail)
         case "provider_connection_materialization_failed":
-            let typed = typedCause(error, code: reason)
+            let typed = typedCause(snapshots, code: reason)
             let safeDetail: String
             if typed?.materializationKind == "http", let status = typed?.status {
                 safeDetail = "Provider connection materialization failed (HTTP \(status))"
@@ -164,12 +229,12 @@ public enum SpawnFailureClassifier {
             return .init(reason: reason, detail: detail,
                          userMessage: "Runner credential mint failed. Ensure the server is deployed and the daemon binary is compatible.")
         case "model_not_found":
-            let typed = typedCause(error, code: reason)
+            let typed = typedCause(snapshots, code: reason)
             let model = typed?.model ?? "the configured model"
             return .init(reason: reason, detail: detail,
                          userMessage: "Model \(model) is not available for this runtime on this computer: it may have been renamed or removed in this runtime version, or its provider has no usable API key here. Choose another model, or fix the provider's key, in the agent's settings.")
         case "runtime_not_found":
-            let verdict = lookupVerdict(of: error)
+            let verdict = lookupVerdict(snapshots)
             let userMessage: String
             if let verdict {
                 userMessage = verdict.reason == "not_on_path"
@@ -180,7 +245,7 @@ public enum SpawnFailureClassifier {
             }
             return .init(reason: reason, detail: detail, userMessage: userMessage, lookupReason: verdict?.reason)
         case "model_not_configured":
-            let typed = typedCause(error, code: reason)
+            let typed = typedCause(snapshots, code: reason)
             let model = typed?.model ?? "the configured model"
             return .init(reason: reason, detail: detail,
                          userMessage: "Model \(model) is not configured for this runtime on this computer. Choose a configured model in the agent's settings, or add it to the runtime's configuration there, then restart the agent.")
@@ -204,14 +269,14 @@ public enum SpawnFailureClassifier {
         }
     }
 
-    static func typedCause(_ error: SpawnFailureError?, code: String) -> SpawnFailureError? {
-        if error?.code == code { return error }
-        if error?.cause?.code == code { return error?.cause }
+    private static func typedCause(_ snapshots: ErrorSnapshots, code: String) -> SpawnFailureError.Snapshot? {
+        if snapshots.root?.code == code { return snapshots.root }
+        if snapshots.cause?.code == code { return snapshots.cause }
         return nil
     }
 
-    static func lookupVerdict(of error: SpawnFailureError?) -> (reason: String, message: String)? {
-        for candidate in [error, error?.cause] {
+    private static func lookupVerdict(_ snapshots: ErrorSnapshots) -> (reason: String, message: String)? {
+        for candidate in [snapshots.root, snapshots.cause] {
             guard let candidate, let raw = candidate.reason else { continue }
             if launchLookupReasons.contains(raw) {
                 return (raw, candidate.message)

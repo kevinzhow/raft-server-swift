@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Passive HTTP request facts for provider calls (request-status diagnostics).
 /// The transport still owns cancellation, errors and retries; the observer sees
@@ -30,13 +31,29 @@ public struct ProviderRequest: Sendable, Equatable {
     }
 }
 
-public final class ProviderHTTPResponse: @unchecked Sendable {
+public final class ProviderHTTPResponse: Sendable {
     public let status: Int
     public let ok: Bool
     public let url: String
     public let redirected: Bool
     public let headers: [String: String]
-    public var body: Data?
+    private let bodyState: Mutex<Data?>
+    public var body: Data? {
+        get { bodySnapshot() }
+        set {
+            let retiredBody = bodyState.withLock { body -> Data? in
+                var replacement = newValue
+                swap(&body, &replacement)
+                return replacement
+            }
+            // Data(bytesNoCopy:) may run user code on its last release. Pin the
+            // displaced storage past withLock's unlock, including under ARC
+            // optimization, so its deallocator cannot run in the critical section.
+            withExtendedLifetime(retiredBody) {}
+        }
+    }
+
+    private func bodySnapshot() -> Data? { bodyState.withLock { $0 } }
 
     public init(status: Int, url: String, redirected: Bool = false, headers: [String: String] = [:], body: Data? = nil) {
         self.status = status
@@ -44,16 +61,20 @@ public final class ProviderHTTPResponse: @unchecked Sendable {
         self.url = url
         self.redirected = redirected
         self.headers = headers
-        self.body = body
+        self.bodyState = Mutex(body)
     }
 
     public var bodyLocked: Bool { false }
 
-    public func text() -> String { String(decoding: body ?? Data(), as: UTF8.self) }
+    public func text() -> String {
+        let body = bodySnapshot()
+        return String(decoding: body ?? Data(), as: UTF8.self)
+    }
 
-    /// An unlocked, independently consumable copy.
+    /// An unlocked, independently consumable copy of one captured body value.
     public func clone() -> ProviderHTTPResponse {
-        ProviderHTTPResponse(status: status, url: url, redirected: redirected, headers: headers, body: body)
+        let body = bodySnapshot()
+        return ProviderHTTPResponse(status: status, url: url, redirected: redirected, headers: headers, body: body)
     }
 }
 

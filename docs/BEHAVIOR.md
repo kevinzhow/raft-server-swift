@@ -2125,3 +2125,9 @@ RFC 074 personal assistant：
 - RuntimeChildGuard handover 只返回一次已有事件，并使后续 orphan/escalation 工作失效；默认十秒 timer 不再误杀已交接的真实子进程。cap 超限仍按原顺序记录、SIGTERM，并在五秒后对忽略 TERM 的真实子进程升级 SIGKILL。已获准执行的 signal 属于在途操作，handover 不等待 killer callback 退出；重复/过期/不可取消 timer 与同步 schedule/cancel/log 重入不复活终态。
 - HTTP 完成保持一次，install 前先完成也会缓存并返回原结果；parser、EOF 和 deadline 的状态均归 channel loop。connect/CONNECT/TLS silence 与 headers 的旧 timeout 分类、单 lane 驱逐规则保持，完整 headers 之后的慢 EOF/chunked body 不被原 headers deadline 截断。
 - 合法 CRLF chunk-size 逐行解析显式去掉 CRLF（Swift 的一个 Character），LF fallback 保留；分两次送来的 Unicode 500 error body 按原字节完整返回。此项的真实红测是 CRLF parser 失败，不是动态 data-race 或 TSan 证据。
+
+### Daemon 可变模型的一次快照
+
+- Spawn failure 保留公开 setter、原对象 identity、code 驱动分类及本体/直接 cause 两节点上限；自 cause 不重入自己的锁。Probe catch 的 status、code、cleanup 和 errorMessage 来自一次 payload 快照，不再在仅 status 并发变化时拼出不可能的结果；ABORT 和原错误对象传播不变。
+- Provider fetch 继续返回原 response 对象，text/clone 各捕获一次 body；公开 body 可变，clone 的 identity 规则及 nil/空 body 文本不变。替换 bytesNoCopy Data 时，旧 Data 的自定义 deallocator 在 Mutex 外最后释放，可同步等待另一个真实线程读取新 body 而不死锁。
+- Account-usage collector 一次读取 installation kind/command 决定该操作，再将同一个 installation 对象交给异步 reader；reader 仍能观察后续 setter 变化。各 setter 独立原子，不承诺多次 setter 或 parent/cause 整图事务。

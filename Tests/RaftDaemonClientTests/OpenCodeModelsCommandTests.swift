@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import RaftDaemonClient
 
@@ -185,4 +186,53 @@ private func windowsScript(version: String, listing: @escaping @Sendable (String
     #expect(observed.items.first?.home == "/tmp/opencode-home")
     #expect(observed.items.first?.noColor == "1")
     _ = seen
+}
+
+@Test func concurrentProbeStatusUpdatesCannotProduceAnImpossibleSyncResult() {
+    let error = ProbeChildError("shared probe failure", status: 9)
+    let readers = Mutex(3)
+    let impossible = Mutex(0)
+    DispatchQueue.concurrentPerform(iterations: 4) { worker in
+        if worker == 0 {
+            while readers.withLock({ $0 > 0 }) {
+                error.status = nil
+                error.status = 9
+            }
+        } else {
+            defer { readers.withLock { $0 -= 1 } }
+            let deps = OpenCodeModelsDeps(platform: "linux", execFileSyncFn: { _, _ in throw error })
+            for _ in 0..<3_000 {
+                let result = OpenCodeModelsCommand.runSync(home: "/tmp/h", deps: deps)
+                let valid = (result.status == 9 && result.errorMessage == nil)
+                    || (result.status == nil && result.errorMessage == "shared probe failure")
+                if !valid { impossible.withLock { $0 += 1 } }
+            }
+        }
+    }
+    #expect(impossible.withLock { $0 } == 0, "status and its error-message decision must use one captured error state")
+}
+
+@Test func mutableProbeAbortKeepsTheSameErrorAndUpdatedCleanup() async {
+    let shared = ProbeChildError("listing aborted", code: "ENOENT", status: 9)
+    let script = windowsScript(version: "1.18.35")
+    let run: RunProbeChild = { command, args, options in
+        if args.first == "models" {
+            shared.code = "ABORT_ERR"
+            shared.status = nil
+            shared.cleanup = .init(childExited: true, waitedMs: 3)
+            throw shared
+        }
+        return try await asyncRunner(script)(command, args, options)
+    }
+    do {
+        _ = try await OpenCodeModelsCommand.runAsync(home: "/tmp/h", deps: syncDeps(script), runProbeChild: run)
+        Issue.record("an abort must propagate rather than becoming a result")
+    } catch let error as ProbeChildError {
+        #expect(error === shared)
+        #expect(error.code == "ABORT_ERR")
+        #expect(error.status == nil)
+        #expect(error.cleanup == .init(childExited: true, waitedMs: 3))
+    } catch {
+        Issue.record("unexpected error \(error)")
+    }
 }

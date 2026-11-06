@@ -1,3 +1,5 @@
+import Foundation
+import Synchronization
 import Testing
 import RaftDaemonClient
 
@@ -125,4 +127,94 @@ typealias Failure = SpawnFailureError
     let unreadable = Classifier.classify(Failure.sessionRuntimeMismatch(runtimeId: "opencode", reason: "record_unreadable", recordedMajor: nil, installedVersion: "1.19.0"))
     #expect(unreadable.reason == "session_runtime_mismatch")
     #expect(unreadable.userMessage.contains("session record is unreadable"))
+}
+
+@Test func concurrentSpawnCodeUpdatesKeepTheConfiguredModelInClassification() {
+    let error = Failure(code: "model_not_found", message: "unchanged detail", model: "configured-model")
+    let readers = Mutex(3)
+    let invalid = Mutex(0)
+    DispatchQueue.concurrentPerform(iterations: 4) { worker in
+        if worker == 0 {
+            while readers.withLock({ $0 > 0 }) {
+                error.code = "model_not_configured"
+                error.code = "model_not_found"
+            }
+        } else {
+            defer { readers.withLock { $0 -= 1 } }
+            for _ in 0..<3_000 {
+                let result = Classifier.classify(error)
+                if !["model_not_found", "model_not_configured"].contains(result.reason)
+                    || !result.userMessage.contains("Model configured-model ")
+                    || result.detail != "unchanged detail" {
+                    invalid.withLock { $0 += 1 }
+                }
+            }
+        }
+    }
+    #expect(invalid.withLock { $0 } == 0, "classification must not resample code when selecting typed model metadata")
+}
+
+@Test func concurrentSpawnCodeReadsNeverReturnAnEmptyCode() {
+    let error = Failure(code: "ENOENT", message: "not a classifier input")
+    let readers = Mutex(3)
+    let invalid = Mutex(0)
+    DispatchQueue.concurrentPerform(iterations: 4) { worker in
+        if worker == 0 {
+            while readers.withLock({ $0 > 0 }) {
+                error.code = ""
+                error.code = "ENOENT"
+            }
+        } else {
+            defer { readers.withLock { $0 -= 1 } }
+            for _ in 0..<3_000 {
+                if let code = Classifier.spawnFailureCode(of: error), code != "ENOENT" {
+                    invalid.withLock { $0 += 1 }
+                }
+            }
+        }
+    }
+    #expect(invalid.withLock { $0 } == 0)
+}
+
+@Test func concurrentCauseReplacementKeepsEachResolverVerdictWithItsMessage() {
+    let timeout = Failure(code: "runtime_not_found", message: "lookup timed out", reason: "lookup_timed_out")
+    let denied = Failure(code: "runtime_not_found", message: "lookup denied", reason: "lookup_permission_denied")
+    let error = Failure(code: "runtime_not_found", message: "outer detail", cause: timeout)
+    let readers = Mutex(3)
+    let invalid = Mutex(0)
+    DispatchQueue.concurrentPerform(iterations: 4) { worker in
+        if worker == 0 {
+            while readers.withLock({ $0 > 0 }) {
+                error.cause = denied
+                error.cause = timeout
+            }
+        } else {
+            defer { readers.withLock { $0 -= 1 } }
+            for _ in 0..<2_000 {
+                let result = Classifier.classify(error)
+                let valid = (result.lookupReason == "lookup_timed_out" && result.userMessage == "lookup timed out")
+                    || (result.lookupReason == "lookup_permission_denied" && result.userMessage == "lookup denied")
+                if !valid || result.detail != "outer detail" { invalid.withLock { $0 += 1 } }
+            }
+        }
+    }
+    #expect(invalid.withLock { $0 } == 0)
+}
+
+@Test func mutableSpawnCausesKeepTheOriginalDepthAndCodeRules() {
+    let deep = Failure(code: "runtime_not_found", message: "deep verdict", reason: "lookup_failed")
+    let direct = Failure(code: "runtime_not_found", message: "direct verdict", cause: deep)
+    let error = Failure(code: "runtime_not_found", message: "outer detail", cause: direct)
+    #expect(Classifier.classify(error).lookupReason == nil, "a grandchild cause is outside the existing classifier bound")
+    direct.reason = "probe_timeout"
+    let result = Classifier.classify(error)
+    #expect(result.lookupReason == "lookup_timed_out")
+    #expect(result.userMessage == "direct verdict")
+    #expect(result.detail == "outer detail")
+    error.cause = error
+    defer { error.cause = nil }
+    #expect(Classifier.classify(error).lookupReason == nil, "self causes must not recurse or lock the node twice")
+    error.code = ""
+    error.message = "model_not_found: ENOENT"
+    #expect(Classifier.classify(error).reason == "runtime_spawn_failed", "mutable message text still cannot decide the code")
 }

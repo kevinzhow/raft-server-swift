@@ -1,16 +1,33 @@
 import Foundation
+import Synchronization
 
 /// Reads one provider's account usage through an OAR runtime and projects it
 /// onto the Raft wire shape. The two failure vocabularies stay apart:
 /// `unsupported` means no reading is structurally obtainable (no probe/reader,
 /// or the runtime is not installed); `error` means a read was attempted and
 /// failed. Ported from the upstream daemon collector.
-public final class OarInstallation: @unchecked Sendable {
-    public var kind: String
-    public var command: String?
+public final class OarInstallation: Sendable {
+    struct Snapshot: Sendable {
+        var kind: String
+        var command: String?
+    }
+    private let state: Mutex<Snapshot>
+
+    // Each setter is synchronized independently. A snapshot captures a read,
+    // not an ownership claim over the installation while a callback awaits.
+    public var kind: String {
+        get { state.withLock { $0.kind } }
+        set { state.withLock { $0.kind = newValue } }
+    }
+    public var command: String? {
+        get { state.withLock { $0.command } }
+        set { state.withLock { $0.command = newValue } }
+    }
+
+    func snapshot() -> Snapshot { state.withLock { $0 } }
+
     public init(kind: String, command: String? = nil) {
-        self.kind = kind
-        self.command = command
+        self.state = Mutex(Snapshot(kind: kind, command: command))
     }
 }
 
@@ -104,12 +121,13 @@ public enum RuntimeAccountUsageCollector {
         }
         do {
             let installation = try await probe()
-            guard installation.kind == "available" else {
+            let installationSnapshot = installation.snapshot()
+            guard installationSnapshot.kind == "available" else {
                 // `not_found` and `unsupported` are both "no reading is obtainable here".
                 return project(.init(kind: .unsupported))
             }
             if provider == .kimi, deps.kimi?.enabled == true, let kimi = deps.kimi {
-                let command = installation.command ?? "kimi"
+                let command = installationSnapshot.command ?? "kimi"
                 let resolveAuth = kimi.resolveAuth
                 let auth = await resolveAuth?(command)
                 if let auth {

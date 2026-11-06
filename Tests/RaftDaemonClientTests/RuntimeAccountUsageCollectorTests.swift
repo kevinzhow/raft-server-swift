@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import RaftDaemonClient
 
@@ -160,4 +161,71 @@ private func read(_ runtime: OarRuntimeAdapter?, provider: RuntimeAccountUsagePr
         #expect(snapshot.accounts.first?.health == .unsupported)
     }
     #expect(counter.probeCalls == 3)
+}
+
+@Test func concurrentInstallationUpdatesPreserveTheObjectPassedToEveryReader() async {
+    let installation = OarInstallation(kind: "available", command: "/fixture/first")
+    let readers = Mutex(4)
+    let probes = Mutex(0)
+    let reads = Mutex(0)
+    let runtime = OarRuntimeAdapter(
+        installation: {
+            probes.withLock { $0 += 1 }
+            return installation
+        },
+        accountUsage: { given, _ in
+            #expect(given === installation)
+            let command = given.command
+            #expect(command == "/fixture/first" || command == "/fixture/second")
+            reads.withLock { $0 += 1 }
+            await Task.yield()
+            return .init(kind: .available, windows: [.init(label: "7 days", usedRatio: 0.4)])
+        }
+    )
+    await withTaskGroup(of: Void.self) { group in
+        group.addTask {
+            while readers.withLock({ $0 > 0 }) {
+                installation.command = "/fixture/first"
+                installation.command = "/fixture/second"
+                await Task.yield()
+            }
+        }
+        for _ in 0..<4 {
+            group.addTask {
+                defer { readers.withLock { $0 -= 1 } }
+                for _ in 0..<100 {
+                    let result = await read(runtime)
+                    #expect(result.accounts.first?.health == .ok)
+                }
+            }
+        }
+    }
+    #expect(probes.withLock { $0 } == 400)
+    #expect(reads.withLock { $0 } == 400)
+}
+
+@Test func installationCallbacksCanMutateTheSameObjectAfterTheCollectorSnapshot() async {
+    let installation = OarInstallation(kind: "available", command: "/fixture/before")
+    let commands = Mutex<[String]>([])
+    let reads = Mutex(0)
+    let runtime = OarRuntimeAdapter(
+        installation: { installation },
+        accountUsage: { given, _ in
+            #expect(given === installation)
+            #expect(given.kind == "unsupported")
+            #expect(given.command == "/fixture/after")
+            reads.withLock { $0 += 1 }
+            return .init(kind: .available, windows: [.init(label: "7 days", usedRatio: 0.4)])
+        }
+    )
+    let result = await read(runtime, provider: .kimi, kimi: .init(resolveAuth: { command in
+        commands.withLock { $0.append(command) }
+        installation.kind = "unsupported"
+        installation.command = "/fixture/after"
+        await Task.yield()
+        return nil
+    }, enabled: true))
+    #expect(commands.withLock { $0 } == ["/fixture/before"])
+    #expect(reads.withLock { $0 } == 1)
+    #expect(result.accounts.first?.health == .ok)
 }

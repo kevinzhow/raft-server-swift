@@ -60,7 +60,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 1. 先拆 credential-use 与 message-suppression 两个叶节点以消除构造环，再将消息、agent/machine、task/channel、integration/feedback、transport 的工厂与策略迁到显式依赖。配置、flags、credential 与 callback slots 仍按操作活读。最终 `ServiceContainer` 只装配已构造的窄 Service；Feature 与专属 fixture 迁走旧类型、raw ledger 与目录构造器，删除全部扩展/嵌套契约/别名，不以全仓改名代替职责迁移。
 2. **已完成非 daemon unchecked 清理**：完整服务端依赖闭包与 Generated 均为零，guard 包含生成代码；恢复可复现的 knowledge 生成脚本及 template，`--check` 不改变固定语料。NIO 局部非 Sendable handler 通过 SDK loop-bound 值限定安装与访问，不以新 unchecked 壳替代。
-3. daemon-only 原 41 处已逐项评估。六个不可变错误、child guard lifecycle 与 HTTP completion/loop timer 边界已迁移，余 32 处见 `docs/CONCURRENCY.md`。真实默认 child timer 红→绿与 CRLF chunked 修复已锁定；HTTP 跨队列问题的原证据是源码审查，未声称 TSan。剩余 timer check/register/publish、公开可变模型、raw Any 和 storage 能力仍需收窄，不能因 daemon-only 而判为安全。
+3. daemon-only 原 41 处已逐项评估。六个不可变错误、child guard lifecycle、HTTP completion/loop timer 和四个可变模型已迁移，余 28 处见 `docs/CONCURRENCY.md`。真实默认 child timer、单字段并发 Probe 快照和 Data 自定义释放回调均有红→绿验收；HTTP 跨队列问题的原证据是源码审查，未声称 TSan。剩余 timer check/register/publish、token/walk budget、callback subscriber、raw Any 和 storage 能力仍需收窄，不能因 daemon-only 而判为安全。
 4. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。
 
 ## 3. 切片门禁与工作契约
