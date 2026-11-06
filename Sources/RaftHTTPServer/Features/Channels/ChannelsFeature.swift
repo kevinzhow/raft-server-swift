@@ -36,7 +36,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             }
         )
         let inbox = ReactionsRealtimeService(directory: services.emailAccounts)
-        let servedInbox = InboxAndWakeService(directory: services.emailAccounts)
+        let servedInbox = services.emailAccounts.inboxAndWake
         channels.post(":channelId", "archive") { request -> Response in
             routeResponse(services.emailAccounts.setChannelArchivedRoute(
                 authorization: request.headers[.authorization],
@@ -78,12 +78,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             ))
         }
 
-        channels.get("inbox", "done") { request -> Response in
-            routeResponse(servedInbox.doneInbox(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                query: request.url.query
-            ))
+        channels.get("inbox", "done") { request async throws -> Response in
+            try await respond {
+                try servedInbox.doneInbox(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    query: request.url.query
+                )
+            }
         }
 
         channels.post("inbox", "undone") { request async throws -> Response in

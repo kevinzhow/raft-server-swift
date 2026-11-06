@@ -1,277 +1,439 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
-/// The served-inbox boundary: the channel message page and its sync cursor,
-/// mention deliveries, the Done inbox page and the stored-message seams the
-/// projections read.
+/// Domain failure for the served-inbox surface.
 ///
-/// The state transitions stay on `EmailLoginDirectory` with unchanged
-/// signatures, so every existing caller and test compiles untouched. This type
-/// is the `Service` boundary the routes call.
-public struct InboxAndWakeService: Sendable {
-    public let directory: EmailLoginDirectory
+/// Every case names one published refusal. The legacy handlers built those
+/// bodies by hand; `Respond.swift` now renders them from `errorCode` /
+/// `errorBody`, so the bytes are unchanged. `notJoinable` is the one non-error
+/// shape (`{"status":"NOT_JOINABLE"}`), which is why it carries `errorBody`.
+public enum InboxAndWakeError: DomainError, Equatable {
+    case invalidChannelId
+    case invalidSyncCursor
+    case missingAuthorization
+    case invalidAccessToken
+    case emailVerificationRequired
+    case forbidden
+    case invalidMessagePageCursor
+    case channelNotFound
+    case channelNotVisible
+    case notJoinable
+    case unauthorized
 
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
+    public var status: UInt {
+        switch self {
+        case .invalidChannelId, .invalidSyncCursor, .invalidMessagePageCursor:
+            400
+        case .missingAuthorization, .invalidAccessToken, .unauthorized:
+            401
+        case .emailVerificationRequired, .forbidden:
+            403
+        case .channelNotFound, .channelNotVisible, .notJoinable:
+            404
+        }
     }
 
-    /// `GET /api/messages/sync`.
+    public var errorMessage: String {
+        switch self {
+        case .invalidChannelId:
+            "Invalid channel id"
+        case .invalidSyncCursor:
+            "Invalid sync cursor"
+        case .missingAuthorization:
+            "Missing or invalid Authorization header"
+        case .invalidAccessToken:
+            "Invalid or expired token"
+        case .emailVerificationRequired:
+            "Email verification required"
+        case .forbidden:
+            "Forbidden"
+        case .invalidMessagePageCursor:
+            "Invalid message page cursor"
+        case .channelNotFound:
+            "Channel not found"
+        case .channelNotVisible:
+            "Channel not found or not visible"
+        case .notJoinable:
+            "NOT_JOINABLE"
+        case .unauthorized:
+            "Unauthorized"
+        }
+    }
+
+    /// The machine-readable `code` the published object appends after `error`.
+    public var errorCode: String? {
+        switch self {
+        case .missingAuthorization, .invalidAccessToken:
+            "auth_required"
+        case .invalidMessagePageCursor:
+            "invalid_message_page_cursor"
+        case .invalidChannelId, .invalidSyncCursor, .emailVerificationRequired,
+             .forbidden, .channelNotFound, .channelNotVisible, .notJoinable, .unauthorized:
+            nil
+        }
+    }
+
+    /// The agent-diagnostics refusal publishes `status` instead of `error`.
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .notJoinable:
+            .object([OrderedJSONField("status", "NOT_JOINABLE")])
+        case .invalidChannelId, .invalidSyncCursor, .missingAuthorization,
+             .invalidAccessToken, .emailVerificationRequired, .forbidden,
+             .invalidMessagePageCursor, .channelNotFound, .channelNotVisible,
+             .unauthorized:
+            nil
+        }
+    }
+}
+
+/// The credential outcome the inbox routes need, without an HTTP reply.
+enum InboxAuthorization: Sendable, Equatable {
+    case user(String)
+    case missingAuthorization
+    case invalidAccessToken
+}
+
+/// The channel-probe outcome without an HTTP reply.
+enum InboxChannelProbe: Sendable, Equatable {
+    case allowed
+    case residue
+    case hidden
+}
+
+/// Every cross-domain decision the inbox service needs, as injected closures.
+///
+/// The message, channel and mention rows live in their own stores and the
+/// service reads them directly. Session lookup, email-verification policy, the
+/// attachment-comments flag, the channel probe, guest scope visibility, message
+/// search visibility, and the four per-message fragments owned by unmigrated
+/// domains (reaction buckets, forward metadata, action-card metadata, thread
+/// summaries) enter here; `live(directory:)` wires them to the existing
+/// directory entry points at the composition root. The four fragment closures
+/// return `OrderedJSON` because their owners still render those bytes; the
+/// service places them at the published position without re-deriving them.
+struct InboxAndWakeDependencies: Sendable {
+    var authorize: @Sendable (String?) -> InboxAuthorization
+    var isEmailVerified: @Sendable (String) -> Bool
+    var attachmentCommentsEnabled: @Sendable (_ serverId: String, _ userId: String?) -> Bool
+    var channelProbeAccess: @Sendable (_ channelId: String, _ serverId: String, _ userId: String) -> InboxChannelProbe
+    var guestCanSeeScope: @Sendable (_ scopeId: String) -> Bool
+    var messageSearchVisible: @Sendable (_ messageChannelId: String, _ serverId: String?, _ userId: String) -> Bool
+    var reactions: @Sendable (_ messageId: String) -> OrderedJSON
+    var forwardMetadata: @Sendable (_ messageId: String, _ userId: String, _ serverId: String?) -> OrderedJSON?
+    var actionCardMetadata: @Sendable (_ messageId: String) -> OrderedJSON?
+    var threadSummaries: @Sendable (_ parentChannelId: String, _ parentIds: [String]) -> OrderedJSON
+
+    static func live(directory source: EmailLoginDirectory) -> InboxAndWakeDependencies {
+        InboxAndWakeDependencies(
+            authorize: { authorization in
+                switch source.authorize(authorization) {
+                case .user(let id):
+                    .user(id)
+                case .rejected(let reply):
+                    // `authorize` has exactly two rejections: a missing/foreign
+                    // header and a token that is unknown or in a revoked family.
+                    reply == EmailLoginDirectory.missingAuthorization
+                        ? .missingAuthorization
+                        : .invalidAccessToken
+                }
+            },
+            isEmailVerified: { source.isEmailVerified(userId: $0) },
+            attachmentCommentsEnabled: { serverId, userId in
+                source.attachmentCommentsEnabled(serverId: serverId, userId: userId)
+            },
+            channelProbeAccess: { channelId, serverId, userId in
+                switch source.channelProbeAccessLocked(
+                    channelId: channelId,
+                    serverId: serverId,
+                    userId: userId
+                ) {
+                case .allowed: .allowed
+                case .residue: .residue
+                case .hidden: .hidden
+                }
+            },
+            guestCanSeeScope: { source.guestCanSeeScopeLocked($0) },
+            messageSearchVisible: { messageChannelId, serverId, userId in
+                source.messageSearchVisibleLocked(
+                    messageChannelId: messageChannelId,
+                    serverId: serverId,
+                    viewer: .user(userId)
+                )
+            },
+            reactions: { messageId in
+                // The shared projection renders the bucket list; the brackets
+                // are the DTO's array value (no reactions is `[]`).
+                let buckets = source.reactionJSONLocked(messageId: messageId)
+                return .raw("[\(buckets)]")
+            },
+            forwardMetadata: { messageId, userId, serverId in
+                source.forwardMetadataJSONLocked(
+                    messageId: messageId,
+                    userId: userId,
+                    serverId: serverId
+                ).map(OrderedJSON.raw)
+            },
+            actionCardMetadata: { messageId in
+                source.actionCardMetadataLocked(messageId: messageId).map(OrderedJSON.raw)
+            },
+            threadSummaries: { parentChannelId, parentIds in
+                // The shared projection renders the object's member list; the
+                // braces are the DTO's object value (an empty page is `{}`).
+                let members = source.threadSummariesJSONLocked(
+                    parentChannelId: parentChannelId,
+                    parentIds: parentIds
+                )
+                return .raw("{\(members)}")
+            }
+        )
+    }
+}
+
+/// The served-inbox boundary: the channel message page and its sync cursor, the
+/// mention-delivery diagnostics, and the Done inbox page.
+///
+/// The service owns the ordering, validation and projection rules; the stores
+/// own the rows and the OAuth ledger owns reads/unread state. It returns the
+/// published `JSONBodyConvertible` DTOs and throws `InboxAndWakeError`; it never
+/// builds an HTTP reply, header set or dictionary payload. Each operation reads one
+/// `MessagesAndThreadsStore` snapshot and one `ServersAndChannelsStore` snapshot,
+/// so a page, its window and its summaries all see the same rows.
+public struct InboxAndWakeService: Sendable {
+    private let messages: MessagesAndThreadsStore
+    private let channels: ServersAndChannelsStore
+    private let oauth: OAuthLedger
+    private let dependencies: InboxAndWakeDependencies
+
+    public init(directory source: EmailLoginDirectory) {
+        self.init(
+            messages: source.messagesAndThreadsStore,
+            channels: source.serversAndChannelsStore,
+            oauth: source.oauth,
+            dependencies: .live(directory: source)
+        )
+    }
+
+    init(
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        oauth: OAuthLedger,
+        dependencies: InboxAndWakeDependencies
+    ) {
+        self.messages = messages
+        self.channels = channels
+        self.oauth = oauth
+        self.dependencies = dependencies
+    }
+
+    // MARK: - GET /api/messages/sync
+
+    /// The channel message page and its sync cursor.
+    ///
+    /// A non-UUID `channel_id` is the published 400 before any credential check;
+    /// `since_seq` accepts only an absent value, `"0"` or an integer. Without a
+    /// `channel_id` the page aggregates every visible channel of the server, and
+    /// a guest only sees channels they were added to.
     public func syncChannelMessages(
         channelId: String?,
         sinceSeq: String?,
         authorization: String?,
         serverId: String?,
-        limit: String? = nil
-    ) -> HTTPReply {
-        directory.syncChannelMessages(
-            channelId: channelId,
-            sinceSeq: sinceSeq,
-            authorization: authorization,
-            serverId: serverId,
-            limit: limit
-        )
-    }
-
-    /// `GET /api/messages/channel/:channelId`.
-    public func listChannelMessages(
-        channelId: String,
-        authorization: String?,
-        serverId: String?,
-        limit: String? = nil,
-        before: String? = nil,
-        after: String? = nil
-    ) -> HTTPReply {
-        directory.listChannelMessages(
-            channelId: channelId,
-            authorization: authorization,
-            serverId: serverId,
-            limit: limit,
-            before: before,
-            after: after
-        )
-    }
-
-    /// `GET /api/messages/:messageId/mention-deliveries`.
-    public func mentionDeliveries(
-        messageId: String,
-        authorization: String?,
-        serverId: String?
-    ) -> HTTPReply {
-        directory.mentionDeliveries(
-            messageId: messageId,
-            authorization: authorization,
-            serverId: serverId
-        )
-    }
-
-    /// `GET /api/channels/inbox`.
-    public func doneInbox(authorization: String?, serverId: String?, query: String? = nil) -> HTTPReply {
-        directory.doneInbox(authorization: authorization, serverId: serverId, query: query)
-    }
-
-    /// Stores a human message row without an HTTP round trip.
-    public func insertHumanMessage(
-        id: String,
-        channelId: String,
-        senderId: String,
-        content: String,
-        messageType: String = "chat",
-        senderType: String = "user",
-        actionKind: String? = nil
-    ) {
-        directory.insertHumanMessage(
-            id: id,
-            channelId: channelId,
-            senderId: senderId,
-            content: content,
-            messageType: messageType,
-            senderType: senderType,
-            actionKind: actionKind
-        )
-    }
-}
-
-extension EmailLoginDirectory {
-    public func syncChannelMessages(channelId: String?, sinceSeq: String?, authorization: String?, serverId: String?, limit rawLimit: String? = nil) -> HTTPReply {
+        limit rawLimit: String? = nil
+    ) throws -> InboxSyncPageDTO {
         if let channelId, !ServerScope.isUUID(channelId) {
-            return Self.json(400, "{\"error\":\"Invalid channel id\"}")
+            throw InboxAndWakeError.invalidChannelId
         }
         guard sinceSeq == nil || sinceSeq == "0" || Int(sinceSeq ?? "") != nil else {
-            return Self.json(400, "{\"error\":\"Invalid sync cursor\"}")
+            throw InboxAndWakeError.invalidSyncCursor
         }
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
+        let userId = try requireUser(authorization)
+        guard dependencies.isEmailVerified(userId) else {
+            throw InboxAndWakeError.emailVerificationRequired
         }
-        guard isEmailVerified(userId: userId) else {
-            return Self.json(403, "{\"error\":\"Email verification required\"}")
-        }
-        let pageLimit = Self.messagePageLimit(rawLimit)
-        let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
+        let pageLimit = EmailLoginDirectory.messagePageLimit(rawLimit)
+        let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", userId)
+        let messageState = messages.state
+        let channelState = channels.state
         if channelId == nil {
-            let cursor = Int(sinceSeq ?? "") ?? 0
-            let isGuest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
-            var guestJoined: Set<String> = []
-            if isGuest {
-                lock.lock()
-                let candidateIds = Array(postableChannels.keys)
-                lock.unlock()
-                guestJoined = Set(candidateIds.filter { oauth.channelHumanIds(channelId: $0).contains(userId) })
-            }
-            lock.lock()
-            var visibleChannels: [String] = []
-            for (id, channel) in postableChannels {
-                guard channel.serverId == serverId, channel.deletedAt == nil, !channel.archived else { continue }
-                if isGuest && !guestJoined.contains(id) { continue }
-                if channel.kind == "channel" || channel.memberIds.contains(userId) {
-                    visibleChannels.append(id)
-                }
-            }
-            var listed: [String] = []
-            for id in visibleChannels {
-                let rows = humanMessageRows.filter { $0.channelId == id }
-                for message in rows where message.seq > cursor {
-                    var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(id)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
-                    if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
-                        row += ",\"commentRef\":\(commentRef)"
-                    }
-                    listed.append(row + "}")
-                }
-            }
-            lock.unlock()
-            let page = listed.suffix(pageLimit)
-            return Self.json(200, "[\(page.joined(separator: ","))]")
+            return InboxSyncPageDTO(messages: Self.broadcastRows(
+                userId: userId,
+                serverId: serverId,
+                sinceSeq: sinceSeq,
+                pageLimit: pageLimit,
+                commentsVisible: commentsVisible,
+                messageState: messageState,
+                channelState: channelState,
+                oauth: oauth
+            ))
         }
-        guard let channelId else {
-            return Self.json(400, "{\"error\":\"Invalid channel id\"}")
-        }
-        lock.lock()
-        if let serverId, channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId) == .residue {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+        guard let channelId else { throw InboxAndWakeError.invalidChannelId }
+        if let serverId,
+           dependencies.channelProbeAccess(channelId, serverId, userId) == .residue {
+            throw InboxAndWakeError.forbidden
         }
         let visible: Bool = {
-            guard let channel = postableChannels[channelId], channel.serverId == serverId else { return false }
+            guard let channel = channelState.postableChannels[channelId], channel.serverId == serverId else {
+                return false
+            }
             if channel.kind == "channel" { return true }
             let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
             if channel.kind == "thread" {
                 if guest { return false }
                 if let parentId = channel.parentChannelId,
-                   let parent = postableChannels[parentId], parent.kind == "channel" {
+                   let parent = channelState.postableChannels[parentId], parent.kind == "channel" {
                     return true
                 }
             }
             return channel.memberIds.contains(userId)
         }()
-        let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
-        let allRows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
+        let storageChannelId = channelState.jointProjections
+            .first { $0.localChannelId == channelId }?
+            .canonicalChannelId ?? channelId
+        let allRows = messageState.humanMessageRows.filter {
+            $0.channelId == storageChannelId || $0.channelId == channelId
+        }
         let cursor = Int(sinceSeq ?? "") ?? 0
         let indexed = allRows.filter { $0.seq > cursor }
-        let limitedIndexed = Array(indexed.suffix(pageLimit))
-        let listed = limitedIndexed.map { message -> String in
-            var row = "{\"id\":\(jsonString(message.id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(message.seq),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))]"
-            if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
-                row += ",\"commentRef\":\(commentRef)"
-            }
-            if let metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId)
-                ?? actionCardMetadataLocked(messageId: message.id) {
-                row += ",\"actionMetadata\":\(metadata)"
-            }
-            row += "}"
-            return row
-        }.joined(separator: ",")
-        lock.unlock()
-        guard visible else {
-            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+        let limited = Array(indexed.suffix(pageLimit))
+        let rows = limited.map { message in
+            Self.syncRow(
+                message,
+                channelId: channelId,
+                commentsVisible: commentsVisible,
+                attachmentComments: messageState.attachmentCommentRecords,
+                metadata: dependencies.forwardMetadata(message.id, userId, serverId)
+                    ?? dependencies.actionCardMetadata(message.id)
+            )
         }
-        let body = "[\(listed)]"
-        return Self.json(200, body)
+        guard visible else { throw InboxAndWakeError.channelNotVisible }
+        return InboxSyncPageDTO(messages: rows)
     }
 
-    /// `GET /api/messages/:messageId/mention-deliveries`. Only the author who can still read the channel sees coarse outcomes.
-    public func mentionDeliveries(messageId: String, authorization: String?, serverId: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
+    /// The `channel_id`-less sync page: every visible channel of the server in
+    /// store order, then the newest `pageLimit` rows.
+    private static func broadcastRows(
+        userId: String,
+        serverId: String?,
+        sinceSeq: String?,
+        pageLimit: Int,
+        commentsVisible: Bool,
+        messageState: MessagesAndThreadsStore.State,
+        channelState: ServersAndChannelsStore.State,
+        oauth: OAuthLedger
+    ) -> [InboxSyncMessageDTO] {
+        let cursor = Int(sinceSeq ?? "") ?? 0
+        let isGuest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
+        var guestJoined: Set<String> = []
+        if isGuest {
+            let candidateIds = Array(channelState.postableChannels.keys)
+            guestJoined = Set(candidateIds.filter { oauth.channelHumanIds(channelId: $0).contains(userId) })
         }
-        guard isEmailVerified(userId: userId) else {
-            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        var visibleChannels: [String] = []
+        for (id, channel) in channelState.postableChannels {
+            guard channel.serverId == serverId, channel.deletedAt == nil, !channel.archived else { continue }
+            if isGuest && !guestJoined.contains(id) { continue }
+            if channel.kind == "channel" || channel.memberIds.contains(userId) {
+                visibleChannels.append(id)
+            }
         }
-        guard ServerScope.isUUID(messageId) else {
-            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
+        var rows: [InboxSyncMessageDTO] = []
+        for id in visibleChannels {
+            let channelRows = messageState.humanMessageRows.filter { $0.channelId == id }
+            for message in channelRows where message.seq > cursor {
+                rows.append(Self.syncRow(
+                    message,
+                    channelId: id,
+                    commentsVisible: commentsVisible,
+                    attachmentComments: messageState.attachmentCommentRecords,
+                    metadata: nil
+                ))
+            }
         }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let message = humanMessageRows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
-              message.senderType == "user",
-              message.senderId == userId,
-              messageSearchVisibleLocked(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId)),
-              postableChannels[message.channelId]?.serverId == serverId
-        else {
-            return Self.json(404, "{\"status\":\"NOT_JOINABLE\"}")
-        }
-        let deliveries = storedMentions.filter {
-            $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
-        }.map { mention in
-            "{\"targetId\":\(jsonString(mention.targetId)),\(Self.mentionDeliveryFields(handle: mention.handle, terminalCode: mention.terminalCode))}"
-        }.joined(separator: ",")
-        return Self.json(200, "{\"messageId\":\(jsonString(message.id)),\"deliveries\":[\(deliveries)]}")
+        return Array(rows.suffix(pageLimit))
     }
 
+    private static func syncRow(
+        _ message: StoredHumanMessage,
+        channelId: String,
+        commentsVisible: Bool,
+        attachmentComments: [String: [AttachmentCommentRecord]],
+        metadata: OrderedJSON?
+    ) -> InboxSyncMessageDTO {
+        InboxSyncMessageDTO(
+            id: message.id,
+            channelId: channelId,
+            seq: message.seq,
+            content: message.content,
+            attachments: attachmentChips(
+                message.attachmentIds,
+                commentsVisible: commentsVisible,
+                records: attachmentComments
+            ),
+            commentRef: commentsVisible
+                ? commentRef(records: attachmentComments, messageId: message.id)
+                : nil,
+            actionMetadata: metadata
+        )
+    }
 
-    /// `GET /api/messages/channel/:channelId`. A non-UUID is `Channel not found`. A UUID the caller cannot see uses the neutral body.
-    public func listChannelMessages(channelId: String, authorization: String?, serverId: String?, limit rawLimit: String? = nil, before rawBefore: String? = nil, after rawAfter: String? = nil) -> HTTPReply {
-        if let serverId, let userId = sessionUserId(authorization: authorization) {
-            lock.lock()
-            let threadScope = postableChannels[channelId]?.kind == "thread"
-            let guestVisible = guestCanSeeScopeLocked(channelId)
-            lock.unlock()
+    // MARK: - GET /api/messages/channel/:channelId
+
+    /// One channel page, its frozen window and the thread summaries hanging off
+    /// it. A guest visibility refusal runs before cursor validation; a non-UUID
+    /// channel is the published 404, and a UUID the caller cannot see uses the
+    /// neutral body after the page has been projected.
+    public func listChannelMessages(
+        channelId: String,
+        authorization: String?,
+        serverId: String?,
+        limit rawLimit: String? = nil,
+        before rawBefore: String? = nil,
+        after rawAfter: String? = nil
+    ) throws -> ChannelMessagesPageDTO {
+        let channelState = channels.state
+        if let serverId, let userId = sessionUserId(authorization) {
+            let threadScope = channelState.postableChannels[channelId]?.kind == "thread"
+            let guestVisible = dependencies.guestCanSeeScope(channelId)
             if oauth.memberRole(serverId: serverId, userId: userId) == "guest",
                !oauth.channelHumanIds(channelId: channelId).contains(userId) {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
+                throw InboxAndWakeError.forbidden
             }
             if threadScope, oauth.memberRole(serverId: serverId, userId: userId) == "guest", !guestVisible {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
+                throw InboxAndWakeError.forbidden
             }
         }
-        let before = Self.parsePageCursor(rawBefore)
-        let after = Self.parsePageCursor(rawAfter)
-        if before == .invalid || after == .invalid || (before.value != nil && after.value != nil && rawBefore != nil && rawAfter != nil) {
-            return Self.json(400, "{\"error\":\"Invalid message page cursor\",\"code\":\"invalid_message_page_cursor\"}")
+        let before = EmailLoginDirectory.parsePageCursor(rawBefore)
+        let after = EmailLoginDirectory.parsePageCursor(rawAfter)
+        if before == .invalid || after == .invalid
+            || (before.value != nil && after.value != nil && rawBefore != nil && rawAfter != nil) {
+            throw InboxAndWakeError.invalidMessagePageCursor
         }
         if !ServerScope.isUUID(channelId) {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw InboxAndWakeError.channelNotFound
         }
         let userId: String?
-        if case .user(let id) = authorize(authorization) {
+        switch dependencies.authorize(authorization) {
+        case .user(let id):
             userId = id
-        } else {
+        case .missingAuthorization, .invalidAccessToken:
             userId = nil
         }
-        lock.lock()
+        let messageState = messages.state
         if let userId, let serverId,
-           channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId) == .residue {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+           dependencies.channelProbeAccess(channelId, serverId, userId) == .residue {
+            throw InboxAndWakeError.forbidden
         }
         let visible: Bool = {
-            guard let channel = postableChannels[channelId], channel.serverId == serverId,
-                  channel.deletedAt == nil, let userId
+            guard let channel = channelState.postableChannels[channelId],
+                  channel.serverId == serverId,
+                  channel.deletedAt == nil,
+                  let userId
             else { return false }
             if channel.kind == "channel" { return true }
             let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
             if channel.kind == "thread" {
                 if guest { return false }
-                if let parentId = channel.parentChannelId, let parent = postableChannels[parentId] {
+                if let parentId = channel.parentChannelId, let parent = channelState.postableChannels[parentId] {
                     if parent.kind == "channel" { return parent.deletedAt == nil }
                     return channel.memberIds.contains(userId)
                 }
@@ -279,66 +441,281 @@ extension EmailLoginDirectory {
             }
             return channel.memberIds.contains(userId)
         }()
-        let storageChannelId = jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId ?? channelId
-        let rows = humanMessageRows.filter { $0.channelId == storageChannelId || $0.channelId == channelId }
+        let storageChannelId = channelState.jointProjections
+            .first { $0.localChannelId == channelId }?
+            .canonicalChannelId ?? channelId
+        let rows = messageState.humanMessageRows.filter {
+            $0.channelId == storageChannelId || $0.channelId == channelId
+        }
         let cursorRows = rows.filter { row in
             if let before = before.value, row.seq >= before { return false }
             if let after = after.value, row.seq <= after { return false }
             return true
         }
-        let pageRows = Array(cursorRows.suffix(Self.messagePageLimit(rawLimit)))
+        let pageRows = Array(cursorRows.suffix(EmailLoginDirectory.messagePageLimit(rawLimit)))
         let statusRequests = pageRows.map { (id: $0.id, senderId: $0.senderId, senderType: $0.senderType) }
-        let memberStatusSnapshot = serverMemberStatuses
-        lock.unlock()
+        let memberStatusSnapshot = channelState.serverMemberStatuses
         var senderStatuses: [String: String] = [:]
         for request in statusRequests {
             if request.senderType == "agent" {
-                senderStatuses[request.id] = oauth.agentRuntimeInfo(id: request.senderId)?.deleted == true ? "removed" : "active"
+                senderStatuses[request.id] = oauth.agentRuntimeInfo(id: request.senderId)?.deleted == true
+                    ? "removed"
+                    : "active"
             } else if let serverId, oauth.memberRole(serverId: serverId, userId: request.senderId) != nil {
                 senderStatuses[request.id] = "active"
             } else {
-                senderStatuses[request.id] = memberStatusSnapshot["\(serverId ?? "")\n\(request.senderId)"] ?? "removed"
+                senderStatuses[request.id] = memberStatusSnapshot[
+                    "\(serverId ?? "")\n\(request.senderId)"
+                ] ?? "removed"
             }
         }
-        lock.lock()
         let highWater = rows.map(\.seq).max() ?? 0
         let pageSeqs = pageRows.map(\.seq)
         let isTail = rawBefore == nil && rawAfter == nil
         let coveredFrom = pageSeqs.first ?? (isTail ? 1 : 0)
         let coveredThrough = pageSeqs.last ?? 0
         let coveredAfter = max(0, coveredFrom - 1)
-        let pageHasGap = !isTail
-        let pageHasNewer = rawBefore != nil
-        let completeThroughLatest = isTail
-        let windowJSON = "{\"schemaVersion\":1,\"domain\":\"receiver_visible_messages_v1\",\"serverId\":\(jsonString(serverId ?? "")),\"receiverKind\":\"user\",\"receiverId\":\(jsonString(userId ?? "")),\"scopeId\":\(jsonString(channelId)),\"coveredFromSeq\":\(coveredFrom),\"coveredAfterSeq\":\(coveredAfter),\"coveredThroughSeq\":\(coveredThrough),\"remoteHighWaterSeq\":\(highWater),\"hasGap\":\(pageHasGap),\"hasNewer\":\(pageHasNewer),\"completeThroughLatest\":\(completeThroughLatest)}"
-        let commentsVisible = attachmentCommentsEnabled(serverId: serverId ?? "", userId: userId)
-        let listed = pageRows.map { message in
+        let window = InboxMessageWindowDTO(
+            serverId: serverId ?? "",
+            receiverId: userId ?? "",
+            scopeId: channelId,
+            coveredFromSeq: coveredFrom,
+            coveredAfterSeq: coveredAfter,
+            coveredThroughSeq: coveredThrough,
+            remoteHighWaterSeq: highWater,
+            hasGap: !isTail,
+            hasNewer: rawBefore != nil,
+            completeThroughLatest: isTail
+        )
+        let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", userId)
+        let listed = pageRows.map { message -> InboxChannelMessageRowDTO in
             let membershipStatus = senderStatuses[message.id] ?? "removed"
-            var row = "{\"id\":\(jsonString(message.id)),\"senderId\":\(jsonString(message.senderId)),\"senderType\":\(jsonString(message.senderType)),\"senderMembershipStatus\":\(jsonString(membershipStatus)),\"content\":\(jsonString(message.content)),\"attachments\":[\(messageAttachmentsJSONLocked(message.attachmentIds, commentsVisible: commentsVisible))],\"reactions\":[\(reactionJSONLocked(messageId: message.id))],\"mentions\":[\(visibleMentionJSONLocked(messageId: message.id))]"
-            if let commentRef = commentRefJSONLocked(messageId: message.id), commentsVisible {
-                row += ",\"commentRef\":\(commentRef)"
-            }
-            var metadata = actionCardMetadataLocked(messageId: message.id)
+            var metadata = dependencies.actionCardMetadata(message.id)
             if let userId {
-                metadata = forwardMetadataJSONLocked(messageId: message.id, userId: userId, serverId: serverId) ?? metadata
+                metadata = dependencies.forwardMetadata(message.id, userId, serverId) ?? metadata
             }
-            if let metadata {
-                row += ",\"actionMetadata\":\(metadata)"
-            }
-            row += "}"
-            return row
-        }.joined(separator: ",")
-        let summaries = threadSummariesJSONLocked(parentChannelId: channelId, parentIds: pageRows.map(\.id))
-        lock.unlock()
-        guard visible else {
-            return Self.json(404, "{\"error\":\"Channel not found or not visible\"}")
+            return InboxChannelMessageRowDTO(
+                id: message.id,
+                senderId: message.senderId,
+                senderType: message.senderType,
+                senderMembershipStatus: membershipStatus,
+                content: message.content,
+                attachments: Self.attachmentChips(
+                    message.attachmentIds,
+                    commentsVisible: commentsVisible,
+                    records: messageState.attachmentCommentRecords
+                ),
+                reactions: dependencies.reactions(message.id),
+                mentions: Self.visibleMentions(messageState.storedMentions, messageId: message.id),
+                commentRef: commentsVisible
+                    ? Self.commentRef(
+                        records: messageState.attachmentCommentRecords,
+                        messageId: message.id
+                    )
+                    : nil,
+                actionMetadata: metadata
+            )
         }
-        return Self.json(200, "{\"messages\":[\(listed)],\"historyLimited\":false,\"messageWindow\":\(windowJSON),\"threadSummariesByParentMessageId\":{\(summaries)}}")
+        let summaries = dependencies.threadSummaries(channelId, pageRows.map(\.id))
+        guard visible else { throw InboxAndWakeError.channelNotVisible }
+        return ChannelMessagesPageDTO(
+            messages: listed,
+            messageWindow: window,
+            threadSummariesByParentMessageId: summaries
+        )
     }
 
-    /// Missing, zero, or non-numeric limits are 50. A positive limit is capped at 200. The page is the newest rows.
+    /// Mentions a reader can see: notifiable at send, or later notified.
+    private static func visibleMentions(_ rows: [StoredMention], messageId: String) -> [InboxMentionDTO] {
+        rows.filter { row in
+            row.messageId == messageId && (row.notifiableAtSend || row.notifiedAt != nil)
+        }.map { row in
+            InboxMentionDTO(type: row.targetType, id: row.targetId, name: row.handle)
+        }
+    }
 
+    // MARK: - GET /api/messages/:messageId/mention-deliveries
 
+    /// The author's coarse delivery outcomes. Only the author who can still read
+    /// the channel sees them; every other caller gets the neutral
+    /// `{"status":"NOT_JOINABLE"}` 404.
+    public func mentionDeliveries(
+        messageId: String,
+        authorization: String?,
+        serverId: String?
+    ) throws -> MentionDeliveriesResponseDTO {
+        let userId = try requireUser(authorization)
+        guard dependencies.isEmailVerified(userId) else {
+            throw InboxAndWakeError.emailVerificationRequired
+        }
+        guard ServerScope.isUUID(messageId) else {
+            throw InboxAndWakeError.notJoinable
+        }
+        let messageState = messages.state
+        let channelState = channels.state
+        guard let message = messageState.humanMessageRows.first(where: {
+            $0.id.caseInsensitiveCompare(messageId) == .orderedSame
+        }),
+            message.senderType == "user",
+            message.senderId == userId,
+            dependencies.messageSearchVisible(message.channelId, serverId, userId),
+            channelState.postableChannels[message.channelId]?.serverId == serverId
+        else {
+            throw InboxAndWakeError.notJoinable
+        }
+        let deliveries = messageState.storedMentions.filter {
+            $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
+        }.map { mention in
+            MentionDeliveryRowDTO(
+                targetId: mention.targetId,
+                handle: mention.handle,
+                terminalCode: mention.terminalCode
+            )
+        }
+        return MentionDeliveriesResponseDTO(messageId: message.id, deliveries: deliveries)
+    }
+
+    // MARK: - GET /api/channels/inbox/done
+
+    /// The Done inbox page. A DM outsider mention is not an inbox item; a guest
+    /// only sees scopes they can still read. `totalCount` is the published
+    /// literal `null`.
+    public func doneInbox(
+        authorization: String?,
+        serverId: String?,
+        query: String? = nil
+    ) throws -> InboxDonePageDTO {
+        guard let userId = sessionUserId(authorization) else {
+            throw InboxAndWakeError.unauthorized
+        }
+        let params = EmailLoginDirectory.inboxQueryParameters(query)
+        let limit = min(max(Int(params["limit"] ?? "") ?? 30, 1), 100)
+        let q = (params["q"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let channelFilter = params["channelId"]
+        let ascending = params["sort"] == "asc"
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let messageState = messages.state
+        let channelState = channels.state
+        let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
+        var rows: [(id: String, kind: String, channelId: String?, threadChannelId: String?, parentChannelId: String?, doneAt: Date)] = []
+        for key in messageState.inboxDoneScopes where key.hasPrefix("\(userId)\n") {
+            let scopeId = String(key.dropFirst("\(userId)\n".count))
+            if guest, !dependencies.guestCanSeeScope(scopeId) { continue }
+            let type = channelState.postableChannels[scopeId]?.kind
+                ?? oauth.channelType(id: scopeId)
+                ?? "channel"
+            let isThread = type == "thread"
+            let parentId = channelState.postableChannels[scopeId]?.parentChannelId
+            if let channelFilter, !(isThread ? parentId == channelFilter : scopeId == channelFilter) {
+                continue
+            }
+            if !q.isEmpty {
+                let matches = messageState.humanMessageRows.contains { row in
+                    row.channelId == scopeId && row.content.localizedCaseInsensitiveContains(q)
+                }
+                if !matches { continue }
+            }
+            rows.append((
+                id: scopeId,
+                kind: isThread ? "thread" : "channel",
+                channelId: isThread ? nil : scopeId,
+                threadChannelId: isThread ? scopeId : nil,
+                parentChannelId: parentId,
+                doneAt: messageState.inboxDoneAt[key] ?? Date.distantPast
+            ))
+        }
+        rows.sort { lhs, rhs in
+            if lhs.doneAt != rhs.doneAt {
+                return ascending ? lhs.doneAt < rhs.doneAt : lhs.doneAt > rhs.doneAt
+            }
+            return ascending ? lhs.id < rhs.id : lhs.id > rhs.id
+        }
+        let page = Array(rows.prefix(limit))
+        let items = page.map { row -> InboxDoneItemDTO in
+            let done = formatter.string(from: row.doneAt)
+            if row.kind == "thread" {
+                let following = messageState.threadFollows[
+                    "\(serverId ?? "")\n\(userId)\n\(row.id)"
+                ] != nil
+                let unread = oauth.channelUnreadInfo(channelId: row.id, userId: userId).unreadCount
+                return .thread(
+                    threadChannelId: row.id,
+                    parentChannelId: row.parentChannelId,
+                    isFollowing: following,
+                    unreadCount: unread,
+                    doneAt: done
+                )
+            }
+            let unread = oauth.channelUnreadInfo(channelId: row.id, userId: userId).unreadCount
+            return .channel(channelId: row.id, unreadCount: unread, doneAt: done)
+        }
+        return InboxDonePageDTO(items: items, hasMore: rows.count > page.count)
+    }
+
+    // MARK: - Helpers
+
+    private func sessionUserId(_ authorization: String?) -> String? {
+        if case .user(let id) = dependencies.authorize(authorization) { return id }
+        return nil
+    }
+
+    private func requireUser(_ authorization: String?) throws -> String {
+        switch dependencies.authorize(authorization) {
+        case .user(let id):
+            return id
+        case .missingAuthorization:
+            throw InboxAndWakeError.missingAuthorization
+        case .invalidAccessToken:
+            throw InboxAndWakeError.invalidAccessToken
+        }
+    }
+
+    /// The attachment chips of one message: a viewer who cannot use attachment
+    /// comments observes count zero, never a hint.
+    private static func attachmentChips(
+        _ ids: [String],
+        commentsVisible: Bool,
+        records: [String: [AttachmentCommentRecord]]
+    ) -> [InboxAttachmentChipDTO] {
+        ids.map { id in
+            InboxAttachmentChipDTO(
+                id: id,
+                commentCount: commentsVisible ? (records[id]?.count ?? 0) : 0
+            )
+        }
+    }
+
+    /// The scoped comment chip of one message, in attachment-record order.
+    private static func commentRef(
+        records: [String: [AttachmentCommentRecord]],
+        messageId: String
+    ) -> InboxCommentRefDTO? {
+        for (attachmentId, rows) in records {
+            guard let record = rows.first(where: { $0.id == messageId }),
+                  let hostMessageId = record.hostMessageId,
+                  let hostChannelId = record.hostChannelId
+            else { continue }
+            return InboxCommentRefDTO(
+                attachmentId: attachmentId,
+                hostMessageId: hostMessageId,
+                hostSource: InboxCommentSourceDTO(
+                    channelId: hostChannelId,
+                    rootThreadChannelId: record.threadChannelId
+                )
+            )
+        }
+        return nil
+    }
+}
+
+// MARK: - Stored-message seams for unmigrated domains
+
+/// Stored-message seams and the shared thread-summary projection that
+/// unmigrated domains still call through the directory accessor. They are not
+/// part of the served-inbox service; removing them would break callers in the
+/// search, message-send and task domains that have not migrated yet.
+extension EmailLoginDirectory {
 
     /// Summaries for threads whose parent message is on this page. Newest three non-system replies, oldest of those first.
     func threadSummariesJSONLocked(parentChannelId: String, parentIds: [String]) -> String {
@@ -357,15 +734,6 @@ extension EmailLoginDirectory {
             parts.append("\(jsonString(parentId)):{\"replyCount\":\(replies.count),\"latestReplies\":[\(latest)]}")
         }
         return parts.joined(separator: ",")
-    }
-
-    /// Mentions a reader can see: notifiable at send, or later notified.
-    func visibleMentionJSONLocked(messageId: String) -> String {
-        storedMentions.filter { row in
-            row.messageId == messageId && (row.notifiableAtSend || row.notifiedAt != nil)
-        }.map { row in
-            "{\"type\":\(jsonString(row.targetType)),\"id\":\(jsonString(row.targetId)),\"name\":\(jsonString(row.handle))}"
-        }.joined(separator: ",")
     }
 
     /// Stores a message row with a fixed id. Reaction short-id tests need a known prefix.
@@ -562,63 +930,6 @@ extension EmailLoginDirectory {
         lock.lock()
         defer { lock.unlock() }
         return storedAgentDeliveries.filter { $0.agentId == agentId }.map(\.channelType)
-    }
-
-    /// `GET /api/channels/inbox`. A DM outsider mention is not an inbox item.
-    public func doneInbox(authorization: String?, serverId: String?, query: String? = nil) -> HTTPReply {
-        guard let userId = sessionUserId(authorization: authorization) else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
-        }
-        let params = Self.inboxQueryParameters(query)
-        let limit = min(max(Int(params["limit"] ?? "") ?? 30, 1), 100)
-        let q = (params["q"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let channelFilter = params["channelId"]
-        let ascending = params["sort"] == "asc"
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        lock.lock()
-        let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
-        var rows: [(id: String, kind: String, channelId: String?, threadChannelId: String?, parentChannelId: String?, doneAt: Date)] = []
-        for key in inboxDoneScopes where key.hasPrefix("\(userId)\n") {
-            let scopeId = String(key.dropFirst("\(userId)\n".count))
-            if guest, !guestCanSeeScopeLocked(scopeId) { continue }
-            let type = postableChannels[scopeId]?.kind ?? oauth.channelType(id: scopeId) ?? "channel"
-            let isThread = type == "thread"
-            let parentId = postableChannels[scopeId]?.parentChannelId
-            if let channelFilter, !(isThread ? parentId == channelFilter : scopeId == channelFilter) { continue }
-            if !q.isEmpty {
-                let matches = humanMessageRows.contains { row in
-                    row.channelId == scopeId && row.content.localizedCaseInsensitiveContains(q)
-                }
-                if !matches { continue }
-            }
-            rows.append((
-                id: scopeId,
-                kind: isThread ? "thread" : "channel",
-                channelId: isThread ? nil : scopeId,
-                threadChannelId: isThread ? scopeId : nil,
-                parentChannelId: parentId,
-                doneAt: inboxDoneAt[key] ?? Date.distantPast
-            ))
-        }
-        rows.sort { lhs, rhs in
-            if lhs.doneAt != rhs.doneAt { return ascending ? lhs.doneAt < rhs.doneAt : lhs.doneAt > rhs.doneAt }
-            return ascending ? lhs.id < rhs.id : lhs.id > rhs.id
-        }
-        let page = Array(rows.prefix(limit))
-        let items = page.map { row -> String in
-            let done = jsonString(formatter.string(from: row.doneAt))
-            if row.kind == "thread" {
-                let following = threadFollows["\(serverId ?? "")\n\(userId)\n\(row.id)"] != nil
-                let unread = oauth.channelUnreadInfo(channelId: row.id, userId: userId).unreadCount
-                let parentJSON = row.parentChannelId.map(jsonString) ?? "null"
-                return "{\"kind\":\"thread\",\"threadChannelId\":\(jsonString(row.id)),\"parentChannelId\":\(parentJSON),\"isFollowing\":\(following),\"unreadCount\":\(unread),\"doneAt\":\(done)}"
-            }
-            let unread = oauth.channelUnreadInfo(channelId: row.id, userId: userId).unreadCount
-            return "{\"kind\":\"channel\",\"channelId\":\(jsonString(row.id)),\"unreadCount\":\(unread),\"doneAt\":\(done)}"
-        }.joined(separator: ",")
-        lock.unlock()
-        return Self.json(200, "{\"items\":[\(items)],\"hasMore\":\(rows.count > page.count),\"totalCount\":null}")
     }
 
 }
