@@ -29,7 +29,7 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 - **服务**：45 个无 Vapor 依赖的 `Service`（32,996 行，最大 1,085 行，上限 1,200），位于 `Sources/RaftHTTP/Services/`。
 - **DTO**：8 个 `Codable` 模块（1,362 行），位于 `Sources/RaftHTTP/DTO/`。
 - **收敛结果**：`Sources/RaftHTTP/EmailLogin.swift` 从 34,306 行压降至 **48 行**（**-99.86%**）；`Sources/RaftHTTP/EmailLogin/` 目录下 `.swift` 文件 **0 个**（原 34 个已全部删除）；`EmailLogin.swift` 内 `ForTesting` 基线为 **0**（`scripts/check_architecture.py` 门禁口径）。`Features/**` 中同步 `request.body.string` 读取为 **0**，`BufferedRequestBodyMiddleware` 已退役。
-- **未收敛项**：`grep -r ForTesting Sources` 全树仍有 **305 处 / 43 个文件**命中（`Services/` 与 `Support/DirectoryTestSeams.swift`、`OAuthLedger.swift` 为主），测试目标 235 个文件引用其中一部分；见 5.4。
+- **测试后门**：`grep -r ForTesting Sources` 全树 **0 处**（原 305 处 / 43 个文件）。所有测试 seam 已迁入测试专用 SwiftPM target `Tests/TestSupport`（`@testable import RaftHTTP`，不是产品、不被生产 target 依赖）；`scripts/for_testing_baseline.tsv` 为空，守卫对全树硬零。
 
 ## 2. 下一阶段目标：Phase 5 按域深度架构重构
 
@@ -69,18 +69,19 @@ Daemon 的 2616 条用例中，约 1130 条属于 Node 运行时 / 进程管理 
 
 ### 5.4 清理生产类型中的测试后门（`TestSupport`）
 
-- 将残留的 `*ForTesting` 方法逐步收敛为依赖注入协议，或迁入测试专用 `TestSupport` 模块。
-- 生产 target 不再暴露测试专用入口；`scripts/check_architecture.py` 的 `ForTesting` 基线继续向下收紧。
+- 将残留的 `*ForTesting` 方法迁入测试专用 `Tests/TestSupport` target（已完成）：seam 以 `extension EmailLoginDirectory` / `OAuthLedger` 形式保留原名与签名，测试只需 `import TestSupport`；生产代码调用的符号改为生产命名，无人使用的 seam 与 failpoint 直接删除。
+- 生产 target 不再暴露测试专用入口；`scripts/check_architecture.py` 的全树 `ForTesting` 守卫基线为 0。
 
 ### Phase 5 完成标准
 
-状态：5.1–5.3 与门禁基线已完成；唯一遗留项为 5.4 的全树 `ForTesting` 清理（后续切片）。
+状态：5.1–5.4 全部完成。
 
 - `Sources/RaftHTTP/EmailLogin/` 下的 `EmailLogin+*.swift` 全部删除，业务逻辑按域收敛到 `<Domain>Service`。（已完成：目录 0 个 `.swift` 文件，`EmailLogin.swift` 48 行。）
 - `Features/**` 中不再有同步 `request.body.string ?? ""` 读取，`BufferedRequestBodyMiddleware` 已移除。（已完成）
 - `NotificationsFeature.swift` 拆分完毕，`Agents`、`Computers`、`Reminders` 路由归属与上游 `routes/*.ts` 一一对应。（已完成）
 - 架构门禁 `ForTesting` 基线归零。（已完成：`EmailLogin.swift` 0 个标记，`scripts/check_architecture.py` 基线 0。）
-- 全树生产代码不再暴露 `*ForTesting`（5.4）。**未完成**：305 处 / 43 个文件，需新增 `TestSupport` 目标并改写测试引用，属行为无关但体量大的独立后续切片，不并入本次收尾。
+- 全树生产代码不再暴露 `*ForTesting`（5.4）。（已完成：0 处；seam 在 `Tests/TestSupport/`。）
+- 遗留可选项：`recordAttestedSendEvent` / `recordAgentSendActivity` / `recordServerMemberEvent` / `lastTaskServerWarning` 等仅由 TestSupport 读取的 `recorded*` 侧通道仍在 Sources；待对应测试改为断言真实输出后删除。
 - 四项门禁全绿，`make parity` 仍为 406 / 406。（已验证。）
 
 ## 3. 切片门禁与工作契约（4 大必过门禁）
