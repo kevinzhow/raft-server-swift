@@ -34,7 +34,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let attachments = routes.grouped("api", "attachments")
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
-        let humanMessageCreate = HumanMessageCreateService(directory: services.emailAccounts)
+        let humanMessageCreate = services.emailAccounts.humanMessageCreate
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
             let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
@@ -55,33 +55,43 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         messages.post("mention-actions", "execute") { request async throws -> Response in
-            routeResponse(humanMessageCreate.executeMentionActions(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(MentionActionsRequest.self, request)
+            return try await respond {
+                try humanMessageCreate.executeMentionActions(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         messages.post { request async throws -> Response in
             // requireAuth runs before the body check. An invalid body writes nothing.
-            routeResponse(humanMessageCreate.createHumanMessage(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(HumanMessageCreateRequest.self, request)
+            return try await respond {
+                try humanMessageCreate.createHumanMessage(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
-        messages.get("forward", "targets", "search") { request -> Response in
-            routeResponse(humanMessageCreate.searchForwardTargets(
-                query: desktopQuery(request.url.query, "q"),
-                limit: desktopQuery(request.url.query, "limit"),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        messages.get("forward", "targets", "search") { request async throws -> Response in
+            try await respond {
+                try humanMessageCreate.searchForwardTargets(
+                    query: desktopQuery(request.url.query, "q"),
+                    limit: desktopQuery(request.url.query, "limit"),
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
-        messages.get("forward", "enabled") { request -> Response in
-            routeResponse(humanMessageCreate.messageForwardEnabled(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+        messages.get("forward", "enabled") { request async throws -> Response in
+            try await respond {
+                try humanMessageCreate.messageForwardEnabled(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         attachments.get(":id", "url") { request async throws -> Response in
             if desktopQuery(request.url.query, "previewToken") != nil {
@@ -101,11 +111,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         messages.post("forward") { request async throws -> Response in
-            routeResponse(humanMessageCreate.forwardHumanMessage(
-                body: try await request.bodyText(),
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!]
-            ))
+            let body = await jsonRequestBody(HumanMessageForwardRequest.self, request)
+            return try await respond(headers: { $0.headers }) {
+                try humanMessageCreate.forwardHumanMessage(
+                    body,
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
         }
         messages.get(":messageId", "mention-deliveries") { request async throws -> Response in
             try await respond {

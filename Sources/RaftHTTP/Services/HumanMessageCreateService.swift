@@ -1,551 +1,651 @@
-import Crypto
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
+import RaftShared
 
-/// The human-message create boundary: the v1 create route, the sender-side
-/// mention actions it leaves pending, and the forward lookup plus forward write.
-///
-/// The state transitions stay on `EmailLoginDirectory` with unchanged
-/// signatures, so every existing caller and test compiles untouched. This type
-/// is the `Service` boundary the routes call; the raw body stays the input
-/// because a create body publishes a per-key `issues` list.
-public struct HumanMessageCreateService: Sendable {
-    public let directory: EmailLoginDirectory
-
-    public init(directory: EmailLoginDirectory) {
-        self.directory = directory
-    }
-
-    /// `POST /api/messages`.
-    public func createHumanMessage(
-        body: String,
-        authorization: String?,
-        serverId: String?,
-        contract: String = "v1"
-    ) -> HTTPReply {
-        directory.createHumanMessage(
-            body: body,
-            authorization: authorization,
-            serverId: serverId,
-            contract: contract
-        )
-    }
-
-    /// `POST /api/messages/mention-actions/execute`.
-    public func executeMentionActions(
-        body: String,
-        authorization: String?,
-        serverId: String?
-    ) -> HTTPReply {
-        directory.executeMentionActions(
-            body: body,
-            authorization: authorization,
-            serverId: serverId
-        )
-    }
-
-    /// `GET /internal/agent-api/mention-actions/pending`.
-    public func agentMentionActionsPending(authorization: String?) -> HTTPReply {
-        directory.agentMentionActionsPending(authorization: authorization)
-    }
-
-    /// `GET /api/messages/forward/targets/search`.
-    public func searchForwardTargets(
-        query: String?,
-        limit: String?,
-        authorization: String?,
-        serverId: String?
-    ) -> HTTPReply {
-        directory.searchForwardTargets(
-            query: query,
-            limit: limit,
-            authorization: authorization,
-            serverId: serverId
-        )
-    }
-
-    /// `GET /api/messages/forward/enabled`.
-    public func messageForwardEnabled(authorization: String?, serverId: String?) -> HTTPReply {
-        directory.messageForwardEnabled(authorization: authorization, serverId: serverId)
-    }
-
-    /// `POST /api/messages/forward`.
-    public func forwardHumanMessage(
-        body: String,
-        authorization: String?,
-        serverId: String?
-    ) -> HTTPReply {
-        directory.forwardHumanMessage(
-            body: body,
-            authorization: authorization,
-            serverId: serverId
-        )
-    }
-
-    /// Turns on Computer and App references for one server.
-    public func allowComposerResourceReferences(serverId: String) {
-        directory.allowComposerResourceReferences(serverId: serverId)
-    }
+/// One human-message insert as the message write reports it: the status and
+/// published row body (or the refusal body) and whether this call created the
+/// row.
+struct HumanMessageWrite: Sendable {
+    var status: Int
+    var body: String
+    var created: Bool
 }
 
-extension EmailLoginDirectory {
-    /// Turns on Computer and App references for one server. Installed apps stay empty until recorded separately.
-    public func allowComposerResourceReferences(serverId: String) {
-        lock.lock()
-        composerResourceServers.insert(serverId)
-        lock.unlock()
+/// The mention handles a send resolved and, for a v2 send, the ones it could
+/// not.
+struct ResolvedMentions: Sendable {
+    var mentions: [MentionInput]
+    var unresolved: [String]
+}
+
+/// The v1/v2 contract the create route answers with.
+public enum HumanMessageContract: Sendable, Equatable {
+    case v1
+    case v2
+}
+
+/// The domains that have not migrated yet and that the create, mention-action
+/// and forward routes still depend on.
+///
+/// - `agentReadOutcome`: the agent credential check (`ProfileAndChannelFiles`).
+/// - `storeHumanMessage`: the serialized message append with its attachment
+///   links, read cursor and `message:new` broadcast (`ProfileAndChannelFiles`).
+/// - `resolveMentions` / `recordMemberMentionRows`: mention resolution and the
+///   member mention rows, shared with the agent send and the integrations
+///   (`MessageSend`).
+/// - `jointLocalChannelId`: the joint-channel projection lookup
+///   (`ProfileAndChannelFiles`, also used by the agents surface).
+/// - `messageVisibleToUser`: the shared message visibility policy
+///   (`SearchMentions`).
+/// - `renderForwardItem`: the forwarded-item projection the message read paths
+///   share (`MessageSend`).
+/// - `mentionBindingConflict`: the handle-binding rule the agent send shares.
+struct HumanMessageCreateDependencies: Sendable {
+    var agentReadOutcome: @Sendable (_ authorization: String?) -> ProfileAgentReadOutcome
+    var storeHumanMessage: @Sendable (
+        _ channelId: String,
+        _ senderId: String,
+        _ content: String,
+        _ randomId: String?,
+        _ attachmentIds: [String],
+        _ senderTimezone: String?,
+        _ mentions: [MentionInput]
+    ) -> HumanMessageWrite
+    var resolveMentions: @Sendable (
+        _ serverId: String,
+        _ senderId: String,
+        _ content: String,
+        _ typed: [MentionInput],
+        _ warnUnresolved: Bool
+    ) -> ResolvedMentions
+    var recordMemberMentionRows: @Sendable (
+        _ messageId: String,
+        _ channelId: String,
+        _ mentions: [MentionInput]
+    ) -> Void
+    var jointLocalChannelId: @Sendable (
+        _ canonicalChannelId: String,
+        _ serverId: String?,
+        _ userId: String
+    ) -> String?
+    var messageVisibleToUser: @Sendable (_ channelId: String, _ serverId: String?, _ userId: String) -> Bool
+    var renderForwardItem: @Sendable (_ item: ForwardItemRecord) -> String
+    var mentionBindingConflict: @Sendable (_ mentions: [MentionInput]) -> Bool
+    var now: @Sendable () -> Date
+}
+
+/// The human-message create boundary: the v1/v2 create route, the sender-side
+/// mention actions it leaves pending, the forward lookup and the forward write
+/// (`HumanMessageForwardService.swift`).
+///
+/// Every read-modify-write runs inside one store critical section
+/// (`MessagesAndThreadsStore`, `AgentsRuntimeStore`, `ServersAndChannelsStore`);
+/// a decision that needs rows of another store is made from a snapshot taken
+/// first and handed in as a pure closure, so no store lock is held while
+/// another is taken. The routes only decode a body and project the returned
+/// DTO or the thrown `DomainError`.
+public struct HumanMessageCreateService: Sendable {
+    let channels: ServersAndChannelsStore
+    let messages: MessagesAndThreadsStore
+    let agents: AgentsRuntimeStore
+    let profiles: AuthProfileStore
+    let oauth: OAuthLedger
+    let dependencies: HumanMessageCreateDependencies
+
+    init(
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        agents: AgentsRuntimeStore,
+        profiles: AuthProfileStore,
+        oauth: OAuthLedger,
+        dependencies: HumanMessageCreateDependencies
+    ) {
+        self.channels = channels
+        self.messages = messages
+        self.agents = agents
+        self.profiles = profiles
+        self.oauth = oauth
+        self.dependencies = dependencies
     }
 
-    /// Whether a stored mention is still a pending sender-side action.
-    func pendingAgentMentionLocked(_ mention: StoredMention, agentId: String) -> Bool {
-        guard mention.senderId == agentId,
-              mention.notifiedAt == nil,
-              !mention.notifiableAtSend,
-              Date().timeIntervalSince(mention.createdAt) < 7 * 24 * 60 * 60,
-              let channel = postableChannels[mention.channelId],
-              channel.serverId == pendingAgentMentionServer(agentId: agentId),
-              humanMessageRows.contains(where: { $0.id == mention.messageId })
-        else { return false }
-        return true
-    }
-
-    func pendingAgentMentionServer(agentId: String) -> String? {
-        oauth.agentRuntimeInfo(id: agentId)?.serverId
-    }
-
-    /// `GET /internal/agent-api/mention-actions/pending`. Sender-side outsider
-    /// mentions authored by the bound agent whose delivery was withheld.
-    public func agentMentionActionsPending(authorization: String?) -> HTTPReply {
-        switch agentReadCredential(authorization) {
-        case .failure(let reply):
-            return reply
-        case .success(let agentId):
-            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
-                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-            }
-            lock.lock()
-            var rows = storedMentions.filter { pendingAgentMentionLocked($0, agentId: agentId) }
-            rows.sort { $0.createdAt > $1.createdAt }
-            let limit = 50
-            let hasMore = rows.count > limit
-            let page = rows.prefix(limit).map { mention -> String in
-                let channelName = postableChannels[mention.channelId]?.name ?? ""
-                return "{\"resolutionId\":\(jsonString(mention.id)),\"messageId\":\(jsonString(mention.messageId)),\"channelId\":\(jsonString(mention.channelId)),\"channelName\":\(jsonString(channelName)),\"targetType\":\(jsonString(mention.targetType)),\"targetId\":\(jsonString(mention.targetId)),\"targetHandle\":\(jsonString(mention.handle)),\"availableActions\":[\"notify\"]}"
-            }
-            lock.unlock()
-            return Self.json(200, "{\"pendingMentionActions\":[\(page.joined(separator: ","))],\"has_more\":\(hasMore)}")
-        }
-    }
-
-    /// `POST /internal/agent-api/mention-actions/execute`. Every id is
-    /// revalidated at action time and returns a typed per-id status.
-    public func agentMentionActionsExecute(authorization: String?, body: String) -> HTTPReply {
-        switch agentReadCredential(authorization) {
-        case .failure(let reply):
-            return reply
-        case .success(let agentId):
-            guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
-                return Self.json(401, "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-            }
-            let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] ?? [:]
-            guard let action = object["action"] as? String, action == "notify" || action == "add" else {
-                return Self.json(400, "{\"error\":\"action must be notify or add\"}")
-            }
-            var seen = Set<String>()
-            var ids: [String] = []
-            let rawIds = (object["resolutionIds"] as? [Any]) ?? (object["ids"] as? [Any]) ?? []
-            for raw in rawIds {
-                guard let text = raw as? String else { continue }
-                let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !id.isEmpty, !seen.contains(id) else { continue }
-                seen.insert(id)
-                ids.append(id)
-                if ids.count == 100 { break }
-            }
-            guard !ids.isEmpty else {
-                return Self.json(400, "{\"error\":\"resolutionIds must include at least one id\"}")
-            }
-            lock.lock()
-            defer { lock.unlock() }
-            var results: [String] = []
-            for id in ids {
-                guard let index = storedMentions.firstIndex(where: { $0.id == id }),
-                      storedMentions[index].senderId == agentId,
-                      postableChannels[storedMentions[index].channelId]?.serverId == agent.serverId,
-                      humanMessageRows.contains(where: { $0.id == storedMentions[index].messageId })
-                else {
-                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\(jsonString(action)),\"status\":\"not_found\"}")
-                    continue
-                }
-                if action == "notify" {
-                    guard mentionTargetCanReadLocked(
-                        channelId: storedMentions[index].channelId,
-                        targetType: storedMentions[index].targetType,
-                        targetId: storedMentions[index].targetId
-                    ) else {
-                        results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"no_permission\",\"reason\":\"target_lacks_read_access\"}")
-                        continue
-                    }
-                    let messageId = storedMentions[index].messageId
-                    let targetType = storedMentions[index].targetType
-                    let targetId = storedMentions[index].targetId
-                    var deduped = [id]
-                    for other in storedMentions.indices where storedMentions[other].messageId == messageId
-                        && storedMentions[other].targetType == targetType
-                        && storedMentions[other].targetId == targetId
-                        && storedMentions[other].notifiedAt == nil {
-                        storedMentions[other].notifiedAt = Date()
-                        storedMentions[other].notifiedByType = "agent"
-                        storedMentions[other].notifiedById = agentId
-                        storedMentions[other].notifiedAction = "notify_only"
-                        if storedMentions[other].id != id { deduped.append(storedMentions[other].id) }
-                    }
-                    let dedupedJSON = deduped.map(jsonString).joined(separator: ",")
-                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"queued\",\"dedupedResolutionIds\":[\(dedupedJSON)]}")
-                } else {
-                    let senderStillVisible = mentionSenderStillInChannelLocked(
-                        channelId: storedMentions[index].channelId,
-                        agentId: agentId
+    public init(directory source: EmailLoginDirectory) {
+        self.init(
+            channels: source.serversAndChannelsStore,
+            messages: source.messagesAndThreadsStore,
+            agents: source.agentsRuntimeStore,
+            profiles: source.authProfileStore,
+            oauth: source.oauth,
+            dependencies: HumanMessageCreateDependencies(
+                agentReadOutcome: { [source] authorization in
+                    source.profileAgentReadOutcome(authorization)
+                },
+                storeHumanMessage: { [source] channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
+                    let written = source.storeHumanMessage(
+                        channelId: channelId,
+                        senderId: senderId,
+                        content: content,
+                        randomId: randomId,
+                        attachmentIds: attachmentIds,
+                        senderTimezone: timezone,
+                        mentions: mentions
                     )
-                    guard senderStillVisible else {
-                        results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"no_permission\",\"reason\":\"sender_lacks_channel_access\"}")
-                        continue
-                    }
-                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"no_permission\",\"reason\":\"add_requires_human_member_authority\"}")
-                }
-            }
-            return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"results\":[\(results.joined(separator: ","))]}")
-        }
+                    return HumanMessageWrite(status: written.status, body: written.body, created: written.created)
+                },
+                resolveMentions: { [source] serverId, senderId, content, typed, warnUnresolved in
+                    let resolved = source.resolvedMessageMentions(
+                        serverId: serverId,
+                        senderId: senderId,
+                        content: content,
+                        typed: typed,
+                        warnUnresolved: warnUnresolved
+                    )
+                    return ResolvedMentions(mentions: resolved.mentions, unresolved: resolved.unresolved)
+                },
+                recordMemberMentionRows: { [source] messageId, channelId, mentions in
+                    source.recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
+                },
+                jointLocalChannelId: { [source] canonical, serverId, userId in
+                    source.jointLocalChannelIdLocked(canonicalChannelId: canonical, serverId: serverId, userId: userId)
+                },
+                messageVisibleToUser: { [source] channelId, serverId, userId in
+                    source.searchMentions.messageVisible(
+                        messageChannelId: channelId,
+                        serverId: serverId,
+                        viewer: .user(userId)
+                    )
+                },
+                renderForwardItem: { item in
+                    EmailLoginDirectory.forwardItemJSON(item)
+                },
+                mentionBindingConflict: { mentions in
+                    EmailLoginDirectory.mentionBindingConflict(mentions)
+                },
+                now: { Date() }
+            )
+        )
     }
 
-    /// `add` authority is participant-scoped: an agent that only has read
-    /// access to a public channel is not a channel member for this action.
-    func mentionSenderStillInChannelLocked(channelId: String, agentId: String) -> Bool {
-        guard let channel = postableChannels[channelId] else { return false }
-        return channel.memberIds.contains(agentId) || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+    // MARK: - Session helpers
+
+    /// The user a bearer header resolves to; nil for a missing header, an
+    /// unknown token or a revoked session family.
+    func sessionUserId(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        return profiles.userId(forAccessToken: String(authorization.dropFirst("Bearer ".count)))
     }
 
-    /// `POST /api/messages/mention-actions/execute`. A resolution id belongs to the sender who wrote the mention.
-    public func executeMentionActions(body: String, authorization: String?, serverId: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected:
-            return PublicVisits.authRequired(authorization: authorization)
-        case .user(let id):
-            userId = id
+    /// The forward and lookup routes' bearer check: a missing header and an
+    /// unknown token publish different bodies.
+    func requireUser(_ authorization: String?) throws -> String {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw HumanMessageCreateError.missingAuthorization
         }
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let action = object["action"] as? String,
-              action == "notify" || action == "add"
-        else {
-            return Self.json(400, "{\"error\":\"action must be notify or add\"}")
+        guard let userId = profiles.userId(forAccessToken: String(authorization.dropFirst("Bearer ".count))) else {
+            throw HumanMessageCreateError.invalidToken
         }
-        var seen = Set<String>()
-        var resolutionIds: [String] = []
-        for id in (object["resolutionIds"] as? [Any])?.compactMap({ $0 as? String }) ?? [] where !seen.contains(id) {
-            seen.insert(id)
-            resolutionIds.append(id)
-            if resolutionIds.count == 100 { break }
-        }
-        if resolutionIds.isEmpty {
-            return Self.json(400, "{\"error\":\"resolutionIds must include at least one id\"}")
-        }
-        var results: [String] = []
-        for id in resolutionIds {
-            guard let index = storedMentions.firstIndex(where: { $0.id == id }),
-                  postableChannels[storedMentions[index].channelId]?.serverId == serverId,
-                  storedMentions[index].senderId == userId
-            else {
-                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\(jsonString(action)),\"status\":\"not_found\"}")
-                continue
-            }
-            if action == "notify" {
-                if !mentionTargetCanReadLocked(
-                    channelId: storedMentions[index].channelId,
-                    targetType: storedMentions[index].targetType,
-                    targetId: storedMentions[index].targetId
-                ) {
-                    results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"no_permission\",\"reason\":\"target_lacks_read_access\"}")
-                    continue
-                }
-                if storedMentions[index].notifiedAt == nil {
-                    storedMentions[index].notifiedAt = Date()
-                    storedMentions[index].notifiedByType = "user"
-                    storedMentions[index].notifiedById = userId
-                    storedMentions[index].notifiedAction = "notify_only"
-                    if storedMentions[index].targetType == "agent" {
-                        storedAgentDeliveries.append((
-                            agentId: storedMentions[index].targetId,
-                            messageId: storedMentions[index].messageId,
-                            channelType: "channel"
-                        ))
-                    }
-                }
-                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"notify\",\"status\":\"queued\",\"dedupedResolutionIds\":[\(jsonString(id))]}")
-            } else if storedMentions[index].notifiedAction == "add" {
-                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"delivered\",\"reason\":\"already_delivered\",\"dedupedResolutionIds\":[\(jsonString(id))]}")
-            } else if !senderStillInChannelLocked(channelId: storedMentions[index].channelId, userId: userId) {
-                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"no_permission\",\"reason\":\"sender_lacks_channel_access\"}")
-            } else {
-                storedMentions[index].notifiedAt = Date()
-                storedMentions[index].notifiedByType = "user"
-                storedMentions[index].notifiedById = userId
-                storedMentions[index].notifiedAction = "add"
-                let targetId = storedMentions[index].targetId
-                let mentionChannelId = storedMentions[index].channelId
-                if storedMentions[index].targetType == "agent" {
-                    var agents = channelAgentMembers[mentionChannelId] ?? []
-                    agents.insert(targetId)
-                    channelAgentMembers[mentionChannelId] = agents
-                    storedAgentDeliveries.append((
-                        agentId: targetId,
-                        messageId: storedMentions[index].messageId,
-                        channelType: "channel"
-                    ))
-                } else {
-                    postableChannels[mentionChannelId]?.memberIds.insert(targetId)
-                }
-                results.append("{\"resolutionId\":\(jsonString(id)),\"action\":\"add\",\"status\":\"delivered\",\"dedupedResolutionIds\":[\(jsonString(id))]}")
-            }
-        }
-        lock.unlock()
-        return Self.json(200, "{\"ok\":true,\"action\":\(jsonString(action)),\"results\":[\(results.joined(separator: ","))]}")
+        return userId
     }
 
-    /// A removed channel member can no longer add someone through a mention they sent earlier.
-    func senderStillInChannelLocked(channelId: String, userId: String) -> Bool {
-        guard let stored = postableChannels[channelId] else { return false }
-        if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = postableChannels[parentId] {
-            return parent.memberIds.contains(userId)
+    /// The create and mention-action routes' check: both refusals share the
+    /// public `auth_required` shape.
+    func requirePublicUser(_ authorization: String?) throws -> String {
+        guard let userId = sessionUserId(authorization) else {
+            throw HumanMessageCreateError.authRequired(bearerPresent: authorization?.hasPrefix("Bearer ") == true)
         }
-        return stored.memberIds.contains(userId)
+        return userId
     }
 
-    /// Public channels are readable by any signed-in user. Private surfaces and their threads require membership.
-    func mentionTargetCanReadLocked(channelId: String, targetType: String, targetId: String) -> Bool {
-        guard let stored = postableChannels[channelId] else { return false }
-        let surface: PostableChannel
-        let surfaceId: String
-        if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = postableChannels[parentId] {
-            surface = parent
-            surfaceId = parentId
-        } else {
-            surface = stored
-            surfaceId = channelId
-        }
-        if targetType == "agent" {
-            if surface.kind == "channel" { return true }
-            return channelAgentMembers[surfaceId]?.contains(targetId) == true
-                || channelAgentMembers[channelId]?.contains(targetId) == true
-        }
-        if surface.kind == "channel" { return true }
-        return surface.memberIds.contains(targetId) || stored.memberIds.contains(targetId)
-    }
+    // MARK: - POST /api/messages, POST /api/v2/messages
 
-    /// `POST /api/messages`. A bad human create body is refused before any message row exists.
-    /// An App reference is refused before persistence when that app is not installed on the channel's server.
-    public func createHumanMessage(body: String, authorization: String?, serverId: String?, contract: String = "v1") -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected:
-            return PublicVisits.authRequired(authorization: authorization)
-        case .user(let id):
-            userId = id
-        }
-        guard isEmailVerified(userId: userId) else {
-            return Self.json(403, "{\"error\":\"Email verification required\"}")
+    /// A bad human create body is refused before any message row exists. An App
+    /// reference is refused before persistence when that app is not installed on
+    /// the channel's server.
+    public func createHumanMessage(
+        _ request: HumanMessageCreateRequest?,
+        authorization: String?,
+        serverId: String?,
+        contract: HumanMessageContract = .v1
+    ) throws -> HumanMessageCreatedResponse {
+        let userId = try requirePublicUser(authorization)
+        guard profiles.isEmailVerified(userId: userId) else {
+            throw HumanMessageCreateError.emailVerificationRequired
         }
         if let serverId, !serverId.isEmpty,
            !oauth.memberIds(serverId: serverId).isEmpty,
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+            throw HumanMessageCreateError.notServerMember
         }
-        guard Self.humanMessageBodyIsValid(body) else {
-            return Self.json(400, "{\"error\":\"Invalid message request body\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any],
-              let channelId = object["channelId"] as? String,
-              let content = object["content"] as? String
+        guard let request, Self.isValidCreateBody(request),
+              case .string(let channelId)? = request.channelId,
+              case .string(let content)? = request.content
         else {
-            return Self.json(400, "{\"error\":\"Invalid message request body\"}")
+            throw HumanMessageCreateError.invalidMessageBody
         }
-        if let asTask = object["asTask"], !(asTask is Bool) {
-            return Self.json(400, "{\"error\":\"asTask must be a boolean\"}")
-        }
-        lock.lock()
-        let channel = postableChannels[channelId]
-        let referencesEnabled = composerResourceServers.contains(channel?.serverId ?? "")
-        let installed = installedServerApps[channel?.serverId ?? ""] ?? []
-        lock.unlock()
+        let channelState = channels.state
+        let channel = channelState.postableChannels[channelId]
+        let referencesEnabled = channelState.composerResourceServers.contains(channel?.serverId ?? "")
+        let installed = channelState.installedServerApps[channel?.serverId ?? ""] ?? []
         guard let channel, channel.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
+            throw HumanMessageCreateError.channelNotFound
         }
         let parentMember = channel.kind == "thread"
-            && (channel.parentChannelId.flatMap { postableChannels[$0] }?.memberIds.contains(userId) ?? false)
+            && (channel.parentChannelId.flatMap { channelState.postableChannels[$0] }?.memberIds.contains(userId) ?? false)
         guard channel.memberIds.contains(userId) || parentMember else {
-            return Self.json(403, "{\"error\":\"Forbidden\"}")
+            throw HumanMessageCreateError.forbidden
         }
         // A thread inherits its parent's freeze: no writes under an archived parent.
         let parentArchived = channel.kind == "thread"
             && channel.parentChannelId.flatMap { oauth.channelArchivedAt(id: $0) } != nil
         if channel.archived || parentArchived {
             if oauth.memberRole(serverId: channel.serverId, userId: userId) == "guest" {
-                return Self.json(403, "{\"error\":\"Forbidden\"}")
+                throw HumanMessageCreateError.forbidden
             }
-            return Self.json(409, "{\"error\":\"This channel is archived\",\"code\":\"channel_archived\"}")
+            throw HumanMessageCreateError.channelArchived
         }
         let appIds = Self.appReferenceIds(content)
         if !appIds.isEmpty {
-            if !referencesEnabled {
-                return Self.json(400, "{\"error\":\"Computer and App references are not enabled in this server\"}")
-            }
+            if !referencesEnabled { throw HumanMessageCreateError.referencesNotEnabled }
             if appIds.contains(where: { !installed.contains($0) }) {
-                return Self.json(400, "{\"error\":\"App reference is not installed in this server\"}")
+                throw HumanMessageCreateError.appNotInstalled
             }
         }
-        let attachmentIds = (object["attachmentIds"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let typedMentions = Self.mentionInputs(object["mentions"])
-        if Self.mentionBindingConflict(typedMentions) {
-            return Self.json(400, "{\"error\":\"A mention handle is bound to more than one target\",\"code\":\"mention_binding_conflict\"}")
+        let attachmentIds = Self.strings(in: request.attachmentIds)
+        let typedMentions = AgentSendMessageRequest.mentions(Self.array(request.mentions))
+        if dependencies.mentionBindingConflict(typedMentions) {
+            throw HumanMessageCreateError.mentionBindingConflict
         }
-        let mentionResolution = resolvedMessageMentions(
-            serverId: serverId ?? "",
-            senderId: userId,
-            content: content,
-            typed: typedMentions,
-            warnUnresolved: contract == "v2"
+        let resolution = dependencies.resolveMentions(
+            serverId ?? "",
+            userId,
+            content,
+            typedMentions,
+            contract == .v2
         )
-        let mentions = mentionResolution.mentions
-        let unresolvedMentionHandles = mentionResolution.unresolved
-        let senderTimezone = Self.parseOptionalIanaTimezone(object["timezone"])
-        let reply: HTTPReply
-        var createdMessage = false
-        if object["randomId"] != nil {
-            guard let randomId = object["randomId"] as? String, !randomId.isEmpty, randomId.count <= 128 else {
-                return Self.json(400, "{\"error\":\"randomId must be a non-empty string with at most 128 characters\"}")
+        let mentions = resolution.mentions
+        let senderTimezone = Self.optionalIanaTimezone(request.timezone)
+        var randomId: String?
+        if let raw = request.randomId {
+            guard case .string(let value) = raw, !value.isEmpty, value.count <= 128 else {
+                throw HumanMessageCreateError.invalidRandomId
             }
-            let stored = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: randomId, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
-            reply = Self.json(stored.status, stored.body)
-            createdMessage = stored.created
-        } else {
-            let stored = storeHumanMessage(channelId: channelId, senderId: userId, content: content, randomId: nil, attachmentIds: attachmentIds, senderTimezone: senderTimezone, mentions: mentions)
-            reply = Self.json(stored.status, stored.body)
-            createdMessage = stored.created
+            randomId = value
         }
-        if createdMessage, reply.status == 200,
-           let data = reply.body.data(using: .utf8),
-           let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let messageId = stored["id"] as? String {
-            recordMemberMentionRows(messageId: messageId, channelId: channelId, mentions: mentions)
+        let written = dependencies.storeHumanMessage(
+            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions
+        )
+        guard written.status == 200 else {
+            throw HumanMessageCreateError.messageWriteRejected(status: UInt(written.status), body: written.body)
         }
-        if reply.status == 200, channel.kind == "thread", let parentMessageId = channel.parentMessageId {
-            lock.lock()
-            threadFollows["\(serverId ?? "")\n\(userId)\n\(channelId)"] = (
+        let messageId = Self.messageId(in: written.body)
+        if written.created, let messageId {
+            dependencies.recordMemberMentionRows(messageId, channelId, mentions)
+        }
+        if channel.kind == "thread", let parentMessageId = channel.parentMessageId {
+            recordThreadReplyFollows(
+                channel: channel,
+                channelId: channelId,
+                parentMessageId: parentMessageId,
                 serverId: serverId ?? "",
                 userId: userId,
-                threadChannelId: channelId,
-                parentMessageId: parentMessageId
+                mentions: mentions
             )
-            for mention in mentions where mention.type == "user" || mention.type == "agent" {
-                guard ServerScope.isUUID(mention.id), mention.id != userId else { continue }
-                let parent = channel.parentChannelId.flatMap { postableChannels[$0] }
-                let parentAllowsHuman = parent?.kind == "channel" || parent?.memberIds.contains(mention.id) == true
-                let parentAllowsAgent = parent?.kind == "channel"
-                    || parent?.agentId == mention.id
-                    || channel.parentChannelId.flatMap { channelAgentMembers[$0]?.contains(mention.id) } == true
-                let valid: Bool
-                if mention.type == "user" {
-                    valid = parentAllowsHuman
-                        && accounts.values.contains { $0.id == mention.id }
-                        && oauth.memberRole(serverId: serverId ?? "", userId: mention.id) != nil
+        }
+        guard let messageId else {
+            return HumanMessageCreatedResponse(
+                messageJSON: written.body,
+                nested: false,
+                pendingMentionActions: [],
+                deliveryWarnings: [],
+                unresolvedMentionHandles: []
+            )
+        }
+        let pending = pendingMentionActions(channelId: channelId, messageId: messageId, mentions: mentions)
+        if contract == .v2 {
+            return HumanMessageCreatedResponse(
+                messageJSON: written.body,
+                nested: true,
+                pendingMentionActions: pending,
+                deliveryWarnings: stoppedAgentDeliveryWarnings(channelId: channelId, messageId: messageId),
+                unresolvedMentionHandles: resolution.unresolved
+            )
+        }
+        return HumanMessageCreatedResponse(
+            messageJSON: written.body,
+            nested: !pending.isEmpty,
+            pendingMentionActions: pending,
+            deliveryWarnings: [],
+            unresolvedMentionHandles: []
+        )
+    }
+
+    /// The sender follows the thread they reply in; a direct mention of a member
+    /// who may read the parent follows it too, and reactivates a suppressed
+    /// follow only for a parent member. Eligibility is decided from snapshots;
+    /// the follow and suppression rows change in one store critical section.
+    private func recordThreadReplyFollows(
+        channel: PostableChannel,
+        channelId: String,
+        parentMessageId: String,
+        serverId: String,
+        userId: String,
+        mentions: [MentionInput]
+    ) {
+        let postable = channels.state.postableChannels
+        let agentMembers = agents.channelAgentMembers
+        let parent = channel.parentChannelId.flatMap { postable[$0] }
+        var mentioned: [ThreadMentionFollowTarget] = []
+        for mention in mentions where mention.type == "user" || mention.type == "agent" {
+            guard ServerScope.isUUID(mention.id), mention.id != userId else { continue }
+            let parentAllowsHuman = parent?.kind == "channel" || parent?.memberIds.contains(mention.id) == true
+            let parentAllowsAgent = parent?.kind == "channel"
+                || parent?.agentId == mention.id
+                || channel.parentChannelId.flatMap { agentMembers[$0]?.contains(mention.id) } == true
+            let valid: Bool
+            if mention.type == "user" {
+                valid = parentAllowsHuman
+                    && profiles.account(userId: mention.id) != nil
+                    && oauth.memberRole(serverId: serverId, userId: mention.id) != nil
+            } else {
+                valid = parentAllowsAgent
+                    && oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
+            }
+            if valid {
+                mentioned.append(ThreadMentionFollowTarget(
+                    userId: mention.id,
+                    isParentMember: parent?.memberIds.contains(mention.id) == true
+                ))
+            }
+        }
+        messages.applyThreadReplyFollows(
+            serverId: serverId,
+            threadChannelId: channelId,
+            parentMessageId: parentMessageId,
+            senderId: userId,
+            mentioned: mentioned
+        )
+    }
+
+    /// Outsider mentions on a new human send are returned beside the message,
+    /// not inside it. The resolution rows are written in one store critical
+    /// section.
+    private func pendingMentionActions(
+        channelId: String,
+        messageId: String,
+        mentions: [MentionInput]
+    ) -> [PendingMentionAction] {
+        let channel = channels.state.postableChannels[channelId]
+        let members = channel?.memberIds ?? []
+        let serverId = channel?.serverId
+        let directMessage = channel?.kind == "dm"
+        let serverAgents = agents.serverAgents
+        let channelAgents = Set(oauth.channelAgentIds(channelId: channelId))
+        var candidates: [PendingMentionCandidate] = []
+        var avatars: [String?] = []
+        for mention in mentions {
+            guard mention.type == "user" || mention.type == "agent",
+                  ServerScope.isUUID(mention.id),
+                  !mention.name.isEmpty
+            else { continue }
+            let avatar: String?
+            if mention.type == "user" {
+                guard let account = profiles.account(userId: mention.id), !members.contains(mention.id) else { continue }
+                avatar = account.avatarUrl
+            } else {
+                if channelAgents.contains(mention.id) { continue }
+                if let agent = serverAgents[mention.id], agent.serverId == serverId {
+                    avatar = agent.avatarUrl
+                } else if let agent = oauth.agentRuntimeInfo(id: mention.id), agent.serverId == serverId, !agent.deleted {
+                    avatar = agent.avatarUrl
                 } else {
-                    valid = parentAllowsAgent
-                        && oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
-                }
-                if valid {
-                    let suppressionKey = "\(serverId ?? "")\n\(mention.id)\n\(channelId)"
-                    if threadUnfollows[suppressionKey] != nil {
-                        // A direct mention reactivates a suppressed thread only for
-                        // a member of the parent channel. An outsider mention stays
-                        // hidden; it must not resurrect the follow.
-                        guard channel.parentChannelId.flatMap({ postableChannels[$0] })?.memberIds.contains(mention.id) == true else {
-                            continue
-                        }
-                        threadUnfollows.removeValue(forKey: suppressionKey)
-                    }
-                    threadFollows["\(serverId ?? "")\n\(mention.id)\n\(channelId)"] = (
-                        serverId: serverId ?? "",
-                        userId: mention.id,
-                        threadChannelId: channelId,
-                        parentMessageId: parentMessageId
-                    )
+                    continue
                 }
             }
-            lock.unlock()
+            candidates.append(PendingMentionCandidate(type: mention.type, id: mention.id, name: mention.name))
+            avatars.append(avatar)
         }
-        if contract == "v2" {
-            return v2HumanSend(reply, channelId: channelId, mentions: mentions, unresolvedMentionHandles: unresolvedMentionHandles)
+        guard !candidates.isEmpty else { return [] }
+        let resolutionIds = messages.resolvePendingMentionRows(
+            messageId: messageId,
+            channelId: channelId,
+            candidates: candidates
+        )
+        guard !directMessage else { return [] }
+        let expiresAt = Self.pendingMentionExpiry(from: dependencies.now())
+        return zip(zip(candidates, avatars), resolutionIds).map { pair, resolutionId in
+            PendingMentionAction(
+                resolutionId: resolutionId,
+                messageId: messageId,
+                targetType: pair.0.type,
+                targetHandle: pair.0.name,
+                targetAvatarUrl: pair.1,
+                expiresAt: expiresAt
+            )
         }
-        return withPendingMentionActions(reply, channelId: channelId, mentions: mentions)
     }
 
-    /// `GET /api/messages/forward/enabled`. The rollout flag is retired, so this stays true.
-    public func messageForwardEnabled(authorization: String?, serverId: String?) -> HTTPReply {
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let userId):
-            guard isEmailVerified(userId: userId) else {
-                return Self.json(403, "{\"error\":\"Email verification required\"}")
+    /// A DM delivery to a stopped agent is dropped as `wake_suppressed` and
+    /// reported to the v2 sender as `agent_stopped`.
+    private func stoppedAgentDeliveryWarnings(channelId: String, messageId: String) -> [MessageDeliveryWarning] {
+        guard let channel = channels.state.postableChannels[channelId],
+              channel.kind == "dm",
+              let agentId = channel.agentId,
+              agents.recordStoppedAgentDelivery(agentId: agentId, messageId: messageId, channelType: channel.kind)
+        else { return [] }
+        return [MessageDeliveryWarning(agentId: agentId)]
+    }
+
+    // MARK: - POST /api/messages/mention-actions/execute
+
+    /// A resolution id belongs to the sender who wrote the mention.
+    public func executeMentionActions(
+        _ request: MentionActionsRequest?,
+        authorization: String?,
+        serverId: String?
+    ) throws -> MentionActionsResponse {
+        let userId = try requirePublicUser(authorization)
+        guard let request, case .string(let action)? = request.action,
+              action == "notify" || action == "add"
+        else {
+            throw HumanMessageCreateError.actionMustBeNotifyOrAdd
+        }
+        var seen = Set<String>()
+        var resolutionIds: [String] = []
+        for id in Self.strings(in: request.resolutionIds) where !seen.contains(id) {
+            seen.insert(id)
+            resolutionIds.append(id)
+            if resolutionIds.count == 100 { break }
+        }
+        if resolutionIds.isEmpty { throw HumanMessageCreateError.resolutionIdsRequired }
+        let postable = channels.state.postableChannels
+        let agentMembers = agents.channelAgentMembers
+        let steps = messages.applyUserMentionActions(
+            ids: resolutionIds,
+            action: action,
+            userId: userId,
+            now: dependencies.now(),
+            inScope: { postable[$0.channelId]?.serverId == serverId },
+            targetCanRead: {
+                Self.targetCanRead(
+                    channels: postable,
+                    agentMembers: agentMembers,
+                    channelId: $0.channelId,
+                    targetType: $0.targetType,
+                    targetId: $0.targetId
+                )
+            },
+            senderStillInChannel: {
+                Self.userStillInChannel(channels: postable, channelId: $0.channelId, userId: userId)
+            }
+        )
+        for step in steps {
+            for effect in step.effects {
+                switch effect {
+                case .deliver(let agentId, let messageId):
+                    agents.recordMentionDelivery(agentId: agentId, messageId: messageId, joiningChannelId: nil)
+                case .addAgent(let channelId, let agentId, let messageId):
+                    agents.recordMentionDelivery(agentId: agentId, messageId: messageId, joiningChannelId: channelId)
+                case .addMember(let channelId, let memberId):
+                    channels.addChannelMember(channelId: channelId, userId: memberId)
+                }
             }
         }
-        guard let serverId, !serverId.isEmpty else {
-            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
-        }
-        return Self.json(200, "{\"enabled\":true}")
+        return MentionActionsResponse(action: action, results: steps.map(\.result))
     }
 
-    /// `GET /api/messages/forward/targets/search`. An empty query returns no targets.
-    public func searchForwardTargets(query: String?, limit rawLimit: String?, authorization: String?, serverId: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
+    // MARK: - GET /internal/agent-api/mention-actions/pending
+
+    /// Sender-side outsider mentions authored by the bound agent whose delivery
+    /// was withheld.
+    public func agentMentionActionsPending(authorization: String?) throws -> AgentPendingMentionActionsResponse {
+        let agentId = try requireAgent(authorization)
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+            throw HumanMessageCreateError.invalidToken
         }
-        lock.lock()
-        let retired = accounts.values.first { $0.id == userId }?.retiredAt != nil
-        lock.unlock()
-        guard !retired else {
-            return Self.json(401, "{\"error\":\"Unauthorized\"}")
+        let postable = channels.state.postableChannels
+        let messageState = messages.state
+        let messageIds = Set(messageState.humanMessageRows.map(\.id))
+        let now = dependencies.now()
+        var rows = messageState.storedMentions.filter { mention in
+            guard mention.senderId == agentId,
+                  mention.notifiedAt == nil,
+                  !mention.notifiableAtSend,
+                  now.timeIntervalSince(mention.createdAt) < 7 * 24 * 60 * 60,
+                  let channel = postable[mention.channelId],
+                  channel.serverId == agent.serverId,
+                  messageIds.contains(mention.messageId)
+            else { return false }
+            return true
         }
-        guard isEmailVerified(userId: userId) else {
-            return Self.json(403, "{\"error\":\"Email verification required\"}")
+        rows.sort { $0.createdAt > $1.createdAt }
+        let limit = 50
+        let page = rows.prefix(limit).map { mention in
+            AgentPendingMentionAction(
+                resolutionId: mention.id,
+                messageId: mention.messageId,
+                channelId: mention.channelId,
+                channelName: postable[mention.channelId]?.name ?? "",
+                targetType: mention.targetType,
+                targetId: mention.targetId,
+                targetHandle: mention.handle
+            )
         }
-        guard let serverId, !serverId.isEmpty else {
-            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
+        return AgentPendingMentionActionsResponse(pendingMentionActions: page, hasMore: rows.count > limit)
+    }
+
+    // MARK: - POST /internal/agent-api/mention-actions/execute
+
+    /// Every id is revalidated at action time and returns a typed per-id status.
+    public func agentMentionActionsExecute(
+        authorization: String?,
+        _ request: MentionActionsRequest?
+    ) throws -> MentionActionsResponse {
+        let agentId = try requireAgent(authorization)
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
+            throw HumanMessageCreateError.invalidToken
         }
+        guard let request, case .string(let action)? = request.action,
+              action == "notify" || action == "add"
+        else {
+            throw HumanMessageCreateError.actionMustBeNotifyOrAdd
+        }
+        var seen = Set<String>()
+        var ids: [String] = []
+        let rawIds = Self.array(request.resolutionIds) ?? Self.array(request.ids) ?? []
+        for raw in rawIds {
+            guard case .string(let text) = raw else { continue }
+            let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !seen.contains(id) else { continue }
+            seen.insert(id)
+            ids.append(id)
+            if ids.count == 100 { break }
+        }
+        guard !ids.isEmpty else { throw HumanMessageCreateError.resolutionIdsRequired }
+        let postable = channels.state.postableChannels
+        let agentMembers = agents.channelAgentMembers
+        let requestedMentions = messages.state.storedMentions.filter { ids.contains($0.id) }
+        let rosterChannels = Set(requestedMentions.map(\.channelId).filter {
+            oauth.channelAgentIds(channelId: $0).contains(agentId)
+        })
+        let results = messages.applyAgentMentionActions(
+            ids: ids,
+            action: action,
+            agentId: agentId,
+            now: dependencies.now(),
+            inScope: { postable[$0.channelId]?.serverId == agent.serverId },
+            targetCanRead: {
+                Self.targetCanRead(
+                    channels: postable,
+                    agentMembers: agentMembers,
+                    channelId: $0.channelId,
+                    targetType: $0.targetType,
+                    targetId: $0.targetId
+                )
+            },
+            senderStillInChannel: { mention in
+                guard let channel = postable[mention.channelId] else { return false }
+                return channel.memberIds.contains(agentId) || rosterChannels.contains(mention.channelId)
+            }
+        )
+        return MentionActionsResponse(action: action, results: results)
+    }
+
+    private func requireAgent(_ authorization: String?) throws -> String {
+        switch dependencies.agentReadOutcome(authorization) {
+        case .success(let agentId):
+            return agentId
+        case .missingAuthorization:
+            throw HumanMessageCreateError.missingAuthorization
+        case .invalidCredential:
+            throw HumanMessageCreateError.invalidToken
+        }
+    }
+
+    // MARK: - GET /api/messages/forward/enabled
+
+    /// The rollout flag is retired, so this stays true.
+    public func messageForwardEnabled(authorization: String?, serverId: String?) throws -> MessageForwardEnabledResponse {
+        let userId = try requireUser(authorization)
+        guard profiles.isEmailVerified(userId: userId) else {
+            throw HumanMessageCreateError.emailVerificationRequired
+        }
+        guard let serverId, !serverId.isEmpty else { throw HumanMessageCreateError.missingServerIdHeader }
+        return MessageForwardEnabledResponse()
+    }
+
+    // MARK: - GET /api/messages/forward/targets/search
+
+    /// An empty query returns no targets.
+    public func searchForwardTargets(
+        query: String?,
+        limit rawLimit: String?,
+        authorization: String?,
+        serverId: String?
+    ) throws -> ForwardTargetsResponse {
+        let userId = try requireUser(authorization)
+        guard profiles.account(userId: userId)?.retiredAt == nil else {
+            throw HumanMessageCreateError.unauthorized
+        }
+        guard profiles.isEmailVerified(userId: userId) else {
+            throw HumanMessageCreateError.emailVerificationRequired
+        }
+        guard let serverId, !serverId.isEmpty else { throw HumanMessageCreateError.missingServerIdHeader }
         let q = (query ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if q.isEmpty {
-            return Self.json(200, "{\"targets\":[]}")
-        }
+        if q.isEmpty { return ForwardTargetsResponse(targets: []) }
         let pageLimit: Int
         if let rawLimit, let parsed = Int(rawLimit), parsed > 0 {
             pageLimit = min(parsed, 20)
         } else {
             pageLimit = 20
         }
-        lock.lock()
-        defer { lock.unlock() }
-        let role = serverMemberRoles["\(serverId)\n\(userId)"]
+        let channelState = channels.state
+        let serverAgents = agents.serverAgents
+        let accounts = profiles.accounts
+        let accountsById = Dictionary(accounts.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let role = channelState.serverMemberRoles["\(serverId)\n\(userId)"]
         let isGuest = role == "guest"
-        let hideHumans = hideHumansFromMembers[serverId] == true || isGuest
-        var results: [(score: Int, title: String, json: String)] = []
-        for (id, channel) in postableChannels where channel.serverId == serverId && channel.deletedAt == nil && !channel.archived {
+        let hideHumans = channelState.hideHumansFromMembers[serverId] == true || isGuest
+        var results: [(score: Int, title: String, target: ForwardTarget)] = []
+        for (id, channel) in channelState.postableChannels
+        where channel.serverId == serverId && channel.deletedAt == nil && !channel.archived {
             guard channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint" else { continue }
             let score = Self.forwardTargetScore(q, channel.name.lowercased())
             if score <= 0 { continue }
@@ -558,7 +658,7 @@ extension EmailLoginDirectory {
             results.append((
                 score + (joined ? 50 : 0),
                 title,
-                Self.forwardTargetJSON(
+                ForwardTarget(
                     type: "channel",
                     channelType: channel.kind,
                     id: id,
@@ -574,12 +674,14 @@ extension EmailLoginDirectory {
             ))
         }
         var dmPeerIds = Set<String>()
-        for (id, channel) in postableChannels where channel.serverId == serverId && channel.kind == "dm" && channel.deletedAt == nil && channel.memberIds.contains(userId) {
+        for (id, channel) in channelState.postableChannels
+        where channel.serverId == serverId && channel.kind == "dm" && channel.deletedAt == nil
+            && channel.memberIds.contains(userId) {
             let peerId = channel.agentId ?? channel.memberIds.first { $0 != userId }
             guard let peerId else { continue }
             dmPeerIds.insert(peerId)
             let agent = serverAgents[peerId]
-            let account = accounts.values.first { $0.id == peerId }
+            let account = accountsById[peerId]
             let label = agent?.name ?? account?.name ?? peerId
             let score = Self.forwardTargetScore(q, label.lowercased())
             if score <= 0 { continue }
@@ -587,7 +689,7 @@ extension EmailLoginDirectory {
             results.append((
                 score + 50,
                 title,
-                Self.forwardTargetJSON(
+                ForwardTarget(
                     type: "dm",
                     channelType: "dm",
                     id: peerId,
@@ -610,7 +712,7 @@ extension EmailLoginDirectory {
                 results.append((
                     score,
                     title,
-                    Self.forwardTargetJSON(
+                    ForwardTarget(
                         type: "agent",
                         channelType: nil,
                         id: agent.id,
@@ -627,19 +729,19 @@ extension EmailLoginDirectory {
             }
         }
         if !hideHumans {
-            for (key, memberRole) in serverMemberRoles {
+            for (key, memberRole) in channelState.serverMemberRoles {
                 let parts = key.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
                 guard parts.count == 2, parts[0] == serverId, memberRole != "guest" else { continue }
                 let memberId = parts[1]
                 if memberId == userId || dmPeerIds.contains(memberId) { continue }
-                guard let account = accounts.values.first(where: { $0.id == memberId }) else { continue }
+                guard let account = accountsById[memberId] else { continue }
                 let score = Self.forwardTargetScore(q, account.name.lowercased())
                 if score <= 0 { continue }
                 let title = "@\(account.name)"
                 results.append((
                     score,
                     title,
-                    Self.forwardTargetJSON(
+                    ForwardTarget(
                         type: "human",
                         channelType: nil,
                         id: memberId,
@@ -659,242 +761,129 @@ extension EmailLoginDirectory {
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             return lhs.title < rhs.title
         }
-        let targets = results.prefix(pageLimit).map(\.json).joined(separator: ",")
-        return Self.json(200, "{\"targets\":[\(targets)]}")
+        return ForwardTargetsResponse(targets: results.prefix(pageLimit).map(\.target))
     }
 
+    // MARK: - Pure policy and parsing helpers
 
-
-    /// `POST /api/messages/forward`. An empty note becomes `Forwarded N message(s)` in the destination.
-    public func forwardHumanMessage(body: String, authorization: String?, serverId: String?) -> HTTPReply {
-        let userId: String
-        switch authorize(authorization) {
-        case .rejected(let reply):
-            return reply
-        case .user(let id):
-            userId = id
-        }
-        guard isEmailVerified(userId: userId) else {
-            return Self.json(403, "{\"error\":\"Email verification required\"}")
-        }
-        guard let serverId, !serverId.isEmpty else {
-            return Self.json(400, "{\"error\":\"Missing X-Server-Id header\"}")
-        }
-        guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else {
-            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
-        }
-        let destinationChannelId: String
-        if let raw = object["destinationChannelId"] as? String {
-            destinationChannelId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let raw = object["channelId"] as? String {
-            destinationChannelId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Public channels are readable by any signed-in user. Private surfaces and
+    /// their threads require membership.
+    static func targetCanRead(
+        channels: [String: PostableChannel],
+        agentMembers: [String: Set<String>],
+        channelId: String,
+        targetType: String,
+        targetId: String
+    ) -> Bool {
+        guard let stored = channels[channelId] else { return false }
+        let surface: PostableChannel
+        let surfaceId: String
+        if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = channels[parentId] {
+            surface = parent
+            surfaceId = parentId
         } else {
-            destinationChannelId = ""
+            surface = stored
+            surfaceId = channelId
         }
-        let note: String?
-        if object["note"] == nil || object["note"] is NSNull {
-            note = ""
-        } else if let raw = object["note"] as? String {
-            note = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        } else {
-            note = nil
+        if targetType == "agent" {
+            if surface.kind == "channel" { return true }
+            return agentMembers[surfaceId]?.contains(targetId) == true
+                || agentMembers[channelId]?.contains(targetId) == true
         }
-        let sourceIds = Self.forwardSourceIds(object["sourceMessageIds"])
-        if object["destinationChannelIds"] != nil {
-            guard let sourceIds, let note else {
-                return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
-            }
-            if note.count > 32_000 {
-                return Self.json(400, "{\"error\":\"Message content exceeds maximum length of 32000 characters\"}")
-            }
-            return forwardToMany(
-                object: object,
-                sourceIds: sourceIds,
-                note: note,
-                authorization: authorization,
-                serverId: serverId
-            )
-        }
-        guard !destinationChannelId.isEmpty, let sourceIds, let note else {
-            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
-        }
-        if note.count > 32_000 {
-            return Self.json(400, "{\"error\":\"Message content exceeds maximum length of 32000 characters\"}")
-        }
-        let randomId: String
-        if object["randomId"] == nil || object["randomId"] is NSNull {
-            randomId = "forward-\(UUID().uuidString.lowercased())"
-        } else if let raw = object["randomId"] as? String, !raw.isEmpty, raw.count <= 128 {
-            randomId = raw
-        } else {
-            return Self.json(400, "{\"error\":\"Destination channel and full source message ids are required\"}")
-        }
-        let content = note.isEmpty
-            ? "Forwarded \(sourceIds.count) message\(sourceIds.count == 1 ? "" : "s")"
-            : note
-        lock.lock()
-        if let existing = humanMessageRows.first(where: { $0.senderId == userId && $0.randomId == randomId }) {
-            if existing.channelId == destinationChannelId,
-               existing.content == content,
-               let record = forwardRecords[existing.id],
-               record.sourceIds == sourceIds {
-                let snapshot = existing
-                lock.unlock()
-                return Self.forwardMessageReply(message: snapshot, record: record, outcome: "idempotent_replay")
-            }
-            lock.unlock()
-            return Self.json(409, "{\"error\":\"This forward request id was already used for different content\",\"code\":\"idempotency_conflict\"}")
-        }
-        guard let destination = postableChannels[destinationChannelId],
-              destination.serverId == serverId,
-              destination.deletedAt == nil
-        else {
-            lock.unlock()
-            return Self.json(404, "{\"error\":\"Channel not found\"}")
-        }
-        guard destination.memberIds.contains(userId) else {
-            lock.unlock()
-            return Self.json(403, "{\"error\":\"You must join this channel to send messages\"}")
-        }
-        var pending: [PendingForwardSource] = []
-        for id in sourceIds {
-            guard let message = humanMessageRows.first(where: { $0.id == id }) else {
-                lock.unlock()
-                return Self.json(404, "{\"error\":\"Source message not found\"}")
-            }
-            let jointLocalId = jointLocalChannelIdLocked(canonicalChannelId: message.channelId, serverId: serverId, userId: userId)
-            let channel = jointLocalId.flatMap { postableChannels[$0] }
-                ?? (searchMentions.messageVisible(messageChannelId: message.channelId, serverId: serverId, viewer: .user(userId))
-                    ? postableChannels[message.channelId] : nil)
-            guard let channel else {
-                lock.unlock()
-                return Self.json(404, "{\"error\":\"Source message not found\"}")
-            }
-            if message.actionKind == "forwarded-bundle" || forwardedBundles[message.id] != nil {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Forwarded messages can't be forwarded. Select the original message instead.\",\"code\":\"forwarded_source_not_supported\"}")
-            }
-            if message.messageType != "chat" || message.actionKind != nil {
-                lock.unlock()
-                return Self.json(400, "{\"error\":\"Only ordinary chat messages can be forwarded\",\"code\":\"unsupported_source_message\"}")
-            }
-            let attachments = channelAttachments.values
-                .filter { $0.messageId == message.id }
-                .sorted { ($0.messagePosition ?? 0) < ($1.messagePosition ?? 0) }
-            pending.append(PendingForwardSource(
-                messageId: message.id,
-                content: message.content,
-                createdAt: message.createdAt,
-                channelId: jointLocalId ?? message.channelId,
-                channelKind: channel.kind,
-                channelName: channel.name,
-                parentChannelId: channel.parentChannelId,
-                senderId: message.senderId,
-                attachments: attachments
-            ))
-        }
-        let selectedThreads = Set(pending.filter { $0.channelKind == "thread" }.map(\.channelId))
-        let prepared = pending.map { source in
-            (source, forwardContextLocked(source: source, selectedThreads: selectedThreads))
-        }
-        if Set(prepared.map { $0.1.bundleSourceId }).count != 1 {
-            lock.unlock()
-            return Self.json(400, "{\"error\":\"Forwarded bundles must come from a single source\",\"code\":\"cross_source_bundle\"}")
-        }
-        let ordered = prepared.sorted { lhs, rhs in
-            if lhs.1.sourceIsThreadParent != rhs.1.sourceIsThreadParent {
-                return lhs.1.sourceIsThreadParent
-            }
-            if lhs.0.createdAt != rhs.0.createdAt { return lhs.0.createdAt < rhs.0.createdAt }
-            return lhs.0.messageId < rhs.0.messageId
-        }
-        var legacy: [ForwardedSource] = []
-        var itemRecords: [ForwardItemRecord] = []
-        var projections: [(attachment: ChannelAttachment, id: String, position: Int)] = []
-        var position = 0
-        for (source, context) in ordered {
-            let exposed = context.sourceTargetId != nil
-            legacy.append(ForwardedSource(
-                sourceServerId: exposed ? serverId : "",
-                sourceTargetId: context.sourceTargetId ?? "",
-                sourceMessageId: exposed ? source.messageId : "",
-                snapshotId: context.snapshotId ?? "",
-                snapshotType: context.snapshotType,
-                snapshotLabel: context.snapshotLabel,
-                snapshotLabelVisibility: context.snapshotLabelVisibility,
-                provenanceState: "available"
-            ))
-            var snapshots: [ForwardAttachmentSnapshot] = []
-            for attachment in source.attachments {
-                let projectedId = UUID().uuidString.lowercased()
-                snapshots.append(ForwardAttachmentSnapshot(
-                    id: projectedId,
-                    filename: attachment.filename,
-                    mimeType: attachment.mimeType ?? "",
-                    sizeBytes: attachment.sizeBytes ?? 0,
-                    width: attachment.width,
-                    height: attachment.height
-                ))
-                projections.append((attachment, projectedId, position))
-                position += 1
-            }
-            let exposesPointers = context.snapshotLabelVisibility == "public" && context.sourceTargetId != nil
-            let uniqueName = accounts.values.first { $0.id == source.senderId }?.name ?? "unknown"
-            itemRecords.append(ForwardItemRecord(
-                sourceMessageId: source.messageId,
-                exposesPointers: exposesPointers,
-                sourceAuthorUniqueName: uniqueName,
-                sourceIsThreadParent: context.sourceIsThreadParent,
-                contentSnapshot: source.content,
-                sourceTargetId: context.sourceTargetId,
-                sourceThreadId: context.sourceThreadId,
-                parentChannelId: context.parentChannelId,
-                snapshotId: context.snapshotId,
-                snapshotType: context.snapshotType,
-                snapshotLabel: context.snapshotLabel,
-                snapshotLabelVisibility: context.snapshotLabelVisibility,
-                provenanceState: "available",
-                attachments: snapshots,
-                attachmentPolicy: snapshots.isEmpty ? "excluded" : "projected"
-            ))
-        }
-        let storageChannelId = jointProjections.first { $0.localChannelId == destinationChannelId }?.canonicalChannelId ?? destinationChannelId
-        let record = StoredForwardRecord(sourceIds: sourceIds, items: itemRecords, destinationTargetId: destinationChannelId)
-        lock.unlock()
-        let storedWrite = storeHumanMessage(
-            channelId: storageChannelId,
-            senderId: userId,
-            content: content,
-            randomId: randomId,
-            attachmentIds: []
-        )
-        let storedReply = Self.json(storedWrite.status, storedWrite.body)
-        guard storedReply.status == 200,
-              let data = storedReply.body.data(using: .utf8),
-              let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let messageId = stored["id"] as? String
-        else { return storedReply }
-        lock.lock()
-        forwardedBundles[messageId] = legacy
-        forwardRecords[messageId] = record
-        if let index = humanMessageRows.firstIndex(where: { $0.id == messageId }) {
-            humanMessageRows[index].attachmentIds = projections.map(\.id)
-        }
-        for projection in projections {
-            var copy = projection.attachment
-            copy.id = projection.id
-            copy.channelId = destinationChannelId
-            copy.messageId = messageId
-            copy.messagePosition = projection.position
-            channelAttachments[copy.id] = copy
-        }
-        guard var message = humanMessageRows.first(where: { $0.id == messageId }) else {
-            lock.unlock()
-            return storedReply
-        }
-        lock.unlock()
-        message.channelId = destinationChannelId
-        return Self.forwardMessageReply(message: message, record: record, outcome: "success")
+        if surface.kind == "channel" { return true }
+        return surface.memberIds.contains(targetId) || stored.memberIds.contains(targetId)
     }
 
+    /// A removed channel member can no longer add someone through a mention they
+    /// sent earlier.
+    static func userStillInChannel(channels: [String: PostableChannel], channelId: String, userId: String) -> Bool {
+        guard let stored = channels[channelId] else { return false }
+        if stored.kind == "thread", let parentId = stored.parentChannelId, let parent = channels[parentId] {
+            return parent.memberIds.contains(userId)
+        }
+        return stored.memberIds.contains(userId)
+    }
+
+    static func forwardTargetScore(_ query: String, _ candidate: String) -> Int {
+        if candidate.isEmpty { return 0 }
+        if candidate == query { return 400 }
+        if candidate.hasPrefix(query) { return 300 }
+        if candidate.range(of: " \(query)") != nil { return 250 }
+        if let range = candidate.range(of: query) {
+            let index = candidate.distance(from: candidate.startIndex, to: range.lowerBound)
+            return max(1, 150 - index)
+        }
+        return 0
+    }
+
+    /// The seven-day window a pending outsider mention stays actionable, as an
+    /// ISO-8601 instant without fractional seconds.
+    static func pendingMentionExpiry(from now: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: now.addingTimeInterval(7 * 24 * 60 * 60))
+    }
+
+    static func appReferenceIds(_ content: String) -> [String] {
+        var ids: [String] = []
+        for match in content.matches(of: /<app:([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+)>/) {
+            let id = String(match.1)
+            if !ids.contains(id) { ids.append(id) }
+        }
+        return ids
+    }
+
+    /// The legacy body check: a UUID `channelId`, an `attachmentIds` that is an
+    /// array of UUID strings when present (a `null` is not an array) and an
+    /// `asTask` that is a boolean when present. `content` is checked by the
+    /// caller together with the channel id so both failures share the refusal.
+    static func isValidCreateBody(_ request: HumanMessageCreateRequest) -> Bool {
+        guard case .string(let channelId)? = request.channelId, ServerScope.isUUID(channelId) else { return false }
+        if let attachments = request.attachmentIds {
+            guard case .array(let ids) = attachments else { return false }
+            for id in ids {
+                guard case .string(let string) = id, ServerScope.isUUID(string) else { return false }
+            }
+        }
+        if let asTask = request.asTask {
+            guard case .bool = asTask else { return false }
+        }
+        return true
+    }
+
+    /// The optional IANA zone a sender reports: a trimmed `UTC` or `Area/City`
+    /// name Foundation recognizes, canonicalized; anything else is dropped.
+    static func optionalIanaTimezone(_ value: JSONValue?) -> String? {
+        guard case .string(let raw)? = value else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.count > 128 { return nil }
+        if trimmed != "UTC" && !trimmed.contains("/") { return nil }
+        if trimmed == "UTC" { return "UTC" }
+        guard let zone = TimeZone(identifier: trimmed) else { return nil }
+        let canonical = zone.identifier
+        if canonical != "UTC" && !canonical.contains("/") { return nil }
+        return canonical
+    }
+
+    static func array(_ value: JSONValue?) -> [JSONValue]? {
+        guard case .array(let items)? = value else { return nil }
+        return items
+    }
+
+    /// The string entries of an array value; a non-array yields none.
+    static func strings(in value: JSONValue?) -> [String] {
+        (array(value) ?? []).compactMap {
+            guard case .string(let string) = $0 else { return nil }
+            return string
+        }
+    }
+
+    private struct StoredMessageId: Decodable {
+        var id: String
+    }
+
+    /// The `id` of a stored row's published body.
+    static func messageId(in body: String) -> String? {
+        (try? JSONDecoder().decode(StoredMessageId.self, from: Data(body.utf8)))?.id
+    }
 }

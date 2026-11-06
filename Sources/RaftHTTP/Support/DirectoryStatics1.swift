@@ -205,56 +205,6 @@ extension EmailLoginDirectory {
         return Self.json(200, body)
     }
 
-    static func forwardTargetScore(_ query: String, _ candidate: String) -> Int {
-        if candidate.isEmpty { return 0 }
-        if candidate == query { return 400 }
-        if candidate.hasPrefix(query) { return 300 }
-        if candidate.range(of: " \(query)") != nil { return 250 }
-        if let range = candidate.range(of: query) {
-            let index = candidate.distance(from: candidate.startIndex, to: range.lowerBound)
-            return max(1, 150 - index)
-        }
-        return 0
-    }
-
-    static func forwardTargetJSON(
-        type: String,
-        channelType: String?,
-        id: String,
-        title: String,
-        subtitle: String,
-        avatarUrl: String?,
-        channelId: String?,
-        joined: Bool?,
-        dmExists: Bool?,
-        canForwardNow: Bool,
-        requiredAction: String?
-    ) -> String {
-        let channelTypeJSON = channelType.map { jsonString($0) } ?? "null"
-        let avatarJSON = avatarUrl.map { jsonString($0) } ?? "null"
-        let channelJSON = channelId.map { jsonString($0) } ?? "null"
-        let joinedJSON = joined.map { $0 ? "true" : "false" } ?? "null"
-        let dmJSON = dmExists.map { $0 ? "true" : "false" } ?? "null"
-        let requiredJSON = requiredAction.map { jsonString($0) } ?? "null"
-        return "{\"type\":\(jsonString(type)),\"channelType\":\(channelTypeJSON),\"id\":\(jsonString(id)),\"title\":\(jsonString(title)),\"subtitle\":\(jsonString(subtitle)),\"avatarUrl\":\(avatarJSON),\"channelId\":\(channelJSON),\"joined\":\(joinedJSON),\"dmExists\":\(dmJSON),\"canForwardNow\":\(canForwardNow ? "true" : "false"),\"requiredAction\":\(requiredJSON)}"
-    }
-
-    static func forwardMessageReply(message: StoredHumanMessage, record: StoredForwardRecord, outcome: String) -> HTTPReply {
-        let items = forwardItemsJSON(record.items)
-        var body = "{\"id\":\(jsonString(message.id)),\"messageType\":\"chat\",\"channelId\":\(jsonString(message.channelId)),\"content\":\(jsonString(message.content)),\"attachments\":[\(attachmentJSON(message.attachmentIds))]"
-        if let randomId = message.randomId {
-            body += ",\"randomId\":\(jsonString(randomId))"
-        }
-        body += ",\"actionMetadata\":{\"kind\":\"forwarded-bundle\",\"destinationTargetId\":\(jsonString(record.destinationTargetId)),\"forwardedItems\":[\(items)]}}"
-        var reply = json(200, body)
-        reply.headers["X-Raft-Forward-Outcome"] = outcome
-        return reply
-    }
-
-    static func forwardItemsJSON(_ items: [ForwardItemRecord]) -> String {
-        items.map { forwardItemJSON($0) }.joined(separator: ",")
-    }
-
     static func forwardAttachmentSnapshotsJSON(_ snapshots: [ForwardAttachmentSnapshot]) -> String {
         snapshots.map { snap in
             let width = snap.width.map(String.init) ?? "null"
@@ -290,40 +240,6 @@ extension EmailLoginDirectory {
         return "{\"sourceMessageId\":null,\"sourceIsThreadParent\":\(parent),\"contentSnapshot\":\(jsonString(item.contentSnapshot)),\"sourceServerId\":null,\"sourceTargetId\":null,\"sourceThreadId\":null,\"parentChannelId\":null,\"sourceTargetSnapshot\":{\"id\":null,\"type\":\(jsonString(type)),\"label\":\"\",\"labelVisibility\":\"restricted\"},\"attachmentSnapshots\":[\(attachments)],\"attachmentPolicy\":\(jsonString(item.attachmentPolicy)),\"provenanceState\":\"original_unavailable\"}"
     }
 
-    static func forwardDestinationIds(_ value: Any?) -> [String]? {
-        guard let rows = value as? [Any], !rows.isEmpty else { return nil }
-        var ids: [String] = []
-        var seen = Set<String>()
-        for row in rows {
-            guard let raw = row as? String else { return nil }
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard ServerScope.isUUID(id) else { return nil }
-            if seen.insert(id).inserted {
-                ids.append(id)
-            }
-        }
-        if ids.isEmpty || ids.count > 10 { return nil }
-        return ids
-    }
-
-    static func forwardSourceIds(_ value: Any?) -> [String]? {
-        guard let rows = value as? [Any], !rows.isEmpty, rows.count <= 20 else { return nil }
-        var ids: [String] = []
-        for row in rows {
-            guard let raw = row as? String else { return nil }
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard ServerScope.isUUID(id), !ids.contains(id) else { return nil }
-            ids.append(id)
-        }
-        return ids
-    }
-
-    static func pendingMentionExpiry() -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.string(from: Date().addingTimeInterval(7 * 24 * 60 * 60))
-    }
-
     static func mentionBindingConflict(_ mentions: [MentionInput]) -> Bool {
         var byName: [String: String] = [:]
         for mention in mentions where mention.type == "user" || mention.type == "agent" {
@@ -343,18 +259,6 @@ extension EmailLoginDirectory {
             if !handle.isEmpty, !handles.contains(handle) { handles.append(handle) }
         }
         return handles
-    }
-
-    static func mentionInputs(_ value: Any?) -> [MentionInput] {
-        guard let rows = value as? [Any] else { return [] }
-        return rows.compactMap { row in
-            guard let object = row as? [String: Any],
-                  let type = object["type"] as? String,
-                  let id = object["id"] as? String,
-                  let name = object["name"] as? String
-            else { return nil }
-            return MentionInput(type: type, id: id, name: name)
-        }
     }
 
     static func previewBase64URL(_ data: Data) -> String {
@@ -621,45 +525,6 @@ extension EmailLoginDirectory {
         }
         body += "}"
         return json(200, body)
-    }
-
-    static func appReferenceIds(_ content: String) -> [String] {
-        var ids: [String] = []
-        for match in content.matches(of: /<app:([a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)+)>/) {
-            let id = String(match.1)
-            if !ids.contains(id) { ids.append(id) }
-        }
-        return ids
-    }
-
-    static func parseOptionalIanaTimezone(_ value: Any?) -> String? {
-        guard let raw = value as? String else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed.count > 128 { return nil }
-        if trimmed != "UTC" && !trimmed.contains("/") { return nil }
-        if trimmed == "UTC" { return "UTC" }
-        guard let zone = TimeZone(identifier: trimmed) else { return nil }
-        let canonical = zone.identifier
-        if canonical != "UTC" && !canonical.contains("/") { return nil }
-        return canonical
-    }
-
-    static func humanMessageBodyIsValid(_ body: String) -> Bool {
-        guard let data = body.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let channelId = object["channelId"] as? String,
-              ServerScope.isUUID(channelId)
-        else { return false }
-        if let attachments = object["attachmentIds"] {
-            guard let ids = attachments as? [Any] else { return false }
-            for id in ids {
-                guard let string = id as? String, ServerScope.isUUID(string) else { return false }
-            }
-        }
-        if object["asTask"] != nil {
-            guard object["asTask"] is Bool else { return false }
-        }
-        return true
     }
 
     static func featureFlagKey(_ value: Any) -> String? {
