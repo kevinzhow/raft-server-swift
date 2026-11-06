@@ -84,6 +84,33 @@ func respond(
     }
 }
 
+/// A success body that owns its exact published order and whose headers depend
+/// on the value just produced.
+///
+/// The task-create idempotent replay is the current caller: a first write uses
+/// the standard header set and a replay of the stored body publishes the
+/// legacy `Content-Type` / `Cache-Control` set without `X-Robots-Tag`. Keeping
+/// this overload separate from the `Encodable` one is what lets an ordered DTO
+/// carry a payload-dependent header policy.
+func respond<DTO: JSONBodyConvertible>(
+    status: UInt = 200,
+    headers: @escaping (DTO) -> ResponseHeaders,
+    _ call: () async throws -> DTO
+) async throws -> Response {
+    do {
+        let payload = try await call()
+        return response(orderedReply(
+            status: status,
+            body: payload.jsonBody.render(),
+            headers: headers(payload)
+        ))
+    } catch let error as any DomainError {
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
+    }
+}
+
 /// A route whose published success carries no body (204) and the bare
 /// `Content-Length: 0` header set.
 func respond(_ call: () async throws -> NoContentResponse) async throws -> Response {

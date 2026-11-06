@@ -749,6 +749,261 @@ extension EmailLoginDirectory {
         return Self.json(200, "{\"messageId\":\(jsonString(messageId)),\"metadata\":\(metadata)}")
     }
 
+
+    func agentHistoryThread(parentId: String, anchorMessageId: String) -> String? {
+        for (id, channel) in postableChannels {
+            guard channel.kind == "thread" else { continue }
+            guard channel.parentChannelId == parentId else { continue }
+            guard channel.parentMessageId == anchorMessageId else { continue }
+            guard channel.deletedAt == nil else { continue }
+            return id
+        }
+        return nil
+    }
+
+    func agentHistoryThreadById(parentId: String, suffix: String) -> String? {
+        for (id, channel) in postableChannels {
+            guard channel.kind == "thread" else { continue }
+            guard channel.parentChannelId == parentId else { continue }
+            guard id.hasPrefix(suffix) else { continue }
+            guard channel.deletedAt == nil else { continue }
+            return id
+        }
+        return nil
+    }
+
+    func agentHistoryThreadByAnchorPrefix(parentId: String, suffix: String) -> String? {
+        for (id, channel) in postableChannels {
+            guard channel.kind == "thread" else { continue }
+            guard channel.parentChannelId == parentId else { continue }
+            guard channel.parentMessageId?.hasPrefix(suffix) == true else { continue }
+            guard channel.deletedAt == nil else { continue }
+            return id
+        }
+        return nil
+    }
+
+    func actionCardTarget(serverId: String, agentId: String, target: String) -> (local: String, storage: String)? {
+        guard target.hasPrefix("#") else { return nil }
+        let name = String(target.dropFirst())
+        lock.lock()
+        var local: String?
+        for (id, channel) in postableChannels {
+            guard channel.serverId == serverId, channel.name == name, channel.deletedAt == nil,
+                  channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint"
+            else { continue }
+            if channel.kind != "channel",
+               !channel.memberIds.contains(agentId),
+               !oauth.channelAgentIds(channelId: id).contains(agentId) {
+                continue
+            }
+            local = id
+            break
+        }
+        let storage = local.flatMap { id in jointProjections.first { $0.localChannelId == id }?.canonicalChannelId } ?? local
+        lock.unlock()
+        guard let local, let storage else { return nil }
+        return (local, storage)
+    }
+
+    /// Third-party text is rendered inert before it reaches agents: agent
+    /// markup literals are escaped and `@name` refs become plain `user:name`
+    /// labels, so a publisher name cannot fabricate a mention or a result tag.
+
+    /// `@name` outside markdown code becomes the plain `user:name` label;
+    /// backticked spans are literal data and keep their shape.
+
+    func marketplaceInstallActionJSON(_ card: MarketplaceInstallCard, includeDraftHint: Bool = true) -> String {
+        let scopes = card.scopes.map(jsonString).joined(separator: ",")
+        let draftHint = includeDraftHint
+            ? ",\"draftHint\":\(jsonString("\(card.agentName) requested \(card.clientName), which is public in the Raft Marketplace but is not installed on this Server. Installing is a Server owner/admin action; the Agent cannot install it automatically."))"
+            : ""
+        let setupUrl = card.setupUrl.map(jsonString) ?? "null"
+        return "{\"type\":\"integration:install_marketplace_app\",\"clientId\":\(jsonString(card.clientRecordId)),\"clientKey\":\(jsonString(card.clientKey)),\"clientName\":\(jsonString(card.clientName)),\"clientNameSha256\":\(jsonString(card.clientNameSha256)),\"agentId\":\(jsonString(card.agentId)),\"agentName\":\(jsonString(card.agentName)),\"scopes\":[\(scopes)],\"setupUrl\":\(setupUrl),\"setupRevision\":\(card.setupRevision)\(draftHint)}"
+    }
+
+    func marketplaceInstallPresentationJSON(_ card: MarketplaceInstallCard) -> String {
+        var items: [String] = []
+        items.append("{\"key\":\"clientId\",\"value\":\(jsonString(card.clientRecordId))}")
+        items.append("{\"key\":\"clientKey\",\"value\":\(jsonString(card.clientKey))}")
+        items.append("{\"key\":\"clientName\",\"value\":\(jsonString(card.clientName))}")
+        items.append("{\"key\":\"agentId\",\"value\":\(jsonString(card.agentId))}")
+        items.append("{\"key\":\"agentName\",\"value\":\(jsonString(card.agentName))}")
+        if !card.scopes.isEmpty {
+            let scopes = card.scopes.map(jsonString).joined(separator: ", ")
+            items.append("{\"key\":\"scopes\",\"value\":\(jsonString(scopes))}")
+        }
+        let warning = "This installs the Marketplace app for this Server so @\(card.agentName) can request the listed scopes."
+        return "{\"title\":\(jsonString("Install \(card.clientName) on this Server")),\"confirmLabel\":\"Install App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\(jsonString(warning)),\"riskLevel\":\"elevated\"}"
+    }
+
+    func marketplaceInstallMetadataJSON(_ card: MarketplaceInstallCard) -> String {
+        let executedAt = card.state == "executed" ? jsonString(ISO8601DateFormatter().string(from: Date())) : "null"
+        let executedBy = card.executedByUserId.map(jsonString) ?? "null"
+        let result = card.resultJSON ?? "null"
+        return "{\"kind\":\"action-card\",\"sourceServerId\":\(jsonString(card.serverId)),\"targetServerName\":\(jsonString(actionCardServerName(card.serverId))),\"action\":\(marketplaceInstallActionJSON(card)),\"presentation\":\(marketplaceInstallPresentationJSON(card)),\"state\":\(jsonString(card.state)),\"executedAt\":\(executedAt),\"executedByUserId\":\(executedBy),\"result\":\(result)}"
+    }
+
+    /// The message projection of every prepared card, keyed by message id.
+    func actionCardMetadataLocked(messageId: String) -> String? {
+        if let card = marketplaceInstallCards[messageId] {
+            return marketplaceInstallMetadataJSON(card)
+        }
+        if let card = integrationRegisterCards[messageId] {
+            return integrationRegisterMetadataJSON(card)
+        }
+        return nil
+    }
+
+    func integrationRegisterActionJSON(_ card: IntegrationRegisterCard) -> String {
+        var fields: [String] = [
+            "\"type\":\"integration:register_app\"",
+            "\"name\":\(jsonString(card.name))",
+        ]
+        if let clientKey = card.clientKey { fields.append("\"clientKey\":\(jsonString(clientKey))") }
+        if let homepageUrl = card.homepageUrl { fields.append("\"homepageUrl\":\(jsonString(homepageUrl))") }
+        fields.append("\"returnUrl\":\(jsonString(card.returnUrl))")
+        if let agentManifestUrl = card.agentManifestUrl {
+            fields.append("\"agentManifestUrl\":\(jsonString(agentManifestUrl))")
+        }
+        let scopes = card.scopes.map(jsonString).joined(separator: ",")
+        fields.append("\"scopes\":[" + scopes + "]")
+        if let setupUrl = card.setupUrl { fields.append("\"setupUrl\":\(jsonString(setupUrl))") }
+        if let setupDescription = card.setupDescription { fields.append("\"setupDescription\":\(jsonString(setupDescription))") }
+        return "{" + fields.joined(separator: ",") + "}"
+    }
+
+    func integrationRegisterPresentationJSON(_ card: IntegrationRegisterCard) -> String {
+        var items: [String] = [
+            "{\"key\":\"name\",\"value\":\(jsonString(card.name))}",
+        ]
+        if let clientKey = card.clientKey {
+            items.append("{\"key\":\"clientKey\",\"value\":\(jsonString(clientKey))}")
+        }
+        items.append("{\"key\":\"returnUrl\",\"value\":\(jsonString(card.returnUrl))}")
+        if !card.scopes.isEmpty {
+            let scopes = card.scopes.map(jsonString).joined(separator: ", ")
+            items.append("{\"key\":\"scopes\",\"value\":\(jsonString(scopes))}")
+        }
+        return "{\"title\":\(jsonString("Register Connected App \(card.name)")),\"confirmLabel\":\"Register App\",\"genericApprovalAllowed\":true,\"displayItems\":[\(items.joined(separator: ","))],\"warning\":\"The requesting agent becomes the initial app owner. No client secret is stored in this card.\",\"riskLevel\":\"elevated\"}"
+    }
+
+    func integrationRegisterMetadataJSON(_ card: IntegrationRegisterCard) -> String {
+        let executedBy = card.executedByUserId.map(jsonString) ?? "null"
+        let result = card.resultJSON ?? "null"
+        return "{\"kind\":\"action-card\",\"sourceServerId\":\(jsonString(card.serverId)),\"targetServerName\":\(jsonString(actionCardServerName(card.serverId))),\"action\":\(integrationRegisterActionJSON(card)),\"presentation\":\(integrationRegisterPresentationJSON(card)),\"state\":\(jsonString(card.state)),\"executedByUserId\":\(executedBy),\"result\":\(result)}"
+    }
+
+    func prepareIntegrationRegisterCard(
+        serverId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        name: String,
+        clientKey: String?,
+        homepageUrl: String?,
+        returnUrl: String,
+        agentManifestUrl: String?,
+        setupUrl: String? = nil,
+        setupDescription: String? = nil,
+        scopes: [String],
+        target: (local: String, storage: String)
+    ) -> String {
+        let messageId = UUID().uuidString.lowercased()
+        let agentName = agent.displayName.isEmpty ? agent.name : agent.displayName
+        let card = IntegrationRegisterCard(
+            messageId: messageId,
+            serverId: serverId,
+            agentId: agent.id,
+            agentName: agentName,
+            storageChannelId: target.storage,
+            localCarrierChannelId: target.local,
+            name: name,
+            clientKey: clientKey,
+            homepageUrl: homepageUrl,
+            returnUrl: returnUrl,
+            agentManifestUrl: agentManifestUrl,
+            setupUrl: setupUrl,
+            setupDescription: setupDescription,
+            scopes: scopes,
+            state: "prepared",
+            executedByUserId: nil,
+            resultJSON: nil
+        )
+        let content = "Operation: register Login with Raft app \(name) (\(clientKey ?? "auto-generated client key"))"
+        lock.lock()
+        appendHumanMessageLocked(StoredHumanMessage(
+            id: messageId,
+            channelId: target.storage,
+            senderId: agent.id,
+            content: content,
+            randomId: nil,
+            messageType: "chat",
+            senderType: "agent",
+            actionKind: "action-card"
+        ))
+        integrationRegisterCards[messageId] = card
+        lock.unlock()
+        return messageId
+    }
+
+    func executeIntegrationRegisterCard(
+        _ card: IntegrationRegisterCard,
+        userId: String,
+        serverId: String,
+        body: String
+    ) -> HTTPReply {
+        guard card.serverId == serverId else {
+            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
+        }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
+        }
+        guard role == "owner" || role == "admin" else {
+            return Self.json(403, "{\"error\":\"Only Server owners and admins can register apps\",\"errorCode\":\"FORBIDDEN\"}")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        if let expectedState = object?["expectedState"] as? String, expectedState != card.state {
+            return Self.json(409, "{\"error\":\"The action card state changed\",\"code\":\"STATE_MISMATCH\"}")
+        }
+        if card.state == "executed" {
+            return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(card))}")
+        }
+        guard let agent = oauth.agentRuntimeInfo(id: card.agentId), !agent.deleted else {
+            return Self.json(409, "{\"error\":\"Requesting agent no longer exists; prepare a fresh request\",\"errorCode\":\"AGENT_BINDING_CHANGED\"}")
+        }
+        let clientKey = card.clientKey ?? Self.generatedIntegrationClientKey(card.name)
+        let created: CreatedOAuthClient
+        do {
+            created = try oauth.createClient(
+                serverId: card.serverId,
+                createdByUserId: userId,
+                name: card.name,
+                clientId: clientKey,
+                appType: "server_local",
+                homepageUrl: card.homepageUrl,
+                returnUrl: card.returnUrl,
+                allowedScopes: card.scopes,
+                agentManifestUrl: card.agentManifestUrl,
+                setupUrl: card.setupUrl,
+                setupDescription: card.setupDescription
+            )
+        } catch let error as OAuthClientRejection {
+            return Self.json(409, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"APP_REGISTRATION_REJECTED\"}")
+        } catch {
+            return Self.json(400, "{\"error\":\"Invalid app registration\",\"errorCode\":\"INVALID_APP_METADATA\"}")
+        }
+        oauth.addClientMaintainer(clientRecordId: created.id, agentId: card.agentId)
+        let scopes = card.scopes.map(jsonString).joined(separator: ",")
+        let result = "{\"kind\":\"integration-app-registration\",\"mode\":\"register\",\"clientId\":\(jsonString(created.id)),\"clientKey\":\(jsonString(created.clientId)),\"clientName\":\(jsonString(card.name)),\"scopes\":[\(scopes)]}"
+        var updated = card
+        updated.state = "executed"
+        updated.executedByUserId = userId
+        updated.resultJSON = result
+        lock.lock()
+        integrationRegisterCards[card.messageId] = updated
+        lock.unlock()
+        return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(updated))}")
+    }
+
     /// `POST /api/actions/:messageId/mark-executed`: a human records an action
     /// card as already carried out. Guests are read-only and cannot mark it.
 }

@@ -1,13 +1,12 @@
 Sources/RaftHTTP/DTO/RealtimeEventDTO.swift	1
 Sources/RaftHTTP/Services/ActionCardExecuteService.swift	9
-Sources/RaftHTTP/Services/ActionCardIntegrationRegisterService.swift	13
-Sources/RaftHTTP/Services/ActionCardMarketplaceService.swift	14
+Sources/RaftHTTP/Services/ActionCardIntegrationRegisterService.swift	15
 Sources/RaftHTTP/Services/AgentHostedMigrationService.swift	21
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	23
 Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	22
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	8
 Sources/RaftHTTP/Services/AttachmentsAndNotificationsService.swift	9
-Sources/RaftHTTP/Services/AuthCoreService.swift	16
+Sources/RaftHTTP/Services/AuthCoreService.swift	21
 Sources/RaftHTTP/Services/AuthIdentitiesService.swift	7
 Sources/RaftHTTP/Services/ComputersFleetService.swift	14
 Sources/RaftHTTP/Services/FeedbackMultiAppService.swift	16

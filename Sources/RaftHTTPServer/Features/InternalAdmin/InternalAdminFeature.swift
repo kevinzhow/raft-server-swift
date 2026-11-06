@@ -220,11 +220,20 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("tasks") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTasksCreate(
-                authorization: request.headers[.authorization],
-                legacyAgentId: request.parameters.get("agentId"),
-                body: try await request.bodyText()
-            ))
+            // The published handler accepted a raw JSON body, so the typed
+            // decode falls back to the collected bytes. The raw text is also
+            // what the idempotency fingerprint covers.
+            let rawBody = try await request.bodyText()
+            let body = (try? await request.content.decode(AgentTaskCreateRequest.self))
+                ?? (try? JSONDecoder().decode(AgentTaskCreateRequest.self, from: Data(rawBody.utf8)))
+            return try await respond(headers: { $0.headers }) {
+                try services.emailAccounts.actionCardMarketplace.createTasks(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    rawBody: rawBody,
+                    legacyAgentId: request.parameters.get("agentId")
+                )
+            }
         }
         agent.post("tasks", "claim") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentTaskClaim(
@@ -241,18 +250,24 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             ))
         }
         agent.post("tasks", "delete") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskDelete(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId")
-            ))
+            let body = await jsonRequestBody(AgentTaskDeleteRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardMarketplace.deleteTask(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId")
+                )
+            }
         }
         agent.post("tasks", "convert") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentTaskConvert(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}"),
-                legacyAgentId: request.parameters.get("agentId")
-            ))
+            let body = await jsonRequestBody(AgentTaskConvertRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.actionCardMarketplace.convertTask(
+                    authorization: request.headers[.authorization],
+                    body: body,
+                    legacyAgentId: request.parameters.get("agentId")
+                )
+            }
         }
         agent.post("messages", ":messageId", "reactions") { request async throws -> Response in
             routeResponse(services.emailAccounts.mutateAgentMessageReaction(
