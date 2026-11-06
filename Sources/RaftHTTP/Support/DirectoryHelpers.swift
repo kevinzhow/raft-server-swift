@@ -7,25 +7,7 @@ import FoundationNetworking
 // MARK: Directory helpers
 
 /// Locale, slug, social/Apple token and model helpers shared by the services.
-/// The two hands-feedback setters at the top are the remaining test seams here;
-/// they move to the `TestSupport` target in a later slice.
 extension EmailLoginDirectory {
-
-    public func setHandsFeedbackForTesting(baseURL: String?, appId: String?, appToken: String?, appSlug: String? = nil) {
-        lock.lock()
-        handsFeedbackBaseURLOverride = baseURL
-        handsFeedbackAppIdOverride = appId
-        handsFeedbackAppSlugOverride = appSlug
-        handsFeedbackAppTokenOverride = appToken
-        productFeedbackReporterSessionCache.removeAll()
-        productFeedbackRouteBindingSuccesses.removeAll()
-        productFeedbackRouteVerifiedCommitments.removeAll()
-        lock.unlock()
-    }
-
-    public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?) {
-        lock.lock(); handsFeedbackUpstreamHandler = handler; lock.unlock()
-    }
 
     /// Shipped UI catalogs only. Region tags collapse inside `en` and `zh-cn`; `zh-TW` and `fr` do not.
     static func normalizeDisplayLocale(_ raw: String) -> String? {

@@ -18,13 +18,13 @@ public final class PublicServerDirectory: @unchecked Sendable {
     public var guestRolloutEnabled: Bool
     public var translationAvailable: Bool
     public var searchIndexEnabled: Bool
-    private let lock = NSLock()
+    let lock = NSLock()
     private var clock: Int
     private var nextPublicId = 1
     private var tokens: [String: String] = [:]
     private var emails: [String: String] = [:]
     private var invites: [String: EmailInvite] = [:]
-    private var servers: [Server] = []
+    var servers: [Server] = []
 
     public init(
         rolloutEnabled: Bool = true,
@@ -331,14 +331,6 @@ public final class PublicServerDirectory: @unchecked Sendable {
         case setChannelPrivate(id: String, privateChannel: Bool)
     }
 
-    public func setServerPublicIdForTesting(serverId: String, publicId: String) {
-        lock.lock()
-        if let index = servers.firstIndex(where: { $0.id == serverId }) {
-            servers[index].publicId = publicId
-        }
-        lock.unlock()
-    }
-
     public func apply(_ edit: Edit) {
         lock.lock()
         defer { lock.unlock() }
@@ -604,14 +596,14 @@ public final class PublicServerDirectory: @unchecked Sendable {
         )
     }
 
-    private struct Reply {
+    struct Reply {
         var content: String
         var createdAtMs: Int
         var updatedAtMs: Int
         var senderName: String
     }
 
-    private struct Thread {
+    struct Thread {
         var id: String
         var publicId: String?
         var parentContent: String
@@ -624,7 +616,7 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var replies: [Reply]
     }
 
-    private struct Channel {
+    struct Channel {
         var id: String
         var publicId: String?
         var name: String
@@ -638,7 +630,7 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var isPrivate: Bool = false
     }
 
-    private struct Server {
+    struct Server {
         var id: String
         var publicId: String?
         var name: String

@@ -113,57 +113,6 @@ public struct FeedbackService: Sendable {
         }
     }
 
-    // MARK: - Test seams
-
-    /// Installs the SecureString-shaped `HANDS_FEEDBACK_APPS` JSON. Production
-    /// reads this from SSM; the port has no AWS client, so the composition root
-    /// (or a test) supplies the payload.
-    func setHandsFeedbackApps(_ appsJSON: String?) {
-        locked {
-            directory.handsFeedbackAppsJSON = appsJSON
-            directory.productFeedbackReporterSessionCache.removeAll()
-            directory.productFeedbackRouteBindingSuccesses.removeAll()
-            directory.productFeedbackRouteVerifiedCommitments.removeAll()
-        }
-    }
-
-    /// Overlays the legacy `HANDS_FEEDBACK_*` environment view for a test.
-    func setHandsFeedbackLegacyEnvironment(_ values: [String: String]?) {
-        locked {
-            directory.handsFeedbackLegacyEnvironment = values
-            directory.productFeedbackReporterSessionCache.removeAll()
-            directory.productFeedbackRouteBindingSuccesses.removeAll()
-            directory.productFeedbackRouteVerifiedCommitments.removeAll()
-        }
-    }
-
-    /// Operator log sink (upstream uses `console.warn`). Tests install one to
-    /// assert the fixed reason codes without reading process output.
-    func setWarningSink(_ sink: ((String) -> Void)?) {
-        locked { directory.handsFeedbackWarningSink = sink }
-    }
-
-    /// Labels committed into `integrationSecretCommitments` by route binding.
-    func routeCommitmentLabels() -> [String] {
-        locked { Array(directory.productFeedbackRouteCommitments.keys).sorted() }
-    }
-
-    func resetRouteBindingCache() {
-        locked {
-            directory.productFeedbackRouteBindingSuccesses.removeAll()
-            directory.productFeedbackRouteVerifiedCommitments.removeAll()
-            directory.productFeedbackRouteCommitments.removeAll()
-        }
-    }
-
-    func setConversation(enabled: Bool, appToken: String?) {
-        locked {
-            directory.handsConversationSessionEnabled = enabled
-            directory.handsConversationAppTokenOverride = appToken
-            directory.productFeedbackReporterSessionCache.removeAll()
-        }
-    }
-
     // MARK: - Configuration resolution
 
     func legacyEnvironmentLocked() -> [String: String] {
@@ -611,26 +560,6 @@ extension EmailLoginDirectory {
         "hands_list", "hands_session_mint", "hands_session_verify",
     ]
 
-    public func setHandsFeedbackAppsForTesting(_ appsJSON: String?) {
-        FeedbackService(directory: self).setHandsFeedbackApps(appsJSON)
-    }
-
-    public func setHandsFeedbackLegacyEnvironmentForTesting(_ values: [String: String]?) {
-        FeedbackService(directory: self).setHandsFeedbackLegacyEnvironment(values)
-    }
-
-    public func setHandsFeedbackWarningSinkForTesting(_ sink: ((String) -> Void)?) {
-        FeedbackService(directory: self).setWarningSink(sink)
-    }
-
-    public func productFeedbackRouteCommitmentLabelsForTesting() -> [String] {
-        FeedbackService(directory: self).routeCommitmentLabels()
-    }
-
-    public func resetProductFeedbackRouteBindingCacheForTesting() {
-        FeedbackService(directory: self).resetRouteBindingCache()
-    }
-
     func feedbackWarn(_ message: String) {
         FeedbackService(directory: self).warn(message)
     }
@@ -777,10 +706,6 @@ extension EmailLoginDirectory {
 
     func feedbackAvailabilityReply(_ failure: FeedbackRouteFailure) -> HTTPReply {
         FeedbackService(directory: self).availabilityReply(failure)
-    }
-
-    public func setHandsConversationForTesting(enabled: Bool, appToken: String?) {
-        FeedbackService(directory: self).setConversation(enabled: enabled, appToken: appToken)
     }
 
     func handsReporterId(_ userId: String) -> String {
