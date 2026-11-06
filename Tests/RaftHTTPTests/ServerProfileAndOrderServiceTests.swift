@@ -135,7 +135,16 @@ private func sortedJSON(_ object: [String: Any]) -> String {
 }
 
 private func attestationService(directory: EmailLoginDirectory) -> ServerProfileAndOrderService {
-    var dependencies = ServerProfileAndOrderDependencies.live(directory: directory)
+    var dependencies = ServerProfileAndOrderDependencies(
+        auth: directory.authCore,
+        machineIdForCredential: directory.machinesAndHostedRuntime.machineIdForCredential,
+        oauth: directory.oauth,
+        channels: directory.serversAndChannelsStore,
+        messages: directory.messagesAndThreadsStore,
+        profiles: directory.authProfileStore,
+        machines: directory.machinesAndComputersStore,
+        agents: directory.agentsRuntimeStore
+    )
     dependencies.now = { attestationNow }
     dependencies.makeUUID = { "00000000-0000-4000-8000-00000000abcd" }
     dependencies.environment = { [:] }

@@ -134,7 +134,16 @@ private func makeService(
     now: Date = followStart,
     publish: @escaping @Sendable (ThreadFollowersUpdatedPayload) -> Void = { _ in }
 ) -> ThreadsService {
-    var dependencies = ThreadsDependencies.live(directory: accounts)
+    var dependencies = ThreadsDependencies(
+        auth: accounts.authCore,
+        channels: accounts.serversAndChannelsStore,
+        profiles: accounts.authProfileStore,
+        tasks: accounts.tasksAndRemindersStore,
+        oauth: accounts.oauth,
+        channelProbeAccess: accounts.agentsLifecycle.channelProbeAccess,
+        guestCanSeeScope: accounts.agentsLifecycle.guestCanSeeScope,
+        visibility: ManagedMCPChannelVisibility(oauth: accounts.oauth, channels: accounts.serversAndChannelsStore)
+    )
     dependencies.now = { now }
     return ThreadsService(
         store: accounts.messagesAndThreadsStore,

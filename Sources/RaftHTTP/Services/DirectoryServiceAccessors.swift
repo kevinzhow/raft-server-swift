@@ -652,13 +652,40 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Thread projections and follow state use the current channel owners.
+    public func threads(
+        publishFollowersUpdated: @escaping @Sendable (ThreadFollowersUpdatedPayload) -> Void = { _ in }
+    ) -> ThreadsService {
+        ThreadsService(
+            store: messagesAndThreadsStore,
+            dependencies: ThreadsDependencies(
+                auth: authCore,
+                channels: serversAndChannelsStore,
+                profiles: authProfileStore,
+                tasks: tasksAndRemindersStore,
+                oauth: oauth,
+                channelProbeAccess: agentsLifecycle.channelProbeAccess,
+                guestCanSeeScope: agentsLifecycle.guestCanSeeScope,
+                visibility: ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore)
+            ),
+            publishFollowersUpdated: publishFollowersUpdated
+        )
+    }
+
     /// Server member roles/removal, server deletion, the sidebar order ledger,
     /// server labs and the task snapshot/period aggregates. The directory
     /// supplies the two domain stores and the OAuth ledger; the session lookup,
     /// the human-name check and the realtime emitter enter as closures because
     /// they belong to domains that have not migrated yet.
     public var serverMembersAndSidebar: ServerMembersAndSidebarService {
-        ServerMembersAndSidebarService(directory: self)
+        ServerMembersAndSidebarService(dependencies: ServerMembersAndSidebarDependencies(
+            auth: authCore,
+            realtime: realtimeRelay,
+            profiles: authProfileStore,
+            oauth: oauth,
+            channels: serversAndChannelsStore,
+            tasks: tasksAndRemindersStore
+        ))
     }
 
     /// Task creation and live catalog projections share the existing owners.
@@ -787,7 +814,16 @@ extension EmailLoginDirectory {
     /// directory supplies the stores and the OAuth ledger; the session and
     /// machine-credential lookups enter as closures.
     public var serverProfileAndOrder: ServerProfileAndOrderService {
-        ServerProfileAndOrderService(directory: self)
+        ServerProfileAndOrderService(dependencies: ServerProfileAndOrderDependencies(
+            auth: authCore,
+            machineIdForCredential: machinesAndHostedRuntime.machineIdForCredential,
+            oauth: oauth,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            profiles: authProfileStore,
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore
+        ))
     }
 
     /// The user id behind a live access token, for the community-join route.

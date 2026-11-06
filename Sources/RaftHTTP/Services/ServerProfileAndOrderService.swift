@@ -13,11 +13,6 @@ import Foundation
 public struct ServerProfileAndOrderService: Sendable {
     let dependencies: ServerProfileAndOrderDependencies
 
-    /// Production wiring.
-    public init(directory: EmailLoginDirectory) {
-        self.init(dependencies: .live(directory: directory))
-    }
-
     init(dependencies: ServerProfileAndOrderDependencies) {
         self.dependencies = dependencies
     }

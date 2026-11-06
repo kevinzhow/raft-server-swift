@@ -2183,3 +2183,9 @@ RFC 074 personal assistant：
 - PrivateSurface 和 ActionCardExecute 删除目录构造器/live，直接持原 owners、AuthCore、credential-use、ownership/suppression、mentions、message ledger，以及 prepare/reactions/role-notice 能力。SendDeps 独立于 DTO；所有操作、原 commit/attachment/mirror 事务及 Cards 独立 barrier 保持。
 - Pending wake hints 仍使用原 Reactions 结果，只有非 nil seq 投影为原 seq/JSON 行；raw/live credential、actor、freshness subtype、assistant flag/membership、joint 附件范围与拒绝顺序保持。同实例 credential-use throttle、relay 卸载/重装、消息和 reaction 的真实 socket 帧回归继续通过。
 - Lifecycle joint 每次调用从实际 Channels owner 形成临时 facts；prepare session 捕获 AuthCore，保原 optional authenticate，不加 verified 条件。查询没有构造时缓存 State/flags/provider/slot，也未恢复已删的三个 ownership/freshness shim。
+
+### 成员、profile 与 threads 的显式构造
+
+- Members/Profile/Threads 删除目录构造器及 live factories，原三份操作、事务与 helper 正文保持。Human-exists 仍按原 accounts id scan，guest/probe/actor 的权限顺序及 allowed/residue/hidden 映射不变；环境、clock、UUID 和配置保持延迟读取。
+- 同 app 注册服务后提升 role，已存在 Profile 服务按新权限接受 rename，Threads follow/read 使用当前成员事实；随后 family revoke 让三个域继续返回原 401/body/header。构造在先的同一 Members 实例能观察 relay 安装、停用和重装，并发送原 server-room role 帧。
+- Threads follower sink 只绑定实际 messaging 服务，频道与 threadOrder 每次仍来自同一 Channels 快照。Member error 声明和三域 dependencies 按职责分文件，不拆业务操作；sidebar/labs CAS、profile/order、translation/attestation、guest/thread 撤销与 DM/follower 视图字节保持。

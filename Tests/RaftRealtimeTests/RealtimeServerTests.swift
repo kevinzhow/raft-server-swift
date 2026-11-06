@@ -295,6 +295,45 @@ struct RealtimeTransportTests {
     #expect(await client.waitForText({ $0.hasPrefix("42[\"agent:seen\",") && $0 != first && $0 != second }, timeout: 0.15) == nil)
 }
 
+@Test func constructedServerMembersServiceReadsTheLiveRelayForRoleFrames() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111648"
+    let memberId = "11111111-1111-4111-8111-111111111649"
+    let serverId = "33333333-3333-4333-8333-333333333672"
+    for (id, email) in [(ownerId, "channel-wire-owner@slock.test"), (memberId, "channel-wire-member@slock.test")] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "channel-wire", name: "Channel Wire", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
+    let token = accounts.mintAccessTokenForTesting(userId: ownerId)
+    let members = accounts.serverMembersAndSidebar
+    let server = try await RealtimeServer.start(auth: StubAuth(
+        tokens: [token: ownerId], roles: ["\(serverId)\n\(ownerId)": "owner"], channels: [:]
+    ))
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+    #expect(await client.waitForText { $0.hasPrefix("0") } != nil)
+    client.send("40{\"token\":\"\(token)\",\"serverId\":\"\(serverId)\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+    let relay = accounts.realtimeRelay
+    relay.install { server.hub.emit(room: $0, event: $1, payloadJSON: $2) }
+    _ = try members.patchServerMemberRole(authorization: "Bearer \(token)", serverId: serverId,
+        memberId: memberId, body: ServerMemberRolePatchRequest(role: "admin"))
+    let promoted = try #require(await client.waitForText { $0.hasPrefix("42[\"server:member-updated\",") })
+    #expect(promoted.contains("\"role\":\"admin\""))
+    #expect(promoted.contains(memberId))
+    relay.install(nil)
+    _ = try members.patchServerMemberRole(authorization: "Bearer \(token)", serverId: serverId,
+        memberId: memberId, body: ServerMemberRolePatchRequest(role: "member"))
+    #expect(await client.waitForText({ $0.hasPrefix("42[\"server:member-updated\",") && $0 != promoted }, timeout: 0.15) == nil)
+    relay.install { server.hub.emit(room: $0, event: $1, payloadJSON: $2) }
+    _ = try members.patchServerMemberRole(authorization: "Bearer \(token)", serverId: serverId,
+        memberId: memberId, body: ServerMemberRolePatchRequest(role: "owner"))
+    #expect(await client.waitForText { $0.hasPrefix("42[\"server:member-updated\",") && $0.contains("\"role\":\"owner\"") } != nil)
+}
+
 @Test func relayCanUninstallItselfWhileDeliveringMessagesOverTheSocket() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111642"

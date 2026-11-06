@@ -29,10 +29,9 @@ public struct ChannelsFeature: RouteCollection, Sendable {
     /// Synchronous mount for `configure`, whose call sites are not `async`.
     public func register(routes: any RoutesBuilder) {
         let channels = routes.grouped("api", "channels")
-        let threads = ThreadsService(
-            directory: services.emailAccounts,
-            publishFollowersUpdated: { payload in
-                services.channelMessaging.publishThreadFollowers(payload)
+        let threads = services.emailAccounts.threads(
+            publishFollowersUpdated: { [messaging = services.channelMessaging] payload in
+                messaging.publishThreadFollowers(payload)
             }
         )
         let inbox = services.emailAccounts.reactionsRealtime
