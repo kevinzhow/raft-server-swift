@@ -374,19 +374,23 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 kind: "html-preview-url"
             ))
         }
-        tasks.get("server", "snapshot-metrics") { request -> Response in
-            routeResponse(services.emailAccounts.taskSnapshotMetrics(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                rawQuery: request.url.query
-            ))
+        tasks.get("server", "snapshot-metrics") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.taskSnapshotMetrics(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    rawQuery: request.url.query
+                )
+            }
         }
-        tasks.get("server", "period-metrics") { request -> Response in
-            routeResponse(services.emailAccounts.taskPeriodMetrics(
-                authorization: request.headers[.authorization],
-                serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                rawQuery: request.url.query
-            ))
+        tasks.get("server", "period-metrics") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.serverMembersAndSidebar.taskPeriodMetrics(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    rawQuery: request.url.query
+                )
+            }
         }
         tasks.get("channel", ":channelId") { request -> Response in
             routeResponse(services.emailAccounts.listChannelTasks(

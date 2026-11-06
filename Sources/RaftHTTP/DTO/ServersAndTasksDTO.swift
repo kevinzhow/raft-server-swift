@@ -45,19 +45,6 @@ public struct ServerCreateRequestDTO: Codable, Sendable, Equatable, ServersReque
     }
 }
 
-/// `PATCH /api/servers/:id/members/:memberId` request body.
-///
-/// `role` is the only field the handler reads; the directory still enforces the
-/// `owner|admin|member|guest` membership and the self-demotion rules, so an
-/// unknown role keeps the raw path and its `Invalid member role` 400.
-public struct ServerMemberRolePatchDTO: Codable, Sendable, Equatable, ServersRequestDTO {
-    public var role: String
-
-    public init(role: String) {
-        self.role = role
-    }
-}
-
 /// `POST /api/servers/:id/setup-reset` request body.
 ///
 /// The reset selects its target by path and reads no fields, so the accepted
