@@ -136,14 +136,6 @@ extension EmailLoginDirectory {
         AgentCredentialLookup(agents: agentsRuntimeStore, channels: agentChannels, credentialUse: agentCredentialUse)
     }
 
-    func assistantOwnerFor(agentId: String, serverId: String) -> String? {
-        agentSurface.assistantOwner(agentId: agentId, serverId: serverId)
-    }
-
-    func assistantOwnerRaw(_ agentId: String) -> String? {
-        agentSurface.assistantOwnerRaw(agentId: agentId)
-    }
-
     /// The Done/Undone, read-all, Activity page and agent mention, wake-hint and
     /// event surface. The directory supplies its stores and the OAuth ledger;
     /// the session lookup, the agent read credential, guest scope visibility and
@@ -163,15 +155,6 @@ extension EmailLoginDirectory {
             .hints.compactMap { hint in
                 hint.seq.map { AgentWakeHintRow(seq: $0, json: hint.jsonBody.render()) }
             }
-    }
-
-    /// A system notice an agent caused itself, of a subtype that never trips
-    /// the send freshness gate.
-    func isSelfCausedFreshnessExemptLocked(_ message: StoredHumanMessage, agentId: String) -> Bool {
-        message.messageType == "system"
-            && message.causalActorType == "agent"
-            && message.causalActorId == agentId
-            && message.systemSubtype.map { AgentFreshnessIdentity.selfCausedFreshnessExemptSubtypes.contains($0) } == true
     }
 
     /// Role-change notices own their DM preparation and use the same message
@@ -465,9 +448,8 @@ extension EmailLoginDirectory {
 
     /// Action-card prepare, the agent context / app-config surface, and the
     /// agent-target projections the execute/send domains still call. The
-    /// service reads the domain stores; the session lookup and the
-    /// assistant-owner policy belong to unmigrated domains and enter as
-    /// closures.
+    /// service reads the domain stores; the session lookup remains a closure,
+    /// and assistant ownership uses only its agent and OAuth owners.
     public var actionCardPrepare: ActionCardPrepareService {
         ActionCardPrepareService(
             oauth: oauth,
@@ -478,8 +460,8 @@ extension EmailLoginDirectory {
             accounts: authProfileStore,
             messages: messagesAndThreadsStore,
             sessionUserId: { self.sessionUserId(authorization: $0) },
-            assistantOwner: { [self] agentId, serverId in
-                assistantOwnerFor(agentId: agentId, serverId: serverId)
+            assistantOwner: { [ownership = AssistantOwnershipQuery(agents: agentsRuntimeStore, oauth: oauth)] agentId, serverId in
+                ownership.liveOwner(agentId: agentId, serverId: serverId)
             }
         )
     }

@@ -2147,3 +2147,9 @@ RFC 074 personal assistant：
 
 - PushRegistration 从目录嵌套声明移到独立通知 DTO，不留旧类型别名。十个字段及其可变性不变，APNs/FCM 的 tuple 校验、安装标识 upsert、session family/revoke capability、unbind 和 delivery-status 字节保持。
 - Notifications owner 的 registration 查找和完整十字段更新仍在一次 Mutex 内；同 installation/provider 的 16/32 路并发注册只保留一条完整 row，不混出不同写入者字段。该记录不需要目录或 action-card 类型即可用于通知 Store。
+
+### Assistant ownership 与 send freshness 策略
+
+- Raw assistant owner 只取 stored link；live owner 仍依次要求该 link、当前 Server membership、当前 `identity_borrowing` flag。Prepare/send 保留原 actor/server 输入，assignment 的 raw 查询保留不额外查 flag 的语义；三处目录 helper 已删除，不经完整 private-surface 构造查询。
+- Self-caused freshness exemption 仍同时要求 system message、agent causal actor、相同 agent id 和既有 subtype 白名单；普通/human/other-agent/actorless 消息不额外豁免。规则纯提取，不改变 hold、catch-up、Cards barrier 或任何 subtype 集合。
+- 同 app 建立 assistant link 后修改 link、membership 或 flag，后续公开消息、inbox、owner-DM confinement 与 card 请求立即使用当前决定；查询组件只持 Agents/OAuth owner，无缓存或新增锁内 callback。

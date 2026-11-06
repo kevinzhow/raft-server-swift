@@ -181,18 +181,14 @@ extension AgentPrivateSurfaceService {
     /// The assistant link is live only while the flag is on and the owner is
     /// still a member of the agent's Server.
     public func assistantOwner(agentId: String, serverId: String) -> String? {
-        guard let owner = dependencies.agents.assistantOwner(agentId: agentId),
-              dependencies.oauth.memberRole(serverId: serverId, userId: owner) != nil
-        else { return nil }
-        guard dependencies.agents.featureFlagEnabled(key: "identity_borrowing", serverId: serverId) else {
-            return nil
-        }
-        return owner
+        AssistantOwnershipQuery(agents: dependencies.agents, oauth: dependencies.oauth)
+            .liveOwner(agentId: agentId, serverId: serverId)
     }
 
     /// The stored link, without the membership and flag checks.
     public func assistantOwnerRaw(agentId: String) -> String? {
-        dependencies.agents.assistantOwner(agentId: agentId)
+        AssistantOwnershipQuery(agents: dependencies.agents, oauth: dependencies.oauth)
+            .rawOwner(agentId: agentId)
     }
 
     private func assistantIsInRegularChannel(serverId: String, agentId: String) -> Bool {

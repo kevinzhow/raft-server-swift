@@ -97,8 +97,8 @@ struct AgentSendDependencies: Sendable {
     /// Production wiring to the not-yet-migrated directory entry points.
     static func live(directory source: EmailLoginDirectory) -> AgentSendDependencies {
         AgentSendDependencies(
-            assistantOwner: { agentId, serverId in
-                source.assistantOwnerFor(agentId: agentId, serverId: serverId)
+            assistantOwner: { [ownership = AssistantOwnershipQuery(agents: source.agentsRuntimeStore, oauth: source.oauth)] agentId, serverId in
+                ownership.liveOwner(agentId: agentId, serverId: serverId)
             },
             threadByAnchor: { parentId, anchorMessageId in
                 source.serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
@@ -124,7 +124,7 @@ struct AgentSendDependencies: Sendable {
                 suppression.isSuppressed(message, agentId: agentId)
             },
             selfCausedExempt: { message, agentId in
-                source.isSelfCausedFreshnessExemptLocked(message, agentId: agentId)
+                AgentSendFreshnessPolicy.isSelfCausedExempt(message, agentId: agentId)
             },
             resolvedMentions: { serverId, senderId, content, typed, warn in
                 let resolved = source.messageMentions.resolve(

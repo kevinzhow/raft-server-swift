@@ -15,7 +15,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
 | `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
 | `Sources/RaftHTTP/EmailLogin.swift` | 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
-| `Sources/RaftHTTP/Services/` | 105 Swift files of domain services and remaining directory accessors; no Vapor imports |
+| `Sources/RaftHTTP/Services/` | 107 Swift files of domain services and remaining directory accessors; no Vapor imports |
 | `Sources/RaftHTTP/Stores/` | 54 Swift files; implementations split by responsibility; every file at most 1,000 lines, currently largest 974 |
 | `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
 | `Sources/RaftHTTP/Support/` | Naming, token, cursor, projection, runtime-config, and policy helpers; no directory extensions or legacy reply factories |
@@ -65,7 +65,7 @@ Examples of semantic outcomes are public attachment file/redirect results, relea
 
 Conditional release-note responses retain their ETag and the original 304 header omissions. Public-search HEAD suppresses the body while retaining the corresponding GET representation length, including errors. No adapter may recompute that length from the suppressed body.
 
-Two leaf services now make the construction graph acyclic at the known policy loops. `AgentCredentialUseService` holds Agents, OAuth and the realtime relay, preserving the owner's use/throttle transaction and publishing external presence afterwards. Credential lookup no longer needs PrivateSurface. `MessageSuppressionService` holds Messages and OAuth and evaluates current prefs/mentions using the existing predicate; execute captures this leaf and no longer constructs tools to make that decision. Their long-lived values retain owners, not state or callback snapshots.
+Two leaf services now make the construction graph acyclic at the known policy loops. `AgentCredentialUseService` holds Agents, OAuth and the realtime relay, preserving the owner's use/throttle transaction and publishing external presence afterwards. Credential lookup no longer needs PrivateSurface. `MessageSuppressionService` holds Messages and OAuth and evaluates current prefs/mentions using the existing predicate; execute captures this leaf and no longer constructs tools to make that decision. Their long-lived values retain owners, not state or callback snapshots. AssistantOwnershipQuery likewise separates raw stored links from live membership/flag eligibility using only Agents and OAuth. Prepare/send and assignment owner lookup use that query directly; the three corresponding directory helpers are deleted. AgentSendFreshnessPolicy preserves the original pure system/causal-actor/subtype rule.
 
 CredentialLookup, RuntimePolicy and MobileEmail helpers now receive explicit owners or narrow services; their Source directory initializers/callers are retired. TaskCatalog is now TaskCatalogService with explicit Tasks/Profile/OAuth owners, and all six Source directory-construction calls are retired. Catalog projection, access policy and number-allocation behavior stay in that domain service. Other broad service constructors/factory captures remain. Replacing the remaining type name alone would not finish composition.
 

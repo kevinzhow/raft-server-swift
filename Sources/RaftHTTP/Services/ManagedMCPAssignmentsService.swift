@@ -29,9 +29,10 @@ struct ManagedMCPAssignmentsDependencies: Sendable {
         appendSystemNotice: @escaping @Sendable (StoredHumanMessage, String?) -> Int
     ) -> ManagedMCPAssignmentsDependencies {
         let catalog = source.taskCatalog
+        let ownership = AssistantOwnershipQuery(agents: source.agentsRuntimeStore, oauth: source.oauth)
         return ManagedMCPAssignmentsDependencies(
             sessionUserId: { source.sessionUserId(authorization: $0) },
-            assistantOwner: { source.assistantOwnerRaw($0) },
+            assistantOwner: { ownership.rawOwner(agentId: $0) },
             channelProbeAccess: { channelId, serverId, userId in
                 source.channelProbeAccessLocked(channelId: channelId, serverId: serverId, userId: userId)
             },
