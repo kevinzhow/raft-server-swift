@@ -80,6 +80,33 @@ public var errorBody: OrderedJSON? {
 `ResponseHeaders.standard(extra:)` merges the published header set;
 `.exact(…)` replaces it (the domain owns `Content-Type`/`Retry-After`).
 
+## Extension: ordered body with a payload-dependent header policy
+
+`respond(status:headers: { dto in … })` was `Encodable`-only: a
+`JSONBodyConvertible` body would have fallen back to `JSONEncoder` key order.
+The action-card prepare replay needs both — the stored first reply's exact
+bytes *and* the legacy `Cache-Control: no-store` header set for a replay versus
+the standard JSON set for a fresh `201`. `Respond.swift` now also overloads
+`respond<DTO: Encodable & JSONBodyConvertible>(status:headers:_:)`. The
+conjunction makes it more specialised than the `Encodable` overload, so a type
+that conforms to both still renders through `jsonBody`.
+
+```swift
+return try await respond(
+    status: 201,
+    headers: { result in
+        result.isIdempotentReplay
+            ? .exact([
+                "Content-Type": AppFallback.jsonContentType,
+                "Cache-Control": "no-store",
+            ])
+            : .standard()
+    }
+) {
+    try services.emailAccounts.actionCardIntegrationRegister.prepareActionCard(…)
+}
+```
+
 ## Extension: a 204 with a header policy
 
 `respond(_:)` publishes the bare `Content-Length: 0` 204. The onboarding-wizard

@@ -540,6 +540,12 @@ extension EmailLoginDirectory {
         return (local, storage)
     }
 
+    /// Thin forwarder for the metadata projections below: the live server name
+    /// is published by the action-card integration-register service now.
+    func actionCardServerName(_ serverId: String) -> String {
+        actionCardIntegrationRegister.actionCardServerName(serverId)
+    }
+
     /// Third-party text is rendered inert before it reaches agents: agent
     /// markup literals are escaped and `@name` refs become plain `user:name`
     /// labels, so a publisher name cannot fabricate a mention or a result tag.
@@ -679,62 +685,4 @@ extension EmailLoginDirectory {
         return messageId
     }
 
-    func executeIntegrationRegisterCard(
-        _ card: IntegrationRegisterCard,
-        userId: String,
-        serverId: String,
-        body: String
-    ) -> HTTPReply {
-        guard card.serverId == serverId else {
-            return Self.json(404, "{\"error\":\"Action card not found\",\"code\":\"NOT_FOUND\"}")
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            return Self.json(403, "{\"error\":\"Not a member of this server\"}")
-        }
-        guard role == "owner" || role == "admin" else {
-            return Self.json(403, "{\"error\":\"Only Server owners and admins can register apps\",\"errorCode\":\"FORBIDDEN\"}")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
-        if let expectedState = object?["expectedState"] as? String, expectedState != card.state {
-            return Self.json(409, "{\"error\":\"The action card state changed\",\"code\":\"STATE_MISMATCH\"}")
-        }
-        if card.state == "executed" {
-            return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(card))}")
-        }
-        guard let agent = oauth.agentRuntimeInfo(id: card.agentId), !agent.deleted else {
-            return Self.json(409, "{\"error\":\"Requesting agent no longer exists; prepare a fresh request\",\"errorCode\":\"AGENT_BINDING_CHANGED\"}")
-        }
-        let clientKey = card.clientKey ?? Self.generatedIntegrationClientKey(card.name)
-        let created: CreatedOAuthClient
-        do {
-            created = try oauth.createClient(
-                serverId: card.serverId,
-                createdByUserId: userId,
-                name: card.name,
-                clientId: clientKey,
-                appType: "server_local",
-                homepageUrl: card.homepageUrl,
-                returnUrl: card.returnUrl,
-                allowedScopes: card.scopes,
-                agentManifestUrl: card.agentManifestUrl,
-                setupUrl: card.setupUrl,
-                setupDescription: card.setupDescription
-            )
-        } catch let error as OAuthClientRejection {
-            return Self.json(409, "{\"error\":\(jsonString(error.message)),\"errorCode\":\"APP_REGISTRATION_REJECTED\"}")
-        } catch {
-            return Self.json(400, "{\"error\":\"Invalid app registration\",\"errorCode\":\"INVALID_APP_METADATA\"}")
-        }
-        oauth.addClientMaintainer(clientRecordId: created.id, agentId: card.agentId)
-        let scopes = card.scopes.map(jsonString).joined(separator: ",")
-        let result = "{\"kind\":\"integration-app-registration\",\"mode\":\"register\",\"clientId\":\(jsonString(created.id)),\"clientKey\":\(jsonString(created.clientId)),\"clientName\":\(jsonString(card.name)),\"scopes\":[\(scopes)]}"
-        var updated = card
-        updated.state = "executed"
-        updated.executedByUserId = userId
-        updated.resultJSON = result
-        lock.lock()
-        integrationRegisterCards[card.messageId] = updated
-        lock.unlock()
-        return Self.json(200, "{\"messageId\":\(jsonString(card.messageId)),\"metadata\":\(integrationRegisterMetadataJSON(updated))}")
-    }
 }

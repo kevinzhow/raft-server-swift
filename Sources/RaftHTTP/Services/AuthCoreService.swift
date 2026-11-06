@@ -888,6 +888,92 @@ extension EmailLoginDirectory {
         FeedbackLocatorService(directory: self)
     }
 
+    /// Action-card prepare/execute and the integration app-registration
+    /// surface. The directory supplies the stores and the OAuth ledger; the
+    /// marketplace target resolver, the integration-card preparer and the two
+    /// card projections belong to the not-yet-migrated action-card marketplace
+    /// module and enter as closures, as do the human session ledger, the
+    /// message append that stamps a server sequence, the channel roster write
+    /// and the realtime relay.
+    public var actionCardIntegrationRegister: ActionCardIntegrationRegisterService {
+        ActionCardIntegrationRegisterService(
+            cards: managedMCPAndCardsStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            inboxFacts: inboxFactStore,
+            accounts: authProfileStore,
+            agents: agentsRuntimeStore,
+            oauth: oauth,
+            dependencies: ActionCardIntegrationRegisterDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                agentCredential: { [self] authorization in
+                    agentCredentialAgent(authorization)
+                },
+                identityResolution: { [self] authorization, capability in
+                    FeedbackLocatorService(
+                        feedback: feedbackStore,
+                        agents: agentsRuntimeStore,
+                        channels: serversAndChannelsStore,
+                        cards: managedMCPAndCardsStore,
+                        oauth: oauth
+                    ).identityResolution(authorization: authorization, capability: capability)
+                },
+                appendHumanMessage: { [self] message in
+                    lock.lock()
+                    let seq = appendHumanMessageLocked(message)
+                    lock.unlock()
+                    return seq
+                },
+                addPostableChannel: { [self] serverId, channelId, memberId, kind, parentChannelId, parentMessageId, name in
+                    addPostableChannel(
+                        serverId: serverId,
+                        channelId: channelId,
+                        memberId: memberId,
+                        kind: kind,
+                        parentChannelId: parentChannelId,
+                        parentMessageId: parentMessageId,
+                        name: name
+                    )
+                },
+                emitRealtime: { [self] room, event, payload in
+                    emitRealtime(room, event, payload)
+                },
+                actionCardTarget: { [self] serverId, agentId, target in
+                    self.actionCardTarget(serverId: serverId, agentId: agentId, target: target)
+                },
+                prepareIntegrationRegisterCard: { [self] serverId, agent, name, clientKey, homepageUrl, returnUrl, agentManifestUrl, setupUrl, setupDescription, scopes, target in
+                    prepareIntegrationRegisterCard(
+                        serverId: serverId,
+                        agent: agent,
+                        name: name,
+                        clientKey: clientKey,
+                        homepageUrl: homepageUrl,
+                        returnUrl: returnUrl,
+                        agentManifestUrl: agentManifestUrl,
+                        setupUrl: setupUrl,
+                        setupDescription: setupDescription,
+                        scopes: scopes,
+                        target: target
+                    )
+                },
+                marketplaceInstallMetadata: { [self] card in
+                    marketplaceInstallMetadataJSON(card)
+                },
+                integrationRegisterMetadata: { [self] card in
+                    integrationRegisterMetadataJSON(card)
+                },
+                marketplaceInstallableClient: { [self] recordId in
+                    oauth.marketplaceInstallableClientIdentity(recordId: recordId)
+                },
+                publicIntegrationClient: { [self] clientId in
+                    oauth.publicIntegrationClientIdentity(clientId: clientId)
+                }
+            )
+        )
+    }
+
     public var sessionCount: Int {
         lock.lock()
         defer { lock.unlock() }

@@ -84,6 +84,34 @@ func respond(
     }
 }
 
+/// A success body that owns its exact published order *and* whose header
+/// policy depends on the payload.
+///
+/// The idempotent action-prepare replay republishes the first reply's stored
+/// bytes with the legacy `Cache-Control: no-store` header set (no
+/// `X-Robots-Tag`), while a fresh `201` keeps the standard JSON set. The
+/// `Encodable & JSONBodyConvertible` constraint makes this overload more
+/// specialised than the plain `Encodable` one above, so a type that conforms to
+/// both still renders through `jsonBody` instead of `JSONEncoder`.
+func respond<DTO: Encodable & JSONBodyConvertible>(
+    status: UInt = 200,
+    headers: @escaping (DTO) -> ResponseHeaders,
+    _ call: () async throws -> DTO
+) async throws -> Response {
+    do {
+        let payload = try await call()
+        return response(orderedReply(
+            status: status,
+            body: payload.jsonBody.render(),
+            headers: headers(payload)
+        ))
+    } catch let error as any DomainError {
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
+    }
+}
+
 /// A route whose published success carries no body (204) and the bare
 /// `Content-Length: 0` header set.
 func respond(_ call: () async throws -> NoContentResponse) async throws -> Response {

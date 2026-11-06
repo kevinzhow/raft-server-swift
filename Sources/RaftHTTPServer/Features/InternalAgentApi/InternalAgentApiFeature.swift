@@ -300,10 +300,13 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("integrations", "app", "prepare") { request async throws -> Response in
-            routeResponse(services.emailAccounts.agentIntegrationAppPrepare(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
+            let body = await jsonRequestBody(IntegrationAppPrepareRequest.self, request)
+            return try await respond(status: 201) {
+                try services.emailAccounts.actionCardIntegrationRegister.agentIntegrationAppPrepare(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.post("integrations", "app", "update") { request async throws -> Response in
             routeResponse(services.emailAccounts.agentIntegrationAppUpdate(
@@ -547,10 +550,23 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             ))
         }
         agentApi.post("prepare-action") { request async throws -> Response in
-            routeResponse(services.emailAccounts.prepareActionCard(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ActionCardPrepareRequest.self, request)
+            return try await respond(
+                status: 201,
+                headers: { result in
+                    result.isIdempotentReplay
+                        ? .exact([
+                            "Content-Type": AppFallback.jsonContentType,
+                            "Cache-Control": "no-store",
+                        ])
+                        : .standard()
+                }
+            ) {
+                try services.emailAccounts.actionCardIntegrationRegister.prepareActionCard(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
         }
         agentApi.get("mcp", "tools") { request async throws -> Response in
             try await respond {
