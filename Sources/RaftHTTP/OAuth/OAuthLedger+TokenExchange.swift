@@ -105,84 +105,84 @@ extension OAuthLedger {
         credentials: (clientId: String, clientSecret: String),
         scopeServerId: String?
     ) throws -> RedeemedAuthorization {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { $0.clientId == credentials.clientId && $0.appType != "slock_builtin" && $0.secretHash == sha256(credentials.clientSecret) }) else {
-            throw OAuthLedgerError(.invalidClientCredentials)
-        }
-        guard let index = requests.firstIndex(where: { $0.id == code && $0.clientId == client.id }) else {
+        return try self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { $0.clientId == credentials.clientId && $0.appType != "slock_builtin" && $0.secretHash == sha256(credentials.clientSecret) }) else {
+                throw OAuthLedgerError(.invalidClientCredentials)
+            }
+            guard let index = ledgerState.requests.firstIndex(where: { $0.id == code && $0.clientId == client.id }) else {
+                if isOIDC {
+                    throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
+                }
+                throw OAuthLedgerError(.accessRequestNotFound)
+            }
+            let request = ledgerState.requests[index]
             if isOIDC {
-                throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
-            }
-            throw OAuthLedgerError(.accessRequestNotFound)
-        }
-        let request = requests[index]
-        if isOIDC {
-            guard request.oidc else {
-                throw OAuthLedgerError(.invalidGrant(.codeRedirectOrVerifierInvalid))
-            }
-            if request.codeChallenge == nil, verifierPresent {
-                throw OAuthLedgerError(.invalidGrant(.notPKCERequest))
-            }
-            if let challenge = request.codeChallenge {
-                guard let verifier = fields["code_verifier"], !verifier.isEmpty,
-                      challenge == Self.pkceChallenge(verifier)
-                else {
+                guard request.oidc else {
                     throw OAuthLedgerError(.invalidGrant(.codeRedirectOrVerifierInvalid))
                 }
-            }
-            if let redirect = request.oidcRedirectURI {
-                guard fields["redirect_uri"] == redirect else {
-                    throw OAuthLedgerError(.invalidGrant(.codeRedirectOrVerifierInvalid))
+                if request.codeChallenge == nil, verifierPresent {
+                    throw OAuthLedgerError(.invalidGrant(.notPKCERequest))
+                }
+                if let challenge = request.codeChallenge {
+                    guard let verifier = fields["code_verifier"], !verifier.isEmpty,
+                          challenge == Self.pkceChallenge(verifier)
+                    else {
+                        throw OAuthLedgerError(.invalidGrant(.codeRedirectOrVerifierInvalid))
+                    }
+                }
+                if let redirect = request.oidcRedirectURI {
+                    guard fields["redirect_uri"] == redirect else {
+                        throw OAuthLedgerError(.invalidGrant(.codeRedirectOrVerifierInvalid))
+                    }
                 }
             }
-        }
-        if let scopeServerId, scopeServerId != request.serverId {
-            throw OAuthLedgerError(.invalidGrant(.differentServer))
-        }
-        if request.consumedAt != nil {
-            if isOIDC {
-                throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
+            if let scopeServerId, scopeServerId != request.serverId {
+                throw OAuthLedgerError(.invalidGrant(.differentServer))
             }
-            throw OAuthLedgerError(.requestAlreadyConsumed)
-        }
-        let now = Date()
-        if now.timeIntervalSince(request.createdAt) > 10 * 60 {
-            if isOIDC {
-                throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
+            if request.consumedAt != nil {
+                if isOIDC {
+                    throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
+                }
+                throw OAuthLedgerError(.requestAlreadyConsumed)
             }
-            throw OAuthLedgerError(.authorizationCodeExpired)
+            let now = Date()
+            if now.timeIntervalSince(request.createdAt) > 10 * 60 {
+                if isOIDC {
+                    throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
+                }
+                throw OAuthLedgerError(.authorizationCodeExpired)
+            }
+            guard let server = ledgerState.servers[request.serverId], !server.deleted,
+                  let role = ledgerState.members["\(request.serverId)\n\(request.userId)"]
+            else {
+                throw OAuthLedgerError(.invalidGrant(.identityUnavailable))
+            }
+            var raw = Data(count: 32)
+            for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+            let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
+            let expiresAt = now.addingTimeInterval(60 * 60)
+            ledgerState.tokens.append(AccessToken(
+                serverId: request.serverId,
+                userId: request.userId,
+                clientId: client.id,
+                requestId: request.id,
+                tokenHash: sha256(accessToken),
+                scopes: request.scopes,
+                expiresAt: expiresAt
+            ))
+            ledgerState.requests[index].consumedAt = now
+            return RedeemedAuthorization(
+                request: request,
+                accessToken: accessToken,
+                issuedAt: now,
+                expiresAt: expiresAt,
+                scopes: request.scopes,
+                clientKey: client.clientId,
+                serverId: server.id,
+                serverSlug: server.slug,
+                role: role
+            )
         }
-        guard let server = servers[request.serverId], !server.deleted,
-              let role = members["\(request.serverId)\n\(request.userId)"]
-        else {
-            throw OAuthLedgerError(.invalidGrant(.identityUnavailable))
-        }
-        var raw = Data(count: 32)
-        for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
-        let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
-        let expiresAt = now.addingTimeInterval(60 * 60)
-        tokens.append(AccessToken(
-            serverId: request.serverId,
-            userId: request.userId,
-            clientId: client.id,
-            requestId: request.id,
-            tokenHash: sha256(accessToken),
-            scopes: request.scopes,
-            expiresAt: expiresAt
-        ))
-        requests[index].consumedAt = now
-        return RedeemedAuthorization(
-            request: request,
-            accessToken: accessToken,
-            issuedAt: now,
-            expiresAt: expiresAt,
-            scopes: request.scopes,
-            clientKey: client.clientId,
-            serverId: server.id,
-            serverSlug: server.slug,
-            role: role
-        )
     }
 
     func exchangeAgentRequest(
@@ -197,71 +197,71 @@ extension OAuthLedger {
         guard requestId.wholeMatch(of: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) != nil else {
             throw OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))
         }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: {
-            $0.clientId == credentials.clientId
-                && isUserManaged($0)
-                && ($0.appType != "third_party_global" || $0.enabled)
-                && $0.secretHash == sha256(credentials.clientSecret)
-        }) else {
-            throw OAuthLedgerError(.invalidClientCredentials)
-        }
-        guard let index = requests.firstIndex(where: { $0.id == requestId && $0.clientId == client.id && $0.agentId != nil }) else {
-            throw OAuthLedgerError(.accessRequestNotFound)
-        }
-        let request = requests[index]
-        if let scopeServerId, scopeServerId != request.serverId {
-            throw OAuthLedgerError(.invalidGrant(.differentServer))
-        }
-        if request.consumedAt != nil {
-            throw OAuthLedgerError(.requestAlreadyConsumed)
-        }
-        guard request.status == "approved" else {
-            throw OAuthLedgerError(.authorizationPending)
-        }
-        guard let agentId = request.agentId, let agent = agents[agentId], !agent.deleted else {
-            throw OAuthLedgerError(.invalidGrant(.identityUnavailable))
-        }
-        let resource = fields["resource"].flatMap { $0.isEmpty ? nil : $0 }
-        let requiresResource = request.scopes.contains(where: {
-            ["agent:event:write", "agent:notification:write", "agent:action_request:write"].contains($0)
-        })
-        let boundResource: String?
-        if requiresResource {
-            guard let resource else {
-                throw OAuthLedgerError(.resourceRequired)
+        return try self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: {
+                $0.clientId == credentials.clientId
+                    && isUserManaged($0)
+                    && ($0.appType != "third_party_global" || $0.enabled)
+                    && $0.secretHash == sha256(credentials.clientSecret)
+            }) else {
+                throw OAuthLedgerError(.invalidClientCredentials)
             }
-            guard resource == "urn:raft:server:\(request.serverId):agent-inbound" else {
-                throw OAuthLedgerError(.resourceMismatch)
+            guard let index = ledgerState.requests.firstIndex(where: { $0.id == requestId && $0.clientId == client.id && $0.agentId != nil }) else {
+                throw OAuthLedgerError(.accessRequestNotFound)
             }
-            boundResource = resource
-        } else {
-            boundResource = resource
+            let request = ledgerState.requests[index]
+            if let scopeServerId, scopeServerId != request.serverId {
+                throw OAuthLedgerError(.invalidGrant(.differentServer))
+            }
+            if request.consumedAt != nil {
+                throw OAuthLedgerError(.requestAlreadyConsumed)
+            }
+            guard request.status == "approved" else {
+                throw OAuthLedgerError(.authorizationPending)
+            }
+            guard let agentId = request.agentId, let agent = ledgerState.agents[agentId], !agent.deleted else {
+                throw OAuthLedgerError(.invalidGrant(.identityUnavailable))
+            }
+            let resource = fields["resource"].flatMap { $0.isEmpty ? nil : $0 }
+            let requiresResource = request.scopes.contains(where: {
+                ["agent:event:write", "agent:notification:write", "agent:action_request:write"].contains($0)
+            })
+            let boundResource: String?
+            if requiresResource {
+                guard let resource else {
+                    throw OAuthLedgerError(.resourceRequired)
+                }
+                guard resource == "urn:raft:server:\(request.serverId):agent-inbound" else {
+                    throw OAuthLedgerError(.resourceMismatch)
+                }
+                boundResource = resource
+            } else {
+                boundResource = resource
+            }
+            var raw = Data(count: 32)
+            for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+            let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
+            let now = Date()
+            ledgerState.tokens.append(AccessToken(
+                serverId: request.serverId,
+                userId: request.userId,
+                clientId: client.id,
+                requestId: request.id,
+                tokenHash: sha256(accessToken),
+                scopes: request.scopes,
+                expiresAt: now.addingTimeInterval(60 * 60),
+                principalType: "agent",
+                agentId: agent.id,
+                resource: boundResource
+            ))
+            ledgerState.requests[index].consumedAt = now
+            return OAuthTokenResponse(
+                accessToken: accessToken,
+                expiresIn: 3600,
+                scope: request.scopes.joined(separator: " "),
+                idToken: nil,
+                resource: boundResource
+            )
         }
-        var raw = Data(count: 32)
-        for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
-        let accessToken = "slock_at_" + raw.map { String(format: "%02x", $0) }.joined()
-        let now = Date()
-        tokens.append(AccessToken(
-            serverId: request.serverId,
-            userId: request.userId,
-            clientId: client.id,
-            requestId: request.id,
-            tokenHash: sha256(accessToken),
-            scopes: request.scopes,
-            expiresAt: now.addingTimeInterval(60 * 60),
-            principalType: "agent",
-            agentId: agent.id,
-            resource: boundResource
-        ))
-        requests[index].consumedAt = now
-        return OAuthTokenResponse(
-            accessToken: accessToken,
-            expiresIn: 3600,
-            scope: request.scopes.joined(separator: " "),
-            idToken: nil,
-            resource: boundResource
-        )
     }
 }

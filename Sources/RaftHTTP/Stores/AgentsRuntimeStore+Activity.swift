@@ -21,70 +21,70 @@ extension AgentsRuntimeStore {
         now: @Sendable () -> Date
     ) -> ActivityIngestOutcome {
         let standardStatuses: Set<String> = ["working", "thinking", "online", "error", "offline"]
-        lock.lock()
-        defer { lock.unlock() }
-        var accepted = 0
-        var rejected = 0
-        var seen = storage.agentActivityEventIds[agentId] ?? []
-        for event in events {
-            guard let eventId = event.eventId,
-                  let occurred = event.occurredAt
-            else {
-                rejected += 1
-                continue
-            }
-            if seen.contains(eventId) {
-                rejected += 1
-                continue
-            }
-            let status = event.status
-            if let status, !standardStatuses.contains(status), status != "failed" {
-                return .invalidStatus
-            }
-            var detailText = ""
-            if let detail = event.detail {
-                guard case .string(let text) = detail else { return .detailInvalid }
-                if text.count > 200 { return .detailTooLong }
-                detailText = text
-            }
-            let effective = min(occurred, now())
-            seen.insert(eventId)
-            accepted += 1
-            let isStandardStatus = status.map { standardStatuses.contains($0) } ?? false
-            if isStandardStatus, let status {
-                storage.agentStatusAdopted.insert(agentId)
-                if effective >= (storage.agentStatusOccurredAt[agentId] ?? .distantPast) {
-                    storage.agentStatusOccurredAt[agentId] = effective
-                    storage.agentActivities[agentId] = (activity: status, detail: detailText)
+        return withState { state in
+            var accepted = 0
+            var rejected = 0
+            var seen = state.agentActivityEventIds[agentId] ?? []
+            for event in events {
+                guard let eventId = event.eventId,
+                      let occurred = event.occurredAt
+                else {
+                    rejected += 1
+                    continue
                 }
-            } else if let hookName = event.hookEventName, !storage.agentStatusAdopted.contains(agentId) {
-                let hookStatus: String
-                switch hookName {
-                case "PreToolUse": hookStatus = "working"
-                case "PostToolUseFailure": hookStatus = "error"
-                case "Stop", "SessionEnd": hookStatus = "online"
-                default: hookStatus = "working"
+                if seen.contains(eventId) {
+                    rejected += 1
+                    continue
                 }
-                if effective >= (storage.agentStatusOccurredAt[agentId] ?? .distantPast) {
-                    storage.agentStatusOccurredAt[agentId] = effective
-                    storage.agentActivities[agentId] = (activity: hookStatus, detail: "")
+                let status = event.status
+                if let status, !standardStatuses.contains(status), status != "failed" {
+                    return .invalidStatus
+                }
+                var detailText = ""
+                if let detail = event.detail {
+                    guard case .string(let text) = detail else { return .detailInvalid }
+                    if text.count > 200 { return .detailTooLong }
+                    detailText = text
+                }
+                let effective = min(occurred, now())
+                seen.insert(eventId)
+                accepted += 1
+                let isStandardStatus = status.map { standardStatuses.contains($0) } ?? false
+                if isStandardStatus, let status {
+                    state.agentStatusAdopted.insert(agentId)
+                    if effective >= (state.agentStatusOccurredAt[agentId] ?? .distantPast) {
+                        state.agentStatusOccurredAt[agentId] = effective
+                        state.agentActivities[agentId] = (activity: status, detail: detailText)
+                    }
+                } else if let hookName = event.hookEventName, !state.agentStatusAdopted.contains(agentId) {
+                    let hookStatus: String
+                    switch hookName {
+                    case "PreToolUse": hookStatus = "working"
+                    case "PostToolUseFailure": hookStatus = "error"
+                    case "Stop", "SessionEnd": hookStatus = "online"
+                    default: hookStatus = "working"
+                    }
+                    if effective >= (state.agentStatusOccurredAt[agentId] ?? .distantPast) {
+                        state.agentStatusOccurredAt[agentId] = effective
+                        state.agentActivities[agentId] = (activity: hookStatus, detail: "")
+                    }
                 }
             }
+            state.agentActivityEventIds[agentId] = seen
+            return .applied(accepted: accepted, rejected: rejected)
         }
-        storage.agentActivityEventIds[agentId] = seen
-        return .applied(accepted: accepted, rejected: rejected)
     }
 
     /// The first-post attention hint: the membership check and the "already
     /// posted" insertion are one critical section, so two concurrent first
     /// sends cannot both publish the drive-by hint.
     func claimFirstAgentPost(channelId: String, agentId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = "\(channelId)\n\(agentId)"
-        if storage.agentChannelPosted.contains(key) { return false }
-        storage.agentChannelPosted.insert(key)
-        return true
+        return withState { state in
+            let key = "\(channelId)\n\(agentId)"
+            if state.agentChannelPosted.contains(key) { return false }
+            state.agentChannelPosted.insert(key)
+            return true
+        }
     }
 }
 
@@ -96,24 +96,24 @@ extension AgentsRuntimeStore {
     /// one critical section, so a stop that lands between them cannot leave a
     /// delivery for an agent that was not stopped.
     func recordStoppedAgentDelivery(agentId: String, messageId: String, channelType: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard storage.serverAgents[agentId]?.status == "stopped" else { return false }
-        storage.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channelType))
-        return true
+        return withState { state in
+            guard state.serverAgents[agentId]?.status == "stopped" else { return false }
+            state.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channelType))
+            return true
+        }
     }
 
     /// A claimed mention action reaches its agent target: an `add` joins the
     /// agent to the channel roster and the delivery is appended, both under one
     /// lock.
     func recordMentionDelivery(agentId: String, messageId: String, joiningChannelId: String?) {
-        lock.lock()
-        defer { lock.unlock() }
-        if let joiningChannelId {
-            var agents = storage.channelAgentMembers[joiningChannelId] ?? []
-            agents.insert(agentId)
-            storage.channelAgentMembers[joiningChannelId] = agents
+        return withState { state in
+            if let joiningChannelId {
+                var agents = state.channelAgentMembers[joiningChannelId] ?? []
+                agents.insert(agentId)
+                state.channelAgentMembers[joiningChannelId] = agents
+            }
+            state.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: "channel"))
         }
-        storage.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: "channel"))
     }
 }

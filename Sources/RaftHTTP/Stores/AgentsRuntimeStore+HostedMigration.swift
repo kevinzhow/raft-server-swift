@@ -43,9 +43,7 @@ private let agentDeleteTerminalMigrationStates: Set<String> = [
 extension AgentsRuntimeStore {
     /// The deployment-level hosted provider token (or its test override) is set.
     func hostedProviderConfigured() -> Bool {
-        lock.lock()
-        let override = storage.hostedProviderTokenOverride
-        lock.unlock()
+        let override = withState { $0.hostedProviderTokenOverride }
         let token = override
             ?? ProcessInfo.processInfo.environment["ANTIPROTON_PROVISIONING_TOKEN"]
             ?? ""
@@ -53,47 +51,45 @@ extension AgentsRuntimeStore {
     }
 
     func hostedProviderAvailable(serverId: String) -> Bool {
-        lock.lock()
-        let flagged = storage.hostedRuntimeServers.contains(serverId)
-        lock.unlock()
+        let flagged = withState { $0.hostedRuntimeServers.contains(serverId) }
         return flagged && hostedProviderConfigured()
     }
 
     func agentMigrationEnabled(serverId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentMigrationServers.contains(serverId)
+        return withState { state in
+            return state.agentMigrationServers.contains(serverId)
+        }
     }
 
     func hostedMigrationEnabled(serverId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.hostedMigrationServers.contains(serverId)
+        return withState { state in
+            return state.hostedMigrationServers.contains(serverId)
+        }
     }
 
     func hostedStartFacts(agentId: String, serverId: String) -> HostedMigrationStartFacts {
-        lock.lock()
-        defer { lock.unlock() }
-        return HostedMigrationStartFacts(
-            hostedEnabled: storage.hostedMigrationServers.contains(serverId),
-            runtimeEnabled: storage.hostedRuntimeServers.contains(serverId),
-            modelPickerEnabled: storage.hostedModelPickerServers.contains(serverId),
-            hasHostedRuntime: storage.hostedRuntimes[agentId] != nil,
-            activeMigration: storage.hostedMigrations[agentId],
-            machineId: storage.agentMachineIds[agentId]
-        )
+        return withState { state in
+            return HostedMigrationStartFacts(
+                hostedEnabled: state.hostedMigrationServers.contains(serverId),
+                runtimeEnabled: state.hostedRuntimeServers.contains(serverId),
+                modelPickerEnabled: state.hostedModelPickerServers.contains(serverId),
+                hasHostedRuntime: state.hostedRuntimes[agentId] != nil,
+                activeMigration: state.hostedMigrations[agentId],
+                machineId: state.agentMachineIds[agentId]
+            )
+        }
     }
 
     /// Inserts the hosted migration row unless the agent already ran in the
     /// cloud or holds a live migration since the caller's early check. One
     /// critical section.
     func insertHostedMigrationIfIdle(_ record: HostedMigrationRecord) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if storage.hostedRuntimes[record.agentId] != nil { return false }
-        if let existing = storage.hostedMigrations[record.agentId], existing.state != "canceled" { return false }
-        storage.hostedMigrations[record.agentId] = record
-        return true
+        return withState { state in
+            if state.hostedRuntimes[record.agentId] != nil { return false }
+            if let existing = state.hostedMigrations[record.agentId], existing.state != "canceled" { return false }
+            state.hostedMigrations[record.agentId] = record
+            return true
+        }
     }
 
     /// `in_transit` to `arriving` for the hosted migration: every gate and both
@@ -106,82 +102,80 @@ extension AgentsRuntimeStore {
         expectedRevision: Int,
         now: Date
     ) -> Result<HostedMigrationRecord, HostedMigrationConfirmFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let migration = storage.hostedMigrations[agentId],
-              migration.supportRef == migrationRef,
-              migration.serverId == serverId
-        else { return .failure(.notFound) }
-        guard migration.revision == expectedRevision else { return .failure(.revisionStale) }
-        guard migration.state == "in_transit" else { return .failure(.reviewNotReady) }
-        guard storage.hostedRuntimes[agentId] == nil else { return .failure(.targetAlreadyUsed) }
-        guard migration.sourceMachineId != nil,
-              storage.agentMachineIds[agentId] == migration.sourceMachineId
-        else { return .failure(.sourceMoved) }
-        var updated = migration
-        updated.state = "arriving"
-        updated.revision += 1
-        storage.hostedMigrations[agentId] = updated
-        storage.hostedRuntimes[agentId] = ("antiproton", nil, "provisioning", false, now)
-        return .success(updated)
+        return withState { state in
+            guard let migration = state.hostedMigrations[agentId],
+                  migration.supportRef == migrationRef,
+                  migration.serverId == serverId
+            else { return .failure(.notFound) }
+            guard migration.revision == expectedRevision else { return .failure(.revisionStale) }
+            guard migration.state == "in_transit" else { return .failure(.reviewNotReady) }
+            guard state.hostedRuntimes[agentId] == nil else { return .failure(.targetAlreadyUsed) }
+            guard migration.sourceMachineId != nil,
+                  state.agentMachineIds[agentId] == migration.sourceMachineId
+            else { return .failure(.sourceMoved) }
+            var updated = migration
+            updated.state = "arriving"
+            updated.revision += 1
+            state.hostedMigrations[agentId] = updated
+            state.hostedRuntimes[agentId] = ("antiproton", nil, "provisioning", false, now)
+            return .success(updated)
+        }
     }
 
     func credentialId(token: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentCredentials[token]?.id
+        return withState { state in
+            return state.agentCredentials[token]?.id
+        }
     }
 
     /// The credentials of one agent in the store's own iteration order.
     func credentials(agentId: String) -> [(token: String, credential: AgentCredential)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentCredentials
-            .filter { $0.value.agentId == agentId }
-            .map { (token: $0.key, credential: $0.value) }
+        return withState { state in
+            return state.agentCredentials
+                .filter { $0.value.agentId == agentId }
+                .map { (token: $0.key, credential: $0.value) }
+        }
     }
 
     /// Stamps the revocation of one credential; a credential revoked earlier
     /// keeps its original time. `false` when the id is unknown or belongs to
     /// another agent.
     func revokeCredential(agentId: String, credentialId: String, now: Date) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let token = storage.agentCredentials.first(where: { $0.value.id == credentialId })?.key,
-              storage.agentCredentials[token]?.agentId == agentId
-        else { return false }
-        let existing = storage.agentCredentials[token]?.revokedAt
-        storage.agentCredentials[token]?.revokedAt = existing ?? now
-        return true
+        return withState { state in
+            guard let token = state.agentCredentials.first(where: { $0.value.id == credentialId })?.key,
+                  state.agentCredentials[token]?.agentId == agentId
+            else { return false }
+            let existing = state.agentCredentials[token]?.revokedAt
+            state.agentCredentials[token]?.revokedAt = existing ?? now
+            return true
+        }
     }
 
     func archiveRecord(agentId: String) -> AgentArchiveRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentArchiveRecords[agentId]
+        return withState { state in
+            return state.agentArchiveRecords[agentId]
+        }
     }
 
     /// The facts an agent delete decides from.
     func agentDeleteFacts(agentId: String) -> AgentDeleteFacts {
-        lock.lock()
-        defer { lock.unlock() }
-        let terminal = agentDeleteTerminalMigrationStates
-        let hasActive = storage.activeAgentMigrations.values.contains {
-            $0.agentId == agentId && !terminal.contains($0.state)
-        } || storage.machineMigrations.values.contains {
-            $0.agentId == agentId && !terminal.contains($0.state)
-        } || (storage.hostedMigrations[agentId].map { !terminal.contains($0.state) } ?? false)
-        return AgentDeleteFacts(
-            machineId: storage.agentMachineIds[agentId],
-            hostedRuntime: storage.hostedRuntimes[agentId] != nil,
-            hasActiveMigration: hasActive
-        )
+        return withState { state in
+            let terminal = agentDeleteTerminalMigrationStates
+            let hasActive = state.activeAgentMigrations.values.contains {
+                $0.agentId == agentId && !terminal.contains($0.state)
+            } || state.machineMigrations.values.contains {
+                $0.agentId == agentId && !terminal.contains($0.state)
+            } || (state.hostedMigrations[agentId].map { !terminal.contains($0.state) } ?? false)
+            return AgentDeleteFacts(
+                machineId: state.agentMachineIds[agentId],
+                hostedRuntime: state.hostedRuntimes[agentId] != nil,
+                hasActiveMigration: hasActive
+            )
+        }
     }
 
     func storeArchiveRecord(agentId: String, record: AgentArchiveRecord) {
-        lock.lock()
-        storage.agentArchiveRecords[agentId] = record
-        lock.unlock()
+        withState { $0.agentArchiveRecords[agentId] = record }
     }
 
     /// Marks one archived workspace for deletion. The state and pending-op
@@ -190,18 +184,18 @@ extension AgentsRuntimeStore {
     func requestArchiveWorkspaceDelete(
         agentId: String
     ) -> Result<AgentArchiveRecord, AgentArchiveWorkspaceFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let record = storage.agentArchiveRecords[agentId] else { return .failure(.missing) }
-        guard record.workspaceState == "on_computer", record.machineId != nil else {
-            return .failure(.unavailable)
+        return withState { state in
+            guard let record = state.agentArchiveRecords[agentId] else { return .failure(.missing) }
+            guard record.workspaceState == "on_computer", record.machineId != nil else {
+                return .failure(.unavailable)
+            }
+            guard record.pendingOp == nil else { return .failure(.pending) }
+            var updated = record
+            updated.pendingOp = "delete"
+            updated.lastErrorCode = nil
+            updated.lastErrorAt = nil
+            state.agentArchiveRecords[agentId] = updated
+            return .success(updated)
         }
-        guard record.pendingOp == nil else { return .failure(.pending) }
-        var updated = record
-        updated.pendingOp = "delete"
-        updated.lastErrorCode = nil
-        updated.lastErrorAt = nil
-        storage.agentArchiveRecords[agentId] = updated
-        return .success(updated)
     }
 }

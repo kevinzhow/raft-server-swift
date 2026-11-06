@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Presence, push, cursor, status and provider facts for one external agent,
 /// read as one locked snapshot so the diagnostics projection cannot mix two
@@ -39,11 +40,11 @@ struct ExternalAgentDiagnosticsFacts: Sendable {
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class AgentsRuntimeStore: @unchecked Sendable {
-    /// Every row this store owns. Grouping them lets one locked value be the
-    /// whole store snapshot; each accessor below copies it, which is cheap
-    /// because the collections are copy-on-write.
-    struct State {
+final class AgentsRuntimeStore: Sendable {
+    /// Every row this store owns. The mutex isolates this whole value so a
+    /// transaction can inspect and update several rows together. Individual
+    /// accessors copy or replace only their own field.
+    struct State: Sendable {
         var serverAgents: [String: ServerAgent] = [:]
         var channelAgentMembers: [String: Set<String>] = [:]
         var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
@@ -104,218 +105,208 @@ final class AgentsRuntimeStore: @unchecked Sendable {
         var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)? = nil
     }
 
-    let lock = NSLock()
-    var storage = State()
+    private let storage = Mutex(State())
 
-    /// The whole owned state. A read or a write is one locked critical section.
+    /// A copied snapshot of every owned row. Whole-state replacement is retained
+    /// for deterministic setup; field setters below update only their own field.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
     }
 
     /// Runs `body` on the owned state in ONE critical section, for a decision
     /// that reads and writes several rows and must not interleave with another
     /// request.
     func withState<Result>(_ body: (inout State) -> Result) -> Result {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&storage)
+        storage.withLock { state in body(&state) }
     }
 
     var serverAgents: [String: ServerAgent] {
-        get { state.serverAgents }
-        set { state.serverAgents = newValue }
+        get { storage.withLock { $0.serverAgents } }
+        set { storage.withLock { $0.serverAgents = newValue } }
     }
 
     var channelAgentMembers: [String: Set<String>] {
-        get { state.channelAgentMembers }
-        set { state.channelAgentMembers = newValue }
+        get { storage.withLock { $0.channelAgentMembers } }
+        set { storage.withLock { $0.channelAgentMembers = newValue } }
     }
 
     var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] {
-        get { state.storedAgentDeliveries }
-        set { state.storedAgentDeliveries = newValue }
+        get { storage.withLock { $0.storedAgentDeliveries } }
+        set { storage.withLock { $0.storedAgentDeliveries = newValue } }
     }
 
     var assistantOwners: [String: String] {
-        get { state.assistantOwners }
-        set { state.assistantOwners = newValue }
+        get { storage.withLock { $0.assistantOwners } }
+        set { storage.withLock { $0.assistantOwners = newValue } }
     }
 
     var agentCredentials: [String: AgentCredential] {
-        get { state.agentCredentials }
-        set { state.agentCredentials = newValue }
+        get { storage.withLock { $0.agentCredentials } }
+        set { storage.withLock { $0.agentCredentials = newValue } }
     }
 
     var agentMachineIds: [String: String] {
-        get { state.agentMachineIds }
-        set { state.agentMachineIds = newValue }
+        get { storage.withLock { $0.agentMachineIds } }
+        set { storage.withLock { $0.agentMachineIds = newValue } }
     }
 
     var agentRuntimeProfiles: [String: AgentRuntimeProfileFact] {
-        get { state.agentRuntimeProfiles }
-        set { state.agentRuntimeProfiles = newValue }
+        get { storage.withLock { $0.agentRuntimeProfiles } }
+        set { storage.withLock { $0.agentRuntimeProfiles = newValue } }
     }
 
     var activeAgentMigrations: [String: AgentMigrationFact] {
-        get { state.activeAgentMigrations }
-        set { state.activeAgentMigrations = newValue }
+        get { storage.withLock { $0.activeAgentMigrations } }
+        set { storage.withLock { $0.activeAgentMigrations = newValue } }
     }
 
     var agentMigrationServers: Set<String> {
-        get { state.agentMigrationServers }
-        set { state.agentMigrationServers = newValue }
+        get { storage.withLock { $0.agentMigrationServers } }
+        set { storage.withLock { $0.agentMigrationServers = newValue } }
     }
 
     var hostedMigrationServers: Set<String> {
-        get { state.hostedMigrationServers }
-        set { state.hostedMigrationServers = newValue }
+        get { storage.withLock { $0.hostedMigrationServers } }
+        set { storage.withLock { $0.hostedMigrationServers = newValue } }
     }
 
     var hostedRuntimeServers: Set<String> {
-        get { state.hostedRuntimeServers }
-        set { state.hostedRuntimeServers = newValue }
+        get { storage.withLock { $0.hostedRuntimeServers } }
+        set { storage.withLock { $0.hostedRuntimeServers = newValue } }
     }
 
     var hostedProviderTokenOverride: String? {
-        get { state.hostedProviderTokenOverride }
-        set { state.hostedProviderTokenOverride = newValue }
+        get { storage.withLock { $0.hostedProviderTokenOverride } }
+        set { storage.withLock { $0.hostedProviderTokenOverride = newValue } }
     }
 
     var hostedMigrations: [String: HostedMigrationRecord] {
-        get { state.hostedMigrations }
-        set { state.hostedMigrations = newValue }
+        get { storage.withLock { $0.hostedMigrations } }
+        set { storage.withLock { $0.hostedMigrations = newValue } }
     }
 
     /// Computer migration rows. They live beside `agentMachineIds` and
     /// `hostedMigrations` so a flip, an auto-start completion or an assignment
     /// is one critical section over every row it reads and writes.
     var machineMigrations: [String: MachineMigrationRecord] {
-        get { state.machineMigrations }
-        set { state.machineMigrations = newValue }
+        get { storage.withLock { $0.machineMigrations } }
+        set { storage.withLock { $0.machineMigrations = newValue } }
     }
 
     var hostedRuntimes: [String: (provider: String, model: String?, state: String, retryNeedsModel: Bool, createdAt: Date)] {
-        get { state.hostedRuntimes }
-        set { state.hostedRuntimes = newValue }
+        get { storage.withLock { $0.hostedRuntimes } }
+        set { storage.withLock { $0.hostedRuntimes = newValue } }
     }
 
     var grokRuntimeServers: Set<String> {
-        get { state.grokRuntimeServers }
-        set { state.grokRuntimeServers = newValue }
+        get { storage.withLock { $0.grokRuntimeServers } }
+        set { storage.withLock { $0.grokRuntimeServers = newValue } }
     }
 
     var remoteUpgradeDisabledServers: Set<String> {
-        get { state.remoteUpgradeDisabledServers }
-        set { state.remoteUpgradeDisabledServers = newValue }
+        get { storage.withLock { $0.remoteUpgradeDisabledServers } }
+        set { storage.withLock { $0.remoteUpgradeDisabledServers = newValue } }
     }
 
     var agentStatusAdopted: Set<String> {
-        get { state.agentStatusAdopted }
-        set { state.agentStatusAdopted = newValue }
+        get { storage.withLock { $0.agentStatusAdopted } }
+        set { storage.withLock { $0.agentStatusAdopted = newValue } }
     }
 
     var agentStatusOccurredAt: [String: Date] {
-        get { state.agentStatusOccurredAt }
-        set { state.agentStatusOccurredAt = newValue }
+        get { storage.withLock { $0.agentStatusOccurredAt } }
+        set { storage.withLock { $0.agentStatusOccurredAt = newValue } }
     }
 
     var agentActivityEventIds: [String: Set<String>] {
-        get { state.agentActivityEventIds }
-        set { state.agentActivityEventIds = newValue }
+        get { storage.withLock { $0.agentActivityEventIds } }
+        set { storage.withLock { $0.agentActivityEventIds = newValue } }
     }
 
     var hostedUsage: [String: String] {
-        get { state.hostedUsage }
-        set { state.hostedUsage = newValue }
+        get { storage.withLock { $0.hostedUsage } }
+        set { storage.withLock { $0.hostedUsage = newValue } }
     }
 
     var hostedModelPickerServers: Set<String> {
-        get { state.hostedModelPickerServers }
-        set { state.hostedModelPickerServers = newValue }
+        get { storage.withLock { $0.hostedModelPickerServers } }
+        set { storage.withLock { $0.hostedModelPickerServers = newValue } }
     }
 
     var hostedModels: [String: HostedModelState] {
-        get { state.hostedModels }
-        set { state.hostedModels = newValue }
+        get { storage.withLock { $0.hostedModels } }
+        set { storage.withLock { $0.hostedModels = newValue } }
     }
 
     var agentArchiveRecords: [String: AgentArchiveRecord] {
-        get { state.agentArchiveRecords }
-        set { state.agentArchiveRecords = newValue }
+        get { storage.withLock { $0.agentArchiveRecords } }
+        set { storage.withLock { $0.agentArchiveRecords = newValue } }
     }
 
     var agentChannelJoinedAt: [String: Date] {
-        get { state.agentChannelJoinedAt }
-        set { state.agentChannelJoinedAt = newValue }
+        get { storage.withLock { $0.agentChannelJoinedAt } }
+        set { storage.withLock { $0.agentChannelJoinedAt = newValue } }
     }
 
     var agentChannelPosted: Set<String> {
-        get { state.agentChannelPosted }
-        set { state.agentChannelPosted = newValue }
+        get { storage.withLock { $0.agentChannelPosted } }
+        set { storage.withLock { $0.agentChannelPosted = newValue } }
     }
 
     var agentActivities: [String: (activity: String, detail: String)] {
-        get { state.agentActivities }
-        set { state.agentActivities = newValue }
+        get { storage.withLock { $0.agentActivities } }
+        set { storage.withLock { $0.agentActivities = newValue } }
     }
 
     var agentLastSeenAt: [String: Date] {
-        get { state.agentLastSeenAt }
-        set { state.agentLastSeenAt = newValue }
+        get { storage.withLock { $0.agentLastSeenAt } }
+        set { storage.withLock { $0.agentLastSeenAt = newValue } }
     }
 
     var agentAttachmentBytes: [String: Data] {
-        get { state.agentAttachmentBytes }
-        set { state.agentAttachmentBytes = newValue }
+        get { storage.withLock { $0.agentAttachmentBytes } }
+        set { storage.withLock { $0.agentAttachmentBytes = newValue } }
     }
 
     var externalPushWebhooks: [String: (url: String, secret: String)] {
-        get { state.externalPushWebhooks }
-        set { state.externalPushWebhooks = newValue }
+        get { storage.withLock { $0.externalPushWebhooks } }
+        set { storage.withLock { $0.externalPushWebhooks = newValue } }
     }
 
     var agentStatusProtocolAdoptedAt: [String: Date] {
-        get { state.agentStatusProtocolAdoptedAt }
-        set { state.agentStatusProtocolAdoptedAt = newValue }
+        get { storage.withLock { $0.agentStatusProtocolAdoptedAt } }
+        set { storage.withLock { $0.agentStatusProtocolAdoptedAt = newValue } }
     }
 
     var agentCursorPullState: [String: (lastPulledAt: Date, pendingAcks: Int)] {
-        get { state.agentCursorPullState }
-        set { state.agentCursorPullState = newValue }
+        get { storage.withLock { $0.agentCursorPullState } }
+        set { storage.withLock { $0.agentCursorPullState = newValue } }
     }
 
     var agentProviderPositions: [String: (provider: String, state: String, providerAgentId: String?, syncPending: Bool, lastErrorCode: String?, lastErrorAt: Date?, activatedAt: Date?)] {
-        get { state.agentProviderPositions }
-        set { state.agentProviderPositions = newValue }
+        get { storage.withLock { $0.agentProviderPositions } }
+        set { storage.withLock { $0.agentProviderPositions = newValue } }
     }
 
     var hostedAgents: Set<String> {
-        get { state.hostedAgents }
-        set { state.hostedAgents = newValue }
+        get { storage.withLock { $0.hostedAgents } }
+        set { storage.withLock { $0.hostedAgents = newValue } }
     }
 
     var agentInboxAvailable: Bool? {
-        get { state.agentInboxAvailable }
-        set { state.agentInboxAvailable = newValue }
+        get { storage.withLock { $0.agentInboxAvailable } }
+        set { storage.withLock { $0.agentInboxAvailable = newValue } }
     }
 
     var featureFlagRecords: [String: FeatureFlagRecord] {
-        get { state.featureFlagRecords }
-        set { state.featureFlagRecords = newValue }
+        get { storage.withLock { $0.featureFlagRecords } }
+        set { storage.withLock { $0.featureFlagRecords = newValue } }
     }
 
     var featureFlagRuleRecords: [FeatureFlagRuleRecord] {
-        get { state.featureFlagRuleRecords }
-        set { state.featureFlagRuleRecords = newValue }
+        get { storage.withLock { $0.featureFlagRuleRecords } }
+        set { storage.withLock { $0.featureFlagRuleRecords = newValue } }
     }
 
     /// The server-scoped rollout decision for one feature flag.
@@ -325,99 +316,99 @@ final class AgentsRuntimeStore: @unchecked Sendable {
     /// decision here takes the same read under one store critical section so a
     /// concurrent flag edit cannot produce a torn decision.
     func featureFlagEnabled(key: String, serverId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let flag = storage.featureFlagRecords[key], flag.enabled, !flag.killSwitch else {
-            return false
+        return withState { state in
+            guard let flag = state.featureFlagRecords[key], flag.enabled, !flag.killSwitch else {
+                return false
+            }
+            let rules = state.featureFlagRuleRecords
+                .filter { $0.key == key && $0.stage == "server" && $0.values.contains(serverId) }
+                .sorted { $0.priority < $1.priority }
+            if let rule = rules.first {
+                return rule.decision == "allow"
+            }
+            return flag.defaultEnabled
         }
-        let rules = storage.featureFlagRuleRecords
-            .filter { $0.key == key && $0.stage == "server" && $0.values.contains(serverId) }
-            .sorted { $0.priority < $1.priority }
-        if let rule = rules.first {
-            return rule.decision == "allow"
-        }
-        return flag.defaultEnabled
     }
 
     // MARK: - Injected agent relays and configuration
 
     var agentMigrationCancelDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String, _ transportGeneration: String, _ stopAgent: Bool) -> Void)? {
-        get { state.agentMigrationCancelDispatch }
-        set { state.agentMigrationCancelDispatch = newValue }
+        get { storage.withLock { $0.agentMigrationCancelDispatch } }
+        set { storage.withLock { $0.agentMigrationCancelDispatch = newValue } }
     }
 
     var agentStartDispatch: (@Sendable (_ agentId: String, _ resumePrompt: String?) async throws -> AgentStartDispatchOutcome)? {
-        get { state.agentStartDispatch }
-        set { state.agentStartDispatch = newValue }
+        get { storage.withLock { $0.agentStartDispatch } }
+        set { storage.withLock { $0.agentStartDispatch = newValue } }
     }
 
     var agentActivityLogProvider: (@Sendable (_ agentId: String, _ limit: Int?) -> AgentSurfaceResult)? {
-        get { state.agentActivityLogProvider }
-        set { state.agentActivityLogProvider = newValue }
+        get { storage.withLock { $0.agentActivityLogProvider } }
+        set { storage.withLock { $0.agentActivityLogProvider = newValue } }
     }
 
     var agentActivitySummariesProvider: (@Sendable (_ agentId: String, _ limit: Int, _ beforeEndedAt: Int?, _ beforeId: String?) -> AgentSurfaceResult)? {
-        get { state.agentActivitySummariesProvider }
-        set { state.agentActivitySummariesProvider = newValue }
+        get { storage.withLock { $0.agentActivitySummariesProvider } }
+        set { storage.withLock { $0.agentActivitySummariesProvider = newValue } }
     }
 
     var agentSkillsProvider: (@Sendable (_ agentId: String) -> AgentSurfaceResult)? {
-        get { state.agentSkillsProvider }
-        set { state.agentSkillsProvider = newValue }
+        get { storage.withLock { $0.agentSkillsProvider } }
+        set { storage.withLock { $0.agentSkillsProvider = newValue } }
     }
 
     var agentHasMachineLocally: (@Sendable (_ agentId: String) -> Bool)? {
-        get { state.agentHasMachineLocally }
-        set { state.agentHasMachineLocally = newValue }
+        get { storage.withLock { $0.agentHasMachineLocally } }
+        set { storage.withLock { $0.agentHasMachineLocally = newValue } }
     }
 
     var agentWorkspaceTreeProvider: (@Sendable (_ agentId: String, _ dirPath: String?, _ includeHidden: Bool) -> AgentSurfaceResult)? {
-        get { state.agentWorkspaceTreeProvider }
-        set { state.agentWorkspaceTreeProvider = newValue }
+        get { storage.withLock { $0.agentWorkspaceTreeProvider } }
+        set { storage.withLock { $0.agentWorkspaceTreeProvider = newValue } }
     }
 
     var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)? {
-        get { state.agentWorkspaceReadProvider }
-        set { state.agentWorkspaceReadProvider = newValue }
+        get { storage.withLock { $0.agentWorkspaceReadProvider } }
+        set { storage.withLock { $0.agentWorkspaceReadProvider = newValue } }
     }
 
     var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)? {
-        get { state.agentStartControlDispatch }
-        set { state.agentStartControlDispatch = newValue }
+        get { storage.withLock { $0.agentStartControlDispatch } }
+        set { storage.withLock { $0.agentStartControlDispatch = newValue } }
     }
 
     var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? {
-        get { state.agentResetDispatch }
-        set { state.agentResetDispatch = newValue }
+        get { storage.withLock { $0.agentResetDispatch } }
+        set { storage.withLock { $0.agentResetDispatch = newValue } }
     }
 
     var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? {
-        get { state.agentConfigLiftDispatch }
-        set { state.agentConfigLiftDispatch = newValue }
+        get { storage.withLock { $0.agentConfigLiftDispatch } }
+        set { storage.withLock { $0.agentConfigLiftDispatch = newValue } }
     }
 
     var agentConnectionOrigin: String {
-        get { state.agentConnectionOrigin }
-        set { state.agentConnectionOrigin = newValue }
+        get { storage.withLock { $0.agentConnectionOrigin } }
+        set { storage.withLock { $0.agentConnectionOrigin = newValue } }
     }
 
     var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? {
-        get { state.agentConnectionProviderStorage }
-        set { state.agentConnectionProviderStorage = newValue }
+        get { storage.withLock { $0.agentConnectionProviderStorage } }
+        set { storage.withLock { $0.agentConnectionProviderStorage = newValue } }
     }
 
     var agentCredentialUseThrottleOverrideMs: Int? {
-        get { state.agentCredentialUseThrottleOverrideMs }
-        set { state.agentCredentialUseThrottleOverrideMs = newValue }
+        get { storage.withLock { $0.agentCredentialUseThrottleOverrideMs } }
+        set { storage.withLock { $0.agentCredentialUseThrottleOverrideMs = newValue } }
     }
 
     var wakeStreamHeartbeatOverrideMs: Int? {
-        get { state.wakeStreamHeartbeatOverrideMs }
-        set { state.wakeStreamHeartbeatOverrideMs = newValue }
+        get { storage.withLock { $0.wakeStreamHeartbeatOverrideMs } }
+        set { storage.withLock { $0.wakeStreamHeartbeatOverrideMs = newValue } }
     }
 
     var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)? {
-        get { state.agentAttachmentPresign }
-        set { state.agentAttachmentPresign = newValue }
+        get { storage.withLock { $0.agentAttachmentPresign } }
+        set { storage.withLock { $0.agentAttachmentPresign = newValue } }
     }
 }

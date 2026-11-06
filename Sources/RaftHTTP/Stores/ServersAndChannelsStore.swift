@@ -1,18 +1,18 @@
 import Foundation
+import Synchronization
 
 /// Owns the server-membership, sidebar and channel-authority rows that used to be stored inline on
 /// `EmailLoginDirectory`.
 ///
 /// HTTP decisions stay in the directory extensions; this store serializes only
-/// its own rows behind a private lock and hands back strong Swift values.
+/// its own rows in a Mutex-protected State and hands back Swift values.
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class ServersAndChannelsStore: @unchecked Sendable {
-    /// Every row this store owns. Grouping them lets one locked value be the
-    /// whole store snapshot; each accessor below copies it, which is cheap
-    /// because the collections are copy-on-write.
-    struct State {
+final class ServersAndChannelsStore: Sendable {
+    /// All mutable rows share one Mutex. Snapshot accessors return values;
+    /// transaction methods read and mutate this state in one critical section.
+    struct State: Sendable {
         var postableChannels: [String: PostableChannel] = [:]
         var threadOrder: [String] = []
         var serverMemberRoles: [String: String] = [:]
@@ -52,185 +52,176 @@ final class ServersAndChannelsStore: @unchecked Sendable {
         var installedServerApps: [String: Set<String>] = [:]
     }
 
-    let lock = NSLock()
-    var storage = State()
+    let mutex = Mutex(State())
 
-    /// The whole owned state. A read or a write is one locked critical section.
+    /// A value snapshot; transaction methods hold the Mutex for their whole decision.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { mutex.withLock { $0 } }
+        set { mutex.withLock { $0 = newValue } }
     }
 
     var postableChannels: [String: PostableChannel] {
-        get { state.postableChannels }
-        set { state.postableChannels = newValue }
+        get { mutex.withLock { $0.postableChannels } }
+        set { mutex.withLock { $0.postableChannels = newValue } }
     }
 
     var threadOrder: [String] {
-        get { state.threadOrder }
-        set { state.threadOrder = newValue }
+        get { mutex.withLock { $0.threadOrder } }
+        set { mutex.withLock { $0.threadOrder = newValue } }
     }
 
     var serverMemberRoles: [String: String] {
-        get { state.serverMemberRoles }
-        set { state.serverMemberRoles = newValue }
+        get { mutex.withLock { $0.serverMemberRoles } }
+        set { mutex.withLock { $0.serverMemberRoles = newValue } }
     }
 
     var hideHumansFromMembers: [String: Bool] {
-        get { state.hideHumansFromMembers }
-        set { state.hideHumansFromMembers = newValue }
+        get { mutex.withLock { $0.hideHumansFromMembers } }
+        set { mutex.withLock { $0.hideHumansFromMembers = newValue } }
     }
 
     var serverMemberStatuses: [String: String] {
-        get { state.serverMemberStatuses }
-        set { state.serverMemberStatuses = newValue }
+        get { mutex.withLock { $0.serverMemberStatuses } }
+        set { mutex.withLock { $0.serverMemberStatuses = newValue } }
     }
 
     var membershipAgreementAudits: [(serverId: String, subjectId: String, actorUserId: String, source: String, agreementId: String?, agreementVersion: Int?)] {
-        get { state.membershipAgreementAudits }
-        set { state.membershipAgreementAudits = newValue }
+        get { mutex.withLock { $0.membershipAgreementAudits } }
+        set { mutex.withLock { $0.membershipAgreementAudits = newValue } }
     }
 
     var jointProjections: [JointChannelLink] {
-        get { state.jointProjections }
-        set { state.jointProjections = newValue }
+        get { mutex.withLock { $0.jointProjections } }
+        set { mutex.withLock { $0.jointProjections = newValue } }
     }
 
     var serverMemberEvents: [ServerMemberEvent] {
-        get { state.serverMemberEvents }
-        set { state.serverMemberEvents = newValue }
+        get { mutex.withLock { $0.serverMemberEvents } }
+        set { mutex.withLock { $0.serverMemberEvents = newValue } }
     }
 
     var deletedServerIds: Set<String> {
-        get { state.deletedServerIds }
-        set { state.deletedServerIds = newValue }
+        get { mutex.withLock { $0.deletedServerIds } }
+        set { mutex.withLock { $0.deletedServerIds = newValue } }
     }
 
     var removedServerMembers: Set<String> {
-        get { state.removedServerMembers }
-        set { state.removedServerMembers = newValue }
+        get { mutex.withLock { $0.removedServerMembers } }
+        set { mutex.withLock { $0.removedServerMembers = newValue } }
     }
 
     var serverPlans: [String: String] {
-        get { state.serverPlans }
-        set { state.serverPlans = newValue }
+        get { mutex.withLock { $0.serverPlans } }
+        set { mutex.withLock { $0.serverPlans = newValue } }
     }
 
     var serverLabsState: [String: ServerLabsState] {
-        get { state.serverLabsState }
-        set { state.serverLabsState = newValue }
+        get { mutex.withLock { $0.serverLabsState } }
+        set { mutex.withLock { $0.serverLabsState = newValue } }
     }
 
     var serverInvites: [(id: String, serverId: String, email: String, role: String, tokenHash: String?)] {
-        get { state.serverInvites }
-        set { state.serverInvites = newValue }
+        get { mutex.withLock { $0.serverInvites } }
+        set { mutex.withLock { $0.serverInvites = newValue } }
     }
 
     var serverSwitcherOrders: [String: (ids: [String], version: Int)] {
-        get { state.serverSwitcherOrders }
-        set { state.serverSwitcherOrders = newValue }
+        get { mutex.withLock { $0.serverSwitcherOrders } }
+        set { mutex.withLock { $0.serverSwitcherOrders = newValue } }
     }
 
     var serverOnboardingSettings: [String: (agentId: String?, greeting: Bool)] {
-        get { state.serverOnboardingSettings }
-        set { state.serverOnboardingSettings = newValue }
+        get { mutex.withLock { $0.serverOnboardingSettings } }
+        set { mutex.withLock { $0.serverOnboardingSettings = newValue } }
     }
 
     var setupPhases: [String: String] {
-        get { state.setupPhases }
-        set { state.setupPhases = newValue }
+        get { mutex.withLock { $0.setupPhases } }
+        set { mutex.withLock { $0.setupPhases = newValue } }
     }
 
     var setupHandoffs: Set<String> {
-        get { state.setupHandoffs }
-        set { state.setupHandoffs = newValue }
+        get { mutex.withLock { $0.setupHandoffs } }
+        set { mutex.withLock { $0.setupHandoffs = newValue } }
     }
 
     var guestRoleServers: Set<String> {
-        get { state.guestRoleServers }
-        set { state.guestRoleServers = newValue }
+        get { mutex.withLock { $0.guestRoleServers } }
+        set { mutex.withLock { $0.guestRoleServers = newValue } }
     }
 
     var proSeats: [String: Int] {
-        get { state.proSeats }
-        set { state.proSeats = newValue }
+        get { mutex.withLock { $0.proSeats } }
+        set { mutex.withLock { $0.proSeats = newValue } }
     }
 
     var joinLinks: [String: JoinLinkRecord] {
-        get { state.joinLinks }
-        set { state.joinLinks = newValue }
+        get { mutex.withLock { $0.joinLinks } }
+        set { mutex.withLock { $0.joinLinks = newValue } }
     }
 
     var usageLimitAttentionServers: Set<String> {
-        get { state.usageLimitAttentionServers }
-        set { state.usageLimitAttentionServers = newValue }
+        get { mutex.withLock { $0.usageLimitAttentionServers } }
+        set { mutex.withLock { $0.usageLimitAttentionServers = newValue } }
     }
 
     var guestVisibleChannels: [String: Bool] {
-        get { state.guestVisibleChannels }
-        set { state.guestVisibleChannels = newValue }
+        get { mutex.withLock { $0.guestVisibleChannels } }
+        set { mutex.withLock { $0.guestVisibleChannels = newValue } }
     }
 
     var guestJoinableChannels: [String: Bool] {
-        get { state.guestJoinableChannels }
-        set { state.guestJoinableChannels = newValue }
+        get { mutex.withLock { $0.guestJoinableChannels } }
+        set { mutex.withLock { $0.guestJoinableChannels = newValue } }
     }
 
     var readReceiptsServers: Set<String> {
-        get { state.readReceiptsServers }
-        set { state.readReceiptsServers = newValue }
+        get { mutex.withLock { $0.readReceiptsServers } }
+        set { mutex.withLock { $0.readReceiptsServers = newValue } }
     }
 
     var channelHumanRoles: [String: String] {
-        get { state.channelHumanRoles }
-        set { state.channelHumanRoles = newValue }
+        get { mutex.withLock { $0.channelHumanRoles } }
+        set { mutex.withLock { $0.channelHumanRoles = newValue } }
     }
 
     var channelAuthorityRevisions: [String: Int] {
-        get { state.channelAuthorityRevisions }
-        set { state.channelAuthorityRevisions = newValue }
+        get { mutex.withLock { $0.channelAuthorityRevisions } }
+        set { mutex.withLock { $0.channelAuthorityRevisions = newValue } }
     }
 
     var sidebarModes: [String: (channel: String, joint: String, dm: String, pinned: String, channelTabs: [String], agentTabs: [String])] {
-        get { state.sidebarModes }
-        set { state.sidebarModes = newValue }
+        get { mutex.withLock { $0.sidebarModes } }
+        set { mutex.withLock { $0.sidebarModes = newValue } }
     }
 
     var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] {
-        get { state.sidebarSections }
-        set { state.sidebarSections = newValue }
+        get { mutex.withLock { $0.sidebarSections } }
+        set { mutex.withLock { $0.sidebarSections = newValue } }
     }
 
     var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] {
-        get { state.sidebarPinnedRefs }
-        set { state.sidebarPinnedRefs = newValue }
+        get { mutex.withLock { $0.sidebarPinnedRefs } }
+        set { mutex.withLock { $0.sidebarPinnedRefs = newValue } }
     }
 
     var sidebarReadAllEnabled: Bool {
-        get { state.sidebarReadAllEnabled }
-        set { state.sidebarReadAllEnabled = newValue }
+        get { mutex.withLock { $0.sidebarReadAllEnabled } }
+        set { mutex.withLock { $0.sidebarReadAllEnabled = newValue } }
     }
 
     var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] {
-        get { state.jointInvites }
-        set { state.jointInvites = newValue }
+        get { mutex.withLock { $0.jointInvites } }
+        set { mutex.withLock { $0.jointInvites = newValue } }
     }
 
     var composerResourceServers: Set<String> {
-        get { state.composerResourceServers }
-        set { state.composerResourceServers = newValue }
+        get { mutex.withLock { $0.composerResourceServers } }
+        set { mutex.withLock { $0.composerResourceServers = newValue } }
     }
 
     var installedServerApps: [String: Set<String>] {
-        get { state.installedServerApps }
-        set { state.installedServerApps = newValue }
+        get { mutex.withLock { $0.installedServerApps } }
+        set { mutex.withLock { $0.installedServerApps = newValue } }
     }
 }

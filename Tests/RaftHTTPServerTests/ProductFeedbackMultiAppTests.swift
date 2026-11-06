@@ -71,7 +71,7 @@ struct ProductFeedbackMultiAppTests {
 
     private static let allowedTickets: Set<String> = ["\(androidAppId)/\(androidTicketId)"]
 
-    private func fakeHands(_ capture: Capture) -> (URLRequest) -> (status: Int, headers: [String: String], body: Data) {
+    private func fakeHands(_ capture: Capture) -> @Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data) {
         { request in
             capture.append(request)
             let path = request.url?.path ?? ""

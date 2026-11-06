@@ -70,48 +70,48 @@ extension AgentsRuntimeStore {
         "canceled_pre_flip", "completed", "aborted", "failed",
     ]
 
-    private func hasActiveMigrationLocked(agentId: String) -> Bool {
-        storage.machineMigrations.values.contains {
+    private static func hasActiveMigrationLocked(state: inout State, agentId: String) -> Bool {
+        state.machineMigrations.values.contains {
             $0.agentId == agentId && !Self.terminalMachineMigrationStates.contains($0.state)
-        } || storage.hostedMigrations[agentId] != nil
+        } || state.hostedMigrations[agentId] != nil
     }
 
     func machineMigration(ref: String) -> MachineMigrationRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machineMigrations[ref]
+        return withState { state in
+            return state.machineMigrations[ref]
+        }
     }
 
     /// Whether the agent has a Computer migration that has not reached a
     /// terminal state, or any hosted migration row.
     func hasActiveMigration(agentId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return hasActiveMigrationLocked(agentId: agentId)
+        return withState { state in
+            return Self.hasActiveMigrationLocked(state: &state, agentId: agentId)
+        }
     }
 
     /// The assignment write guarded by the active-migration check, one critical
     /// section. `false` when an active migration owns the agent.
     func assignMachine(agentId: String, machineId: String?) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if hasActiveMigrationLocked(agentId: agentId) { return false }
-        if let machineId {
-            storage.agentMachineIds[agentId] = machineId
-        } else {
-            storage.agentMachineIds.removeValue(forKey: agentId)
+        return withState { state in
+            if Self.hasActiveMigrationLocked(state: &state, agentId: agentId) { return false }
+            if let machineId {
+                state.agentMachineIds[agentId] = machineId
+            } else {
+                state.agentMachineIds.removeValue(forKey: agentId)
+            }
+            return true
         }
-        return true
     }
 
     /// Inserts a freshly provisioned Computer migration unless one became
     /// active since the caller's early check. One critical section.
     func insertMachineMigrationIfIdle(_ record: MachineMigrationRecord) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if hasActiveMigrationLocked(agentId: record.agentId) { return false }
-        storage.machineMigrations[record.supportRef] = record
-        return true
+        return withState { state in
+            if Self.hasActiveMigrationLocked(state: &state, agentId: record.agentId) { return false }
+            state.machineMigrations[record.supportRef] = record
+            return true
+        }
     }
 
     /// Stores the control manifest and its parsed chunk table. A manifest that
@@ -122,15 +122,15 @@ extension AgentsRuntimeStore {
         body: String,
         chunks: [Int: (sha256: String, sizeBytes: Int)]
     ) -> Result<Void, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref] else { return .failure(.migrationMissing) }
-        if let existing = record.manifestJSON, existing != body { return .failure(.manifestConflict) }
-        record.manifestJSON = body
-        record.manifestChunks = chunks
-        if record.chunkReceipts.isEmpty { record.chunkReceipts = [:] }
-        storage.machineMigrations[ref] = record
-        return .success(())
+        return withState { state in
+            guard var record = state.machineMigrations[ref] else { return .failure(.migrationMissing) }
+            if let existing = record.manifestJSON, existing != body { return .failure(.manifestConflict) }
+            record.manifestJSON = body
+            record.manifestChunks = chunks
+            if record.chunkReceipts.isEmpty { record.chunkReceipts = [:] }
+            state.machineMigrations[ref] = record
+            return .success(())
+        }
     }
 
     /// Records one chunk receipt against the registered manifest.
@@ -139,32 +139,32 @@ extension AgentsRuntimeStore {
         chunkIndex: Int,
         sha256: String
     ) -> Result<Void, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref] else { return .failure(.migrationMissing) }
-        guard record.manifestJSON != nil, !record.manifestChunks.isEmpty else {
-            return .failure(.controlManifestMissing)
+        return withState { state in
+            guard var record = state.machineMigrations[ref] else { return .failure(.migrationMissing) }
+            guard record.manifestJSON != nil, !record.manifestChunks.isEmpty else {
+                return .failure(.controlManifestMissing)
+            }
+            guard let expected = record.manifestChunks[chunkIndex] else { return .failure(.chunkInvalid) }
+            guard expected.sha256 == sha256 else { return .failure(.chunkReceiptMismatch) }
+            record.chunkReceipts[chunkIndex] = sha256
+            state.machineMigrations[ref] = record
+            return .success(())
         }
-        guard let expected = record.manifestChunks[chunkIndex] else { return .failure(.chunkInvalid) }
-        guard expected.sha256 == sha256 else { return .failure(.chunkReceiptMismatch) }
-        record.chunkReceipts[chunkIndex] = sha256
-        storage.machineMigrations[ref] = record
-        return .success(())
     }
 
     /// `transfer_complete` once every manifest chunk has a receipt. The missing
     /// check and the state write share one critical section.
     func completeUpload(ref: String) -> Result<Void, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref] else { return .failure(.migrationMissing) }
-        guard !record.manifestChunks.isEmpty else { return .failure(.controlManifestMissing) }
-        let missing = record.manifestChunks.keys.filter { record.chunkReceipts[$0] == nil }.sorted()
-        guard missing.isEmpty else { return .failure(.chunksMissing(missing)) }
-        record.state = "transfer_complete"
-        record.revision += 1
-        storage.machineMigrations[ref] = record
-        return .success(())
+        return withState { state in
+            guard var record = state.machineMigrations[ref] else { return .failure(.migrationMissing) }
+            guard !record.manifestChunks.isEmpty else { return .failure(.controlManifestMissing) }
+            let missing = record.manifestChunks.keys.filter { record.chunkReceipts[$0] == nil }.sorted()
+            guard missing.isEmpty else { return .failure(.chunksMissing(missing)) }
+            record.state = "transfer_complete"
+            record.revision += 1
+            state.machineMigrations[ref] = record
+            return .success(())
+        }
     }
 
     /// The target Computer's read of its own row.
@@ -172,12 +172,12 @@ extension AgentsRuntimeStore {
         ref: String,
         machineId: String
     ) -> Result<MachineMigrationRecord, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let record = storage.machineMigrations[ref], record.targetMachineId == machineId else {
-            return .failure(.migrationMissing)
+        return withState { state in
+            guard let record = state.machineMigrations[ref], record.targetMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            return .success(record)
         }
-        return .success(record)
     }
 
     /// `ready` to `in_transit`: ownership, generation and state checks and the
@@ -190,20 +190,20 @@ extension AgentsRuntimeStore {
         nextGeneration: String,
         now: Date
     ) -> Result<MachineMigrationRecord, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref], record.targetMachineId == machineId else {
-            return .failure(.migrationMissing)
+        return withState { state in
+            guard var record = state.machineMigrations[ref], record.targetMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            guard record.transportGeneration == generation else { return .failure(.generationStale) }
+            guard record.state == "ready" else { return .failure(.notReady) }
+            record.previousTransportGeneration = record.transportGeneration
+            record.state = "in_transit"
+            record.transportGeneration = nextGeneration
+            record.revision += 1
+            record.updatedAt = now
+            state.machineMigrations[ref] = record
+            return .success(record)
         }
-        guard record.transportGeneration == generation else { return .failure(.generationStale) }
-        guard record.state == "ready" else { return .failure(.notReady) }
-        record.previousTransportGeneration = record.transportGeneration
-        record.state = "in_transit"
-        record.transportGeneration = nextGeneration
-        record.revision += 1
-        record.updatedAt = now
-        storage.machineMigrations[ref] = record
-        return .success(record)
     }
 
     /// `in_transit` to `arriving`: the row transition and the agent's machine
@@ -215,29 +215,29 @@ extension AgentsRuntimeStore {
         nextGeneration: String,
         now: Date
     ) -> Result<MachineMigrationRecord, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref], record.targetMachineId == machineId else {
-            return .failure(.migrationMissing)
-        }
-        if (record.state == "arriving" || record.state == "completed")
-            && storage.agentMachineIds[record.agentId] == record.targetMachineId {
+        return withState { state in
+            guard var record = state.machineMigrations[ref], record.targetMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            if (record.state == "arriving" || record.state == "completed")
+                && state.agentMachineIds[record.agentId] == record.targetMachineId {
+                return .success(record)
+            }
+            guard record.transportGeneration == generation else { return .failure(.generationStale) }
+            guard record.state == "in_transit" else { return .failure(.notFlippable) }
+            guard state.agentMachineIds[record.agentId] == record.sourceMachineId else {
+                return .failure(.sourceMachineMismatch)
+            }
+            record.previousTransportGeneration = record.transportGeneration
+            record.state = "arriving"
+            record.flippedAt = now
+            record.transportGeneration = nextGeneration
+            record.revision += 1
+            record.updatedAt = now
+            state.agentMachineIds[record.agentId] = record.targetMachineId
+            state.machineMigrations[ref] = record
             return .success(record)
         }
-        guard record.transportGeneration == generation else { return .failure(.generationStale) }
-        guard record.state == "in_transit" else { return .failure(.notFlippable) }
-        guard storage.agentMachineIds[record.agentId] == record.sourceMachineId else {
-            return .failure(.sourceMachineMismatch)
-        }
-        record.previousTransportGeneration = record.transportGeneration
-        record.state = "arriving"
-        record.flippedAt = now
-        record.transportGeneration = nextGeneration
-        record.revision += 1
-        record.updatedAt = now
-        storage.agentMachineIds[record.agentId] = record.targetMachineId
-        storage.machineMigrations[ref] = record
-        return .success(record)
     }
 
     /// Records a failed source-archive attempt. It does not bump `revision`:
@@ -246,36 +246,36 @@ extension AgentsRuntimeStore {
         let code = rawCode.range(of: "^[A-Za-z0-9_:.-]{1,160}$", options: .regularExpression) != nil
             ? rawCode
             : "MIGRATION_SOURCE_WORKSPACE_ARCHIVE_FAILED"
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref],
-              record.sourceWorkspaceArchivedAt == nil,
-              record.sourceWorkspaceArchiveAbandonedAt == nil
-        else { return }
-        record.sourceWorkspaceArchiveAttempts += 1
-        let agentMoved = MachineMigrationPolicy.migrationSourceArchiveMovedCodes.contains(code)
-        let exhausted = agentMoved
-            || record.sourceWorkspaceArchiveAttempts >= MachineMigrationPolicy.migrationSourceArchiveMaxAttempts
-        record.sourceWorkspaceArchiveLastError = agentMoved ? "agent_moved" : code
-        record.sourceWorkspaceArchiveRetryAt = exhausted
-            ? nil
-            : now.addingTimeInterval(
-                MachineMigrationPolicy.migrationSourceArchiveBackoff(attempts: record.sourceWorkspaceArchiveAttempts)
-            )
-        record.sourceWorkspaceArchiveAbandonedAt = exhausted ? now : nil
-        record.updatedAt = now
-        storage.machineMigrations[ref] = record
+        return withState { state in
+            guard var record = state.machineMigrations[ref],
+                  record.sourceWorkspaceArchivedAt == nil,
+                  record.sourceWorkspaceArchiveAbandonedAt == nil
+            else { return }
+            record.sourceWorkspaceArchiveAttempts += 1
+            let agentMoved = MachineMigrationPolicy.migrationSourceArchiveMovedCodes.contains(code)
+            let exhausted = agentMoved
+                || record.sourceWorkspaceArchiveAttempts >= MachineMigrationPolicy.migrationSourceArchiveMaxAttempts
+            record.sourceWorkspaceArchiveLastError = agentMoved ? "agent_moved" : code
+            record.sourceWorkspaceArchiveRetryAt = exhausted
+                ? nil
+                : now.addingTimeInterval(
+                    MachineMigrationPolicy.migrationSourceArchiveBackoff(attempts: record.sourceWorkspaceArchiveAttempts)
+                )
+            record.sourceWorkspaceArchiveAbandonedAt = exhausted ? now : nil
+            record.updatedAt = now
+            state.machineMigrations[ref] = record
+        }
     }
 
     /// Stamps the source archive confirmation once.
     func confirmSourceArchive(ref: String, now: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var current = storage.machineMigrations[ref], current.sourceWorkspaceArchivedAt == nil else { return }
-        current.sourceWorkspaceArchivedAt = now
-        current.revision += 1
-        current.updatedAt = now
-        storage.machineMigrations[ref] = current
+        return withState { state in
+            guard var current = state.machineMigrations[ref], current.sourceWorkspaceArchivedAt == nil else { return }
+            current.sourceWorkspaceArchivedAt = now
+            current.revision += 1
+            current.updatedAt = now
+            state.machineMigrations[ref] = current
+        }
     }
 
     /// Records a failed target start while the row is `starting`; any other
@@ -286,18 +286,18 @@ extension AgentsRuntimeStore {
         code: String,
         now: Date
     ) -> Result<MachineMigrationRecord, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref] else { return .failure(.migrationMissing) }
-        if record.state == "starting" {
-            record.failureReason = "auto_start_failed"
-            record.autoStartFailureStage = stage
-            record.autoStartFailureCode = code
-            record.revision += 1
-            record.updatedAt = now
-            storage.machineMigrations[ref] = record
+        return withState { state in
+            guard var record = state.machineMigrations[ref] else { return .failure(.migrationMissing) }
+            if record.state == "starting" {
+                record.failureReason = "auto_start_failed"
+                record.autoStartFailureStage = stage
+                record.autoStartFailureCode = code
+                record.revision += 1
+                record.updatedAt = now
+                state.machineMigrations[ref] = record
+            }
+            return .success(record)
         }
-        return .success(record)
     }
 
     /// Phase 1 of the arrival callback: the cheap validity check plus the input
@@ -308,26 +308,26 @@ extension AgentsRuntimeStore {
         ref: String,
         generation: String
     ) -> Result<MachineMigrationArrivalContext, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let record = storage.machineMigrations[ref], record.targetMachineId == machineId else {
-            return .failure(.migrationMissing)
+        return withState { state in
+            guard let record = state.machineMigrations[ref], record.targetMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            let archivableStates: Set<String> = ["arriving", "starting", "completed"]
+            let held = state.agentMachineIds[record.agentId] == record.targetMachineId
+            let archivedAndHeld = archivableStates.contains(record.state)
+                && record.sourceWorkspaceArchivedAt != nil
+                && held
+            if !archivedAndHeld {
+                guard record.transportGeneration == generation else { return .failure(.generationStale) }
+                guard archivableStates.contains(record.state) else { return .failure(.notArriving) }
+                guard held else { return .failure(.sourceMachineMismatch) }
+            }
+            return .success(MachineMigrationArrivalContext(
+                supportRef: record.supportRef,
+                sourceMachineId: record.sourceMachineId,
+                agentId: record.agentId
+            ))
         }
-        let archivableStates: Set<String> = ["arriving", "starting", "completed"]
-        let held = storage.agentMachineIds[record.agentId] == record.targetMachineId
-        let archivedAndHeld = archivableStates.contains(record.state)
-            && record.sourceWorkspaceArchivedAt != nil
-            && held
-        if !archivedAndHeld {
-            guard record.transportGeneration == generation else { return .failure(.generationStale) }
-            guard archivableStates.contains(record.state) else { return .failure(.notArriving) }
-            guard held else { return .failure(.sourceMachineMismatch) }
-        }
-        return .success(MachineMigrationArrivalContext(
-            supportRef: record.supportRef,
-            sourceMachineId: record.sourceMachineId,
-            agentId: record.agentId
-        ))
     }
 
     /// Phase 3: `arriving` to `starting`, or observe or reclaim an
@@ -340,46 +340,46 @@ extension AgentsRuntimeStore {
         reportSha256: String?,
         now: Date
     ) -> Result<MachineMigrationArrivalOutcome, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var current = storage.machineMigrations[ref], current.targetMachineId == machineId else {
-            return .failure(.migrationMissing)
-        }
-        let held = storage.agentMachineIds[current.agentId] == current.targetMachineId
-        if current.state == "completed" && held {
-            return .success(.settled(current))
-        }
-        if current.state == "starting" && held {
-            if current.failureReason == nil {
-                if now < current.updatedAt.addingTimeInterval(MachineMigrationPolicy.migrationAutoStartLease) {
-                    return .success(.settled(current))
-                }
-                current.revision += 1
-                current.updatedAt = now
-            } else if current.failureReason != "auto_start_failed" {
+        return withState { state in
+            guard var current = state.machineMigrations[ref], current.targetMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            let held = state.agentMachineIds[current.agentId] == current.targetMachineId
+            if current.state == "completed" && held {
                 return .success(.settled(current))
+            }
+            if current.state == "starting" && held {
+                if current.failureReason == nil {
+                    if now < current.updatedAt.addingTimeInterval(MachineMigrationPolicy.migrationAutoStartLease) {
+                        return .success(.settled(current))
+                    }
+                    current.revision += 1
+                    current.updatedAt = now
+                } else if current.failureReason != "auto_start_failed" {
+                    return .success(.settled(current))
+                } else {
+                    current.failureReason = nil
+                    current.revision += 1
+                    current.updatedAt = now
+                }
             } else {
+                guard current.transportGeneration == generation else { return .failure(.generationStale) }
+                guard current.state == "arriving" else { return .failure(.notArriving) }
+                guard held else { return .failure(.sourceMachineMismatch) }
+                current.previousTransportGeneration = current.transportGeneration
+                current.state = "starting"
+                current.arrivedAt = now
                 current.failureReason = nil
+                current.autoStartFailureStage = nil
+                current.autoStartFailureCode = nil
+                current.arrivalReportPath = reportPath
+                current.arrivalReportSha256 = reportSha256
                 current.revision += 1
                 current.updatedAt = now
             }
-        } else {
-            guard current.transportGeneration == generation else { return .failure(.generationStale) }
-            guard current.state == "arriving" else { return .failure(.notArriving) }
-            guard held else { return .failure(.sourceMachineMismatch) }
-            current.previousTransportGeneration = current.transportGeneration
-            current.state = "starting"
-            current.arrivedAt = now
-            current.failureReason = nil
-            current.autoStartFailureStage = nil
-            current.autoStartFailureCode = nil
-            current.arrivalReportPath = reportPath
-            current.arrivalReportSha256 = reportSha256
-            current.revision += 1
-            current.updatedAt = now
+            state.machineMigrations[ref] = current
+            return .success(.dispatch(current))
         }
-        storage.machineMigrations[ref] = current
-        return .success(.dispatch(current))
     }
 
     /// Phase 4: the agent runs on the target. The row transition and the
@@ -389,23 +389,23 @@ extension AgentsRuntimeStore {
         nextGeneration: String,
         now: Date
     ) -> Result<MachineMigrationAutoStartOutcome, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var completed = storage.machineMigrations[ref] else { return .failure(.migrationMissing) }
-        guard completed.state == "starting" else { return .success(.unchanged(completed)) }
-        completed.state = "completed"
-        completed.failureReason = nil
-        completed.autoStartFailureStage = nil
-        completed.autoStartFailureCode = nil
-        completed.completedAt = now
-        completed.transportTeardownAt = now
-        completed.previousTransportGeneration = completed.transportGeneration
-        completed.transportGeneration = nextGeneration
-        completed.revision += 1
-        completed.updatedAt = now
-        storage.agentMachineIds[completed.agentId] = completed.targetMachineId
-        storage.machineMigrations[ref] = completed
-        return .success(.completed(completed))
+        return withState { state in
+            guard var completed = state.machineMigrations[ref] else { return .failure(.migrationMissing) }
+            guard completed.state == "starting" else { return .success(.unchanged(completed)) }
+            completed.state = "completed"
+            completed.failureReason = nil
+            completed.autoStartFailureStage = nil
+            completed.autoStartFailureCode = nil
+            completed.completedAt = now
+            completed.transportTeardownAt = now
+            completed.previousTransportGeneration = completed.transportGeneration
+            completed.transportGeneration = nextGeneration
+            completed.revision += 1
+            completed.updatedAt = now
+            state.agentMachineIds[completed.agentId] = completed.targetMachineId
+            state.machineMigrations[ref] = completed
+            return .success(.completed(completed))
+        }
     }
 
     /// A Computer's transport-lost report. A replay of the same terminal reason
@@ -419,25 +419,25 @@ extension AgentsRuntimeStore {
         reportedGeneration: String?,
         now: Date
     ) -> Result<MachineMigrationRecord, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref],
-              record.sourceMachineId == machineId || record.targetMachineId == machineId
-        else { return .failure(.migrationMissing) }
-        if record.state == "failed" && record.failureReason == code { return .success(record) }
-        if let reportedGeneration, record.transportGeneration != reportedGeneration { return .success(record) }
-        let activeStates: Set<String> = ["provisioning", "prep", "ready", "in_transit", "arriving", "starting"]
-        guard activeStates.contains(record.state) else { return .failure(.notActive) }
-        record.state = "failed"
-        record.revision += 1
-        record.failureReason = code
-        record.transportErrorCode = detailCode ?? code
-        record.transportErrorMessage = message
-        record.transportLostAt = now
-        record.transportTeardownAt = now
-        record.updatedAt = now
-        storage.machineMigrations[ref] = record
-        return .success(record)
+        return withState { state in
+            guard var record = state.machineMigrations[ref],
+                  record.sourceMachineId == machineId || record.targetMachineId == machineId
+            else { return .failure(.migrationMissing) }
+            if record.state == "failed" && record.failureReason == code { return .success(record) }
+            if let reportedGeneration, record.transportGeneration != reportedGeneration { return .success(record) }
+            let activeStates: Set<String> = ["provisioning", "prep", "ready", "in_transit", "arriving", "starting"]
+            guard activeStates.contains(record.state) else { return .failure(.notActive) }
+            record.state = "failed"
+            record.revision += 1
+            record.failureReason = code
+            record.transportErrorCode = detailCode ?? code
+            record.transportErrorMessage = message
+            record.transportLostAt = now
+            record.transportTeardownAt = now
+            record.updatedAt = now
+            state.machineMigrations[ref] = record
+            return .success(record)
+        }
     }
 
     /// One cancel acknowledgement from the source or the target. The generation
@@ -449,59 +449,59 @@ extension AgentsRuntimeStore {
         ack: MachineMigrationCancelAck,
         now: Date
     ) -> Result<MachineMigrationCancelAckView, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref],
-              record.supportRef == ack.supportRef,
-              (ack.role == "source" ? record.sourceMachineId : record.targetMachineId) == machineId
-        else { return .failure(.migrationMissing) }
-        guard record.cancelGeneration == ack.cancelGeneration else { return .failure(.cancelGenerationStale) }
-        guard record.cancelTransportGeneration == ack.transportGeneration else {
-            return .failure(.generationStale)
-        }
-        let cancellationStates: Set<String> = [
-            "cancel_requested_pre_flip", "cancel_requested_post_flip", "canceled_pre_flip", "canceled_post_flip",
-        ]
-        guard cancellationStates.contains(record.state), let disposition = record.cancelDisposition else {
-            return .failure(.cancelNotRequested)
-        }
-        // Post-flip the target is authoritative: its successful outcome is
-        // `stopped`, never `cleaned`.
-        let successOutcome = (disposition == "post_flip_target_authoritative" && ack.role == "target")
-            ? "stopped"
-            : "cleaned"
-        if ack.outcome != "needs_attention" && ack.outcome != successOutcome {
-            return .failure(.cancelOutcomeMismatch)
-        }
-        if ack.outcome == "needs_attention" {
-            record.cancelErrorCode = record.cancelErrorCode ?? "cleanup_incomplete"
-            record.updatedAt = now
-            storage.machineMigrations[ref] = record
-        } else {
-            let alreadyAcknowledged = ack.role == "source" ? record.cancelSourceAckAt : record.cancelTargetAckAt
-            if alreadyAcknowledged == nil {
-                if ack.role == "source" {
-                    record.cancelSourceAck = ack.outcome
-                    record.cancelSourceAckAt = now
-                } else {
-                    record.cancelTargetAck = ack.outcome
-                    record.cancelTargetAckAt = now
-                }
-                if record.cancelSourceAckAt != nil && record.cancelTargetAckAt != nil {
-                    record.transportTeardownAt = now
-                    record.canceledAt = record.canceledAt ?? now
-                }
-                record.revision += 1
-                record.updatedAt = now
-                storage.machineMigrations[ref] = record
+        return withState { state in
+            guard var record = state.machineMigrations[ref],
+                  record.supportRef == ack.supportRef,
+                  (ack.role == "source" ? record.sourceMachineId : record.targetMachineId) == machineId
+            else { return .failure(.migrationMissing) }
+            guard record.cancelGeneration == ack.cancelGeneration else { return .failure(.cancelGenerationStale) }
+            guard record.cancelTransportGeneration == ack.transportGeneration else {
+                return .failure(.generationStale)
             }
+            let cancellationStates: Set<String> = [
+                "cancel_requested_pre_flip", "cancel_requested_post_flip", "canceled_pre_flip", "canceled_post_flip",
+            ]
+            guard cancellationStates.contains(record.state), let disposition = record.cancelDisposition else {
+                return .failure(.cancelNotRequested)
+            }
+            // Post-flip the target is authoritative: its successful outcome is
+            // `stopped`, never `cleaned`.
+            let successOutcome = (disposition == "post_flip_target_authoritative" && ack.role == "target")
+                ? "stopped"
+                : "cleaned"
+            if ack.outcome != "needs_attention" && ack.outcome != successOutcome {
+                return .failure(.cancelOutcomeMismatch)
+            }
+            if ack.outcome == "needs_attention" {
+                record.cancelErrorCode = record.cancelErrorCode ?? "cleanup_incomplete"
+                record.updatedAt = now
+                state.machineMigrations[ref] = record
+            } else {
+                let alreadyAcknowledged = ack.role == "source" ? record.cancelSourceAckAt : record.cancelTargetAckAt
+                if alreadyAcknowledged == nil {
+                    if ack.role == "source" {
+                        record.cancelSourceAck = ack.outcome
+                        record.cancelSourceAckAt = now
+                    } else {
+                        record.cancelTargetAck = ack.outcome
+                        record.cancelTargetAckAt = now
+                    }
+                    if record.cancelSourceAckAt != nil && record.cancelTargetAckAt != nil {
+                        record.transportTeardownAt = now
+                        record.canceledAt = record.canceledAt ?? now
+                    }
+                    record.revision += 1
+                    record.updatedAt = now
+                    state.machineMigrations[ref] = record
+                }
+            }
+            return .success(MachineMigrationCancelAckView(
+                supportRef: record.supportRef,
+                state: record.state,
+                revision: record.revision,
+                disposition: disposition
+            ))
         }
-        return .success(MachineMigrationCancelAckView(
-            supportRef: record.supportRef,
-            state: record.state,
-            revision: record.revision,
-            disposition: disposition
-        ))
     }
 
     /// Stores the source quiesce receipt for the source Computer's row.
@@ -510,17 +510,17 @@ extension AgentsRuntimeStore {
         ref: String,
         receiptJSON: String?
     ) -> Result<MachineMigrationQuiesceView, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref], record.sourceMachineId == machineId else {
-            return .failure(.migrationMissing)
+        return withState { state in
+            guard var record = state.machineMigrations[ref], record.sourceMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            record.quiesceReceiptJSON = receiptJSON
+            state.machineMigrations[ref] = record
+            return .success(MachineMigrationQuiesceView(
+                transportGeneration: record.transportGeneration,
+                transportSessionId: record.transportSessionId
+            ))
         }
-        record.quiesceReceiptJSON = receiptJSON
-        storage.machineMigrations[ref] = record
-        return .success(MachineMigrationQuiesceView(
-            transportGeneration: record.transportGeneration,
-            transportSessionId: record.transportSessionId
-        ))
     }
 
     /// Stores the source progress body for the source Computer's row.
@@ -529,13 +529,13 @@ extension AgentsRuntimeStore {
         ref: String,
         body: String
     ) -> Result<Void, MachineMigrationTransportFailure> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var record = storage.machineMigrations[ref], record.sourceMachineId == machineId else {
-            return .failure(.migrationMissing)
+        return withState { state in
+            guard var record = state.machineMigrations[ref], record.sourceMachineId == machineId else {
+                return .failure(.migrationMissing)
+            }
+            record.progressJSON = body
+            state.machineMigrations[ref] = record
+            return .success(())
         }
-        record.progressJSON = body
-        storage.machineMigrations[ref] = record
-        return .success(())
     }
 }

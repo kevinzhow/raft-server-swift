@@ -84,16 +84,18 @@ struct AccountProfileUpdate: Sendable {
 extension AuthProfileStore {
     /// The identity rows and the password flag in one critical section.
     func identitySnapshot(userId: String) -> AuthIdentitySnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return identitySnapshotLocked(userId: userId, rows: identityRows[userId] ?? [])
+        return state.withLock { state in
+            let rows = state.identityRows[userId] ?? []
+            return Self.identitySnapshotLocked(state: &state, userId: userId, rows: rows)
+        }
     }
 
-    private func identitySnapshotLocked(
+    private static func identitySnapshotLocked(
+        state: inout State,
         userId: String,
         rows: [(provider: String, providerEmail: String)]
     ) -> AuthIdentitySnapshot {
-        let passwordConfigured = accountSurface.accounts.values
+        let passwordConfigured = state.accountSurface.accounts.values
             .first { $0.id == userId }?.passwordCredentialEstablishedAt != nil
         return AuthIdentitySnapshot(rows: rows, passwordConfigured: passwordConfigured)
     }
@@ -103,39 +105,39 @@ extension AuthProfileStore {
     /// two concurrent unlinks of a passwordless user's last two identities
     /// cannot both pass the guard.
     func unlinkIdentity(userId: String, provider: String) -> UnlinkIdentityOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        var rows = identityRows[userId] ?? []
-        let before = identitySnapshotLocked(userId: userId, rows: rows)
-        guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
-            return .notLinked(before)
+        return state.withLock { state in
+            var rows = state.identityRows[userId] ?? []
+            let before = Self.identitySnapshotLocked(state: &state, userId: userId, rows: rows)
+            guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
+                return .notLinked(before)
+            }
+            if rows.count == 1, !before.passwordConfigured {
+                return .passwordCredentialRequired
+            }
+            rows.remove(at: index)
+            state.identityRows[userId] = rows
+            return .unlinked(Self.identitySnapshotLocked(state: &state, userId: userId, rows: rows))
         }
-        if rows.count == 1, !before.passwordConfigured {
-            return .passwordCredentialRequired
-        }
-        rows.remove(at: index)
-        identityRows[userId] = rows
-        return .unlinked(identitySnapshotLocked(userId: userId, rows: rows))
     }
 
     /// The account behind a bearer token, without the revoked-family check the
     /// session decisions apply (`requireAuth` for the OAuth routes).
     func account(forAnyAccessToken token: String) -> Account? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = accountSurface.accessTokens[token] else { return nil }
-        return accountSurface.accounts.values.first { $0.id == userId }
+        return state.withLock { state in
+            guard let userId = state.accountSurface.accessTokens[token] else { return nil }
+            return state.accountSurface.accounts.values.first { $0.id == userId }
+        }
     }
 
-    /// Opens one session family. The caller holds `lock`.
-    func openSessionLocked(userId: String) -> IssuedSessionTokens {
+    /// Opens one session family. The caller passes its already-borrowed state.
+    static func openSessionLocked(state: inout State, userId: String) -> IssuedSessionTokens {
         let familyId = UUID().uuidString.lowercased()
-        accountSurface.sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
+        state.accountSurface.sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
         let accessToken = AuthTokenCodec.token()
         let refreshToken = AuthTokenCodec.token()
-        accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: familyId)
-        accountSurface.accessTokens[accessToken] = userId
-        accountSurface.accessTokenFamilies[accessToken] = familyId
+        state.accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: familyId)
+        state.accountSurface.accessTokens[accessToken] = userId
+        state.accountSurface.accessTokenFamilies[accessToken] = familyId
         return IssuedSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
     }
 
@@ -148,42 +150,42 @@ extension AuthProfileStore {
         pendingLinkToken: String?,
         now: Date
     ) -> AuthenticateOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        var pendingLink: PendingSocialLink?
-        if let token = pendingLinkToken, !token.isEmpty {
-            guard let pending = accountSurface.pendingSocialLinks[token], !pending.consumed,
-                  !pending.cancelled, pending.expiresAt > now
-            else { return .pendingLinkExpired }
-            guard pending.email == email else { return .pendingLinkAccountMismatch }
-            pendingLink = pending
-        }
-        guard var account = accountSurface.accounts[email],
-              account.passwordHash == passwordHash,
-              account.retiredAt == nil
-        else { return .rejected }
-        if account.passwordCredentialEstablishedAt == nil {
-            account.passwordCredentialEstablishedAt = now
-            accountSurface.accounts[email] = account
-        }
-        let tokens = openSessionLocked(userId: account.id)
-        var linkedProvider: String?
-        if var pending = pendingLink {
-            pending.consumed = true
-            accountSurface.pendingSocialLinks[pending.token] = pending
-            if !accountSurface.linkedIdentities.contains(where: {
-                $0.userId == account.id && $0.provider == pending.provider
-                    && $0.providerUserId == pending.providerUserId
-            }) {
-                accountSurface.linkedIdentities.append(LinkedIdentity(
-                    userId: account.id,
-                    provider: pending.provider,
-                    providerUserId: pending.providerUserId,
-                    providerEmail: pending.email
-                ))
+        return state.withLock { state in
+            var pendingLink: PendingSocialLink?
+            if let token = pendingLinkToken, !token.isEmpty {
+                guard let pending = state.accountSurface.pendingSocialLinks[token], !pending.consumed,
+                      !pending.cancelled, pending.expiresAt > now
+                else { return .pendingLinkExpired }
+                guard pending.email == email else { return .pendingLinkAccountMismatch }
+                pendingLink = pending
             }
-            linkedProvider = pending.provider
+            guard var account = state.accountSurface.accounts[email],
+                  account.passwordHash == passwordHash,
+                  account.retiredAt == nil
+            else { return .rejected }
+            if account.passwordCredentialEstablishedAt == nil {
+                account.passwordCredentialEstablishedAt = now
+                state.accountSurface.accounts[email] = account
+            }
+            let tokens = Self.openSessionLocked(state: &state, userId: account.id)
+            var linkedProvider: String?
+            if var pending = pendingLink {
+                pending.consumed = true
+                state.accountSurface.pendingSocialLinks[pending.token] = pending
+                if !state.accountSurface.linkedIdentities.contains(where: {
+                    $0.userId == account.id && $0.provider == pending.provider
+                        && $0.providerUserId == pending.providerUserId
+                }) {
+                    state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                        userId: account.id,
+                        provider: pending.provider,
+                        providerUserId: pending.providerUserId,
+                        providerEmail: pending.email
+                    ))
+                }
+                linkedProvider = pending.provider
+            }
+            return .authenticated(userId: account.id, email: account.email, tokens: tokens, linkedProvider: linkedProvider)
         }
-        return .authenticated(userId: account.id, email: account.email, tokens: tokens, linkedProvider: linkedProvider)
     }
 }

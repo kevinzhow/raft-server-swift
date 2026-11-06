@@ -1,38 +1,34 @@
 import Foundation
+import Synchronization
 
 /// Agent thread-follow ledger behind its own lock.
-final class ThreadFollowStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var rows: [String: AgentThreadFollowRecord] = [:]
+final class ThreadFollowStore: Sendable {
+    private let rows = Mutex<[String: AgentThreadFollowRecord]>([:])
 
     private func key(serverId: String, agentId: String, threadChannelId: String) -> String {
         "\(serverId)\n\(agentId)\n\(threadChannelId)"
     }
 
     func upsert(_ record: AgentThreadFollowRecord) {
-        lock.lock()
-        rows[key(serverId: record.serverId, agentId: record.agentId, threadChannelId: record.threadChannelId)] = record
-        lock.unlock()
+        rows.withLock {
+            $0[key(serverId: record.serverId, agentId: record.agentId, threadChannelId: record.threadChannelId)] = record
+        }
     }
 
     func record(serverId: String, agentId: String, threadChannelId: String) -> AgentThreadFollowRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return rows[key(serverId: serverId, agentId: agentId, threadChannelId: threadChannelId)]
+        rows.withLock { $0[key(serverId: serverId, agentId: agentId, threadChannelId: threadChannelId)] }
     }
 
     func all() -> [AgentThreadFollowRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(rows.values)
+        rows.withLock { Array($0.values) }
     }
 
     func markUnfollowed(serverId: String, agentId: String, threadChannelId: String, at date: Date) {
-        lock.lock()
-        if var record = rows[key(serverId: serverId, agentId: agentId, threadChannelId: threadChannelId)] {
-            record.unfollowedAt = date
-            rows[key(serverId: serverId, agentId: agentId, threadChannelId: threadChannelId)] = record
+        rows.withLock { rows in
+            if var record = rows[key(serverId: serverId, agentId: agentId, threadChannelId: threadChannelId)] {
+                record.unfollowedAt = date
+                rows[key(serverId: serverId, agentId: agentId, threadChannelId: threadChannelId)] = record
+            }
         }
-        lock.unlock()
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// `POST /api/public-visits/:slug` and the `visitorIdMode` on the public page.
 ///
@@ -112,28 +113,32 @@ public struct PublicVisitUser: Equatable, Sendable {
     }
 }
 
-public final class PublicVisitDirectory: @unchecked Sendable {
+public final class PublicVisitDirectory: Sendable {
     public static let defaultDailyCap = 20_000
-    private let lock = NSLock()
-    private var dailyCap: Int
-    private var servers: [String: Server] = [:]
-    private var users: [String: PublicVisitUser] = [:]
-    private var tokens: [String: String] = [:]
-    private var seen: Set<String> = []
-    private var daily: [String: Int] = [:]
-    private var recorded: [PublicVisitRow] = []
-    private var visitorRows: [PublicVisitorRow] = []
-    private var translationProviderConfigured = false
-    private var llmTranslationUnavailable = false
-    private var history: [String: [PublicHistoryMessage]] = [:]
-    private var channelMembers: [String: [String]] = [:]
-    private var attachments: [String: StoredAttachment] = [:]
-    private var objects: [String: String] = [:]
-    private var presignTarget: String?
-    private var recordedPresigns: [PublicPresignRequest] = []
+
+    private struct State: Sendable {
+        var dailyCap: Int
+        var servers: [String: Server] = [:]
+        var users: [String: PublicVisitUser] = [:]
+        var tokens: [String: String] = [:]
+        var seen: Set<String> = []
+        var daily: [String: Int] = [:]
+        var recorded: [PublicVisitRow] = []
+        var visitorRows: [PublicVisitorRow] = []
+        var translationProviderConfigured = false
+        var llmTranslationUnavailable = false
+        var history: [String: [PublicHistoryMessage]] = [:]
+        var channelMembers: [String: [String]] = [:]
+        var attachments: [String: StoredAttachment] = [:]
+        var objects: [String: String] = [:]
+        var presignTarget: String?
+        var recordedPresigns: [PublicPresignRequest] = []
+    }
+
+    private let state: Mutex<State>
 
     public init(dailyCap: Int = PublicVisitDirectory.defaultDailyCap) {
-        self.dailyCap = dailyCap
+        state = Mutex(State(dailyCap: dailyCap))
     }
 
     public func addServer(
@@ -152,115 +157,115 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         translationEnabled: Bool = false,
         avatarUrl: String? = nil
     ) {
-        lock.lock()
-        servers[slug] = Server(
-            id: id,
-            name: name.isEmpty ? slug : name,
-            publiclyVisible: publiclyVisible,
-            productAnalyticsEnabled: productAnalyticsEnabled,
-            publicEnabled: publicEnabled,
-            countsEnabled: countsEnabled,
-            visitorIdEnabled: visitorIdEnabled,
-            guestJoinEnabled: guestJoinEnabled,
-            guestRolloutEnabled: guestRolloutEnabled,
-            translationEnabled: translationEnabled,
-            avatarUrl: avatarUrl,
-            memberIds: memberIds,
-            guestChannelIds: Set(guestChannelIds.map { $0.lowercased() }),
-            guestChannelNames: Dictionary(uniqueKeysWithValues: guestChannelIds.map { ($0.lowercased(), $0.lowercased()) }),
-            channelTypes: Dictionary(uniqueKeysWithValues: guestChannelIds.map { ($0.lowercased(), "channel") }),
-            threads: [:],
-            archivedChannelIds: [],
-            mentionMembers: [],
-            mentionAgents: [],
-            memberRoles: Dictionary(uniqueKeysWithValues: memberIds.map { ($0, "member") }),
-            agreement: nil,
-            joinAudits: []
-        )
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug] = Server(
+                id: id,
+                name: name.isEmpty ? slug : name,
+                publiclyVisible: publiclyVisible,
+                productAnalyticsEnabled: productAnalyticsEnabled,
+                publicEnabled: publicEnabled,
+                countsEnabled: countsEnabled,
+                visitorIdEnabled: visitorIdEnabled,
+                guestJoinEnabled: guestJoinEnabled,
+                guestRolloutEnabled: guestRolloutEnabled,
+                translationEnabled: translationEnabled,
+                avatarUrl: avatarUrl,
+                memberIds: memberIds,
+                guestChannelIds: Set(guestChannelIds.map { $0.lowercased() }),
+                guestChannelNames: Dictionary(uniqueKeysWithValues: guestChannelIds.map { ($0.lowercased(), $0.lowercased()) }),
+                channelTypes: Dictionary(uniqueKeysWithValues: guestChannelIds.map { ($0.lowercased(), "channel") }),
+                threads: [:],
+                archivedChannelIds: [],
+                mentionMembers: [],
+                mentionAgents: [],
+                memberRoles: Dictionary(uniqueKeysWithValues: memberIds.map { ($0, "member") }),
+                agreement: nil,
+                joinAudits: []
+            )
+        }
     }
 
     public func addThread(slug: String, id: String, parentChannelId: String, archived: Bool = false) {
-        lock.lock()
-        servers[slug]?.threads[id.lowercased()] = Thread(
-            parentChannelId: parentChannelId.lowercased(),
-            archived: archived
-        )
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.threads[id.lowercased()] = Thread(
+                parentChannelId: parentChannelId.lowercased(),
+                archived: archived
+            )
+        }
     }
 
     public func addUser(_ user: PublicVisitUser) {
-        lock.lock()
-        users[user.id] = user
-        lock.unlock()
+        state.withLock { state in
+            state.users[user.id] = user
+        }
     }
 
     public func addToken(_ token: String, userId: String) {
-        lock.lock()
-        tokens[token] = userId
-        lock.unlock()
+        state.withLock { state in
+            state.tokens[token] = userId
+        }
     }
 
     public func addMentionMember(slug: String, userId: String, name: String, displayName: String) {
-        lock.lock()
-        servers[slug]?.mentionMembers.append(MentionPerson(
-            name: name,
-            displayName: displayName,
-            actorId: userId,
-            deleted: false,
-            member: true
-        ))
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.mentionMembers.append(MentionPerson(
+                name: name,
+                displayName: displayName,
+                actorId: userId,
+                deleted: false,
+                member: true
+            ))
+        }
     }
 
     public func addMentionAgent(slug: String, agentId: String, name: String, displayName: String, deleted: Bool = false) {
-        lock.lock()
-        servers[slug]?.mentionAgents.append(MentionPerson(
-            name: name,
-            displayName: displayName,
-            actorId: agentId,
-            deleted: deleted,
-            member: false
-        ))
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.mentionAgents.append(MentionPerson(
+                name: name,
+                displayName: displayName,
+                actorId: agentId,
+                deleted: deleted,
+                member: false
+            ))
+        }
     }
 
     /// A handle that exists somewhere else. It is not a member of this server, so a typed `@name` does not highlight it.
     public func addMentionOutsider(slug: String, userId: String, name: String, displayName: String) {
-        lock.lock()
-        servers[slug]?.mentionMembers.append(MentionPerson(
-            name: name,
-            displayName: displayName,
-            actorId: userId,
-            deleted: false,
-            member: false
-        ))
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.mentionMembers.append(MentionPerson(
+                name: name,
+                displayName: displayName,
+                actorId: userId,
+                deleted: false,
+                member: false
+            ))
+        }
     }
 
     public func archiveChannel(slug: String, id: String) {
-        lock.lock()
-        servers[slug]?.archivedChannelIds.insert(id.lowercased())
-        lock.unlock()
+        state.withLock { state in
+            _ = state.servers[slug]?.archivedChannelIds.insert(id.lowercased())
+        }
     }
 
     /// Object storage that can sign a URL. The next readable download redirects instead of streaming bytes.
     public func enablePresign(_ url: String) {
-        lock.lock()
-        presignTarget = url
-        lock.unlock()
+        state.withLock { state in
+            state.presignTarget = url
+        }
     }
 
     public var presignCalls: [PublicPresignRequest] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedPresigns
+        return state.withLock { state in
+            return state.recordedPresigns
+        }
     }
 
     public func putPublicObject(key: String, bytes: String) {
-        lock.lock()
-        objects[key] = bytes
-        lock.unlock()
+        state.withLock { state in
+            state.objects[key] = bytes
+        }
     }
 
     public func addPublicAttachment(
@@ -271,15 +276,15 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         mimeType: String,
         storageKey: String
     ) {
-        lock.lock()
-        attachments[id.lowercased()] = StoredAttachment(
-            channelId: channelId.lowercased(),
-            messageId: messageId,
-            filename: filename,
-            mimeType: mimeType,
-            storageKey: storageKey
-        )
-        lock.unlock()
+        state.withLock { state in
+            state.attachments[id.lowercased()] = StoredAttachment(
+                channelId: channelId.lowercased(),
+                messageId: messageId,
+                filename: filename,
+                mimeType: mimeType,
+                storageKey: storageKey
+            )
+        }
     }
 
     public func publicAttachment(
@@ -290,13 +295,13 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         frameAncestors: [String] = []
     ) throws -> PublicAttachmentResponse {
         guard ServerScope.isUUID(attachmentId) else { throw PublicAttachments.missing(attachmentId: attachmentId) }
-        lock.lock()
-        let attachment = attachments[attachmentId.lowercased()]
-        let server = servers[slug]
-        let bytes = attachment.flatMap { objects[$0.storageKey] }
-        let readable = attachment.map { attachmentIsReadable($0, server: server) } ?? false
-        let presignTarget = self.presignTarget
-        lock.unlock()
+        let (attachment, bytes, readable, presignTarget) = state.withLock { state in
+            let attachment = state.attachments[attachmentId.lowercased()]
+            let server = state.servers[slug]
+            let bytes = attachment.flatMap { state.objects[$0.storageKey] }
+            let readable = attachment.map { attachmentIsReadable($0, server: server) } ?? false
+            return (attachment, bytes, readable, state.presignTarget)
+        }
         guard readable, let attachment else {
             throw PublicAttachments.missing(attachmentId: attachmentId)
         }
@@ -308,9 +313,9 @@ public final class PublicVisitDirectory: @unchecked Sendable {
                 forceDownload: forceDownload,
                 inlineDisposition: inlineDisposition
             )
-            lock.lock()
-            recordedPresigns.append(request)
-            lock.unlock()
+            state.withLock { state in
+                state.recordedPresigns.append(request)
+            }
             return PublicAttachments.redirect(location: presignTarget)
         }
         guard let bytes else {
@@ -327,68 +332,68 @@ public final class PublicVisitDirectory: @unchecked Sendable {
     }
 
     public func addGuestChannel(slug: String, id: String, name: String, type: String = "channel") {
-        lock.lock()
-        let key = id.lowercased()
-        servers[slug]?.guestChannelIds.insert(key)
-        servers[slug]?.guestChannelNames[key] = name
-        servers[slug]?.channelTypes[key] = type
-        lock.unlock()
+        state.withLock { state in
+            let key = id.lowercased()
+            state.servers[slug]?.guestChannelIds.insert(key)
+            state.servers[slug]?.guestChannelNames[key] = name
+            state.servers[slug]?.channelTypes[key] = type
+        }
     }
 
     public func setTranslationAvailable(_ enabled: Bool) {
-        lock.lock()
-        translationProviderConfigured = enabled
-        lock.unlock()
+        state.withLock { state in
+            state.translationProviderConfigured = enabled
+        }
     }
 
     public func setLlmTranslationUnavailable(_ unavailable: Bool) {
-        lock.lock()
-        llmTranslationUnavailable = unavailable
-        lock.unlock()
+        state.withLock { state in
+            state.llmTranslationUnavailable = unavailable
+        }
     }
 
     public func translationGate(slug: String) -> PublicTranslations.Gate? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let server = servers[slug] else { return nil }
-        return PublicTranslations.Gate(
-            publiclyVisible: server.publiclyVisible,
-            publicEnabled: server.publicEnabled,
-            translationEnabled: server.translationEnabled,
-            providerConfigured: translationProviderConfigured,
-            llmUnavailable: llmTranslationUnavailable
-        )
+        return state.withLock { state in
+            guard let server = state.servers[slug] else { return nil }
+            return PublicTranslations.Gate(
+                publiclyVisible: server.publiclyVisible,
+                publicEnabled: server.publicEnabled,
+                translationEnabled: server.translationEnabled,
+                providerConfigured: state.translationProviderConfigured,
+                llmUnavailable: state.llmTranslationUnavailable
+            )
+        }
     }
 
     public func publicTranslationResults(slug: String, targetLanguage: String, messageIds: [String]) -> [[String: String]] {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let server = servers[slug], let messages = history[slug] else {
-            return messageIds.map { ["messageId": $0, "status": "not_found", "targetLanguage": targetLanguage] }
-        }
-        let byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        return messageIds.map { id in
-            guard let message = byId[id] else {
-                return ["messageId": id, "status": "not_found", "targetLanguage": targetLanguage]
+        return state.withLock { state in
+            guard let server = state.servers[slug], let messages = state.history[slug] else {
+                return messageIds.map { ["messageId": $0, "status": "not_found", "targetLanguage": targetLanguage] }
             }
-            let visibleChannel = server.guestChannelIds.contains(message.channelId.lowercased())
-                || server.threads[message.channelId.lowercased()].map { server.guestChannelIds.contains($0.parentChannelId) } == true
-            guard visibleChannel, !server.archivedChannelIds.contains(message.channelId.lowercased()) else {
-                return ["messageId": id, "status": "not_found", "targetLanguage": targetLanguage]
+            let byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+            return messageIds.map { id in
+                guard let message = byId[id] else {
+                    return ["messageId": id, "status": "not_found", "targetLanguage": targetLanguage]
+                }
+                let visibleChannel = server.guestChannelIds.contains(message.channelId.lowercased())
+                    || server.threads[message.channelId.lowercased()].map { server.guestChannelIds.contains($0.parentChannelId) } == true
+                guard visibleChannel, !server.archivedChannelIds.contains(message.channelId.lowercased()) else {
+                    return ["messageId": id, "status": "not_found", "targetLanguage": targetLanguage]
+                }
+                let source = PublicTranslations.detectSourceLanguage(message.content)
+                if source == targetLanguage {
+                    return ["messageId": id, "status": "skipped", "reason": "target_is_source", "sourceLanguage": source, "targetLanguage": targetLanguage]
+                }
+                return [
+                    "messageId": id,
+                    "status": "translated",
+                    "sourceLanguage": source,
+                    "targetLanguage": targetLanguage,
+                    "translatedContent": "[\(targetLanguage)] \(message.content)",
+                    "provider": "fake",
+                    "providerVersion": "fake@v0+fake-v0",
+                ]
             }
-            let source = PublicTranslations.detectSourceLanguage(message.content)
-            if source == targetLanguage {
-                return ["messageId": id, "status": "skipped", "reason": "target_is_source", "sourceLanguage": source, "targetLanguage": targetLanguage]
-            }
-            return [
-                "messageId": id,
-                "status": "translated",
-                "sourceLanguage": source,
-                "targetLanguage": targetLanguage,
-                "translatedContent": "[\(targetLanguage)] \(message.content)",
-                "provider": "fake",
-                "providerVersion": "fake@v0+fake-v0",
-            ]
         }
     }
 
@@ -399,76 +404,76 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         translationEnabled: Bool? = nil,
         avatarUrl: String? = nil
     ) {
-        lock.lock()
-        if let guestJoinEnabled { servers[slug]?.guestJoinEnabled = guestJoinEnabled }
-        if let guestRolloutEnabled { servers[slug]?.guestRolloutEnabled = guestRolloutEnabled }
-        if let translationEnabled { servers[slug]?.translationEnabled = translationEnabled }
-        if let avatarUrl { servers[slug]?.avatarUrl = avatarUrl }
-        lock.unlock()
+        state.withLock { state in
+            if let guestJoinEnabled { state.servers[slug]?.guestJoinEnabled = guestJoinEnabled }
+            if let guestRolloutEnabled { state.servers[slug]?.guestRolloutEnabled = guestRolloutEnabled }
+            if let translationEnabled { state.servers[slug]?.translationEnabled = translationEnabled }
+            if let avatarUrl { state.servers[slug]?.avatarUrl = avatarUrl }
+        }
     }
 
     public func setPubliclyVisible(slug: String, visible: Bool) {
-        lock.lock()
-        servers[slug]?.publiclyVisible = visible
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.publiclyVisible = visible
+        }
     }
 
     public func setPublicEnabled(slug: String, enabled: Bool) {
-        lock.lock()
-        servers[slug]?.publicEnabled = enabled
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.publicEnabled = enabled
+        }
     }
 
     public func addMember(slug: String, userId: String) {
-        lock.lock()
-        servers[slug]?.memberIds.insert(userId)
-        lock.unlock()
+        state.withLock { state in
+            _ = state.servers[slug]?.memberIds.insert(userId)
+        }
     }
 
     public func addChannelMember(channelId: String, userId: String) {
-        lock.lock()
-        let key = channelId.lowercased()
-        var members = channelMembers[key] ?? []
-        if !members.contains(userId) { members.append(userId) }
-        channelMembers[key] = members
-        lock.unlock()
+        state.withLock { state in
+            let key = channelId.lowercased()
+            var members = state.channelMembers[key] ?? []
+            if !members.contains(userId) { members.append(userId) }
+            state.channelMembers[key] = members
+        }
     }
 
     public func channelMemberIds(channelId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return channelMembers[channelId.lowercased()] ?? []
+        return state.withLock { state in
+            return state.channelMembers[channelId.lowercased()] ?? []
+        }
     }
 
     public func messageCount(slug: String, channelId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        let id = channelId.lowercased()
-        return (history[slug] ?? []).filter { $0.channelId.lowercased() == id }.count
+        return state.withLock { state in
+            let id = channelId.lowercased()
+            return (state.history[slug] ?? []).filter { $0.channelId.lowercased() == id }.count
+        }
     }
 
     public func setVisitorIdEnabled(slug: String, enabled: Bool) {
-        lock.lock()
-        servers[slug]?.visitorIdEnabled = enabled
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.visitorIdEnabled = enabled
+        }
     }
 
     public func setProductAnalyticsEnabled(slug: String, enabled: Bool) {
-        lock.lock()
-        servers[slug]?.productAnalyticsEnabled = enabled
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.productAnalyticsEnabled = enabled
+        }
     }
 
     public var rows: [PublicVisitRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return recorded
+        return state.withLock { state in
+            return state.recorded
+        }
     }
 
     public var visitors: [PublicVisitorRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return visitorRows
+        return state.withLock { state in
+            return state.visitorRows
+        }
     }
 
     public func record(
@@ -483,142 +488,141 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         guard site == "same-origin" || site == "same-site" else { return }
         guard Data(body.utf8).count <= 1024 else { return }
         guard let visit = PublicVisits.parse(body) else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let server = servers[slug], server.publiclyVisible, server.publicEnabled, server.countsEnabled else { return }
-        guard server.productAnalyticsEnabled else { return }
-        let channelId = visit.channelId?.lowercased()
-        if visit.event == "public_page_channel_opened" {
-            guard let channelId, Self.isOrdinaryGuestChannel(server, channelId) else { return }
-        }
-        var threadChannelId: String?
-        if visit.event == "public_page_thread_opened" {
-            guard let channelId, let rawThread = visit.threadChannelId else { return }
-            threadChannelId = rawThread.lowercased()
-            guard Self.isOrdinaryGuestChannel(server, channelId),
-                  let thread = server.threads[threadChannelId!],
-                  !thread.archived,
-                  thread.parentChannelId == channelId
-            else { return }
-        }
-        let kept = PublicVisits.kept(visit, channelId: channelId, threadChannelId: threadChannelId)
-        guard seen.insert(visit.uuid).inserted else { return }
-        let day = PublicVisits.utcDay(now)
-        let slotKey = "\(server.id):\(day)"
-        let used = (daily[slotKey] ?? 0) + 1
-        guard used <= dailyCap else { return }
-        daily[slotKey] = used
-        let userId = bearerUserId(authorization)
-        let context = PublicVisits.requestContext(userAgent: userAgent, country: country)
-        var visitor = "anonymous"
-        var analyticsId: String?
-        if let userId, let user = users[userId] {
-            visitor = server.memberIds.contains(userId) ? "signed_in_member" : "signed_in_non_member"
-            if user.shareUsageData == true {
-                analyticsId = user.analyticsId
+        return state.withLock { state in
+            guard let server = state.servers[slug], server.publiclyVisible, server.publicEnabled, server.countsEnabled else { return }
+            guard server.productAnalyticsEnabled else { return }
+            let channelId = visit.channelId?.lowercased()
+            if visit.event == "public_page_channel_opened" {
+                guard let channelId, Self.isOrdinaryGuestChannel(server, channelId) else { return }
             }
-        }
-        if visitor == "anonymous", server.visitorIdEnabled, let anonymousId = PublicVisits.visitorId(visit.anonymousId) {
-            visitorRows.append(PublicVisitorRow(
-                uuid: visit.uuid,
+            var threadChannelId: String?
+            if visit.event == "public_page_thread_opened" {
+                guard let channelId, let rawThread = visit.threadChannelId else { return }
+                threadChannelId = rawThread.lowercased()
+                guard Self.isOrdinaryGuestChannel(server, channelId),
+                      let thread = server.threads[threadChannelId!],
+                      !thread.archived,
+                      thread.parentChannelId == channelId
+                else { return }
+            }
+            let kept = PublicVisits.kept(visit, channelId: channelId, threadChannelId: threadChannelId)
+            guard state.seen.insert(visit.uuid).inserted else { return }
+            let day = PublicVisits.utcDay(now)
+            let slotKey = "\(server.id):\(day)"
+            let used = (state.daily[slotKey] ?? 0) + 1
+            guard used <= state.dailyCap else { return }
+            state.daily[slotKey] = used
+            let userId = Self.bearerUserId(state: &state, authorization)
+            let context = PublicVisits.requestContext(userAgent: userAgent, country: country)
+            var visitor = "anonymous"
+            var analyticsId: String?
+            if let userId, let user = state.users[userId] {
+                visitor = server.memberIds.contains(userId) ? "signed_in_member" : "signed_in_non_member"
+                if user.shareUsageData == true {
+                    analyticsId = user.analyticsId
+                }
+            }
+            if visitor == "anonymous", server.visitorIdEnabled, let anonymousId = PublicVisits.visitorId(visit.anonymousId) {
+                state.visitorRows.append(PublicVisitorRow(
+                    uuid: visit.uuid,
+                    event: visit.event,
+                    serverId: server.id,
+                    anonymousId: anonymousId
+                ))
+            }
+            state.recorded.append(PublicVisitRow(
                 event: visit.event,
+                visitor: visitor,
                 serverId: server.id,
-                anonymousId: anonymousId
+                source: "server",
+                analyticsId: analyticsId,
+                clientSessionId: nil,
+                channelId: kept.channelId,
+                threadChannelId: kept.threadChannelId,
+                entry: kept.entry,
+                referrerDomain: kept.referrerDomain,
+                utmSource: kept.utmSource,
+                utmMedium: kept.utmMedium,
+                utmCampaign: kept.utmCampaign,
+                browser: context.browser,
+                browserVersion: context.browserVersion,
+                os: context.os,
+                deviceType: context.deviceType,
+                country: context.country
             ))
         }
-        recorded.append(PublicVisitRow(
-            event: visit.event,
-            visitor: visitor,
-            serverId: server.id,
-            source: "server",
-            analyticsId: analyticsId,
-            clientSessionId: nil,
-            channelId: kept.channelId,
-            threadChannelId: kept.threadChannelId,
-            entry: kept.entry,
-            referrerDomain: kept.referrerDomain,
-            utmSource: kept.utmSource,
-            utmMedium: kept.utmMedium,
-            utmCampaign: kept.utmCampaign,
-            browser: context.browser,
-            browserVersion: context.browserVersion,
-            os: context.os,
-            deviceType: context.deviceType,
-            country: context.country
-        ))
     }
 
     public func setAgreement(slug: String, id: String, title: String, bodyMarkdown: String) {
-        lock.lock()
-        servers[slug]?.agreement = StoredAgreement(
-            id: id,
-            title: title,
-            bodyMarkdown: bodyMarkdown,
-            version: 1,
-            enabled: true
-        )
-        lock.unlock()
+        state.withLock { state in
+            state.servers[slug]?.agreement = StoredAgreement(
+                id: id,
+                title: title,
+                bodyMarkdown: bodyMarkdown,
+                version: 1,
+                enabled: true
+            )
+        }
     }
 
     public func serverMemberRole(slug: String, userId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard servers[slug]?.memberIds.contains(userId) == true else { return nil }
-        return servers[slug]?.memberRoles[userId] ?? "member"
+        return state.withLock { state in
+            guard state.servers[slug]?.memberIds.contains(userId) == true else { return nil }
+            return state.servers[slug]?.memberRoles[userId] ?? "member"
+        }
     }
 
     public func joinAudits(slug: String) -> [PublicJoinAudit] {
-        lock.lock()
-        defer { lock.unlock() }
-        return servers[slug]?.joinAudits.map {
-            PublicJoinAudit(source: $0.source, agreementId: $0.agreementId, subjectId: $0.subjectId)
-        } ?? []
+        return state.withLock { state in
+            return state.servers[slug]?.joinAudits.map {
+                PublicJoinAudit(source: $0.source, agreementId: $0.agreementId, subjectId: $0.subjectId)
+            } ?? []
+        }
     }
 
     public func join(slug: String, authorization: String?, body: String) throws -> PublicJoinResponse {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = bearerUserId(authorization), users[userId] != nil else {
-            throw PublicVisits.authRequired(authorization: authorization)
-        }
-        guard var server = servers[slug],
-              server.publiclyVisible,
-              server.publicEnabled,
-              server.guestRolloutEnabled,
-              server.guestJoinEnabled
-        else {
-            throw PublicVisitError.notFound
-        }
-        let already = server.memberIds.contains(userId)
-        if !already {
-            if let agreement = server.agreement, agreement.enabled {
-                let sent = Self.agreementId(body)
-                if sent == nil {
-                    throw Self.agreementRequired(agreement)
-                }
-                if sent != agreement.id {
-                    throw Self.agreementChanged(agreement)
-                }
+        return try state.withLock { state in
+            guard let userId = Self.bearerUserId(state: &state, authorization), state.users[userId] != nil else {
+                throw PublicVisits.authRequired(authorization: authorization)
             }
-            server.memberIds.insert(userId)
-            server.memberRoles[userId] = "guest"
-            if let agreement = server.agreement, agreement.enabled {
-                server.joinAudits.append(JoinAudit(subjectId: userId, source: "join", agreementId: agreement.id))
+            guard var server = state.servers[slug],
+                  server.publiclyVisible,
+                  server.publicEnabled,
+                  server.guestRolloutEnabled,
+                  server.guestJoinEnabled
+            else {
+                throw PublicVisitError.notFound
             }
-            servers[slug] = server
-            recordJoin(server: server, userId: userId, body: body)
+            let already = server.memberIds.contains(userId)
+            if !already {
+                if let agreement = server.agreement, agreement.enabled {
+                    let sent = Self.agreementId(body)
+                    if sent == nil {
+                        throw Self.agreementRequired(agreement)
+                    }
+                    if sent != agreement.id {
+                        throw Self.agreementChanged(agreement)
+                    }
+                }
+                server.memberIds.insert(userId)
+                server.memberRoles[userId] = "guest"
+                if let agreement = server.agreement, agreement.enabled {
+                    server.joinAudits.append(JoinAudit(subjectId: userId, source: "join", agreementId: agreement.id))
+                }
+                state.servers[slug] = server
+                Self.recordJoin(state: &state, server: server, userId: userId, body: body)
+            }
+            let role = server.memberRoles[userId] ?? "guest"
+            return PublicJoinResponse(
+                serverId: server.id, serverName: server.name, serverSlug: slug, role: role, joined: !already
+            )
         }
-        let role = server.memberRoles[userId] ?? "guest"
-        return PublicJoinResponse(
-            serverId: server.id, serverName: server.name, serverSlug: slug, role: role, joined: !already
-        )
     }
 
     public func page(slug: String, country: String?, region: String?, gpc: String?) throws -> PublicPageResponse {
-        lock.lock()
-        let server = servers[slug]
-        let translationAvailable = translationProviderConfigured
-        lock.unlock()
+        let (server, translationAvailable) = state.withLock { state in
+            (state.servers[slug], state.translationProviderConfigured)
+        }
         guard let server, server.publiclyVisible, server.publicEnabled else {
             throw PublicVisitError.notFound
         }
@@ -647,18 +651,18 @@ public final class PublicVisitDirectory: @unchecked Sendable {
     /// Member server list. `publicPageLive` is the anonymous page gate
     /// (`publiclyVisible` and the rollout flag). The stored switch itself is omitted.
     public func serverList(authorization: String?) throws -> PublicServerListResponse {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = bearerUserId(authorization), users[userId] != nil else {
-            throw PublicVisits.authRequired(authorization: authorization)
+        return try state.withLock { state in
+            guard let userId = Self.bearerUserId(state: &state, authorization), state.users[userId] != nil else {
+                throw PublicVisits.authRequired(authorization: authorization)
+            }
+            let rows = state.servers
+                .filter { $0.value.memberIds.contains(userId) }
+                .sorted { $0.value.id < $1.value.id }
+            return PublicServerListResponse(servers: rows.map { slug, server in
+                .init(id: server.id, slug: slug, role: server.memberRoles[userId] ?? "member",
+                      publicPageLive: server.publiclyVisible && server.publicEnabled)
+            })
         }
-        let rows = servers
-            .filter { $0.value.memberIds.contains(userId) }
-            .sorted { $0.value.id < $1.value.id }
-        return PublicServerListResponse(servers: rows.map { slug, server in
-            .init(id: server.id, slug: slug, role: server.memberRoles[userId] ?? "member",
-                  publicPageLive: server.publiclyVisible && server.publicEnabled)
-        })
     }
 
     public func joinCommunity(userId: String, slug rawSlug: String?) throws -> PublicServerJoinedResponse {
@@ -666,46 +670,43 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         guard slug == "community" || slug == "community-cn" else {
             throw PublicVisitError.unsupportedCommunity
         }
-        lock.lock()
-        guard var server = servers[slug] else {
-            lock.unlock()
-            throw PublicVisitError.communityUnavailable
+        let server = try state.withLock { state in
+            guard var server = state.servers[slug] else {
+                throw PublicVisitError.communityUnavailable
+            }
+            guard !server.memberIds.contains(userId) else {
+                throw PublicVisitError.alreadyMember
+            }
+            server.memberIds.insert(userId)
+            server.memberRoles[userId] = "member"
+            state.servers[slug] = server
+            return server
         }
-        guard !server.memberIds.contains(userId) else {
-            lock.unlock()
-            throw PublicVisitError.alreadyMember
-        }
-        server.memberIds.insert(userId)
-        server.memberRoles[userId] = "member"
-        servers[slug] = server
-        lock.unlock()
         return PublicServerJoinedResponse(serverId: server.id, serverName: server.name)
     }
 
     public func addPublicMessage(slug: String, message: PublicHistoryMessage) {
-        lock.lock()
-        history[slug, default: []].append(message)
-        lock.unlock()
+        state.withLock { state in
+            state.history[slug, default: []].append(message)
+        }
     }
 
     public func addPublicReply(slug: String, parentMessageId: String, threadId: String, reply: PublicHistoryReply) {
-        lock.lock()
-        guard var messages = history[slug], let index = messages.firstIndex(where: { $0.id == parentMessageId }) else {
-            lock.unlock()
-            return
+        state.withLock { state in
+            guard var messages = state.history[slug], let index = messages.firstIndex(where: { $0.id == parentMessageId }) else {
+                return
+            }
+            messages[index].threadId = threadId
+            messages[index].replies.append(reply)
+            state.history[slug] = messages
         }
-        messages[index].threadId = threadId
-        messages[index].replies.append(reply)
-        history[slug] = messages
-        lock.unlock()
     }
 
     public func channelMessages(slug: String, channelId: String, limit: Int = 50, beforeMessageId: String? = nil) throws -> PublicHistoryResponse {
         let id = channelId.lowercased()
-        lock.lock()
-        let server = servers[slug]
-        let messages = history[slug] ?? []
-        lock.unlock()
+        let (server, messages) = state.withLock { state in
+            (state.servers[slug], state.history[slug] ?? [])
+        }
         guard let server, server.publiclyVisible, server.publicEnabled, Self.isOrdinaryGuestChannel(server, id) else {
             throw PublicServerMessages.channel(channelId: channelId)
         }
@@ -722,10 +723,9 @@ public final class PublicVisitDirectory: @unchecked Sendable {
 
     public func threadMessages(slug: String, threadId: String, limit: Int = 50, beforeMessageId: String? = nil) throws -> PublicHistoryResponse {
         let id = threadId.lowercased()
-        lock.lock()
-        let server = servers[slug]
-        let messages = history[slug] ?? []
-        lock.unlock()
+        let (server, messages) = state.withLock { state in
+            (state.servers[slug], state.history[slug] ?? [])
+        }
         guard let server, server.publiclyVisible, server.publicEnabled,
               let thread = server.threads[id],
               Self.isOrdinaryGuestChannel(server, thread.parentChannelId)
@@ -780,13 +780,13 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         return false
     }
 
-    private func recordJoin(server: Server, userId: String, body: String) {
+    private static func recordJoin(state: inout State, server: Server, userId: String, body: String) {
         guard server.countsEnabled, server.productAnalyticsEnabled else { return }
-        guard let user = users[userId], user.shareUsageData == true, let analyticsId = user.analyticsId else { return }
+        guard let user = state.users[userId], user.shareUsageData == true, let analyticsId = user.analyticsId else { return }
         let anonymousId = PublicVisits.visitorId(PublicVisits.anonymousId(body))
         let hasVisitorId = anonymousId != nil && server.visitorIdEnabled
         let uuid = UUID().uuidString.lowercased()
-        recorded.append(PublicVisitRow(
+        state.recorded.append(PublicVisitRow(
             event: "public_page_server_joined",
             visitor: "",
             serverId: server.id,
@@ -798,7 +798,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
             uuid: uuid
         ))
         if hasVisitorId, let anonymousId {
-            visitorRows.append(PublicVisitorRow(
+            state.visitorRows.append(PublicVisitorRow(
                 uuid: uuid,
                 event: "public_page_server_joined",
                 serverId: server.id,
@@ -807,14 +807,14 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         }
     }
 
-    private func bearerUserId(_ authorization: String?) -> String? {
+    private static func bearerUserId(state: inout State, _ authorization: String?) -> String? {
         guard let authorization else { return nil }
         let prefix = "Bearer "
         guard authorization.hasPrefix(prefix) else { return nil }
-        return tokens[String(authorization.dropFirst(prefix.count))]
+        return state.tokens[String(authorization.dropFirst(prefix.count))]
     }
 
-    private struct Server {
+    private struct Server: Sendable {
         var id: String
         var name: String
         var publiclyVisible: Bool
@@ -839,7 +839,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         var joinAudits: [JoinAudit]
     }
 
-    private struct StoredAgreement {
+    private struct StoredAgreement: Sendable {
         var id: String
         var title: String
         var bodyMarkdown: String
@@ -847,7 +847,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         var enabled: Bool
     }
 
-    private struct JoinAudit {
+    private struct JoinAudit: Sendable {
         var subjectId: String
         var source: String
         var agreementId: String
@@ -875,7 +875,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         .agreementChanged(agreementCard(agreement))
     }
 
-    private struct StoredAttachment {
+    private struct StoredAttachment: Sendable {
         var channelId: String
         var messageId: String?
         var filename: String
@@ -883,7 +883,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
         var storageKey: String
     }
 
-    private struct MentionPerson {
+    private struct MentionPerson: Sendable {
         var name: String
         var displayName: String
         var actorId: String
@@ -897,7 +897,7 @@ public final class PublicVisitDirectory: @unchecked Sendable {
             && !server.archivedChannelIds.contains(id)
     }
 
-    private struct Thread {
+    private struct Thread: Sendable {
         var parentChannelId: String
         var archived: Bool
     }

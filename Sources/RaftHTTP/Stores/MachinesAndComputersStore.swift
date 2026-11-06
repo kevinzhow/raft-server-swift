@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Owns the machine, Computer and migration rows that used to be stored inline on
 /// `EmailLoginDirectory`.
@@ -8,11 +9,11 @@ import Foundation
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class MachinesAndComputersStore: @unchecked Sendable {
-    /// Every row this store owns. Grouping them lets one locked value be the
-    /// whole store snapshot; each accessor below copies it, which is cheap
-    /// because the collections are copy-on-write.
-    struct State {
+final class MachinesAndComputersStore: Sendable {
+    /// Every row this store owns. The mutex isolates this whole value so a
+    /// transaction can inspect and update several rows together. Individual
+    /// accessors copy or replace only their own field.
+    struct State: Sendable {
         var machines: [MachineRecord] = []
         var machineStatusVersions: [String: Int] = [:]
         var machineOnline: [String: Bool] = [:]
@@ -45,163 +46,155 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? = nil
     }
 
-    private let lock = NSLock()
-    private var storage = State()
+    private let storage = Mutex(State())
 
-    /// The whole owned state. A read or a write is one locked critical section.
+    /// A copied snapshot of every owned row. Whole-state replacement is retained
+    /// for deterministic setup; field setters below update only their own field.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
     }
 
     var machines: [MachineRecord] {
-        get { state.machines }
-        set { state.machines = newValue }
+        get { storage.withLock { $0.machines } }
+        set { storage.withLock { $0.machines = newValue } }
     }
 
     var machineStatusVersions: [String: Int] {
-        get { state.machineStatusVersions }
-        set { state.machineStatusVersions = newValue }
+        get { storage.withLock { $0.machineStatusVersions } }
+        set { storage.withLock { $0.machineStatusVersions = newValue } }
     }
 
     var machineOnline: [String: Bool] {
-        get { state.machineOnline }
-        set { state.machineOnline = newValue }
+        get { storage.withLock { $0.machineOnline } }
+        set { storage.withLock { $0.machineOnline = newValue } }
     }
 
     var computers: [(id: String, serverId: String, name: String, apiKey: String, machineId: String?, revokedAt: Date?, online: Bool, version: String?)] {
-        get { state.computers }
-        set { state.computers = newValue }
+        get { storage.withLock { $0.computers } }
+        set { storage.withLock { $0.computers = newValue } }
     }
 
     var computerAttachers: [String: String] {
-        get { state.computerAttachers }
-        set { state.computerAttachers = newValue }
+        get { storage.withLock { $0.computerAttachers } }
+        set { storage.withLock { $0.computerAttachers = newValue } }
     }
 
     var attachedComputers: [String: AttachedComputer] {
-        get { state.attachedComputers }
-        set { state.attachedComputers = newValue }
+        get { storage.withLock { $0.attachedComputers } }
+        set { storage.withLock { $0.attachedComputers = newValue } }
     }
 
     var deletedMachineWorkspaces: Set<String> {
-        get { state.deletedMachineWorkspaces }
-        set { state.deletedMachineWorkspaces = newValue }
+        get { storage.withLock { $0.deletedMachineWorkspaces } }
+        set { storage.withLock { $0.deletedMachineWorkspaces = newValue } }
     }
 
     var machineMigrationCapabilities: [String: Set<String>] {
-        get { state.machineMigrationCapabilities }
-        set { state.machineMigrationCapabilities = newValue }
+        get { storage.withLock { $0.machineMigrationCapabilities } }
+        set { storage.withLock { $0.machineMigrationCapabilities = newValue } }
     }
 
     var machineRuntimeDetections: [String: (status: String, unfinished: Set<String>)] {
-        get { state.machineRuntimeDetections }
-        set { state.machineRuntimeDetections = newValue }
+        get { storage.withLock { $0.machineRuntimeDetections } }
+        set { storage.withLock { $0.machineRuntimeDetections = newValue } }
     }
 
     var machineRuntimeModels: [String: [String: (models: [(id: String, label: String)], updatedAt: Date)]] {
-        get { state.machineRuntimeModels }
-        set { state.machineRuntimeModels = newValue }
+        get { storage.withLock { $0.machineRuntimeModels } }
+        set { storage.withLock { $0.machineRuntimeModels = newValue } }
     }
 
     var runtimeAccountUsage: [String: (json: String, staleAfter: Date)] {
-        get { state.runtimeAccountUsage }
-        set { state.runtimeAccountUsage = newValue }
+        get { storage.withLock { $0.runtimeAccountUsage } }
+        set { storage.withLock { $0.runtimeAccountUsage = newValue } }
     }
 
     var runtimeAccountUsageRefreshAt: [String: Date] {
-        get { state.runtimeAccountUsageRefreshAt }
-        set { state.runtimeAccountUsageRefreshAt = newValue }
+        get { storage.withLock { $0.runtimeAccountUsageRefreshAt } }
+        set { storage.withLock { $0.runtimeAccountUsageRefreshAt = newValue } }
     }
 
     var machineKeys: [String: (serverId: String, agentId: String)] {
-        get { state.machineKeys }
-        set { state.machineKeys = newValue }
+        get { storage.withLock { $0.machineKeys } }
+        set { storage.withLock { $0.machineKeys = newValue } }
     }
 
     var machineBroadcastPolicies: [String: String] {
-        get { state.machineBroadcastPolicies }
-        set { state.machineBroadcastPolicies = newValue }
+        get { storage.withLock { $0.machineBroadcastPolicies } }
+        set { storage.withLock { $0.machineBroadcastPolicies = newValue } }
     }
 
     var machineModelSeenCapability: Set<String> {
-        get { state.machineModelSeenCapability }
-        set { state.machineModelSeenCapability = newValue }
+        get { storage.withLock { $0.machineModelSeenCapability } }
+        set { storage.withLock { $0.machineModelSeenCapability = newValue } }
     }
 
     var latestComputerRelease: (version: String, notesJSON: String)? {
-        get { state.latestComputerRelease }
-        set { state.latestComputerRelease = newValue }
+        get { storage.withLock { $0.latestComputerRelease } }
+        set { storage.withLock { $0.latestComputerRelease = newValue } }
     }
 
     // MARK: - Injected machine relays and configuration
 
     var machineMigrationProvisioner: (@Sendable (_ sourceMachineId: String, _ targetMachineId: String) -> String?)? {
-        get { state.machineMigrationProvisioner }
-        set { state.machineMigrationProvisioner = newValue }
+        get { storage.withLock { $0.machineMigrationProvisioner } }
+        set { storage.withLock { $0.machineMigrationProvisioner = newValue } }
     }
 
     var machineMigrationLeaseDispatch: (@Sendable (_ machineId: String, _ role: String, _ migrationRef: String) -> Void)? {
-        get { state.machineMigrationLeaseDispatch }
-        set { state.machineMigrationLeaseDispatch = newValue }
+        get { storage.withLock { $0.machineMigrationLeaseDispatch } }
+        set { storage.withLock { $0.machineMigrationLeaseDispatch = newValue } }
     }
 
     var machineMigrationStartAgent: (@Sendable (_ agentId: String) async throws -> MachineMigrationAgentStartOutcome)? {
-        get { state.machineMigrationStartAgent }
-        set { state.machineMigrationStartAgent = newValue }
+        get { storage.withLock { $0.machineMigrationStartAgent } }
+        set { storage.withLock { $0.machineMigrationStartAgent = newValue } }
     }
 
     var machineMigrationArchiveSourceWorkspace: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)? {
-        get { state.machineMigrationArchiveSourceWorkspace }
-        set { state.machineMigrationArchiveSourceWorkspace = newValue }
+        get { storage.withLock { $0.machineMigrationArchiveSourceWorkspace } }
+        set { storage.withLock { $0.machineMigrationArchiveSourceWorkspace = newValue } }
     }
 
     var builtinModelCatalogCheck: (@Sendable (_ machineId: String, _ modelId: String) -> BuiltinModelCatalogResult)? {
-        get { state.builtinModelCatalogCheck }
-        set { state.builtinModelCatalogCheck = newValue }
+        get { storage.withLock { $0.builtinModelCatalogCheck } }
+        set { storage.withLock { $0.builtinModelCatalogCheck = newValue } }
     }
 
     var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)? {
-        get { state.agentRuntimeModelsForMachine }
-        set { state.agentRuntimeModelsForMachine = newValue }
+        get { storage.withLock { $0.agentRuntimeModelsForMachine } }
+        set { storage.withLock { $0.agentRuntimeModelsForMachine = newValue } }
     }
 
     var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)? {
-        get { state.runtimeAccountUsageManualRefresh }
-        set { state.runtimeAccountUsageManualRefresh = newValue }
+        get { storage.withLock { $0.runtimeAccountUsageManualRefresh } }
+        set { storage.withLock { $0.runtimeAccountUsageManualRefresh = newValue } }
     }
 
     var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)? {
-        get { state.machineRuntimeModelProbe }
-        set { state.machineRuntimeModelProbe = newValue }
+        get { storage.withLock { $0.machineRuntimeModelProbe } }
+        set { storage.withLock { $0.machineRuntimeModelProbe = newValue } }
     }
 
     var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)? {
-        get { state.machineRoutedLocally }
-        set { state.machineRoutedLocally = newValue }
+        get { storage.withLock { $0.machineRoutedLocally } }
+        set { storage.withLock { $0.machineRoutedLocally = newValue } }
     }
 
     var builtinCatalogMode: String {
-        get { state.builtinCatalogMode }
-        set { state.builtinCatalogMode = newValue }
+        get { storage.withLock { $0.builtinCatalogMode } }
+        set { storage.withLock { $0.builtinCatalogMode = newValue } }
     }
 
     var computerAttachEnabledOverride: Bool? {
-        get { state.computerAttachEnabledOverride }
-        set { state.computerAttachEnabledOverride = newValue }
+        get { storage.withLock { $0.computerAttachEnabledOverride } }
+        set { storage.withLock { $0.computerAttachEnabledOverride = newValue } }
     }
 
     var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? {
-        get { state.computerUpgradeSender }
-        set { state.computerUpgradeSender = newValue }
+        get { storage.withLock { $0.computerUpgradeSender } }
+        set { storage.withLock { $0.computerUpgradeSender = newValue } }
     }
 
     // MARK: - Agent send / delivery credentials
@@ -216,25 +209,25 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     }
 
     func machineCredential(apiKey: String, agentId: String?) -> MachineCredentialSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        let machine = storage.machines.first { $0.apiKey == apiKey }
-        let legacy = storage.machineKeys[apiKey]
-        var capability = false
-        if let agentId, storage.machineModelSeenCapability.contains(agentId) {
-            capability = true
+        return storage.withLock { state in
+            let machine = state.machines.first { $0.apiKey == apiKey }
+            let legacy = state.machineKeys[apiKey]
+            var capability = false
+            if let agentId, state.machineModelSeenCapability.contains(agentId) {
+                capability = true
+            }
+            if let machine, state.machineModelSeenCapability.contains(machine.id) {
+                capability = true
+            }
+            return MachineCredentialSnapshot(machine: machine, legacy: legacy, modelSeenCapability: capability)
         }
-        if let machine, storage.machineModelSeenCapability.contains(machine.id) {
-            capability = true
-        }
-        return MachineCredentialSnapshot(machine: machine, legacy: legacy, modelSeenCapability: capability)
     }
 
     /// The machine row only, as the runtime-profile and task-writer lookups use it.
     func machine(apiKey: String) -> MachineRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machines.first { $0.apiKey == apiKey }
+        return storage.withLock { state in
+            return state.machines.first { $0.apiKey == apiKey }
+        }
     }
 
     // MARK: - Machine credential lookups
@@ -242,40 +235,38 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     /// The Machine a bearer token authenticates: a Machine key, else a live
     /// Computer key's Machine.
     func machineId(forToken token: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        if let machine = storage.machines.first(where: { $0.apiKey == token }) { return machine.id }
-        if let computer = storage.computers.first(where: { $0.apiKey == token && $0.revokedAt == nil }) {
-            return computer.machineId
+        return storage.withLock { state in
+            if let machine = state.machines.first(where: { $0.apiKey == token }) { return machine.id }
+            if let computer = state.computers.first(where: { $0.apiKey == token && $0.revokedAt == nil }) {
+                return computer.machineId
+            }
+            return nil
         }
-        return nil
     }
 
     func machineServerId(machineId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machines.first { $0.id == machineId }?.serverId
+        return storage.withLock { state in
+            return state.machines.first { $0.id == machineId }?.serverId
+        }
     }
 
     func machineAPIKey(machineId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machines.first { $0.id == machineId }?.apiKey
+        return storage.withLock { state in
+            return state.machines.first { $0.id == machineId }?.apiKey
+        }
     }
 
     /// One increment-and-read: two concurrent bumps never return the same version.
     func bumpMachineStatusVersion(machineId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        let next = (storage.machineStatusVersions[machineId] ?? 0) + 1
-        storage.machineStatusVersions[machineId] = next
-        return next
+        return storage.withLock { state in
+            let next = (state.machineStatusVersions[machineId] ?? 0) + 1
+            state.machineStatusVersions[machineId] = next
+            return next
+        }
     }
 
     func setMachineOnline(machineId: String, online: Bool) {
-        lock.lock()
-        storage.machineOnline[machineId] = online
-        lock.unlock()
+        storage.withLock { $0.machineOnline[machineId] = online }
     }
 
     // MARK: - Server setup reset
@@ -283,15 +274,15 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     /// Revokes every live Computer of one server and returns how many of them
     /// had a machine attached, matching the reset reply's `revokedComputers`.
     func revokeComputers(serverId: String, now: Date) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        var revoked = 0
-        for index in storage.computers.indices
-        where storage.computers[index].serverId == serverId && storage.computers[index].revokedAt == nil {
-            storage.computers[index].revokedAt = now
-            if storage.computers[index].machineId != nil { revoked += 1 }
+        return storage.withLock { state in
+            var revoked = 0
+            for index in state.computers.indices
+            where state.computers[index].serverId == serverId && state.computers[index].revokedAt == nil {
+                state.computers[index].revokedAt = now
+                if state.computers[index].machineId != nil { revoked += 1 }
+            }
+            return revoked
         }
-        return revoked
     }
 
     // MARK: - Runtime forms, probes and credential liveness
@@ -299,32 +290,32 @@ final class MachinesAndComputersStore: @unchecked Sendable {
     /// One Computer-owned machine row of one Server, as every runtime-form and
     /// runtime-probe route resolves it.
     func machine(id: String, serverId: String) -> MachineRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machines.first { $0.id == id && $0.serverId == serverId }
+        return storage.withLock { state in
+            return state.machines.first { $0.id == id && $0.serverId == serverId }
+        }
     }
 
     /// The probe cache the runtime option sources fall back to.
     func runtimeModels(machineId: String, runtime: String) -> [(id: String, label: String)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machineRuntimeModels[machineId]?[runtime]?.models ?? []
+        return storage.withLock { state in
+            return state.machineRuntimeModels[machineId]?[runtime]?.models ?? []
+        }
     }
 
     /// Every Computer's cached `builtin` models. Empty when no machine is
     /// registered, read in one critical section so the two facts agree.
     func builtinRuntimeModels() -> [(id: String, label: String)] {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !storage.machines.isEmpty else { return [] }
-        return Array(storage.machineRuntimeModels.values.flatMap { $0["builtin"]?.models ?? [] })
+        return storage.withLock { state in
+            guard !state.machines.isEmpty else { return [] }
+            return Array(state.machineRuntimeModels.values.flatMap { $0["builtin"]?.models ?? [] })
+        }
     }
 
     /// The `machineId\nworkspace` keys a Computer deleted.
     func deletedWorkspaceKeys() -> Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.deletedMachineWorkspaces
+        return storage.withLock { state in
+            return state.deletedMachineWorkspaces
+        }
     }
 
     /// Everything the runtime account usage routes read about one machine, in
@@ -342,108 +333,108 @@ final class MachinesAndComputersStore: @unchecked Sendable {
         serverId: String,
         provider: String
     ) -> RuntimeAccountUsageContext? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let machine = storage.machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            return nil
+        return storage.withLock { state in
+            guard let machine = state.machines.first(where: { $0.id == machineId && $0.serverId == serverId }) else {
+                return nil
+            }
+            return RuntimeAccountUsageContext(
+                machine: machine,
+                attacher: state.computerAttachers[machineId],
+                online: state.machineOnline[machineId] == true,
+                snapshot: state.runtimeAccountUsage["\(machineId)\n\(provider)"]
+            )
         }
-        return RuntimeAccountUsageContext(
-            machine: machine,
-            attacher: storage.computerAttachers[machineId],
-            online: storage.machineOnline[machineId] == true,
-            snapshot: storage.runtimeAccountUsage["\(machineId)\n\(provider)"]
-        )
     }
 
     /// Whether the usage refresh for `key` ran less than `cooldown` seconds ago.
     func runtimeAccountUsageRefreshInCooldown(key: String, now: Date, cooldown: TimeInterval) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let last = storage.runtimeAccountUsageRefreshAt[key] else { return false }
-        return now.timeIntervalSince(last) < cooldown
+        return storage.withLock { state in
+            guard let last = state.runtimeAccountUsageRefreshAt[key] else { return false }
+            return now.timeIntervalSince(last) < cooldown
+        }
     }
 
     /// The cooldown check and the attempt stamp as one decision: of two
     /// concurrent requested refreshes exactly one claims the slot.
     func claimRuntimeAccountUsageRefresh(key: String, now: Date, cooldown: TimeInterval) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if let last = storage.runtimeAccountUsageRefreshAt[key], now.timeIntervalSince(last) < cooldown {
-            return false
+        return storage.withLock { state in
+            if let last = state.runtimeAccountUsageRefreshAt[key], now.timeIntervalSince(last) < cooldown {
+                return false
+            }
+            state.runtimeAccountUsageRefreshAt[key] = now
+            return true
         }
-        storage.runtimeAccountUsageRefreshAt[key] = now
-        return true
     }
 
     /// Stamps a manual refresh attempt that produced no snapshot.
     func recordRuntimeAccountUsageRefreshAttempt(key: String, at: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.runtimeAccountUsageRefreshAt[key] = at
+        return storage.withLock { state in
+            state.runtimeAccountUsageRefreshAt[key] = at
+        }
     }
 
     /// Stores a fresh snapshot and its refresh stamp together.
     func recordRuntimeAccountUsage(key: String, json: String, staleAfter: Date, refreshedAt: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.runtimeAccountUsage[key] = (json, staleAfter)
-        storage.runtimeAccountUsageRefreshAt[key] = refreshedAt
+        return storage.withLock { state in
+            state.runtimeAccountUsage[key] = (json, staleAfter)
+            state.runtimeAccountUsageRefreshAt[key] = refreshedAt
+        }
     }
 
     /// Whether `token` is a live machine key or a non-revoked Computer key, so
     /// an oversized body can be refused before any parser sees it.
     func machineCredentialIsLive(token: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machines.contains { $0.apiKey == token }
-            || storage.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        return storage.withLock { state in
+            return state.machines.contains { $0.apiKey == token }
+                || state.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        }
     }
 
     func computerCredentialIsLive(token: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        return storage.withLock { state in
+            return state.computers.contains { $0.apiKey == token && $0.revokedAt == nil }
+        }
     }
 
     /// The machine a live Computer credential is attached to, for the
     /// migration target callbacks. A live credential without a machine answers
     /// `nil`, like an unknown one.
     func attachedMachineId(computerKey token: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.computers.first { $0.apiKey == token && $0.revokedAt == nil }?.machineId
+        return storage.withLock { state in
+            return state.computers.first { $0.apiKey == token && $0.revokedAt == nil }?.machineId
+        }
     }
 
     /// Appends one machine row with a fresh key and returns its id.
     func registerMachine(serverId: String, userId: String, name: String) -> String {
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        storage.machines.append(MachineRecord(
-            id: id,
-            serverId: serverId,
-            userId: userId,
-            name: name,
-            description: nil,
-            apiKey: MachineCredentialMaterial.machineAPIKeyMaterial()
-        ))
-        lock.unlock()
+        storage.withLock { state in
+            state.machines.append(MachineRecord(
+                id: id,
+                serverId: serverId,
+                userId: userId,
+                name: name,
+                description: nil,
+                apiKey: MachineCredentialMaterial.machineAPIKeyMaterial()
+            ))
+        }
         return id
     }
 
     /// The `/daemon/connect` lookup by machine id.
     func machineCredentialIdentity(id: String) -> MachineCredentialIdentity? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let machine = storage.machines.first(where: { $0.id == id }) else { return nil }
-        return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+        return storage.withLock { state in
+            guard let machine = state.machines.first(where: { $0.id == id }) else { return nil }
+            return MachineCredentialIdentity(machineId: machine.id, serverId: machine.serverId)
+        }
     }
 }
 
 extension MachinesAndComputersStore {
     func machine(id: String) -> MachineRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.machines.first { $0.id == id }
+        return storage.withLock { state in
+            return state.machines.first { $0.id == id }
+        }
     }
 }
 
@@ -470,9 +461,7 @@ enum LegacyAdoptionOutcome {
 extension MachinesAndComputersStore {
     /// Records one deleted machine workspace (`machineId\ndirectoryName`).
     func markWorkspaceDeleted(machineId: String, directoryName: String) {
-        lock.lock()
-        storage.deletedMachineWorkspaces.insert("\(machineId)\n\(directoryName)")
-        lock.unlock()
+        storage.withLock { _ = $0.deletedMachineWorkspaces.insert("\(machineId)\n\(directoryName)") }
     }
 
     /// Lookup, creator/admin gate and description write in one critical
@@ -485,19 +474,19 @@ extension MachinesAndComputersStore {
         role: String,
         description: String?
     ) -> FleetMachineMutation<MachineRecord> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = storage.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            return .missing
+        return storage.withLock { state in
+            guard let index = state.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+                return .missing
+            }
+            if role != "owner", role != "admin", state.machines[index].userId != userId {
+                return .forbidden
+            }
+            if let description {
+                let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.machines[index].description = trimmed.isEmpty ? nil : trimmed
+            }
+            return .applied(state.machines[index])
         }
-        if role != "owner", role != "admin", storage.machines[index].userId != userId {
-            return .forbidden
-        }
-        if let description {
-            let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
-            storage.machines[index].description = trimmed.isEmpty ? nil : trimmed
-        }
-        return .applied(storage.machines[index])
     }
 
     /// Lookup, creator/admin gate and key replacement in one critical section.
@@ -508,16 +497,16 @@ extension MachinesAndComputersStore {
         role: String,
         apiKey: String
     ) -> FleetMachineMutation<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = storage.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            return .missing
+        return storage.withLock { state in
+            guard let index = state.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+                return .missing
+            }
+            if role != "owner", role != "admin", state.machines[index].userId != userId {
+                return .forbidden
+            }
+            state.machines[index].apiKey = apiKey
+            return .applied(apiKey)
         }
-        if role != "owner", role != "admin", storage.machines[index].userId != userId {
-            return .forbidden
-        }
-        storage.machines[index].apiKey = apiKey
-        return .applied(apiKey)
     }
 
     /// The name-collision check, the machine registration, the Computer row
@@ -532,35 +521,35 @@ extension MachinesAndComputersStore {
         computerId: String,
         computerApiKey: String
     ) -> ComputerAttachOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        let collides = storage.computers.contains { computer in
-            computer.revokedAt == nil
-                && computer.serverId == serverId
-                && computer.name == name
-                && storage.computerAttachers[computer.machineId ?? ""] == userId
+        return storage.withLock { state in
+            let collides = state.computers.contains { computer in
+                computer.revokedAt == nil
+                    && computer.serverId == serverId
+                    && computer.name == name
+                    && state.computerAttachers[computer.machineId ?? ""] == userId
+            }
+            if collides { return .nameCollision }
+            state.machines.append(MachineRecord(
+                id: machineId,
+                serverId: serverId,
+                userId: userId,
+                name: name,
+                description: nil,
+                apiKey: machineApiKey
+            ))
+            state.computers.append((
+                id: computerId,
+                serverId: serverId,
+                name: name,
+                apiKey: computerApiKey,
+                machineId: machineId,
+                revokedAt: nil,
+                online: false,
+                version: nil
+            ))
+            state.computerAttachers[machineId] = userId
+            return .attached(machineId: machineId, computerId: computerId)
         }
-        if collides { return .nameCollision }
-        storage.machines.append(MachineRecord(
-            id: machineId,
-            serverId: serverId,
-            userId: userId,
-            name: name,
-            description: nil,
-            apiKey: machineApiKey
-        ))
-        storage.computers.append((
-            id: computerId,
-            serverId: serverId,
-            name: name,
-            apiKey: computerApiKey,
-            machineId: machineId,
-            revokedAt: nil,
-            online: false,
-            version: nil
-        ))
-        storage.computerAttachers[machineId] = userId
-        return .attached(machineId: machineId, computerId: computerId)
     }
 
     /// The legacy-key migration mark and the Computer mint/rotation in one
@@ -577,84 +566,84 @@ extension MachinesAndComputersStore {
         newComputerId: String,
         now: Date
     ) -> LegacyAdoptionOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let machineIndex = storage.machines.firstIndex(where: { $0.id == machineId }) else {
-            return .machineMissing
+        return storage.withLock { state in
+            guard let machineIndex = state.machines.firstIndex(where: { $0.id == machineId }) else {
+                return .machineMissing
+            }
+            let serverId = state.machines[machineIndex].serverId
+            let liveComputerIndex = state.computers.firstIndex { computer in
+                computer.machineId == machineId && computer.serverId == serverId && computer.revokedAt == nil
+            }
+            if state.machines[machineIndex].legacyKeyMigratedAt != nil {
+                // Roster/daemon selection may retry after the server committed: the
+                // setup did not finish locally, so resume the linked Computer with
+                // a rotated credential instead of demanding the legacy key again.
+                guard allowAlreadyMigratedResume, let liveComputerIndex else { return .alreadyMigrated }
+                let live = state.computers[liveComputerIndex]
+                state.computers[liveComputerIndex] = (
+                    id: live.id,
+                    serverId: serverId,
+                    name: name,
+                    apiKey: apiKey,
+                    machineId: machineId,
+                    revokedAt: nil,
+                    online: live.online,
+                    version: live.version
+                )
+                return .adopted(computerId: live.id, serverId: serverId, resumed: true)
+            }
+            state.machines[machineIndex].legacyKeyMigratedAt = now
+            let computerId: String
+            let resumed: Bool
+            if let liveComputerIndex {
+                let live = state.computers[liveComputerIndex]
+                state.computers[liveComputerIndex] = (
+                    id: live.id,
+                    serverId: serverId,
+                    name: name,
+                    apiKey: apiKey,
+                    machineId: machineId,
+                    revokedAt: nil,
+                    online: live.online,
+                    version: live.version
+                )
+                computerId = live.id
+                resumed = true
+            } else {
+                computerId = newComputerId
+                state.computers.append((
+                    id: computerId,
+                    serverId: serverId,
+                    name: name,
+                    apiKey: apiKey,
+                    machineId: machineId,
+                    revokedAt: nil,
+                    online: false,
+                    version: nil
+                ))
+                resumed = false
+            }
+            state.computerAttachers[machineId] = userId
+            return .adopted(computerId: computerId, serverId: serverId, resumed: resumed)
         }
-        let serverId = storage.machines[machineIndex].serverId
-        let liveComputerIndex = storage.computers.firstIndex { computer in
-            computer.machineId == machineId && computer.serverId == serverId && computer.revokedAt == nil
-        }
-        if storage.machines[machineIndex].legacyKeyMigratedAt != nil {
-            // Roster/daemon selection may retry after the server committed: the
-            // setup did not finish locally, so resume the linked Computer with
-            // a rotated credential instead of demanding the legacy key again.
-            guard allowAlreadyMigratedResume, let liveComputerIndex else { return .alreadyMigrated }
-            let live = storage.computers[liveComputerIndex]
-            storage.computers[liveComputerIndex] = (
-                id: live.id,
-                serverId: serverId,
-                name: name,
-                apiKey: apiKey,
-                machineId: machineId,
-                revokedAt: nil,
-                online: live.online,
-                version: live.version
-            )
-            return .adopted(computerId: live.id, serverId: serverId, resumed: true)
-        }
-        storage.machines[machineIndex].legacyKeyMigratedAt = now
-        let computerId: String
-        let resumed: Bool
-        if let liveComputerIndex {
-            let live = storage.computers[liveComputerIndex]
-            storage.computers[liveComputerIndex] = (
-                id: live.id,
-                serverId: serverId,
-                name: name,
-                apiKey: apiKey,
-                machineId: machineId,
-                revokedAt: nil,
-                online: live.online,
-                version: live.version
-            )
-            computerId = live.id
-            resumed = true
-        } else {
-            computerId = newComputerId
-            storage.computers.append((
-                id: computerId,
-                serverId: serverId,
-                name: name,
-                apiKey: apiKey,
-                machineId: machineId,
-                revokedAt: nil,
-                online: false,
-                version: nil
-            ))
-            resumed = false
-        }
-        storage.computerAttachers[machineId] = userId
-        return .adopted(computerId: computerId, serverId: serverId, resumed: resumed)
     }
 
     /// Removes one machine row and revokes every Computer linked to it (the
     /// machine link is cleared, matched case-insensitively) in one critical
     /// section. Returns false when the machine is already gone.
     func removeMachine(serverId: String, machineId: String, now: Date) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = storage.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
-            return false
+        return storage.withLock { state in
+            guard let index = state.machines.firstIndex(where: { $0.id == machineId && $0.serverId == serverId }) else {
+                return false
+            }
+            state.machines.remove(at: index)
+            for computerIndex in state.computers.indices
+            where state.computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
+                state.computers[computerIndex].machineId = nil
+                state.computers[computerIndex].revokedAt = now
+            }
+            return true
         }
-        storage.machines.remove(at: index)
-        for computerIndex in storage.computers.indices
-        where storage.computers[computerIndex].machineId?.caseInsensitiveCompare(machineId) == .orderedSame {
-            storage.computers[computerIndex].machineId = nil
-            storage.computers[computerIndex].revokedAt = now
-        }
-        return true
     }
 }
 
@@ -663,20 +652,20 @@ extension MachinesAndComputersStore {
     /// prefix, then a live row whose key does not verify, then absence; one
     /// critical section.
     func computerCredential(apiKey: String) -> ComputerCredentialLookup {
-        lock.lock()
-        defer { lock.unlock() }
-        let length = MachineCredentialMaterial.computerAPIKeyPrefixLength
-        let prefix = String(apiKey.prefix(length))
-        let candidates = storage.computers.filter { String($0.apiKey.prefix(length)) == prefix }
-        if let computer = candidates.first(where: { $0.apiKey == apiKey }) {
-            if computer.revokedAt != nil { return .revoked }
-            guard let machineId = computer.machineId,
-                  storage.machines.contains(where: { $0.id == machineId })
-            else { return .machineUnlinked }
-            return .linked(computerId: computer.id, machineId: machineId)
+        return storage.withLock { state in
+            let length = MachineCredentialMaterial.computerAPIKeyPrefixLength
+            let prefix = String(apiKey.prefix(length))
+            let candidates = state.computers.filter { String($0.apiKey.prefix(length)) == prefix }
+            if let computer = candidates.first(where: { $0.apiKey == apiKey }) {
+                if computer.revokedAt != nil { return .revoked }
+                guard let machineId = computer.machineId,
+                      state.machines.contains(where: { $0.id == machineId })
+                else { return .machineUnlinked }
+                return .linked(computerId: computer.id, machineId: machineId)
+            }
+            if candidates.contains(where: { $0.revokedAt != nil }) { return .revoked }
+            if !candidates.isEmpty { return .keyMismatch }
+            return .notFound
         }
-        if candidates.contains(where: { $0.revokedAt != nil }) { return .revoked }
-        if !candidates.isEmpty { return .keyMismatch }
-        return .notFound
     }
 }

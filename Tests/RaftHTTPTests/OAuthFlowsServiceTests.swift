@@ -47,17 +47,15 @@ private func handoffCode(_ service: OAuthFlowsService, provider: String = "googl
 }
 
 private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mode: String, userId: String?, provider: String = "google") {
-    store.profiles.withOAuthFlowState { accounts, _, _ in
-        var request = MobileOAuthRequest(
-            id: id, provider: provider, mode: mode, status: "provider_completed",
-            codeChallenge: challenge(), returnUri: returnUri, nonce: "n",
-            expiresAt: Date().addingTimeInterval(600), userId: userId
-        )
-        request.handoffCode = code
-        request.profileEmail = "seed-\(id)@flows.test"
-        request.profileUserId = "sub-\(id)"
-        accounts.mobileRequests[id] = request
-    }
+    var request = MobileOAuthRequest(
+        id: id, provider: provider, mode: mode, status: "provider_completed",
+        codeChallenge: challenge(), returnUri: returnUri, nonce: "n",
+        expiresAt: Date().addingTimeInterval(600), userId: userId
+    )
+    request.handoffCode = code
+    request.profileEmail = "seed-\(id)@flows.test"
+    request.profileUserId = "sub-\(id)"
+    store.insertMobileRequest(request)
 }
 
 // MARK: - Bytes

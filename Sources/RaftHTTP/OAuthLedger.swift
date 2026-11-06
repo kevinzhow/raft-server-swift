@@ -46,50 +46,52 @@ public struct OAuthClientRejection: Error, Sendable {
 /// In-memory OAuth clients, human authorization codes, and access tokens.
 /// `POST /api/oauth/authorize/human` and `POST /api/oauth/token` both use this ledger.
 ///
-/// All mutable records are protected by `lock`; operations in the domain
-/// extensions hold it over each transaction, including calls to `...Locked`
-/// helpers. The signing secret has its own Mutex because signing intentionally
-/// happens after the transaction lock is released. The remaining unchecked
-/// conformance covers the shared NSLock-protected record tables.
-public final class OAuthLedger: @unchecked Sendable {
+/// Each record-table transaction borrows one State from its Mutex. Helpers
+/// ending in `Locked` receive that State explicitly and never acquire the Mutex.
+/// The signing secret stays independent so JWT signing runs after redemption
+/// releases the record-table transaction.
+public final class OAuthLedger: Sendable {
     private let signingSecret = Mutex("test-jwt-secret")
 
     public var jwtSecret: String {
         get { signingSecret.withLock { $0 } }
         set { signingSecret.withLock { $0 = newValue } }
     }
-    let lock = NSLock()
-    var servers: [String: Server] = [:]
-    var agents: [String: Agent] = [:]
-    var agentRoles: [String: String] = [:]
-    /// Agent owners of a server-local App (`oauth_client_maintainers`).
-    var clientMaintainerOwners: [String: Set<String>] = [:]
-    var agentEvents: [AgentEvent] = []
-    var revokedGrantClients: Set<String> = []
-    var agentGrants: [AgentGrant] = []
-    var autoGrantBlocked: Set<String> = []
-    var members: [String: String] = [:]
-    var channelRecords: [ChannelRecord] = []
-    var channelHumans: Set<String> = []
-    var channelAgents: Set<String> = []
-    var channelMessages: [ChannelMessageRecord] = []
-    var channelSystemMessages: [ChannelSystemMessageRecord] = []
-    var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
-    var channelReadCursors: [String: Int] = [:]
-    var channelDisplayPrefs: [String: ChannelDisplayPrefs] = [:]
-    var savedMessageRecords: [SavedMessageRecord] = []
-    var savedMessageCounter = 0
-    var sidebarOrders: [String: SidebarOrder] = [:]
-    var serverAgreementRecords: [String: [ServerAgreementInfo]] = [:]
-    var serverPushMutes: Set<String> = []
+    let state = Mutex(State())
 
-    var clients: [Client] = []
-    var integrationAuditEvents: [IntegrationAuditEvent] = []
-    var requests: [AccessRequest] = []
-    var tokens: [AccessToken] = []
-    var installations: [Installation] = []
-    var installationTokens: [InstallationToken] = []
-    var officialAppClientIds: Set<String> = []
+    struct State: Sendable {
+        var servers: [String: Server] = [:]
+        var agents: [String: Agent] = [:]
+        var agentRoles: [String: String] = [:]
+        /// Agent owners of a server-local App (`oauth_client_maintainers`).
+        var clientMaintainerOwners: [String: Set<String>] = [:]
+        var agentEvents: [AgentEvent] = []
+        var revokedGrantClients: Set<String> = []
+        var agentGrants: [AgentGrant] = []
+        var autoGrantBlocked: Set<String> = []
+        var members: [String: String] = [:]
+        var channelRecords: [ChannelRecord] = []
+        var channelHumans: Set<String> = []
+        var channelAgents: Set<String> = []
+        var channelMessages: [ChannelMessageRecord] = []
+        var channelSystemMessages: [ChannelSystemMessageRecord] = []
+        var channelNotificationPrefs: [String: ChannelNotificationPrefs] = [:]
+        var channelReadCursors: [String: Int] = [:]
+        var channelDisplayPrefs: [String: ChannelDisplayPrefs] = [:]
+        var savedMessageRecords: [SavedMessageRecord] = []
+        var savedMessageCounter = 0
+        var sidebarOrders: [String: SidebarOrder] = [:]
+        var serverAgreementRecords: [String: [ServerAgreementInfo]] = [:]
+        var serverPushMutes: Set<String> = []
+
+        var clients: [Client] = []
+        var integrationAuditEvents: [IntegrationAuditEvent] = []
+        var requests: [AccessRequest] = []
+        var tokens: [AccessToken] = []
+        var installations: [Installation] = []
+        var installationTokens: [InstallationToken] = []
+        var officialAppClientIds: Set<String> = []
+    }
 
     public init() {}
 }

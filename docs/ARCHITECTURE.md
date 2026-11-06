@@ -19,11 +19,11 @@ The upstream server separates route modules, services, database schema, middlewa
 | `Sources/RaftHTTP/Stores/` | 50 Swift files; large store implementations split into extensions by responsibility; every file at most 1,000 lines |
 | `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
 | `Sources/RaftHTTP/Support/` | Naming, token, cursor, projection, runtime-config, and policy helpers; no directory extensions or legacy reply factories |
-| `Sources/RaftHTTP/OAuthLedger.swift` and `OAuth/` | 95-line ledger root plus 18 domain files; the largest OAuth file is 466 lines |
+| `Sources/RaftHTTP/OAuthLedger.swift` and `OAuth/` | 97-line ledger root plus 18 domain files; the largest OAuth file is 466 lines |
 | `Sources/RaftShared/` | Shared value contracts, including `JSONValue` |
 | `Tests/TestSupport/` | Test-only seams, deterministic setup, and injected dependencies; never a production dependency |
 
-`Sources/RaftHTTP/EmailLogin/` has no Swift files. The remaining directory extensions are under `Services/` and `Stores/`, not hidden by that empty-directory result. Large store splits retain each store's original transaction lock and method bodies; the required cross-file access changes do not make state private to individual extension files.
+`Sources/RaftHTTP/EmailLogin/` has no Swift files. The remaining directory extensions are under `Services/` and `Stores/`, not hidden by that empty-directory result. File extraction preserved the original transactions; the subsequent Mutex migration keeps those transaction boundaries while grouping each store's mutable records into typed state.
 
 ## 2. Target layers
 
@@ -67,11 +67,13 @@ Conditional release-note responses retain their ETag and the original 304 header
 
 ### 2.3 Stores and concurrency
 
-Each principal store owns one record family. Its methods retain their existing critical sections during file extraction. Splitting a file is distinct from changing its synchronization model.
+Each principal store owns one record family. All twelve principal stores and the OAuth ledger now declare checked Sendable conformance, with mutable records and configuration isolated by `Mutex`. State values and the 55 shared value records used by those transactions have checked conformances too. Locked helpers borrow the caller's state explicitly and do not acquire that Mutex again. OAuth flows intentionally share the AuthProfileStore state so account, identity, legal acceptance, and session writes remain one auth transaction.
 
-The current directory still supplies a global `NSLock`, relay locks, and the freshness-commit lock. Several stores and the OAuth ledger still declare unchecked Sendable conformance. OAuth's signing secret now lives in a `Mutex` because token signing can occur after a record transaction releases its lock; that change does not make the rest of the ledger checked Sendable.
+Field setters update only their own field in one transaction. This fixes the old whole-State copy/writeback race that could discard a concurrent write to another field. Whole-state replacement remains a setup operation; legacy field reads followed by a separate write still do not form an atomic read-modify-write. Directory forwarders and their callers must migrate to domain operations before the global lock can disappear.
 
-The remaining work is to give mutable state checked `Mutex` or actor isolation and move each read-modify-write into its owning store before removing the global lock. Merely removing a lock around separately locked snapshot getters/setters would allow lost updates. Cross-domain transaction and lock-order assumptions must be reviewed explicitly.
+The directory root now has checked conformance because its stored fields are immutable references to Sendable stores, the ledger, and lock objects. Its global and relay locks remain, and an unused freshness-lock declaration still needs deletion. This conformance does not establish a consistent cross-store authorization snapshot or make the remaining directory extensions pure composition.
+
+OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry. Existing cross-store callbacks retain their original positions and still require explicit ownership and lock-order review.
 
 ### 2.4 JSON and compatibility boundaries
 
@@ -131,10 +133,10 @@ For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet
 
 The current handwritten-source snapshot has 12 directory extension occurrences, a 580-line forwarding file, 60 server reply tokens, 94 server JSON-any text occurrences, 98 directory type references, and 185 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the two Services `directory.` occurrences are comments. Source-level transport and string construction remain outside those narrow service zeros.
 
-The unchecked conformance ratchet is 63 across handwritten Sources: 22 in the server dependency closure and 41 in daemon-only targets. Desktop feed caching, attachment request budgets, public-search rate/in-flight accounting and lookup results, and the internal-surface snapshot now use checked `Mutex` storage; the causal error value is also checked Sendable. Generated knowledge telemetry contains one additional explicit unchecked conformance, so the physical full-source count is 64. The generated exception is not a concurrency-safety conclusion. Removing unchecked conformance outside the daemon, including that generated helper, remains planned work; the daemon's NIO handlers and process handles require individual assessment.
+The unchecked conformance ratchet is 47 across handwritten Sources: six in the server dependency closure and 41 in daemon-only targets. All twelve principal stores, the OAuth ledger, the immutable directory root, the public server/visit directories, HTTP caches/budgets, and the internal-surface snapshot now use checked conformances. The remaining six handwritten server declarations are the machine-connect handler and five realtime/session/desktop-attention classes. Generated knowledge telemetry contains one additional explicit unchecked conformance, so the physical full-source count is 48. The generated exception is not a concurrency-safety conclusion. Its generator and the remaining server classes still need migration; daemon NIO handlers and process handles require individual assessment.
 
 ## 4. Behavioral gates and remaining work
 
 Every accepted slice runs relevant published-path regressions, `make test`, `make test-e2e`, `scripts/smoke-server.sh`, `make architecture`, and `make parity-check`. Smoke is supplemental evidence for real-process wiring, not proof of every locked module. Coverage progress comes from `make parity` and the qualifications in `docs/PARITY.tsv`.
 
-The next boundaries are removal of the remaining directory extensions/forwarders and global lock, checked store isolation, then the repository-wide `ServiceContainer` rename and remaining server concurrency cleanup. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.
+The remaining boundaries are removal of the directory extensions/forwarders and global lock, then the repository-wide `ServiceContainer` rename, realtime/connect-handler isolation, the generated telemetry helper, and assessment of daemon exceptions. Checked store state is complete, but legacy cross-store orchestration is not. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.

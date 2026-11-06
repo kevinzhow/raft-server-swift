@@ -6,7 +6,7 @@ extension MessagesAndThreadsStore {
     /// One recipient's active, not-dismissed attention incidents in the archive
     /// order (newest activation first), with the receipt timestamps from the
     /// same locked snapshot.
-    struct SystemAttentionNotificationRow {
+    struct SystemAttentionNotificationRow: Sendable {
         let incident: SystemAttentionIncident
         let seenAt: Date?
     }
@@ -15,16 +15,16 @@ extension MessagesAndThreadsStore {
         serverId: String,
         userId: String
     ) -> [SystemAttentionNotificationRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.systemAttentionIncidents
-            .filter { $0.serverId == serverId && $0.state == "active" }
-            .compactMap { incident -> SystemAttentionNotificationRow? in
-                let receipt = storage.systemAttentionReceipts["\(incident.id)\n\(userId)"]
-                guard receipt?.dismissedAt == nil else { return nil }
-                return SystemAttentionNotificationRow(incident: incident, seenAt: receipt?.seenAt)
-            }
-            .sorted { $0.incident.activatedAt > $1.incident.activatedAt }
+        withState { state in
+            return state.systemAttentionIncidents
+                .filter { $0.serverId == serverId && $0.state == "active" }
+                .compactMap { incident -> SystemAttentionNotificationRow? in
+                    let receipt = state.systemAttentionReceipts["\(incident.id)\n\(userId)"]
+                    guard receipt?.dismissedAt == nil else { return nil }
+                    return SystemAttentionNotificationRow(incident: incident, seenAt: receipt?.seenAt)
+                }
+                .sorted { $0.incident.activatedAt > $1.incident.activatedAt }
+        }
     }
 
     /// Decides and writes one recipient receipt in a single critical section.
@@ -41,20 +41,20 @@ extension MessagesAndThreadsStore {
         dismiss: Bool,
         now: Date
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard attentionEnabled,
-              storage.systemAttentionIncidents.contains(where: {
-                  $0.id == incidentId && $0.serverId == serverId && $0.state == "active"
-              })
-        else { return false }
-        let key = "\(incidentId)\n\(userId)"
-        var receipt = storage.systemAttentionReceipts[key]
-            ?? SystemAttentionReceipt(seenAt: nil, dismissedAt: nil)
-        if receipt.seenAt == nil { receipt.seenAt = now }
-        if dismiss { receipt.dismissedAt = now }
-        storage.systemAttentionReceipts[key] = receipt
-        return true
+        withState { state in
+            guard attentionEnabled,
+                  state.systemAttentionIncidents.contains(where: {
+                      $0.id == incidentId && $0.serverId == serverId && $0.state == "active"
+                  })
+            else { return false }
+            let key = "\(incidentId)\n\(userId)"
+            var receipt = state.systemAttentionReceipts[key]
+                ?? SystemAttentionReceipt(seenAt: nil, dismissedAt: nil)
+            if receipt.seenAt == nil { receipt.seenAt = now }
+            if dismiss { receipt.dismissedAt = now }
+            state.systemAttentionReceipts[key] = receipt
+            return true
+        }
     }
 
     /// Stores one uploaded share artifact under the store lock. The id was
@@ -67,24 +67,24 @@ extension MessagesAndThreadsStore {
         serverId: String,
         createdAt: Date
     ) {
-        lock.lock()
-        storage.shareArtifacts[id] = ShareArtifactRecord(
-            bytes: bytes,
-            width: width,
-            height: height,
-            serverId: serverId,
-            createdAt: createdAt
-        )
-        lock.unlock()
+        withState { state in
+            state.shareArtifacts[id] = ShareArtifactRecord(
+                bytes: bytes,
+                width: width,
+                height: height,
+                serverId: serverId,
+                createdAt: createdAt
+            )
+        }
     }
 
     // MARK: - Share artifacts and message translations
 
     /// One uploaded share artifact, or nil when no row carries the id.
     func shareArtifact(id: String) -> ShareArtifactRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.shareArtifacts[id]
+        withState { state in
+            return state.shareArtifacts[id]
+        }
     }
 
     /// Records the translation outcome for one message in a single critical
@@ -96,13 +96,13 @@ extension MessagesAndThreadsStore {
         targetLanguage: String,
         translatedContent: String
     ) {
-        lock.lock()
-        storage.messageTranslationLedger[messageId] = (
-            status: status,
-            providerBilledChars: providerBilledChars,
-            targetLanguage: targetLanguage,
-            translatedContent: translatedContent
-        )
-        lock.unlock()
+        withState { state in
+            state.messageTranslationLedger[messageId] = (
+                status: status,
+                providerBilledChars: providerBilledChars,
+                targetLanguage: targetLanguage,
+                translatedContent: translatedContent
+            )
+        }
     }
 }

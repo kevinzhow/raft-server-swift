@@ -15,7 +15,7 @@ extension EmailLoginDirectory {
         feedbackStore.clearRouteBindingCache(includingReporterSessions: true)
     }
 
-    public func setHandsFeedbackUpstreamForTesting(_ handler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))?) {
+    public func setHandsFeedbackUpstreamForTesting(_ handler: (@Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data))?) {
         feedbackStore.handsFeedbackUpstreamHandler = handler
     }
 
@@ -35,7 +35,7 @@ extension EmailLoginDirectory {
 
     /// Operator log sink (upstream uses `console.warn`). Tests install one to
     /// assert the fixed reason codes without reading process output.
-    public func setHandsFeedbackWarningSinkForTesting(_ sink: ((String) -> Void)?) {
+    public func setHandsFeedbackWarningSinkForTesting(_ sink: (@Sendable (String) -> Void)?) {
         authProfileStore.handsFeedbackWarningSink = sink
     }
 

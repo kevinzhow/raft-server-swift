@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// One issued email-verification token.
 ///
@@ -31,56 +32,61 @@ enum ResetPasswordOutcome: Equatable, Sendable {
 /// email-verification tokens and legal acceptances. HTTP/session/account
 /// decisions stay in `EmailLoginDirectory`; this store serializes only its own
 /// rows and returns strong Swift values, never JSON or `HTTPReply`.
-final class AuthProfileStore: @unchecked Sendable {
+final class AuthProfileStore: Sendable {
     /// Profile surface rows that used to be stored inline on
     /// `EmailLoginDirectory`: timezone history and the
     /// mobile-app lifecycle email audience.
-    struct ProfileState {
+    struct ProfileState: Sendable {
         var timezoneObservations: [String: TimezoneObservation] = [:]
         var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] = [:]
         var storedMobileAppEmailJourneys: [MobileAppEmailJourney] = []
     }
 
-    let lock = NSLock()
-    var profile = ProfileState()
-    var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
-    private var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
-    var legalAcceptances: [String: EmailLegalAcceptance] = [:]
-    /// Live tokens keyed by user id. `issueVerificationToken` replaces the
-    /// user's set, which is the upstream insert-after-delete behavior.
-    var emailVerificationTokens: [String: [EmailVerificationRecord]] = [:]
-    /// Issue history per user. It survives token replacement so the resend
-    /// rate limit can count sends from the last hour even after old rows go.
-    var emailVerificationIssueDates: [String: [Date]] = [:]
+    /// All mutable rows share one Mutex so cross-ledger decisions remain atomic.
+    struct State: Sendable {
+        var profile = ProfileState()
+        var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
+        var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
+        var legalAcceptances: [String: EmailLegalAcceptance] = [:]
+        /// Replacing a live token does not erase the hourly issue history.
+        var emailVerificationTokens: [String: [EmailVerificationRecord]] = [:]
+        var emailVerificationIssueDates: [String: [Date]] = [:]
+        var accountSurface = AccountState()
+        var seamSurface = SeamState()
+        var configSurface = ConfigState()
+    }
+
+    /// Shared by the store's file extensions; every access borrows state via withLock.
+    let state = Mutex(State())
 
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
-        lock.lock()
-        identityRows[userId, default: []].append((provider, providerEmail))
-        lock.unlock()
+        state.withLock { state in
+            state.identityRows[userId, default: []].append((provider, providerEmail))
+        }
     }
 
     func identityCount(userId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return identityRows[userId]?.count ?? 0
+        return state.withLock { state in
+            return state.identityRows[userId]?.count ?? 0
+        }
     }
 
     func resetToken(hash: String) -> (userId: String, expiresAt: Date)? {
-        lock.lock()
-        defer { lock.unlock() }
-        return passwordResetTokens[hash]
+        return state.withLock { state in
+            return state.passwordResetTokens[hash]
+        }
     }
 
     func removeResetToken(hash: String) {
-        lock.lock()
-        passwordResetTokens.removeValue(forKey: hash)
-        lock.unlock()
+        state.withLock { state in
+            _ = state.passwordResetTokens.removeValue(forKey: hash)
+        }
     }
 
     func setResetToken(hash: String, userId: String, expiresAt: Date) {
-        lock.lock()
-        passwordResetTokens[hash] = (userId, expiresAt)
-        lock.unlock()
+        state.withLock { state in
+            state.passwordResetTokens[hash] = (userId, expiresAt)
+        }
     }
 
     /// Mints a password-reset token for a known address. The normalized
@@ -94,13 +100,13 @@ final class AuthProfileStore: @unchecked Sendable {
         now: Date,
         ttl: TimeInterval
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let account = accountSurface.accounts[AccountNaming.normalize(email)] else {
-            return false
+        return state.withLock { state in
+            guard let account = state.accountSurface.accounts[AccountNaming.normalize(email)] else {
+                return false
+            }
+            state.passwordResetTokens[tokenHash] = (account.id, now.addingTimeInterval(ttl))
+            return true
         }
-        passwordResetTokens[tokenHash] = (account.id, now.addingTimeInterval(ttl))
-        return true
     }
 
     /// Spends one reset token and writes the new password in one critical
@@ -111,45 +117,45 @@ final class AuthProfileStore: @unchecked Sendable {
         passwordHash: String,
         now: Date
     ) -> ResetPasswordOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let reset = passwordResetTokens[tokenHash], reset.expiresAt > now,
-              let email = accountSurface.accounts.first(where: { $0.value.id == reset.userId })?.key
-        else {
-            return .invalidOrExpiredToken
+        return state.withLock { state in
+            guard let reset = state.passwordResetTokens[tokenHash], reset.expiresAt > now,
+                  let email = state.accountSurface.accounts.first(where: { $0.value.id == reset.userId })?.key
+            else {
+                return .invalidOrExpiredToken
+            }
+            state.passwordResetTokens.removeValue(forKey: tokenHash)
+            state.accountSurface.accounts[email]?.passwordHash = passwordHash
+            state.accountSurface.accounts[email]?.passwordCredentialEstablishedAt = now
+            return .reset
         }
-        passwordResetTokens.removeValue(forKey: tokenHash)
-        accountSurface.accounts[email]?.passwordHash = passwordHash
-        accountSurface.accounts[email]?.passwordCredentialEstablishedAt = now
-        return .reset
     }
 
     /// Cancels one pending social link. Unknown, already-cancelled and expired
     /// tokens are the same no-op; the route answers 204 either way.
     func markPendingSocialLinkCancelled(token: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var pending = accountSurface.pendingSocialLinks[token] else { return }
-        pending.cancelled = true
-        accountSurface.pendingSocialLinks[token] = pending
+        return state.withLock { state in
+            guard var pending = state.accountSurface.pendingSocialLinks[token] else { return }
+            pending.cancelled = true
+            state.accountSurface.pendingSocialLinks[token] = pending
+        }
     }
 
     var legalAcceptanceCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return legalAcceptances.count
+        return state.withLock { state in
+            return state.legalAcceptances.count
+        }
     }
 
     func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
-        lock.lock()
-        defer { lock.unlock() }
-        return legalAcceptances[userId]
+        return state.withLock { state in
+            return state.legalAcceptances[userId]
+        }
     }
 
     func setLegalAcceptance(_ acceptance: EmailLegalAcceptance, userId: String) {
-        lock.lock()
-        legalAcceptances[userId] = acceptance
-        lock.unlock()
+        state.withLock { state in
+            state.legalAcceptances[userId] = acceptance
+        }
     }
 
     // MARK: - Email verification
@@ -163,13 +169,14 @@ final class AuthProfileStore: @unchecked Sendable {
         now: Date = Date(),
         ttl: TimeInterval = 24 * 60 * 60
     ) {
-        lock.lock()
-        issueVerificationTokenLocked(userId: userId, token: token, tokenHash: tokenHash, now: now, ttl: ttl)
-        lock.unlock()
+        state.withLock { state in
+            Self.issueVerificationTokenLocked(state: &state, userId: userId, token: token, tokenHash: tokenHash, now: now, ttl: ttl)
+        }
     }
 
-    /// The token replacement and issue-date append. The caller holds `lock`.
-    func issueVerificationTokenLocked(
+    /// The token replacement and issue-date append. The caller passes its already-borrowed state.
+    static func issueVerificationTokenLocked(
+        state: inout State,
         userId: String,
         token: String,
         tokenHash: String,
@@ -183,8 +190,8 @@ final class AuthProfileStore: @unchecked Sendable {
             createdAt: now,
             expiresAt: now.addingTimeInterval(ttl)
         )
-        emailVerificationTokens[userId] = [record]
-        emailVerificationIssueDates[userId, default: []].append(now)
+        state.emailVerificationTokens[userId] = [record]
+        state.emailVerificationIssueDates[userId, default: []].append(now)
     }
 
     /// The resend policy and its write in one critical section: hourly-cap
@@ -200,104 +207,104 @@ final class AuthProfileStore: @unchecked Sendable {
         hourlyLimit: Int,
         cooldown: TimeInterval
     ) -> IssueOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        let recentIssued = emailVerificationIssueDates[userId]?.filter {
-            $0 >= now.addingTimeInterval(-60 * 60)
-        }.count ?? 0
-        if recentIssued >= hourlyLimit { return .tooManyRequests }
-        if recentIssued > 0,
-           let latest = emailVerificationTokens[userId]?.max(by: { $0.createdAt < $1.createdAt }),
-           now.timeIntervalSince(latest.createdAt) < cooldown {
-            return .cooldown
+        return state.withLock { state in
+            let recentIssued = state.emailVerificationIssueDates[userId]?.filter {
+                $0 >= now.addingTimeInterval(-60 * 60)
+            }.count ?? 0
+            if recentIssued >= hourlyLimit { return .tooManyRequests }
+            if recentIssued > 0,
+               let latest = state.emailVerificationTokens[userId]?.max(by: { $0.createdAt < $1.createdAt }),
+               now.timeIntervalSince(latest.createdAt) < cooldown {
+                return .cooldown
+            }
+            state.emailVerificationTokens[userId] = [EmailVerificationRecord(
+                userId: userId,
+                tokenHash: tokenHash,
+                rawToken: token,
+                createdAt: now,
+                expiresAt: now.addingTimeInterval(ttl)
+            )]
+            state.emailVerificationIssueDates[userId, default: []].append(now)
+            state.accountSurface.emailVerifications += 1
+            return .issued
         }
-        emailVerificationTokens[userId] = [EmailVerificationRecord(
-            userId: userId,
-            tokenHash: tokenHash,
-            rawToken: token,
-            createdAt: now,
-            expiresAt: now.addingTimeInterval(ttl)
-        )]
-        emailVerificationIssueDates[userId, default: []].append(now)
-        accountSurface.emailVerifications += 1
-        return .issued
     }
 
     /// Spends one token. An unknown hash returns `nil`. An expired token is
     /// removed and returns `nil`. A valid token removes every verification
     /// token for its owner and returns the owner id.
     func consumeVerificationToken(tokenHash: String, now: Date = Date()) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = emailVerificationTokens.first(where: { _, records in
-            records.contains { $0.tokenHash == tokenHash }
-        })?.key,
-            let record = emailVerificationTokens[userId]?.first(where: { $0.tokenHash == tokenHash })
-        else { return nil }
-        guard record.expiresAt >= now else {
-            emailVerificationTokens[userId]?.removeAll { $0.tokenHash == tokenHash }
-            if emailVerificationTokens[userId]?.isEmpty == true {
-                emailVerificationTokens.removeValue(forKey: userId)
+        return state.withLock { state in
+            guard let userId = state.emailVerificationTokens.first(where: { _, records in
+                records.contains { $0.tokenHash == tokenHash }
+            })?.key,
+                let record = state.emailVerificationTokens[userId]?.first(where: { $0.tokenHash == tokenHash })
+            else { return nil }
+            guard record.expiresAt >= now else {
+                state.emailVerificationTokens[userId]?.removeAll { $0.tokenHash == tokenHash }
+                if state.emailVerificationTokens[userId]?.isEmpty == true {
+                    state.emailVerificationTokens.removeValue(forKey: userId)
+                }
+                return nil
             }
-            return nil
+            state.emailVerificationTokens.removeValue(forKey: userId)
+            return userId
         }
-        emailVerificationTokens.removeValue(forKey: userId)
-        return userId
     }
 
     /// The most recently issued live token, for inspection and the acceptance
     /// seam. The resend cooldown reads it inside `issueVerificationTokenIfAllowed`.
     func latestVerificationToken(userId: String) -> EmailVerificationRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return emailVerificationTokens[userId]?.max { $0.createdAt < $1.createdAt }
+        return state.withLock { state in
+            return state.emailVerificationTokens[userId]?.max { $0.createdAt < $1.createdAt }
+        }
     }
 
     // MARK: - Verification policy lookups
 
     /// Whether an account row still exists for `userId`.
     func accountExists(userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.accounts.values.contains { $0.id == userId }
+        return state.withLock { state in
+            return state.accountSurface.accounts.values.contains { $0.id == userId }
+        }
     }
 
     func isEmailVerified(userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.accounts.values.first { $0.id == userId }?.emailVerified ?? false
+        return state.withLock { state in
+            return state.accountSurface.accounts.values.first { $0.id == userId }?.emailVerified ?? false
+        }
     }
 
     /// One locked lookup by account id. The submission and onboarding paths
     /// read verification, the published handle and the usage-data opt-out from
     /// the same row.
     func account(userId: String) -> Account? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.accounts.values.first { $0.id == userId }
+        return state.withLock { state in
+            return state.accountSurface.accounts.values.first { $0.id == userId }
+        }
     }
 
     /// The Node fixture marks a row verified without an HTTP call. Retirement
     /// refuses an unverified account.
     func markEmailVerified(userId: String) {
-        lock.lock()
-        if let key = accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
-            accountSurface.accounts[key]?.emailVerified = true
+        state.withLock { state in
+            if let key = state.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+                state.accountSurface.accounts[key]?.emailVerified = true
+            }
         }
-        lock.unlock()
     }
 
     /// The account id behind a bearer access token, or `nil` when the token is
     /// unknown or its session family was revoked.
     func userId(forAccessToken token: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let userId = accountSurface.accessTokens[token] else { return nil }
-        if let family = accountSurface.accessTokenFamilies[token],
-           accountSurface.revokedFamilies.contains(family) {
-            return nil
+        return state.withLock { state in
+            guard let userId = state.accountSurface.accessTokens[token] else { return nil }
+            if let family = state.accountSurface.accessTokenFamilies[token],
+               state.accountSurface.revokedFamilies.contains(family) {
+                return nil
+            }
+            return userId
         }
-        return userId
     }
 
     // MARK: - Profile surface
@@ -306,20 +313,20 @@ final class AuthProfileStore: @unchecked Sendable {
     /// section, so `EmailLoginDirectory`'s forwarding accessors stay atomic.
     var profileState: ProfileState {
         get {
-            lock.lock()
-            defer { lock.unlock() }
-            return profile
+            return state.withLock { state in
+                return state.profile
+            }
         }
         set {
-            lock.lock()
-            profile = newValue
-            lock.unlock()
+            state.withLock { state in
+                state.profile = newValue
+            }
         }
     }
 
     var timezoneObservations: [String: TimezoneObservation] {
-        get { profileState.timezoneObservations }
-        set { profileState.timezoneObservations = newValue }
+        get { state.withLock { $0.profile.timezoneObservations } }
+        set { state.withLock { $0.profile.timezoneObservations = newValue } }
     }
 
     /// Records one timezone observation and returns the committed pair. The
@@ -330,27 +337,27 @@ final class AuthProfileStore: @unchecked Sendable {
         timezone: String,
         now: Date
     ) -> TimezoneObservation {
-        lock.lock()
-        defer { lock.unlock() }
-        let existing = profile.timezoneObservations[userId]
-        let observation = TimezoneObservation(
-            firstTimezone: existing?.firstTimezone ?? timezone,
-            firstAt: existing?.firstAt ?? now,
-            lastTimezone: timezone,
-            lastAt: now
-        )
-        profile.timezoneObservations[userId] = observation
-        return observation
+        return state.withLock { state in
+            let existing = state.profile.timezoneObservations[userId]
+            let observation = TimezoneObservation(
+                firstTimezone: existing?.firstTimezone ?? timezone,
+                firstAt: existing?.firstAt ?? now,
+                lastTimezone: timezone,
+                lastAt: now
+            )
+            state.profile.timezoneObservations[userId] = observation
+            return observation
+        }
     }
 
     var mobileAppEmailContactsByKey: [String: MobileAppEmailContact] {
-        get { profileState.mobileAppEmailContactsByKey }
-        set { profileState.mobileAppEmailContactsByKey = newValue }
+        get { state.withLock { $0.profile.mobileAppEmailContactsByKey } }
+        set { state.withLock { $0.profile.mobileAppEmailContactsByKey = newValue } }
     }
 
     var storedMobileAppEmailJourneys: [MobileAppEmailJourney] {
-        get { profileState.storedMobileAppEmailJourneys }
-        set { profileState.storedMobileAppEmailJourneys = newValue }
+        get { state.withLock { $0.profile.storedMobileAppEmailJourneys } }
+        set { state.withLock { $0.profile.storedMobileAppEmailJourneys = newValue } }
     }
 
     // MARK: - Account and session surface
@@ -358,7 +365,7 @@ final class AuthProfileStore: @unchecked Sendable {
     /// Rows that used to be stored inline on `EmailLoginDirectory`: the account
     /// table, the refresh-session families they mint, the one-time social and
     /// device handoffs, and the login-platform gates.
-    struct AccountState {
+    struct AccountState: Sendable {
         var accounts: [String: Account] = [:]
         var analyticsIds: [String: String] = [:]
         var sessions: [String: LiveSession] = [:]
@@ -388,15 +395,15 @@ final class AuthProfileStore: @unchecked Sendable {
 
     /// Injected hands-feedback switches (conversation session flag and the
     /// warning sink); the directory body keeps no storage of its own.
-    struct SeamState {
+    struct SeamState: Sendable {
         var handsConversationSessionEnabled: Bool? = nil
-        var handsFeedbackWarningSink: ((String) -> Void)? = nil
+        var handsFeedbackWarningSink: (@Sendable (String) -> Void)? = nil
     }
 
     /// Injected sign-in configuration that used to live inline on
     /// `EmailLoginDirectory`: social/Apple providers, OAuth return URIs and the
     /// deployment switches read by the auth extensions.
-    struct ConfigState {
+    struct ConfigState: Sendable {
         var mobileProviderProfile: MobileProviderProfile? = nil
         var webProviderProfile: MobileProviderProfile? = nil
         var configuredSocialAuthProviders: Set<String> = []
@@ -415,36 +422,33 @@ final class AuthProfileStore: @unchecked Sendable {
         var deploymentEnvironmentOverride: String?? = nil
     }
 
-    var accountSurface = AccountState()
-    private var seamSurface = SeamState()
-    var configSurface = ConfigState()
 
     /// The whole account/session surface. One read or one write is one locked
     /// critical section, so `EmailLoginDirectory`'s forwarding accessors stay
     /// atomic.
     var accountState: AccountState {
         get {
-            lock.lock()
-            defer { lock.unlock() }
-            return accountSurface
+            return state.withLock { state in
+                return state.accountSurface
+            }
         }
         set {
-            lock.lock()
-            accountSurface = newValue
-            lock.unlock()
+            state.withLock { state in
+                state.accountSurface = newValue
+            }
         }
     }
 
     var seamState: SeamState {
         get {
-            lock.lock()
-            defer { lock.unlock() }
-            return seamSurface
+            return state.withLock { state in
+                return state.seamSurface
+            }
         }
         set {
-            lock.lock()
-            seamSurface = newValue
-            lock.unlock()
+            state.withLock { state in
+                state.seamSurface = newValue
+            }
         }
     }
 
@@ -452,212 +456,212 @@ final class AuthProfileStore: @unchecked Sendable {
     /// locked critical section.
     var configState: ConfigState {
         get {
-            lock.lock()
-            defer { lock.unlock() }
-            return configSurface
+            return state.withLock { state in
+                return state.configSurface
+            }
         }
         set {
-            lock.lock()
-            configSurface = newValue
-            lock.unlock()
+            state.withLock { state in
+                state.configSurface = newValue
+            }
         }
     }
 
     var accounts: [String: Account] {
-        get { accountState.accounts }
-        set { accountState.accounts = newValue }
+        get { state.withLock { $0.accountSurface.accounts } }
+        set { state.withLock { $0.accountSurface.accounts = newValue } }
     }
 
     var analyticsIds: [String: String] {
-        get { accountState.analyticsIds }
-        set { accountState.analyticsIds = newValue }
+        get { state.withLock { $0.accountSurface.analyticsIds } }
+        set { state.withLock { $0.accountSurface.analyticsIds = newValue } }
     }
 
     var sessions: [String: LiveSession] {
-        get { accountState.sessions }
-        set { accountState.sessions = newValue }
+        get { state.withLock { $0.accountSurface.sessions } }
+        set { state.withLock { $0.accountSurface.sessions = newValue } }
     }
 
     var rotationReceipts: [String: RotationReceipt] {
-        get { accountState.rotationReceipts }
-        set { accountState.rotationReceipts = newValue }
+        get { state.withLock { $0.accountSurface.rotationReceipts } }
+        set { state.withLock { $0.accountSurface.rotationReceipts = newValue } }
     }
 
     var predecessorFamilies: [String: String] {
-        get { accountState.predecessorFamilies }
-        set { accountState.predecessorFamilies = newValue }
+        get { state.withLock { $0.accountSurface.predecessorFamilies } }
+        set { state.withLock { $0.accountSurface.predecessorFamilies = newValue } }
     }
 
     var revokedFamilies: Set<String> {
-        get { accountState.revokedFamilies }
-        set { accountState.revokedFamilies = newValue }
+        get { state.withLock { $0.accountSurface.revokedFamilies } }
+        set { state.withLock { $0.accountSurface.revokedFamilies = newValue } }
     }
 
     var sessionFamilies: [String: SessionFamily] {
-        get { accountState.sessionFamilies }
-        set { accountState.sessionFamilies = newValue }
+        get { state.withLock { $0.accountSurface.sessionFamilies } }
+        set { state.withLock { $0.accountSurface.sessionFamilies = newValue } }
     }
 
     var retirementReceipts: [String: RetirementReceipt] {
-        get { accountState.retirementReceipts }
-        set { accountState.retirementReceipts = newValue }
+        get { state.withLock { $0.accountSurface.retirementReceipts } }
+        set { state.withLock { $0.accountSurface.retirementReceipts = newValue } }
     }
 
     var accessTokens: [String: String] {
-        get { accountState.accessTokens }
-        set { accountState.accessTokens = newValue }
+        get { state.withLock { $0.accountSurface.accessTokens } }
+        set { state.withLock { $0.accountSurface.accessTokens = newValue } }
     }
 
     var accessTokenFamilies: [String: String] {
-        get { accountState.accessTokenFamilies }
-        set { accountState.accessTokenFamilies = newValue }
+        get { state.withLock { $0.accountSurface.accessTokenFamilies } }
+        set { state.withLock { $0.accountSurface.accessTokenFamilies = newValue } }
     }
 
     var emailVerifications: Int {
-        get { accountState.emailVerifications }
-        set { accountState.emailVerifications = newValue }
+        get { state.withLock { $0.accountSurface.emailVerifications } }
+        set { state.withLock { $0.accountSurface.emailVerifications = newValue } }
     }
 
     var socialCompletions: [SocialCompletion] {
-        get { accountState.socialCompletions }
-        set { accountState.socialCompletions = newValue }
+        get { state.withLock { $0.accountSurface.socialCompletions } }
+        set { state.withLock { $0.accountSurface.socialCompletions = newValue } }
     }
 
     var pendingSocialLinks: [String: PendingSocialLink] {
-        get { accountState.pendingSocialLinks }
-        set { accountState.pendingSocialLinks = newValue }
+        get { state.withLock { $0.accountSurface.pendingSocialLinks } }
+        set { state.withLock { $0.accountSurface.pendingSocialLinks = newValue } }
     }
 
     var mobileRequests: [String: MobileOAuthRequest] {
-        get { accountState.mobileRequests }
-        set { accountState.mobileRequests = newValue }
+        get { state.withLock { $0.accountSurface.mobileRequests } }
+        set { state.withLock { $0.accountSurface.mobileRequests = newValue } }
     }
 
     var providerExchanges: Int {
-        get { accountState.providerExchanges }
-        set { accountState.providerExchanges = newValue }
+        get { state.withLock { $0.accountSurface.providerExchanges } }
+        set { state.withLock { $0.accountSurface.providerExchanges = newValue } }
     }
 
     var consumedHandoffs: Set<String> {
-        get { accountState.consumedHandoffs }
-        set { accountState.consumedHandoffs = newValue }
+        get { state.withLock { $0.accountSurface.consumedHandoffs } }
+        set { state.withLock { $0.accountSurface.consumedHandoffs = newValue } }
     }
 
     var deviceGrants: [String: DeviceGrant] {
-        get { accountState.deviceGrants }
-        set { accountState.deviceGrants = newValue }
+        get { state.withLock { $0.accountSurface.deviceGrants } }
+        set { state.withLock { $0.accountSurface.deviceGrants = newValue } }
     }
 
     var deviceUserCodes: [String: String] {
-        get { accountState.deviceUserCodes }
-        set { accountState.deviceUserCodes = newValue }
+        get { state.withLock { $0.accountSurface.deviceUserCodes } }
+        set { state.withLock { $0.accountSurface.deviceUserCodes = newValue } }
     }
 
     var appleLoginPlatforms: Set<String> {
-        get { accountState.appleLoginPlatforms }
-        set { accountState.appleLoginPlatforms = newValue }
+        get { state.withLock { $0.accountSurface.appleLoginPlatforms } }
+        set { state.withLock { $0.accountSurface.appleLoginPlatforms = newValue } }
     }
 
     var linkedIdentities: [LinkedIdentity] {
-        get { accountState.linkedIdentities }
-        set { accountState.linkedIdentities = newValue }
+        get { state.withLock { $0.accountSurface.linkedIdentities } }
+        set { state.withLock { $0.accountSurface.linkedIdentities = newValue } }
     }
 
     var experimentalSurfacesDisabledOverride: Bool? {
-        get { accountState.experimentalSurfacesDisabledOverride }
-        set { accountState.experimentalSurfacesDisabledOverride = newValue }
+        get { state.withLock { $0.accountSurface.experimentalSurfacesDisabledOverride } }
+        set { state.withLock { $0.accountSurface.experimentalSurfacesDisabledOverride = newValue } }
     }
 
     var handsConversationSessionEnabled: Bool? {
-        get { seamState.handsConversationSessionEnabled }
-        set { seamState.handsConversationSessionEnabled = newValue }
+        get { state.withLock { $0.seamSurface.handsConversationSessionEnabled } }
+        set { state.withLock { $0.seamSurface.handsConversationSessionEnabled = newValue } }
     }
 
-    var handsFeedbackWarningSink: ((String) -> Void)? {
-        get { seamState.handsFeedbackWarningSink }
-        set { seamState.handsFeedbackWarningSink = newValue }
+    var handsFeedbackWarningSink: (@Sendable (String) -> Void)? {
+        get { state.withLock { $0.seamSurface.handsFeedbackWarningSink } }
+        set { state.withLock { $0.seamSurface.handsFeedbackWarningSink = newValue } }
     }
 
     // MARK: - Injected sign-in configuration
 
     var mobileProviderProfile: MobileProviderProfile? {
-        get { configState.mobileProviderProfile }
-        set { configState.mobileProviderProfile = newValue }
+        get { state.withLock { $0.configSurface.mobileProviderProfile } }
+        set { state.withLock { $0.configSurface.mobileProviderProfile = newValue } }
     }
 
     var webProviderProfile: MobileProviderProfile? {
-        get { configState.webProviderProfile }
-        set { configState.webProviderProfile = newValue }
+        get { state.withLock { $0.configSurface.webProviderProfile } }
+        set { state.withLock { $0.configSurface.webProviderProfile = newValue } }
     }
 
     var configuredSocialAuthProviders: Set<String> {
-        get { configState.configuredSocialAuthProviders }
-        set { configState.configuredSocialAuthProviders = newValue }
+        get { state.withLock { $0.configSurface.configuredSocialAuthProviders } }
+        set { state.withLock { $0.configSurface.configuredSocialAuthProviders = newValue } }
     }
 
     var appleClientId: String {
-        get { configState.appleClientId }
-        set { configState.appleClientId = newValue }
+        get { state.withLock { $0.configSurface.appleClientId } }
+        set { state.withLock { $0.configSurface.appleClientId = newValue } }
     }
 
     var nativeAppleClientId: String {
-        get { configState.nativeAppleClientId }
-        set { configState.nativeAppleClientId = newValue }
+        get { state.withLock { $0.configSurface.nativeAppleClientId } }
+        set { state.withLock { $0.configSurface.nativeAppleClientId = newValue } }
     }
 
     var nativeAppleClientSecret: String {
-        get { configState.nativeAppleClientSecret }
-        set { configState.nativeAppleClientSecret = newValue }
+        get { state.withLock { $0.configSurface.nativeAppleClientSecret } }
+        set { state.withLock { $0.configSurface.nativeAppleClientSecret = newValue } }
     }
 
     var nativeAppleStateSecret: String {
-        get { configState.nativeAppleStateSecret }
-        set { configState.nativeAppleStateSecret = newValue }
+        get { state.withLock { $0.configSurface.nativeAppleStateSecret } }
+        set { state.withLock { $0.configSurface.nativeAppleStateSecret = newValue } }
     }
 
     var exchangeNativeAppleCode: (@Sendable (NativeAppleCodeExchange) async -> String?)? {
-        get { configState.exchangeNativeAppleCode }
-        set { configState.exchangeNativeAppleCode = newValue }
+        get { state.withLock { $0.configSurface.exchangeNativeAppleCode } }
+        set { state.withLock { $0.configSurface.exchangeNativeAppleCode = newValue } }
     }
 
     var serverURL: String {
-        get { configState.serverURL }
-        set { configState.serverURL = newValue }
+        get { state.withLock { $0.configSurface.serverURL } }
+        set { state.withLock { $0.configSurface.serverURL = newValue } }
     }
 
     var appURL: String {
-        get { configState.appURL }
-        set { configState.appURL = newValue }
+        get { state.withLock { $0.configSurface.appURL } }
+        set { state.withLock { $0.configSurface.appURL = newValue } }
     }
 
     var mobileOAuthReturnURI: String? {
-        get { configState.mobileOAuthReturnURI }
-        set { configState.mobileOAuthReturnURI = newValue }
+        get { state.withLock { $0.configSurface.mobileOAuthReturnURI } }
+        set { state.withLock { $0.configSurface.mobileOAuthReturnURI = newValue } }
     }
 
     var mobileOAuthAllowedReturnURIs: String? {
-        get { configState.mobileOAuthAllowedReturnURIs }
-        set { configState.mobileOAuthAllowedReturnURIs = newValue }
+        get { state.withLock { $0.configSurface.mobileOAuthAllowedReturnURIs } }
+        set { state.withLock { $0.configSurface.mobileOAuthAllowedReturnURIs = newValue } }
     }
 
     var releaseBranch: String? {
-        get { configState.releaseBranch }
-        set { configState.releaseBranch = newValue }
+        get { state.withLock { $0.configSurface.releaseBranch } }
+        set { state.withLock { $0.configSurface.releaseBranch = newValue } }
     }
 
     var deviceLoginGate: String? {
-        get { configState.deviceLoginGate }
-        set { configState.deviceLoginGate = newValue }
+        get { state.withLock { $0.configSurface.deviceLoginGate } }
+        set { state.withLock { $0.configSurface.deviceLoginGate = newValue } }
     }
 
     var scopeAttestationSecretOverride: String?? {
-        get { configState.scopeAttestationSecretOverride }
-        set { configState.scopeAttestationSecretOverride = newValue }
+        get { state.withLock { $0.configSurface.scopeAttestationSecretOverride } }
+        set { state.withLock { $0.configSurface.scopeAttestationSecretOverride = newValue } }
     }
 
     var deploymentEnvironmentOverride: String?? {
-        get { configState.deploymentEnvironmentOverride }
-        set { configState.deploymentEnvironmentOverride = newValue }
+        get { state.withLock { $0.configSurface.deploymentEnvironmentOverride } }
+        set { state.withLock { $0.configSurface.deploymentEnvironmentOverride = newValue } }
     }
 
     // MARK: - Join-link / agent-profile account reads
@@ -666,24 +670,24 @@ final class AuthProfileStore: @unchecked Sendable {
     /// ledger's dictionary order. The caller still filters by server
     /// membership, exactly like the retired extension did.
     func accountsMatching(name loweredName: String) -> [Account] {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.accounts.values.filter { $0.name.lowercased() == loweredName }
+        return state.withLock { state in
+            return state.accountSurface.accounts.values.filter { $0.name.lowercased() == loweredName }
+        }
     }
 
     func accountEmail(id: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        // The account table is keyed by normalized email, not user id.
-        return accountSurface.accounts.values.first { $0.id == id }?.email
+        return state.withLock { state in
+            // The account table is keyed by normalized email, not user id.
+            return state.accountSurface.accounts.values.first { $0.id == id }?.email
+        }
     }
 
     /// The first account whose public handle matches `exactName` exactly, in
     /// the account ledger's dictionary order. The action-card DM target
     /// resolver keeps the legacy case-sensitive `values.first` contract.
     func firstAccount(exactName: String) -> Account? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.accounts.values.first { $0.name == exactName }
+        return state.withLock { state in
+            return state.accountSurface.accounts.values.first { $0.name == exactName }
+        }
     }
 }

@@ -17,39 +17,39 @@ extension OAuthLedger {
     ) throws -> Bool {
         let normalizedUrl = try AppSetupContract.normalizeSetupUrl(setupUrl)
         let normalizedDescription = try AppSetupContract.normalizeSetupDescription(setupDescription)
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = clients.firstIndex(where: { $0.id == clientRecordId }) else { return false }
-        let urlChanged = clients[index].setupUrl != normalizedUrl
-        clients[index].setupUrl = normalizedUrl
-        clients[index].setupDescription = normalizedDescription
-        guard urlChanged else { return true }
-        clients[index].setupRevision += 1
-        for installationIndex in installations.indices where installations[installationIndex].clientId == clientRecordId {
-            installations[installationIndex].setupCompletedRevision = nil
-            installations[installationIndex].setupCompletedAt = nil
+        return self.state.withLock { ledgerState in
+            guard let index = ledgerState.clients.firstIndex(where: { $0.id == clientRecordId }) else { return false }
+            let urlChanged = ledgerState.clients[index].setupUrl != normalizedUrl
+            ledgerState.clients[index].setupUrl = normalizedUrl
+            ledgerState.clients[index].setupDescription = normalizedDescription
+            guard urlChanged else { return true }
+            ledgerState.clients[index].setupRevision += 1
+            for installationIndex in ledgerState.installations.indices where ledgerState.installations[installationIndex].clientId == clientRecordId {
+                ledgerState.installations[installationIndex].setupCompletedRevision = nil
+                ledgerState.installations[installationIndex].setupCompletedAt = nil
+            }
+            return true
         }
-        return true
     }
 
     /// The setup state of one server's active installation. Callers establish
     /// human Server access (or App authentication) first.
     public func getAppInstallationSetup(clientRecordId: String, serverId: String) -> AppSetupState? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { $0.id == clientRecordId && $0.enabled }) else { return nil }
-        guard let installation = installations.first(where: {
-            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
-        }) else { return nil }
-        return try? AppSetupContract.project(
-            setupUrl: client.setupUrl,
-            setupDescription: client.setupDescription,
-            setupRevision: client.setupRevision,
-            installationId: installation.id,
-            serverId: installation.serverId,
-            completedRevision: installation.setupCompletedRevision,
-            completedAt: installation.setupCompletedAt
-        )
+        return self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { $0.id == clientRecordId && $0.enabled }) else { return nil }
+            guard let installation = ledgerState.installations.first(where: {
+                $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+            }) else { return nil }
+            return try? AppSetupContract.project(
+                setupUrl: client.setupUrl,
+                setupDescription: client.setupDescription,
+                setupRevision: client.setupRevision,
+                installationId: installation.id,
+                serverId: installation.serverId,
+                completedRevision: installation.setupCompletedRevision,
+                completedAt: installation.setupCompletedAt
+            )
+        }
     }
 
     /// App-authenticated, revision-bound and idempotent; never a permissions
@@ -60,147 +60,147 @@ extension OAuthLedger {
         guard status == "pending" || status == "complete" else {
             throw OAuthClientRejection(message: "status must be pending or complete")
         }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let clientIndex = clients.firstIndex(where: { $0.id == clientRecordId && $0.enabled }) else { return nil }
-        guard let installationIndex = installations.firstIndex(where: {
-            $0.id == installationId && $0.clientId == clientRecordId && $0.status == "active"
-        }) else { return nil }
-        let client = clients[clientIndex]
-        guard let setupUrl = client.setupUrl, !setupUrl.isEmpty, revision == client.setupRevision else {
-            throw AppSetupConflictError("Setup declaration changed; read current setup state before reporting completion")
+        return try self.state.withLock { ledgerState in
+            guard let clientIndex = ledgerState.clients.firstIndex(where: { $0.id == clientRecordId && $0.enabled }) else { return nil }
+            guard let installationIndex = ledgerState.installations.firstIndex(where: {
+                $0.id == installationId && $0.clientId == clientRecordId && $0.status == "active"
+            }) else { return nil }
+            let client = ledgerState.clients[clientIndex]
+            guard let setupUrl = client.setupUrl, !setupUrl.isEmpty, revision == client.setupRevision else {
+                throw AppSetupConflictError("Setup declaration changed; read current setup state before reporting completion")
+            }
+            let complete = status == "complete"
+            let desiredRevision: Int? = complete ? client.setupRevision : nil
+            if ledgerState.installations[installationIndex].setupCompletedRevision != desiredRevision {
+                ledgerState.installations[installationIndex].setupCompletedRevision = desiredRevision
+                ledgerState.installations[installationIndex].setupCompletedAt = complete ? Date() : nil
+                ledgerState.integrationAuditEvents.append(IntegrationAuditEvent(
+                    eventType: "installation.setup_updated", clientRecordId: client.id,
+                    installationId: installationId, serverId: ledgerState.installations[installationIndex].serverId
+                ))
+            }
+            let installation = ledgerState.installations[installationIndex]
+            return try? AppSetupContract.project(
+                setupUrl: client.setupUrl,
+                setupDescription: client.setupDescription,
+                setupRevision: client.setupRevision,
+                installationId: installation.id,
+                serverId: installation.serverId,
+                completedRevision: installation.setupCompletedRevision,
+                completedAt: installation.setupCompletedAt
+            )
         }
-        let complete = status == "complete"
-        let desiredRevision: Int? = complete ? client.setupRevision : nil
-        if installations[installationIndex].setupCompletedRevision != desiredRevision {
-            installations[installationIndex].setupCompletedRevision = desiredRevision
-            installations[installationIndex].setupCompletedAt = complete ? Date() : nil
-            integrationAuditEvents.append(IntegrationAuditEvent(
-                eventType: "installation.setup_updated", clientRecordId: client.id,
-                installationId: installationId, serverId: installations[installationIndex].serverId
-            ))
-        }
-        let installation = installations[installationIndex]
-        return try? AppSetupContract.project(
-            setupUrl: client.setupUrl,
-            setupDescription: client.setupDescription,
-            setupRevision: client.setupRevision,
-            installationId: installation.id,
-            serverId: installation.serverId,
-            completedRevision: installation.setupCompletedRevision,
-            completedAt: installation.setupCompletedAt
-        )
     }
 
     /// Marketplace uninstall: drops the active installation; a later install
     /// creates a new installation id and therefore a fresh setup state.
     @discardableResult
     public func uninstallClient(serverId: String, clientRecordId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let before = installations.count
-        installations.removeAll {
-            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+        return self.state.withLock { ledgerState in
+            let before = ledgerState.installations.count
+            ledgerState.installations.removeAll {
+                $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+            }
+            return ledgerState.installations.count != before
         }
-        return installations.count != before
     }
 
     /// App backend authentication for the setup report: the owning App's
     /// client id + secret, enabled and user-managed.
     public func verifyClientSecret(clientKey: String, clientSecret: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients.first {
-            ($0.clientId == clientKey || $0.id == clientKey) && $0.enabled
-                && $0.appType != "slock_builtin" && $0.secretHash == sha256(clientSecret)
-        }?.id
+        return self.state.withLock { ledgerState in
+            return ledgerState.clients.first {
+                ($0.clientId == clientKey || $0.id == clientKey) && $0.enabled
+                    && $0.appType != "slock_builtin" && $0.secretHash == sha256(clientSecret)
+            }?.id
+        }
     }
     /// Resolves an App by client key or record id for a target Server, whether
     /// the App is owned by that Server or installed on it from a publisher.
     public func setupClientRecordId(serverId: String, clientKey: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients.first { client in
-            (client.clientId == clientKey || client.id == clientKey)
-                && (client.serverId == serverId || installations.contains {
-                    $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
-                })
-        }?.id
+        return self.state.withLock { ledgerState in
+            return ledgerState.clients.first { client in
+                (client.clientId == clientKey || client.id == clientKey)
+                    && (client.serverId == serverId || ledgerState.installations.contains {
+                        $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
+                    })
+            }?.id
+        }
     }
 
     public func clientRecordIdForServer(serverId: String, clientKey: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients.first {
-            $0.serverId == serverId && ($0.clientId == clientKey || $0.id == clientKey)
-        }?.id
+        return self.state.withLock { ledgerState in
+            return ledgerState.clients.first {
+                $0.serverId == serverId && ($0.clientId == clientKey || $0.id == clientKey)
+            }?.id
+        }
     }
 
     public func integrationAuditEventCount(eventType: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return integrationAuditEvents.filter { $0.eventType == eventType }.count
+        return self.state.withLock { ledgerState in
+            return ledgerState.integrationAuditEvents.filter { $0.eventType == eventType }.count
+        }
     }
 
     public func clientSetupDeclaration(clientRecordId: String) -> (url: String?, description: String?, revision: Int)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { $0.id == clientRecordId }) else { return nil }
-        return (client.setupUrl, client.setupDescription, client.setupRevision)
+        return self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { $0.id == clientRecordId }) else { return nil }
+            return (client.setupUrl, client.setupDescription, client.setupRevision)
+        }
     }
 
     public func addClientMaintainer(clientRecordId: String, agentId: String, role: String = "owner") {
         guard role == "owner" else { return }
-        lock.lock()
-        clientMaintainerOwners[clientRecordId, default: []].insert(agentId)
-        lock.unlock()
+        _ = self.state.withLock { ledgerState in
+            ledgerState.clientMaintainerOwners[clientRecordId, default: []].insert(agentId)
+        }
     }
 
     public func isClientMaintainerOwner(clientRecordId: String, agentId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return clientMaintainerOwners[clientRecordId]?.contains(agentId) == true
+        return self.state.withLock { ledgerState in
+            return ledgerState.clientMaintainerOwners[clientRecordId]?.contains(agentId) == true
+        }
     }
 
     public func installationId(serverId: String, clientRecordId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return installations.first {
-            $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
-        }?.id
+        return self.state.withLock { ledgerState in
+            return ledgerState.installations.first {
+                $0.clientId == clientRecordId && $0.serverId == serverId && $0.status == "active"
+            }?.id
+        }
     }
 
     /// The agent-facing projection of Apps this agent may manage: every
     /// user-managed app of the Server for an admin agent, otherwise only the
     /// ones this agent owns. Installation ids never cross the Server boundary.
     public func ownedIntegrationApps(serverId: String, agentId: String, admin: Bool) -> [IntegrationAppProjection] {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients.filter { client in
-            guard client.serverId == serverId, isUserManaged(client),
-                  client.appType == "server_local" || client.appType == "third_party_global"
-            else { return false }
-            return admin || clientMaintainerOwners[client.id]?.contains(agentId) == true
-        }.map { client in
-            integrationAppProjection(client, serverId: serverId, admin: admin)
+        return self.state.withLock { ledgerState in
+            return ledgerState.clients.filter { client in
+                guard client.serverId == serverId, isUserManaged(client),
+                      client.appType == "server_local" || client.appType == "third_party_global"
+                else { return false }
+                return admin || ledgerState.clientMaintainerOwners[client.id]?.contains(agentId) == true
+            }.map { client in
+                integrationAppProjection(client, serverId: serverId, admin: admin, state: ledgerState)
+            }
         }
     }
 
     public func ownedIntegrationApp(serverId: String, agentId: String, clientKey: String, admin: Bool) -> IntegrationAppProjection? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { candidate in
-            candidate.serverId == serverId
-                && (candidate.clientId == clientKey || candidate.id == clientKey)
-                && isUserManaged(candidate)
-                && (candidate.appType == "server_local" || candidate.appType == "third_party_global")
-        }) else { return nil }
-        guard admin || clientMaintainerOwners[client.id]?.contains(agentId) == true else { return nil }
-        return integrationAppProjection(client, serverId: serverId, admin: admin)
+        return self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { candidate in
+                candidate.serverId == serverId
+                    && (candidate.clientId == clientKey || candidate.id == clientKey)
+                    && isUserManaged(candidate)
+                    && (candidate.appType == "server_local" || candidate.appType == "third_party_global")
+            }) else { return nil }
+            guard admin || ledgerState.clientMaintainerOwners[client.id]?.contains(agentId) == true else { return nil }
+            return integrationAppProjection(client, serverId: serverId, admin: admin, state: ledgerState)
+        }
     }
 
-    func setupProjection(client: Client, serverId: String) -> IntegrationAppSetupProjection? {
-        guard let installation = installations.first(where: {
+    func setupProjection(client: Client, serverId: String, state ledgerState: State) -> IntegrationAppSetupProjection? {
+        guard let installation = ledgerState.installations.first(where: {
             $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
         }) else { return nil }
         guard let state = try? AppSetupContract.project(
@@ -219,12 +219,12 @@ extension OAuthLedger {
         )
     }
 
-    func integrationAppProjection(_ client: Client, serverId: String, admin: Bool) -> IntegrationAppProjection {
+    func integrationAppProjection(_ client: Client, serverId: String, admin: Bool, state ledgerState: State) -> IntegrationAppProjection {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let now = formatter.string(from: Date())
         return IntegrationAppProjection(
-            installationId: installations.first {
+            installationId: ledgerState.installations.first {
                 $0.clientId == client.id && $0.serverId == serverId && $0.status == "active"
             }?.id,
             name: client.name,
@@ -238,7 +238,7 @@ extension OAuthLedger {
             setupUrl: client.setupUrl,
             setupDescription: client.setupDescription,
             setupRevision: client.setupRevision,
-            setup: setupProjection(client: client, serverId: serverId),
+            setup: setupProjection(client: client, serverId: serverId, state: ledgerState),
             scopes: client.allowedScopes ?? [],
             appType: client.appType,
             publishStatus: client.publishStatus,

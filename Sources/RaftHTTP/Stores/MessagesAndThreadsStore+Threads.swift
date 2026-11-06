@@ -3,29 +3,29 @@ import Foundation
 extension MessagesAndThreadsStore {
     /// Follow/unfollow keys as one snapshot so the recursive parent-visibility
     /// check does not take the store lock once per thread.
-    struct ThreadFollowSnapshot {
+    struct ThreadFollowSnapshot: Sendable {
         let follows: Set<String>
         let unfollows: Set<String>
     }
 
     func threadFollowSnapshot() -> ThreadFollowSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return ThreadFollowSnapshot(
-            follows: Set(storage.threadFollows.keys),
-            unfollows: Set(storage.threadUnfollows.keys)
-        )
+        withState { state in
+            return ThreadFollowSnapshot(
+                follows: Set(state.threadFollows.keys),
+                unfollows: Set(state.threadUnfollows.keys)
+            )
+        }
     }
 
     /// Removes every follow row for `keys` in one critical section.
     func removeThreadFollows(keys: [String]) {
         guard !keys.isEmpty else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        for key in keys {
-            storage.threadFollows.removeValue(forKey: key)
-            storage.threadUnfollows.removeValue(forKey: key)
-            storage.threadFollowStarts.removeValue(forKey: key)
+        withState { state in
+            for key in keys {
+                state.threadFollows.removeValue(forKey: key)
+                state.threadUnfollows.removeValue(forKey: key)
+                state.threadFollowStarts.removeValue(forKey: key)
+            }
         }
     }
 
@@ -40,50 +40,50 @@ extension MessagesAndThreadsStore {
     /// The thread a parent message already follows, searched across the whole
     /// ledger exactly as the legacy resolver did.
     func threadId(serverId: String, parentMessageId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.threadFollows.values.first {
-            $0.serverId == serverId && $0.parentMessageId == parentMessageId
-        }?.threadChannelId
+        withState { state in
+            return state.threadFollows.values.first {
+                $0.serverId == serverId && $0.parentMessageId == parentMessageId
+            }?.threadChannelId
+        }
     }
 
     /// A user's active follows on one server, with inbox-done scopes filtered
     /// out under the same lock that reads the rows.
     func activeThreadFollows(serverId: String, userId: String) -> [ThreadFollowRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.threadFollows.values
-            .filter {
-                $0.serverId == serverId
-                    && $0.userId == userId
-                    && !storage.inboxDoneScopes.contains("\(userId)\n\($0.threadChannelId)")
-            }
-            .map { ThreadFollowRow(threadChannelId: $0.threadChannelId, parentMessageId: $0.parentMessageId) }
+        withState { state in
+            return state.threadFollows.values
+                .filter {
+                    $0.serverId == serverId
+                        && $0.userId == userId
+                        && !state.inboxDoneScopes.contains("\(userId)\n\($0.threadChannelId)")
+                }
+                .map { ThreadFollowRow(threadChannelId: $0.threadChannelId, parentMessageId: $0.parentMessageId) }
+        }
     }
 
     func isThreadFollowed(serverId: String, userId: String, threadChannelId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
+        withState { state in
+            return state.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
+        }
     }
 
     /// Unread-eligible personal mention ids for one user. The followed-thread
     /// projection intersects these with the thread's unread replies.
     func unreadMentionMessageIds(userId: String) -> Set<String> {
-        lock.lock()
-        defer { lock.unlock() }
-        return Set(storage.storedMentions.lazy.filter {
-            $0.targetType == "user" && $0.targetId == userId && $0.notifiableAtSend
-        }.map(\.messageId))
+        withState { state in
+            return Set(state.storedMentions.lazy.filter {
+                $0.targetType == "user" && $0.targetId == userId && $0.notifiableAtSend
+            }.map(\.messageId))
+        }
     }
 
     /// One user's unfollow suppression rows on a server, newest first is left
     /// to the caller.
     func threadUnfollowRecords(serverId: String, userId: String) -> [ThreadUnfollowRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.threadUnfollows.values.filter {
-            $0.serverId == serverId && $0.userId == userId
+        withState { state in
+            return state.threadUnfollows.values.filter {
+                $0.serverId == serverId && $0.userId == userId
+            }
         }
     }
 
@@ -100,37 +100,37 @@ extension MessagesAndThreadsStore {
         follow: Bool,
         now: Date
     ) {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
-        if follow {
-            storage.threadFollows[key] = (
+        withState { state in
+            let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
+            if follow {
+                state.threadFollows[key] = (
+                    serverId: serverId,
+                    userId: userId,
+                    threadChannelId: threadChannelId,
+                    parentMessageId: parentMessageId
+                )
+                if state.threadFollowStarts[key] == nil {
+                    state.threadFollowStarts[key] = now
+                }
+                state.threadUnfollows.removeValue(forKey: key)
+                return
+            }
+            state.threadFollows.removeValue(forKey: key)
+            let startedAt = state.threadFollowStarts.removeValue(forKey: key) ?? .distantPast
+            let frozen = state.humanMessageRows
+                .filter { $0.channelId == threadChannelId && $0.createdAt >= startedAt }
+                .map { (id: $0.id, content: $0.content) }
+            state.threadUnfollows[key] = ThreadUnfollowRecord(
                 serverId: serverId,
                 userId: userId,
                 threadChannelId: threadChannelId,
-                parentMessageId: parentMessageId
+                parentMessageId: parentMessageId,
+                unfollowedAt: now,
+                latestMessageId: frozen.last?.id ?? parentMessageId,
+                replyCount: frozen.count,
+                frozenMessages: frozen
             )
-            if storage.threadFollowStarts[key] == nil {
-                storage.threadFollowStarts[key] = now
-            }
-            storage.threadUnfollows.removeValue(forKey: key)
-            return
         }
-        storage.threadFollows.removeValue(forKey: key)
-        let startedAt = storage.threadFollowStarts.removeValue(forKey: key) ?? .distantPast
-        let frozen = storage.humanMessageRows
-            .filter { $0.channelId == threadChannelId && $0.createdAt >= startedAt }
-            .map { (id: $0.id, content: $0.content) }
-        storage.threadUnfollows[key] = ThreadUnfollowRecord(
-            serverId: serverId,
-            userId: userId,
-            threadChannelId: threadChannelId,
-            parentMessageId: parentMessageId,
-            unfollowedAt: now,
-            latestMessageId: frozen.last?.id ?? parentMessageId,
-            replyCount: frozen.count,
-            frozenMessages: frozen
-        )
     }
 
     /// Follows the creator (and, when a different live member wrote the
@@ -143,13 +143,13 @@ extension MessagesAndThreadsStore {
         parentMessageId: String,
         parentAuthorId: String?
     ) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] =
-            (serverId, userId, threadChannelId, parentMessageId)
-        if let parentAuthorId {
-            storage.threadFollows["\(serverId)\n\(parentAuthorId)\n\(threadChannelId)"] =
-                (serverId, parentAuthorId, threadChannelId, parentMessageId)
+        withState { state in
+            state.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] =
+                (serverId, userId, threadChannelId, parentMessageId)
+            if let parentAuthorId {
+                state.threadFollows["\(serverId)\n\(parentAuthorId)\n\(threadChannelId)"] =
+                    (serverId, parentAuthorId, threadChannelId, parentMessageId)
+            }
         }
     }
 
@@ -170,19 +170,19 @@ extension MessagesAndThreadsStore {
         agentId: String,
         undoToken: String
     ) -> ThreadFollowerRemovalWrite {
-        lock.lock()
-        defer { lock.unlock() }
-        if let existing = storage.threadFollowerRemovals.first(where: {
-            $0.value.threadChannelId == threadId && $0.value.agentId == agentId
-        }) {
-            return .replay(undoToken: existing.key)
+        withState { state in
+            if let existing = state.threadFollowerRemovals.first(where: {
+                $0.value.threadChannelId == threadId && $0.value.agentId == agentId
+            }) {
+                return .replay(undoToken: existing.key)
+            }
+            state.threadFollowerRemovals[undoToken] = (
+                serverId: serverId,
+                threadChannelId: threadId,
+                agentId: agentId
+            )
+            return .created(undoToken: undoToken)
         }
-        storage.threadFollowerRemovals[undoToken] = (
-            serverId: serverId,
-            threadChannelId: threadId,
-            agentId: agentId
-        )
-        return .created(undoToken: undoToken)
     }
 
     /// The decision and the write of the restore route.
@@ -200,14 +200,14 @@ extension MessagesAndThreadsStore {
         agentId: String,
         undoToken: String
     ) -> ThreadFollowerRestoreWrite {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let record = storage.threadFollowerRemovals[undoToken],
-              record.threadChannelId == threadId,
-              record.agentId == agentId
-        else { return .notRemoved }
-        storage.threadFollowerRemovals.removeValue(forKey: undoToken)
-        storage.staleThreadFollowerUndoTokens.insert(undoToken)
-        return .restored
+        withState { state in
+            guard let record = state.threadFollowerRemovals[undoToken],
+                  record.threadChannelId == threadId,
+                  record.agentId == agentId
+            else { return .notRemoved }
+            state.threadFollowerRemovals.removeValue(forKey: undoToken)
+            state.staleThreadFollowerUndoTokens.insert(undoToken)
+            return .restored
+        }
     }
 }

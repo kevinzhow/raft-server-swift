@@ -9,14 +9,14 @@ struct AgentInboxConversation: Sendable, Equatable {
 }
 
 /// A message an agent has not read yet, with the conversation it was found in.
-struct AgentPendingMessage {
+struct AgentPendingMessage: Sendable {
     var seq: Int
     var message: StoredHumanMessage
     var conversationIndex: Int
 }
 
 /// What one agent inbox drain handed out and what it advanced.
-struct AgentInboxDrain {
+struct AgentInboxDrain: Sendable {
     var selected: [AgentPendingMessage]
     var hasMore: Bool
     var mentionedMessageIds: Set<String>
@@ -24,7 +24,7 @@ struct AgentInboxDrain {
 
 /// The slice of the message ledger the Activity page projects from, copied in
 /// one critical section so a page never mixes two versions of the ledger.
-struct InboxReadSnapshot {
+struct InboxReadSnapshot: Sendable {
     var doneScopes: Set<String>
     var mentions: [StoredMention]
     var followKeys: Set<String>

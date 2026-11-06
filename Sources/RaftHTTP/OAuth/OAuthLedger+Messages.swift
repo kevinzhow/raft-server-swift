@@ -9,18 +9,18 @@ extension OAuthLedger {
         createdAt: Date = Date(),
         senderId: String = "user"
     ) -> Date {
-        lock.lock()
-        let seq = channelMessages.filter { $0.channelId == channelId }.count
-            + channelSystemMessages.filter { $0.channelId == channelId }.count + 1
-        channelMessages.append(ChannelMessageRecord(
-            id: UUID().uuidString.lowercased(),
-            channelId: channelId,
-            content: content,
-            createdAt: createdAt,
-            senderId: senderId,
-            seq: seq
-        ))
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            let seq = ledgerState.channelMessages.filter { $0.channelId == channelId }.count
+                + ledgerState.channelSystemMessages.filter { $0.channelId == channelId }.count + 1
+            ledgerState.channelMessages.append(ChannelMessageRecord(
+                id: UUID().uuidString.lowercased(),
+                channelId: channelId,
+                content: content,
+                createdAt: createdAt,
+                senderId: senderId,
+                seq: seq
+            ))
+        }
         return createdAt
     }
 
@@ -38,21 +38,21 @@ extension OAuthLedger {
         senderType: String?,
         messageType: String?
     ) {
-        lock.lock()
-        if !channelMessages.contains(where: { $0.id == id }) {
-            channelMessages.append(ChannelMessageRecord(
-                id: id,
-                channelId: channelId,
-                content: content,
-                createdAt: createdAt,
-                senderId: senderId,
-                seq: seq,
-                senderTimezone: senderTimezone,
-                senderType: senderType,
-                messageType: messageType
-            ))
+        self.state.withLock { ledgerState in
+            if !ledgerState.channelMessages.contains(where: { $0.id == id }) {
+                ledgerState.channelMessages.append(ChannelMessageRecord(
+                    id: id,
+                    channelId: channelId,
+                    content: content,
+                    createdAt: createdAt,
+                    senderId: senderId,
+                    seq: seq,
+                    senderTimezone: senderTimezone,
+                    senderType: senderType,
+                    messageType: messageType
+                ))
+            }
         }
-        lock.unlock()
     }
 
     public func createMessageRecord(
@@ -69,26 +69,26 @@ extension OAuthLedger {
         causalActorType: String? = nil,
         causalActorId: String? = nil
     ) -> (id: String, seq: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        let seq = explicitSeq ?? (channelMessages.filter { $0.channelId == channelId }.count
-            + channelSystemMessages.filter { $0.channelId == channelId }.count + 1)
-        let id = explicitId ?? UUID().uuidString.lowercased()
-        channelMessages.append(ChannelMessageRecord(
-            id: id,
-            channelId: channelId,
-            content: content,
-            createdAt: createdAt,
-            senderId: senderId,
-            seq: seq,
-            senderTimezone: senderTimezone,
-            senderType: senderType,
-            messageType: messageType,
-            systemSubtype: systemSubtype,
-            causalActorType: causalActorType,
-            causalActorId: causalActorId
-        ))
-        return (id, seq)
+        return self.state.withLock { ledgerState in
+            let seq = explicitSeq ?? (ledgerState.channelMessages.filter { $0.channelId == channelId }.count
+                + ledgerState.channelSystemMessages.filter { $0.channelId == channelId }.count + 1)
+            let id = explicitId ?? UUID().uuidString.lowercased()
+            ledgerState.channelMessages.append(ChannelMessageRecord(
+                id: id,
+                channelId: channelId,
+                content: content,
+                createdAt: createdAt,
+                senderId: senderId,
+                seq: seq,
+                senderTimezone: senderTimezone,
+                senderType: senderType,
+                messageType: messageType,
+                systemSubtype: systemSubtype,
+                causalActorType: causalActorType,
+                causalActorId: causalActorId
+            ))
+            return (id, seq)
+        }
     }
     public struct SavedMessageInfo: Sendable {
         public var messageId: String
@@ -103,18 +103,18 @@ extension OAuthLedger {
     }
 
     public func createThreadChannel(parentChannelId: String, parentMessageId: String) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        let id = UUID().uuidString.lowercased()
-        channelRecords.append(ChannelRecord(
-            id: id,
-            serverId: channelRecords.first(where: { $0.id == parentChannelId })?.serverId ?? "",
-            name: "",
-            type: "thread",
-            parentChannelId: parentChannelId,
-            parentMessageId: parentMessageId
-        ))
-        return id
+        return self.state.withLock { ledgerState in
+            let id = UUID().uuidString.lowercased()
+            ledgerState.channelRecords.append(ChannelRecord(
+                id: id,
+                serverId: ledgerState.channelRecords.first(where: { $0.id == parentChannelId })?.serverId ?? "",
+                name: "",
+                type: "thread",
+                parentChannelId: parentChannelId,
+                parentMessageId: parentMessageId
+            ))
+            return id
+        }
     }
 
     public struct HistoryMessage: Sendable {
@@ -129,79 +129,80 @@ extension OAuthLedger {
     }
 
     public func historyMessages(channelId: String) -> [HistoryMessage] {
-        lock.lock()
-        defer { lock.unlock() }
-        return channelMessages
-            .filter { $0.channelId == channelId }
-            .sorted { $0.seq < $1.seq }
-            .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone, senderType: $0.senderType, messageType: $0.messageType) }
+        return self.state.withLock { ledgerState in
+            return ledgerState.channelMessages
+                .filter { $0.channelId == channelId }
+                .sorted { $0.seq < $1.seq }
+                .map { HistoryMessage(id: $0.id, content: $0.content, senderId: $0.senderId, seq: $0.seq, createdAt: $0.createdAt, senderTimezone: $0.senderTimezone, senderType: $0.senderType, messageType: $0.messageType) }
+        }
     }
 
     public func reminderMessageMetadata(id: String) -> (channelId: String, senderId: String, senderType: String, messageType: String, systemSubtype: String?, causalActorId: String?)? {
-        lock.lock(); defer { lock.unlock() }
-        guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
-        return (message.channelId, message.senderId, message.senderType ?? "user", message.messageType ?? "chat", message.systemSubtype, message.causalActorId)
+        return self.state.withLock { ledgerState in
+            guard let message = ledgerState.channelMessages.first(where: { $0.id == id }) else { return nil }
+            return (message.channelId, message.senderId, message.senderType ?? "user", message.messageType ?? "chat", message.systemSubtype, message.causalActorId)
+        }
     }
     public func messageTranslationMetadata(id: String) -> (channelId: String, content: String, senderId: String, senderType: String, messageType: String)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
-        return (message.channelId, message.content, message.senderId, message.senderType ?? "user", message.messageType ?? "chat")
+        return self.state.withLock { ledgerState in
+            guard let message = ledgerState.channelMessages.first(where: { $0.id == id }) else { return nil }
+            return (message.channelId, message.content, message.senderId, message.senderType ?? "user", message.messageType ?? "chat")
+        }
     }
 
     public func messageContent(id: String) -> (channelId: String, content: String)? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let message = channelMessages.first(where: { $0.id == id }) else { return nil }
-        return (message.channelId, message.content)
+        return self.state.withLock { ledgerState in
+            guard let message = ledgerState.channelMessages.first(where: { $0.id == id }) else { return nil }
+            return (message.channelId, message.content)
+        }
     }
 
     public func messageChannelId(_ messageId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return channelMessages.first(where: { $0.id == messageId })?.channelId
+        return self.state.withLock { ledgerState in
+            return ledgerState.channelMessages.first(where: { $0.id == messageId })?.channelId
+        }
     }
 
     public func saveMessage(userId: String, messageId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let message = channelMessages.first(where: { $0.id == messageId }) else { return false }
-        if savedMessageRecords.contains(where: { $0.userId == userId && $0.messageId == messageId }) {
+        return self.state.withLock { ledgerState in
+            guard let message = ledgerState.channelMessages.first(where: { $0.id == messageId }) else { return false }
+            if ledgerState.savedMessageRecords.contains(where: { $0.userId == userId && $0.messageId == messageId }) {
+                return true
+            }
+            ledgerState.savedMessageCounter += 1
+            ledgerState.savedMessageRecords.append(SavedMessageRecord(userId: userId, messageId: messageId, savedAt: ledgerState.savedMessageCounter))
+            _ = message
             return true
         }
-        savedMessageCounter += 1
-        savedMessageRecords.append(SavedMessageRecord(userId: userId, messageId: messageId, savedAt: savedMessageCounter))
-        _ = message
-        return true
     }
 
     public func savedMessages(userId: String) -> [SavedMessageInfo] {
-        lock.lock()
-        defer { lock.unlock() }
-        return savedMessageRecords
-            .filter { $0.userId == userId }
-            .compactMap { saved -> SavedMessageInfo? in
-                guard let message = channelMessages.first(where: { $0.id == saved.messageId }),
-                      let channel = channelRecords.first(where: { $0.id == message.channelId })
-                else { return nil }
-                let parentPreview = channel.parentMessageId.flatMap { parentId in
-                    channelMessages.first(where: { $0.id == parentId })?.content
+        return self.state.withLock { ledgerState in
+            return ledgerState.savedMessageRecords
+                .filter { $0.userId == userId }
+                .compactMap { saved -> SavedMessageInfo? in
+                    guard let message = ledgerState.channelMessages.first(where: { $0.id == saved.messageId }),
+                          let channel = ledgerState.channelRecords.first(where: { $0.id == message.channelId })
+                    else { return nil }
+                    let parentPreview = channel.parentMessageId.flatMap { parentId in
+                        ledgerState.channelMessages.first(where: { $0.id == parentId })?.content
+                    }
+                    let replyCount = channel.type == "thread"
+                        ? ledgerState.channelMessages.filter { $0.channelId == channel.id }.count
+                        : 0
+                    return SavedMessageInfo(
+                        messageId: saved.messageId,
+                        savedAt: saved.savedAt,
+                        content: message.content,
+                        channelId: channel.id,
+                        channelType: channel.type,
+                        parentChannelId: channel.parentChannelId,
+                        parentMessageId: channel.parentMessageId,
+                        parentMessagePreview: parentPreview,
+                        replyCount: replyCount
+                    )
                 }
-                let replyCount = channel.type == "thread"
-                    ? channelMessages.filter { $0.channelId == channel.id }.count
-                    : 0
-                return SavedMessageInfo(
-                    messageId: saved.messageId,
-                    savedAt: saved.savedAt,
-                    content: message.content,
-                    channelId: channel.id,
-                    channelType: channel.type,
-                    parentChannelId: channel.parentChannelId,
-                    parentMessageId: channel.parentMessageId,
-                    parentMessagePreview: parentPreview,
-                    replyCount: replyCount
-                )
-            }
+        }
     }
 
     struct SavedMessageRecord: Sendable {

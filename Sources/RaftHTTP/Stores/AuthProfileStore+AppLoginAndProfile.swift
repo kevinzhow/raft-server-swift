@@ -4,15 +4,15 @@ extension AuthProfileStore {
     // MARK: App login
 
     func insertAppLoginRequest(_ request: AppLoginRequest) {
-        lock.lock()
-        accountSurface.appLoginRequests[request.id] = request
-        lock.unlock()
+        state.withLock { state in
+            state.accountSurface.appLoginRequests[request.id] = request
+        }
     }
 
     func appLoginRequest(id: String) -> AppLoginRequest? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.appLoginRequests[id]
+        return state.withLock { state in
+            return state.accountSurface.appLoginRequests[id]
+        }
     }
 
     /// Approves or denies one request. The expiry check, the pending check and
@@ -23,21 +23,21 @@ extension AuthProfileStore {
         decision: AppLoginDecision,
         now: Date
     ) -> AppLoginDecisionOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var request = accountSurface.appLoginRequests[requestId] else { return .notFound }
-        if request.expiresAt <= now { return .expired(request) }
-        guard request.status == "pending" else { return .notPending }
-        switch decision {
-        case .approve(let userId, let code):
-            request.status = "approved"
-            request.code = code
-            request.userId = userId
-        case .deny:
-            request.status = "denied"
+        return state.withLock { state in
+            guard var request = state.accountSurface.appLoginRequests[requestId] else { return .notFound }
+            if request.expiresAt <= now { return .expired(request) }
+            guard request.status == "pending" else { return .notPending }
+            switch decision {
+            case .approve(let userId, let code):
+                request.status = "approved"
+                request.code = code
+                request.userId = userId
+            case .deny:
+                request.status = "denied"
+            }
+            state.accountSurface.appLoginRequests[requestId] = request
+            return .decided(request)
         }
-        accountSurface.appLoginRequests[requestId] = request
-        return .decided(request)
     }
 
     /// Spends one approved request's code. The code lookup, the consumed/expiry
@@ -49,22 +49,22 @@ extension AuthProfileStore {
         verifierChallenge: String,
         now: Date
     ) -> CompleteAppLoginOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let request = accountSurface.appLoginRequests.values.first(where: { $0.code == code }) else {
-            return .codeNotFound
+        return state.withLock { state in
+            guard let request = state.accountSurface.appLoginRequests.values.first(where: { $0.code == code }) else {
+                return .codeNotFound
+            }
+            if request.consumedAt != nil { return .codeConsumed }
+            if request.expiresAt <= now { return .codeExpired }
+            guard verifierChallenge == request.codeChallenge else { return .pkceMismatch }
+            guard let userId = request.userId else { return .notApproved }
+            var approved = request
+            approved.consumedAt = now
+            state.accountSurface.appLoginRequests[approved.id] = approved
+            guard let account = state.accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+                return .accountMissing
+            }
+            return .completed(account, Self.openSessionLocked(state: &state, userId: userId))
         }
-        if request.consumedAt != nil { return .codeConsumed }
-        if request.expiresAt <= now { return .codeExpired }
-        guard verifierChallenge == request.codeChallenge else { return .pkceMismatch }
-        guard let userId = request.userId else { return .notApproved }
-        var approved = request
-        approved.consumedAt = now
-        accountSurface.appLoginRequests[approved.id] = approved
-        guard let account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
-            return .accountMissing
-        }
-        return .completed(account, openSessionLocked(userId: userId))
     }
 
     // MARK: Profile writes
@@ -72,15 +72,15 @@ extension AuthProfileStore {
     /// Replaces the password when the current one matches. The compare and the
     /// write are one critical section.
     func changePassword(userId: String, currentHash: String, newHash: String) -> ChangePasswordOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
-            return .accountMissing
+        return state.withLock { state in
+            guard var account = state.accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+                return .accountMissing
+            }
+            guard account.passwordHash == currentHash else { return .wrongPassword }
+            account.passwordHash = newHash
+            state.accountSurface.accounts[account.email] = account
+            return .changed
         }
-        guard account.passwordHash == currentHash else { return .wrongPassword }
-        account.passwordHash = newHash
-        accountSurface.accounts[account.email] = account
-        return .changed
     }
 
     /// Applies every validated profile field and the analytics-id mapping the
@@ -92,70 +92,70 @@ extension AuthProfileStore {
         now: Date,
         newAnalyticsId: String
     ) -> Account? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
-            return nil
-        }
-        var changed = false
-        if let value = update.referralSource {
-            account.referralSource = value
-            account.referralSourceSkippedAt = nil
-            changed = true
-        }
-        if let value = update.referralSourceOther {
-            account.referralSourceOther = value
-            changed = true
-        }
-        if update.referralSourceSkipped {
-            account.referralSourceSkippedAt = now
-            changed = true
-        }
-        if let value = update.preferredLanguage { account.preferredLanguage = value; changed = true }
-        if let value = update.preferredTimezone { account.preferredTimezone = value; changed = true }
-        if let value = update.preferredTranslationMode { account.preferredTranslationMode = value; changed = true }
-        if let value = update.autoTranslationEnabled { account.autoTranslationEnabled = value; changed = true }
-        if let value = update.preferredTranslationDisplay { account.preferredTranslationDisplay = value; changed = true }
-        if let value = update.preferredTimeFormat { account.preferredTimeFormat = value; changed = true }
-        if let value = update.preferredMessageBodyFontSize { account.preferredMessageBodyFontSize = value; changed = true }
-        if let language = update.displayLanguage {
-            account.displayLanguage = language
-            changed = true
-        }
-        if let share = update.shareUsageData {
-            account.shareUsageData = share
-            if share == true {
-                if accountSurface.analyticsIds[account.id] == nil {
-                    accountSurface.analyticsIds[account.id] = newAnalyticsId
-                }
-            } else if share == false {
-                accountSurface.analyticsIds.removeValue(forKey: account.id)
+        return state.withLock { state in
+            guard var account = state.accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+                return nil
             }
-            changed = true
+            var changed = false
+            if let value = update.referralSource {
+                account.referralSource = value
+                account.referralSourceSkippedAt = nil
+                changed = true
+            }
+            if let value = update.referralSourceOther {
+                account.referralSourceOther = value
+                changed = true
+            }
+            if update.referralSourceSkipped {
+                account.referralSourceSkippedAt = now
+                changed = true
+            }
+            if let value = update.preferredLanguage { account.preferredLanguage = value; changed = true }
+            if let value = update.preferredTimezone { account.preferredTimezone = value; changed = true }
+            if let value = update.preferredTranslationMode { account.preferredTranslationMode = value; changed = true }
+            if let value = update.autoTranslationEnabled { account.autoTranslationEnabled = value; changed = true }
+            if let value = update.preferredTranslationDisplay { account.preferredTranslationDisplay = value; changed = true }
+            if let value = update.preferredTimeFormat { account.preferredTimeFormat = value; changed = true }
+            if let value = update.preferredMessageBodyFontSize { account.preferredMessageBodyFontSize = value; changed = true }
+            if let language = update.displayLanguage {
+                account.displayLanguage = language
+                changed = true
+            }
+            if let share = update.shareUsageData {
+                account.shareUsageData = share
+                if share == true {
+                    if state.accountSurface.analyticsIds[account.id] == nil {
+                        state.accountSurface.analyticsIds[account.id] = newAnalyticsId
+                    }
+                } else if share == false {
+                    state.accountSurface.analyticsIds.removeValue(forKey: account.id)
+                }
+                changed = true
+            }
+            if changed {
+                state.accountSurface.accounts[account.email] = account
+            }
+            return account
         }
-        if changed {
-            accountSurface.accounts[account.email] = account
-        }
-        return account
     }
 
     /// Stores a new avatar path and returns the stored row, or `nil` when the
     /// account no longer exists.
     func setAvatarURL(userId: String, url: String) -> Account? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var account = accountSurface.accounts.values.first(where: { $0.id == userId }) else {
-            return nil
+        return state.withLock { state in
+            guard var account = state.accountSurface.accounts.values.first(where: { $0.id == userId }) else {
+                return nil
+            }
+            account.avatarUrl = url
+            state.accountSurface.accounts[account.email] = account
+            return account
         }
-        account.avatarUrl = url
-        accountSurface.accounts[account.email] = account
-        return account
     }
 
     /// The first/last timezone pair `me` appends once a user reported one.
     func timezoneObservation(userId: String) -> TimezoneObservation? {
-        lock.lock()
-        defer { lock.unlock() }
-        return profile.timezoneObservations[userId]
+        return state.withLock { state in
+            return state.profile.timezoneObservations[userId]
+        }
     }
 }

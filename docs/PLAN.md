@@ -35,9 +35,9 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 | 范围 | 实现 |
 | --- | --- |
 | 顶层公共路由 | 公共页面、消息、附件、搜索、翻译、访问、发布说明和 integration endpoint 改为具名 payload / DomainError / 语义 outcome；保留 HEAD 和缓存头 |
-| OAuth ledger | 按职责拆文件，响应与签名声明使用有序 DTO；签名 secret 使用 Mutex，记录表的原事务锁及整体 unchecked conformance仍在 |
+| OAuth ledger | 按职责拆文件，响应与签名声明使用有序 DTO；后续记录状态 Mutex 隔离已完成，见第九批 |
 | Support | 移除目录扩展和旧回复工厂，helper 各有明确职责；原嵌套值模型独立出来 |
-| Features / Fallback | 去除手工 JSON 回复，统一请求体解码 helper，保持原输入和鉴权策略 |
+| Features / Fallback | 已迁移路径使用 typed projection；请求体 helper 保留原输入和鉴权策略，余下 JSON adapter 仍计入迁移债务 |
 | 超大 Store | 按职责纯搬移拆分；恢复不需要跨文件可见的私有字段；加入 1,000 行门禁 |
 | 全服务端棘轮 | 扩展为七个 server targets，补充拒升更新器、只读迁移导出与字符串 JSON 候选检测 |
 
@@ -47,10 +47,12 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 ### 第九批：目录收缩与 Store 并发边界
 
-首个同步边界切片将桌面 feed cache、公开附件预算、搜索 rate/in-flight 状态与线程查询结果、internal-surface snapshot 迁入 Mutex，并移除纯值 causal error 的 unchecked 声明（非生成服务端 28→22）。目录全局锁和领域 Store 的迁移仍是本批工作，不能据此宣布完成。
+已完成状态隔离子批：十二个主 Store、OAuth ledger、只持有不可变引用的目录根类型、公开 server/visit 目录均为 checked Sendable，领域记录与配置由 Mutex 隔离；55 个共享值模型补齐 checked conformance。保持原事务，修复兼容 setter 整份 State 回写覆盖其他字段并发更新的问题。非生成服务端 unchecked 现为 6，另有生成 telemetry 1 处。此前 HTTP 缓存/预算切片也已完成。
+
+这些数字不代表整批完成。仍有 12 处目录扩展和 195 个属性组成的 580 行 forwarding 文件；全局锁、生产文件内的测试夹具和复合消息提交都要按真实消费者迁移。消息 comment writer 原本不经过目录锁，必须与 human/agent append 统一序号分配，不能只删锁保留 count/get/append。
 
 1. 把剩余目录扩展中的领域逻辑和跨域 helper 移到真正的 Service / Store；删除旧实现和 forwarding 文件，不保留另一层兼容外壳。
-2. 将可变 Store 状态迁到编译器检查的 Mutex 或 actor 隔离。保留 read-modify-write 原子性，不能把一次事务拆成分别锁住的 getter/setter。
+2. **已完成状态隔离**：可变 Store 状态使用编译器检查的 Mutex，原 read-modify-write 事务保持完整。后续业务迁移仍不能把事务拆成分别锁住的 getter/setter。
 3. 把目录全局锁下的操作逐项迁入拥有状态的领域事务，再删除全局锁。核查跨域调用与锁顺序，保持会话刷新、消息序号、幂等、mention、task 与权限决策。
 4. 每个切片用并发断言或 published-path 回归证明其边界，再跑完整门禁。
 

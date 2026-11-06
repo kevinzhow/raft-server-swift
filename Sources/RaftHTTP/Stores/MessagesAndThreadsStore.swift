@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Owns the human-message, reaction, mention, read-frontier, thread-follow and
 /// attachment-comment rows that used to be stored inline on
@@ -9,11 +10,11 @@ import Foundation
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class MessagesAndThreadsStore: @unchecked Sendable {
+final class MessagesAndThreadsStore: Sendable {
     /// Every row this store owns. Grouping them lets one locked value be the
     /// whole store snapshot; each accessor below copies it, which is cheap
     /// because the collections are copy-on-write.
-    struct State {
+    struct State: Sendable {
         var humanMessageRows: [StoredHumanMessage] = []
         var channelAttachments: [String: ChannelAttachment] = [:]
         var forwardedBundles: [String: [ForwardedSource]] = [:]
@@ -58,231 +59,219 @@ final class MessagesAndThreadsStore: @unchecked Sendable {
         var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? = nil
     }
 
-    let lock = NSLock()
-    var storage = State()
+    private let stateStorage = Mutex(State())
 
-    /// The whole owned state. A read or a write is one locked critical section.
+    /// A whole-store value snapshot. Mutations of several rows use `withState`.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { withState { $0 } }
+        set { withState { $0 = newValue } }
     }
 
-    /// Runs `body` on the owned state in ONE critical section, for a decision
-    /// that reads and writes several rows and must not interleave with another
-    /// request. `body` must not call back into this store.
+    /// One transaction over the owned state. Callbacks must not reenter this
+    /// store; helpers called inside a transaction take its state explicitly.
     func withState<Result>(_ body: (inout State) -> Result) -> Result {
-        lock.lock()
-        defer { lock.unlock() }
-        return body(&storage)
+        stateStorage.withLock { state in body(&state) }
     }
 
     var humanMessageRows: [StoredHumanMessage] {
-        get { state.humanMessageRows }
-        set { state.humanMessageRows = newValue }
+        get { withState { $0.humanMessageRows } }
+        set { withState { $0.humanMessageRows = newValue } }
     }
 
     var channelAttachments: [String: ChannelAttachment] {
-        get { state.channelAttachments }
-        set { state.channelAttachments = newValue }
+        get { withState { $0.channelAttachments } }
+        set { withState { $0.channelAttachments = newValue } }
     }
 
     var forwardedBundles: [String: [ForwardedSource]] {
-        get { state.forwardedBundles }
-        set { state.forwardedBundles = newValue }
+        get { withState { $0.forwardedBundles } }
+        set { withState { $0.forwardedBundles = newValue } }
     }
 
     var forwardRecords: [String: StoredForwardRecord] {
-        get { state.forwardRecords }
-        set { state.forwardRecords = newValue }
+        get { withState { $0.forwardRecords } }
+        set { withState { $0.forwardRecords = newValue } }
     }
 
     var messageReactions: [StoredReaction] {
-        get { state.messageReactions }
-        set { state.messageReactions = newValue }
+        get { withState { $0.messageReactions } }
+        set { withState { $0.messageReactions = newValue } }
     }
 
     var reactionViewerVersions: [String: Int] {
-        get { state.reactionViewerVersions }
-        set { state.reactionViewerVersions = newValue }
+        get { withState { $0.reactionViewerVersions } }
+        set { withState { $0.reactionViewerVersions = newValue } }
     }
 
     var reactionDiscussionVersions: [String: Int] {
-        get { state.reactionDiscussionVersions }
-        set { state.reactionDiscussionVersions = newValue }
+        get { withState { $0.reactionDiscussionVersions } }
+        set { withState { $0.reactionDiscussionVersions = newValue } }
     }
 
     var storedMentions: [StoredMention] {
-        get { state.storedMentions }
-        set { state.storedMentions = newValue }
+        get { withState { $0.storedMentions } }
+        set { withState { $0.storedMentions = newValue } }
     }
 
     var attachmentCommentRecords: [String: [AttachmentCommentRecord]] {
-        get { state.attachmentCommentRecords }
-        set { state.attachmentCommentRecords = newValue }
+        get { withState { $0.attachmentCommentRecords } }
+        set { withState { $0.attachmentCommentRecords = newValue } }
     }
 
     var messageTranslationLedger: [String: (status: String, providerBilledChars: Int, targetLanguage: String, translatedContent: String)] {
-        get { state.messageTranslationLedger }
-        set { state.messageTranslationLedger = newValue }
+        get { withState { $0.messageTranslationLedger } }
+        set { withState { $0.messageTranslationLedger = newValue } }
     }
 
     var readMutationRecords: [String: ReadMutationRecord] {
-        get { state.readMutationRecords }
-        set { state.readMutationRecords = newValue }
+        get { withState { $0.readMutationRecords } }
+        set { withState { $0.readMutationRecords = newValue } }
     }
 
     var readMutationAuthoritySeq: [String: Int] {
-        get { state.readMutationAuthoritySeq }
-        set { state.readMutationAuthoritySeq = newValue }
+        get { withState { $0.readMutationAuthoritySeq } }
+        set { withState { $0.readMutationAuthoritySeq = newValue } }
     }
 
     var readMutationOrder: [String] {
-        get { state.readMutationOrder }
-        set { state.readMutationOrder = newValue }
+        get { withState { $0.readMutationOrder } }
+        set { withState { $0.readMutationOrder = newValue } }
     }
 
     var readMutationAcks: [String: (scopeId: String, throughSeq: Int)] {
-        get { state.readMutationAcks }
-        set { state.readMutationAcks = newValue }
+        get { withState { $0.readMutationAcks } }
+        set { withState { $0.readMutationAcks = newValue } }
     }
 
     var userChannelReadCursors: [String: Int] {
-        get { state.userChannelReadCursors }
-        set { state.userChannelReadCursors = newValue }
+        get { withState { $0.userChannelReadCursors } }
+        set { withState { $0.userChannelReadCursors = newValue } }
     }
 
     var shareArtifacts: [String: ShareArtifactRecord] {
-        get { state.shareArtifacts }
-        set { state.shareArtifacts = newValue }
+        get { withState { $0.shareArtifacts } }
+        set { withState { $0.shareArtifacts = newValue } }
     }
 
     var systemAttentionIncidents: [SystemAttentionIncident] {
-        get { state.systemAttentionIncidents }
-        set { state.systemAttentionIncidents = newValue }
+        get { withState { $0.systemAttentionIncidents } }
+        set { withState { $0.systemAttentionIncidents = newValue } }
     }
 
     var systemAttentionReceipts: [String: SystemAttentionReceipt] {
-        get { state.systemAttentionReceipts }
-        set { state.systemAttentionReceipts = newValue }
+        get { withState { $0.systemAttentionReceipts } }
+        set { withState { $0.systemAttentionReceipts = newValue } }
     }
 
     var threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] {
-        get { state.threadFollows }
-        set { state.threadFollows = newValue }
+        get { withState { $0.threadFollows } }
+        set { withState { $0.threadFollows = newValue } }
     }
 
     var threadUnfollows: [String: ThreadUnfollowRecord] {
-        get { state.threadUnfollows }
-        set { state.threadUnfollows = newValue }
+        get { withState { $0.threadUnfollows } }
+        set { withState { $0.threadUnfollows = newValue } }
     }
 
     var threadFollowStarts: [String: Date] {
-        get { state.threadFollowStarts }
-        set { state.threadFollowStarts = newValue }
+        get { withState { $0.threadFollowStarts } }
+        set { withState { $0.threadFollowStarts = newValue } }
     }
 
     var threadFollowerRemovals: [String: (serverId: String, threadChannelId: String, agentId: String)] {
-        get { state.threadFollowerRemovals }
-        set { state.threadFollowerRemovals = newValue }
+        get { withState { $0.threadFollowerRemovals } }
+        set { withState { $0.threadFollowerRemovals = newValue } }
     }
 
     var staleThreadFollowerUndoTokens: Set<String> {
-        get { state.staleThreadFollowerUndoTokens }
-        set { state.staleThreadFollowerUndoTokens = newValue }
+        get { withState { $0.staleThreadFollowerUndoTokens } }
+        set { withState { $0.staleThreadFollowerUndoTokens = newValue } }
     }
 
     var channelReadVersions: [String: Int] {
-        get { state.channelReadVersions }
-        set { state.channelReadVersions = newValue }
+        get { withState { $0.channelReadVersions } }
+        set { withState { $0.channelReadVersions = newValue } }
     }
 
     var agentChannelReadCursors: [String: (seq: Int, version: Int)] {
-        get { state.agentChannelReadCursors }
-        set { state.agentChannelReadCursors = newValue }
+        get { withState { $0.agentChannelReadCursors } }
+        set { withState { $0.agentChannelReadCursors = newValue } }
     }
 
     var attestedSendEventRecords: [AttestedSendEventRecord] {
-        get { state.attestedSendEventRecords }
-        set { state.attestedSendEventRecords = newValue }
+        get { withState { $0.attestedSendEventRecords } }
+        set { withState { $0.attestedSendEventRecords = newValue } }
     }
 
     var agentSendActivityRecords: [String: [(title: String, text: String, producerFactId: String?)]] {
-        get { state.agentSendActivityRecords }
-        set { state.agentSendActivityRecords = newValue }
+        get { withState { $0.agentSendActivityRecords } }
+        set { withState { $0.agentSendActivityRecords = newValue } }
     }
 
     var inboxDoneScopes: Set<String> {
-        get { state.inboxDoneScopes }
-        set { state.inboxDoneScopes = newValue }
+        get { withState { $0.inboxDoneScopes } }
+        set { withState { $0.inboxDoneScopes = newValue } }
     }
 
     var inboxDoneAt: [String: Date] {
-        get { state.inboxDoneAt }
-        set { state.inboxDoneAt = newValue }
+        get { withState { $0.inboxDoneAt } }
+        set { withState { $0.inboxDoneAt = newValue } }
     }
 
     var inboxDoneFrontiers: [String: Int] {
-        get { state.inboxDoneFrontiers }
-        set { state.inboxDoneFrontiers = newValue }
+        get { withState { $0.inboxDoneFrontiers } }
+        set { withState { $0.inboxDoneFrontiers = newValue } }
     }
 
     var inboxResidues: Set<String> {
-        get { state.inboxResidues }
-        set { state.inboxResidues = newValue }
+        get { withState { $0.inboxResidues } }
+        set { withState { $0.inboxResidues = newValue } }
     }
 
     var deferredUnreadAdvance: [String: Int] {
-        get { state.deferredUnreadAdvance }
-        set { state.deferredUnreadAdvance = newValue }
+        get { withState { $0.deferredUnreadAdvance } }
+        set { withState { $0.deferredUnreadAdvance = newValue } }
     }
 
     var externalAvatarAssets: [String: ExternalAvatarAsset] {
-        get { state.externalAvatarAssets }
-        set { state.externalAvatarAssets = newValue }
+        get { withState { $0.externalAvatarAssets } }
+        set { withState { $0.externalAvatarAssets = newValue } }
     }
 
     var externalAvatarStorageAvailable: Bool {
-        get { state.externalAvatarStorageAvailable }
-        set { state.externalAvatarStorageAvailable = newValue }
+        get { withState { $0.externalAvatarStorageAvailable } }
+        set { withState { $0.externalAvatarStorageAvailable = newValue } }
     }
 
     // MARK: - Injected messaging configuration
 
     var translationProviderOverride: String? {
-        get { state.translationProviderOverride }
-        set { state.translationProviderOverride = newValue }
+        get { withState { $0.translationProviderOverride } }
+        set { withState { $0.translationProviderOverride = newValue } }
     }
 
     var attachmentPreviewBody: (@Sendable (_ attachmentId: String) -> String?)? {
-        get { state.attachmentPreviewBody }
-        set { state.attachmentPreviewBody = newValue }
+        get { withState { $0.attachmentPreviewBody } }
+        set { withState { $0.attachmentPreviewBody = newValue } }
     }
 
     var attachmentPresign: (@Sendable (_ attachmentId: String, _ mimeType: String?, _ ttlSeconds: Int) -> String)? {
-        get { state.attachmentPresign }
-        set { state.attachmentPresign = newValue }
+        get { withState { $0.attachmentPresign } }
+        set { withState { $0.attachmentPresign = newValue } }
     }
 
     var readPositionSettleMs: Int {
-        get { state.readPositionSettleMs }
-        set { state.readPositionSettleMs = newValue }
+        get { withState { $0.readPositionSettleMs } }
+        set { withState { $0.readPositionSettleMs = newValue } }
     }
 
     var sendFreshnessModeOverride: String? {
-        get { state.sendFreshnessModeOverride }
-        set { state.sendFreshnessModeOverride = newValue }
+        get { withState { $0.sendFreshnessModeOverride } }
+        set { withState { $0.sendFreshnessModeOverride = newValue } }
     }
 
     var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? {
-        get { state.realtimeEmitterStorage }
-        set { state.realtimeEmitterStorage = newValue }
+        get { withState { $0.realtimeEmitterStorage } }
+        set { withState { $0.realtimeEmitterStorage = newValue } }
     }
 }

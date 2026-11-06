@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Owns the notification, announcement and push rows that used to be stored
 /// inline on `EmailLoginDirectory`.
@@ -8,7 +9,7 @@ import Foundation
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class NotificationsStore: @unchecked Sendable {
+final class NotificationsStore: Sendable {
     /// One announcement row. Kept as a tuple because every existing projection
     /// treats it as an anonymous record rather than a named model.
     typealias AnnouncementRow = (
@@ -34,7 +35,7 @@ final class NotificationsStore: @unchecked Sendable {
     /// Every row this store owns. Grouping them lets one locked value be the
     /// whole store snapshot; each accessor below copies it, which is cheap
     /// because the collections are copy-on-write.
-    struct State {
+    struct State: Sendable {
         var pushRegistrations: [EmailLoginDirectory.PushRegistration] = []
         var fcmPushAvailable = true
         var webPushEnabled = true
@@ -57,8 +58,7 @@ final class NotificationsStore: @unchecked Sendable {
         var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? = nil
     }
 
-    private let lock = NSLock()
-    private var storage = State()
+    private let storage = Mutex(State())
 
     /// Enrollment grants, devices, native credentials and the event ledger.
     /// A `Mutex`-guarded store of its own; this store keeps only the kill
@@ -67,108 +67,100 @@ final class NotificationsStore: @unchecked Sendable {
 
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
     }
 
     var pushRegistrations: [EmailLoginDirectory.PushRegistration] {
-        get { state.pushRegistrations }
-        set { state.pushRegistrations = newValue }
+        get { storage.withLock { $0.pushRegistrations } }
+        set { storage.withLock { $0.pushRegistrations = newValue } }
     }
 
     var fcmPushAvailable: Bool {
-        get { state.fcmPushAvailable }
-        set { state.fcmPushAvailable = newValue }
+        get { storage.withLock { $0.fcmPushAvailable } }
+        set { storage.withLock { $0.fcmPushAvailable = newValue } }
     }
 
     var webPushEnabled: Bool {
-        get { state.webPushEnabled }
-        set { state.webPushEnabled = newValue }
+        get { storage.withLock { $0.webPushEnabled } }
+        set { storage.withLock { $0.webPushEnabled = newValue } }
     }
 
     var webPushSubscriptions: [WebPushSubscription] {
-        get { state.webPushSubscriptions }
-        set { state.webPushSubscriptions = newValue }
+        get { storage.withLock { $0.webPushSubscriptions } }
+        set { storage.withLock { $0.webPushSubscriptions = newValue } }
     }
 
     var announcements: [AnnouncementRow] {
-        get { state.announcements }
-        set { state.announcements = newValue }
+        get { storage.withLock { $0.announcements } }
+        set { storage.withLock { $0.announcements = newValue } }
     }
 
     var announcementImageAssets: [String: AnnouncementImageAsset] {
-        get { state.announcementImageAssets }
-        set { state.announcementImageAssets = newValue }
+        get { storage.withLock { $0.announcementImageAssets } }
+        set { storage.withLock { $0.announcementImageAssets = newValue } }
     }
 
     var announcementImageStorageAvailable: Bool {
-        get { state.announcementImageStorageAvailable }
-        set { state.announcementImageStorageAvailable = newValue }
+        get { storage.withLock { $0.announcementImageStorageAvailable } }
+        set { storage.withLock { $0.announcementImageStorageAvailable = newValue } }
     }
 
     var announcementDismissals: Set<String> {
-        get { state.announcementDismissals }
-        set { state.announcementDismissals = newValue }
+        get { storage.withLock { $0.announcementDismissals } }
+        set { storage.withLock { $0.announcementDismissals = newValue } }
     }
 
     var serverNotificationPrefs: [String: ServerNotificationPref] {
-        get { state.serverNotificationPrefs }
-        set { state.serverNotificationPrefs = newValue }
+        get { storage.withLock { $0.serverNotificationPrefs } }
+        set { storage.withLock { $0.serverNotificationPrefs = newValue } }
     }
 
     // MARK: - Injected notification and mobile-email configuration
 
     var mobileAppEmailUnsubscribeSecret: String {
-        get { state.mobileAppEmailUnsubscribeSecret }
-        set { state.mobileAppEmailUnsubscribeSecret = newValue }
+        get { storage.withLock { $0.mobileAppEmailUnsubscribeSecret } }
+        set { storage.withLock { $0.mobileAppEmailUnsubscribeSecret = newValue } }
     }
 
     var cancelMobileAppEmail: (@Sendable (String) -> Void)? {
-        get { state.cancelMobileAppEmail }
-        set { state.cancelMobileAppEmail = newValue }
+        get { storage.withLock { $0.cancelMobileAppEmail } }
+        set { storage.withLock { $0.cancelMobileAppEmail = newValue } }
     }
 
     var nativeNotificationsEnabled: Bool {
-        get { state.nativeNotificationsEnabled }
-        set { state.nativeNotificationsEnabled = newValue }
+        get { storage.withLock { $0.nativeNotificationsEnabled } }
+        set { storage.withLock { $0.nativeNotificationsEnabled = newValue } }
     }
 
     var nativeNotificationStreamPollMs: Int {
-        get { state.nativeNotificationStreamPollMs }
-        set { state.nativeNotificationStreamPollMs = newValue }
+        get { storage.withLock { $0.nativeNotificationStreamPollMs } }
+        set { storage.withLock { $0.nativeNotificationStreamPollMs = newValue } }
     }
 
     var onAgentReadUpdated: (@Sendable (String, String, String, Int) -> Void)? {
-        get { state.onAgentReadUpdated }
-        set { state.onAgentReadUpdated = newValue }
+        get { storage.withLock { $0.onAgentReadUpdated } }
+        set { storage.withLock { $0.onAgentReadUpdated = newValue } }
     }
 
     var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)? {
-        get { state.nativeNotificationLiveWriteHook }
-        set { state.nativeNotificationLiveWriteHook = newValue }
+        get { storage.withLock { $0.nativeNotificationLiveWriteHook } }
+        set { storage.withLock { $0.nativeNotificationLiveWriteHook = newValue } }
     }
 
     var nativeNotificationAttestationMode: String? {
-        get { state.nativeNotificationAttestationMode }
-        set { state.nativeNotificationAttestationMode = newValue }
+        get { storage.withLock { $0.nativeNotificationAttestationMode } }
+        set { storage.withLock { $0.nativeNotificationAttestationMode = newValue } }
     }
 
     var nativeNotificationNodeEnv: String {
-        get { state.nativeNotificationNodeEnv }
-        set { state.nativeNotificationNodeEnv = newValue }
+        get { storage.withLock { $0.nativeNotificationNodeEnv } }
+        set { storage.withLock { $0.nativeNotificationNodeEnv = newValue } }
     }
 
     var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? {
-        get { state.nativeNotificationAttestationVerifier }
-        set { state.nativeNotificationAttestationVerifier = newValue }
+        get { storage.withLock { $0.nativeNotificationAttestationVerifier } }
+        set { storage.withLock { $0.nativeNotificationAttestationVerifier = newValue } }
     }
 
     // MARK: - Server notification preferences
@@ -176,9 +168,9 @@ final class NotificationsStore: @unchecked Sendable {
     /// The preference row of one `serverId\nuserId` key; a member who never
     /// patched reads the default row at version 0.
     func serverNotificationPref(key: String) -> ServerNotificationPref {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.serverNotificationPrefs[key] ?? Self.defaultServerNotificationPref
+        return storage.withLock { storage in
+            return storage.serverNotificationPrefs[key] ?? Self.defaultServerNotificationPref
+        }
     }
 
     /// One locked patch of a member's server notification row.
@@ -193,34 +185,34 @@ final class NotificationsStore: @unchecked Sendable {
         mode: String?,
         muted: Bool?
     ) -> (prefs: ServerNotificationPref, changed: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        var prefs = storage.serverNotificationPrefs[key] ?? Self.defaultServerNotificationPref
-        if let mode {
-            prefs.mode = mode
-            prefs.muted = mode == "none"
-            prefs.mentionsOnly = mode == "mentions"
-        }
-        if let muted {
-            prefs.muted = muted
-            if muted {
-                prefs.mode = "none"
-                prefs.mentionsOnly = false
-            } else if prefs.mode == "none" {
-                prefs.mode = "all"
-                prefs.mentionsOnly = false
+        return storage.withLock { storage in
+            var prefs = storage.serverNotificationPrefs[key] ?? Self.defaultServerNotificationPref
+            if let mode {
+                prefs.mode = mode
+                prefs.muted = mode == "none"
+                prefs.mentionsOnly = mode == "mentions"
             }
+            if let muted {
+                prefs.muted = muted
+                if muted {
+                    prefs.mode = "none"
+                    prefs.mentionsOnly = false
+                } else if prefs.mode == "none" {
+                    prefs.mode = "all"
+                    prefs.mentionsOnly = false
+                }
+            }
+            let previous = storage.serverNotificationPrefs[key]
+            let changed = previous == nil
+                || previous!.muted != prefs.muted
+                || previous!.mentionsOnly != prefs.mentionsOnly
+                || previous!.mode != prefs.mode
+            if changed {
+                prefs.version = (previous?.version ?? 0) + 1
+            }
+            storage.serverNotificationPrefs[key] = prefs
+            return (prefs, changed)
         }
-        let previous = storage.serverNotificationPrefs[key]
-        let changed = previous == nil
-            || previous!.muted != prefs.muted
-            || previous!.mentionsOnly != prefs.mentionsOnly
-            || previous!.mode != prefs.mode
-        if changed {
-            prefs.version = (previous?.version ?? 0) + 1
-        }
-        storage.serverNotificationPrefs[key] = prefs
-        return (prefs, changed)
     }
 
     private static let defaultServerNotificationPref: ServerNotificationPref = (
@@ -235,64 +227,64 @@ extension NotificationsStore {
     /// one critical section, so two registrations of one installation cannot
     /// both append a row.
     func upsertPushRegistration(_ registration: EmailLoginDirectory.PushRegistration) {
-        lock.lock()
-        defer { lock.unlock() }
-        if let index = storage.pushRegistrations.firstIndex(where: {
-            $0.installationId == registration.installationId && $0.provider == registration.provider
-        }) {
-            storage.pushRegistrations[index].env = registration.env
-            storage.pushRegistrations[index].topic = registration.topic
-            storage.pushRegistrations[index].deviceToken = registration.deviceToken
-            storage.pushRegistrations[index].appVersion = registration.appVersion
-            storage.pushRegistrations[index].userId = registration.userId
-            storage.pushRegistrations[index].serverId = registration.serverId
-            storage.pushRegistrations[index].sessionFamilyId = registration.sessionFamilyId
-            storage.pushRegistrations[index].revokeCapability = registration.revokeCapability
-        } else {
-            storage.pushRegistrations.append(registration)
+        storage.withLock { storage -> Void in
+            if let index = storage.pushRegistrations.firstIndex(where: {
+                $0.installationId == registration.installationId && $0.provider == registration.provider
+            }) {
+                storage.pushRegistrations[index].env = registration.env
+                storage.pushRegistrations[index].topic = registration.topic
+                storage.pushRegistrations[index].deviceToken = registration.deviceToken
+                storage.pushRegistrations[index].appVersion = registration.appVersion
+                storage.pushRegistrations[index].userId = registration.userId
+                storage.pushRegistrations[index].serverId = registration.serverId
+                storage.pushRegistrations[index].sessionFamilyId = registration.sessionFamilyId
+                storage.pushRegistrations[index].revokeCapability = registration.revokeCapability
+            } else {
+                storage.pushRegistrations.append(registration)
+            }
         }
     }
 
     /// Detaches every registration of the installation from its user, server
     /// and session family and answers how many rows changed.
     func unbindPushInstallation(installationId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        var unbound = 0
-        for index in storage.pushRegistrations.indices
-        where storage.pushRegistrations[index].installationId == installationId {
-            storage.pushRegistrations[index].userId = nil
-            storage.pushRegistrations[index].serverId = nil
-            storage.pushRegistrations[index].sessionFamilyId = nil
-            unbound += 1
+        return storage.withLock { storage in
+            var unbound = 0
+            for index in storage.pushRegistrations.indices
+            where storage.pushRegistrations[index].installationId == installationId {
+                storage.pushRegistrations[index].userId = nil
+                storage.pushRegistrations[index].serverId = nil
+                storage.pushRegistrations[index].sessionFamilyId = nil
+                unbound += 1
+            }
+            return unbound
         }
-        return unbound
     }
 
     /// Whether FCM delivery is available and `userId` registered the
     /// installation for it, from one snapshot.
     func isFcmActive(installationId: String, userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.fcmPushAvailable && storage.pushRegistrations.contains {
-            $0.installationId == installationId && $0.provider == "fcm" && $0.userId == userId
+        return storage.withLock { storage in
+            return storage.fcmPushAvailable && storage.pushRegistrations.contains {
+                $0.installationId == installationId && $0.provider == "fcm" && $0.userId == userId
+            }
         }
     }
 
     /// Records one browser push subscription unless the pair already exists.
     func recordWebPushSubscription(userId: String, endpoint: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        if !storage.webPushSubscriptions.contains(where: { $0.userId == userId && $0.endpoint == endpoint }) {
-            storage.webPushSubscriptions.append(WebPushSubscription(userId: userId, endpoint: endpoint))
+        storage.withLock { storage -> Void in
+            if !storage.webPushSubscriptions.contains(where: { $0.userId == userId && $0.endpoint == endpoint }) {
+                storage.webPushSubscriptions.append(WebPushSubscription(userId: userId, endpoint: endpoint))
+            }
         }
     }
 
     /// Records that `userId` dismissed the announcement.
     func insertAnnouncementDismissal(userId: String, announcementId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.announcementDismissals.insert("\(userId)\n\(announcementId)")
+        storage.withLock { storage -> Void in
+            storage.announcementDismissals.insert("\(userId)\n\(announcementId)")
+        }
     }
 
     /// The announcement row, the image asset and the storage flags a read
@@ -300,11 +292,11 @@ extension NotificationsStore {
     func announcementImageSnapshot(
         imageId: String
     ) -> (asset: AnnouncementImageAsset?, announcement: AnnouncementRow?, storageAvailable: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        let asset = storage.announcementImageAssets[imageId]
-        let announcement = storage.announcements.first { $0.id == asset?.announcementId }
-        return (asset, announcement, storage.announcementImageStorageAvailable)
+        return storage.withLock { storage in
+            let asset = storage.announcementImageAssets[imageId]
+            let announcement = storage.announcements.first { $0.id == asset?.announcementId }
+            return (asset, announcement, storage.announcementImageStorageAvailable)
+        }
     }
 
     /// The published, started, unexpired, undismissed announcements in start
@@ -313,24 +305,24 @@ extension NotificationsStore {
         userId: String,
         after: String?,
         now: Date,
-        visible: (AnnouncementRow) -> Bool
+        visible: @Sendable (AnnouncementRow) -> Bool
     ) -> AnnouncementRow? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.announcements
-            .filter { $0.status == "published" && $0.publishedAt != nil }
-            .filter { $0.startsAt <= now && ($0.expiresAt == nil || $0.expiresAt! > now) }
-            .filter(visible)
-            .filter { !storage.announcementDismissals.contains("\(userId)\n\($0.id)") }
-            .filter { after == nil || $0.id != after }
-            .sorted { $0.startsAt < $1.startsAt }
-            .first
+        return storage.withLock { storage in
+            return storage.announcements
+                .filter { $0.status == "published" && $0.publishedAt != nil }
+                .filter { $0.startsAt <= now && ($0.expiresAt == nil || $0.expiresAt! > now) }
+                .filter(visible)
+                .filter { !storage.announcementDismissals.contains("\(userId)\n\($0.id)") }
+                .filter { after == nil || $0.id != after }
+                .sorted { $0.startsAt < $1.startsAt }
+                .first
+        }
     }
 
     /// One announcement by id.
     func announcement(id: String) -> AnnouncementRow? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.announcements.first { $0.id == id }
+        return storage.withLock { storage in
+            return storage.announcements.first { $0.id == id }
+        }
     }
 }

@@ -92,7 +92,7 @@ enum WebLoginRecordOutcome: Sendable, Equatable {
 /// links, consumed handoffs and the sessions a completed handoff opens.
 ///
 /// The rows live in `AuthProfileStore`; every read-modify-write here is one
-/// `withOAuthFlowState` critical section, the same atomicity the retired
+/// `Mutex.withLock` critical section, the same atomicity the retired
 /// handlers got from the directory lock. The store builds no JSON or HTTP
 /// response: the service maps each outcome. A struct over the locked store is
 /// `Sendable` without an `@unchecked` escape.
@@ -106,21 +106,21 @@ struct OAuthFlowsStore: Sendable {
     // MARK: Reads
 
     func config() -> OAuthFlowsConfig {
-        profiles.withOAuthFlowState { accounts, config, _ in
+        profiles.state.withLock { state in
             OAuthFlowsConfig(
-                configuredProviders: config.configuredSocialAuthProviders,
-                applePlatforms: accounts.appleLoginPlatforms,
-                appleClientId: config.appleClientId,
-                nativeAppleClientId: config.nativeAppleClientId,
-                nativeAppleClientSecret: config.nativeAppleClientSecret,
-                nativeAppleStateSecret: config.nativeAppleStateSecret,
-                serverURL: config.serverURL,
-                appURL: config.appURL,
-                mobileOAuthReturnURI: config.mobileOAuthReturnURI,
-                mobileOAuthAllowedReturnURIs: config.mobileOAuthAllowedReturnURIs,
-                exchangeNativeAppleCode: config.exchangeNativeAppleCode,
-                mobileProviderProfile: config.mobileProviderProfile,
-                webProviderProfile: config.webProviderProfile
+                configuredProviders: state.configSurface.configuredSocialAuthProviders,
+                applePlatforms: state.accountSurface.appleLoginPlatforms,
+                appleClientId: state.configSurface.appleClientId,
+                nativeAppleClientId: state.configSurface.nativeAppleClientId,
+                nativeAppleClientSecret: state.configSurface.nativeAppleClientSecret,
+                nativeAppleStateSecret: state.configSurface.nativeAppleStateSecret,
+                serverURL: state.configSurface.serverURL,
+                appURL: state.configSurface.appURL,
+                mobileOAuthReturnURI: state.configSurface.mobileOAuthReturnURI,
+                mobileOAuthAllowedReturnURIs: state.configSurface.mobileOAuthAllowedReturnURIs,
+                exchangeNativeAppleCode: state.configSurface.exchangeNativeAppleCode,
+                mobileProviderProfile: state.configSurface.mobileProviderProfile,
+                webProviderProfile: state.configSurface.webProviderProfile
             )
         }
     }
@@ -138,15 +138,15 @@ struct OAuthFlowsStore: Sendable {
     // MARK: Request rows
 
     func insertMobileRequest(_ request: MobileOAuthRequest) {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            accounts.mobileRequests[request.id] = request
+        profiles.state.withLock { state in
+            state.accountSurface.mobileRequests[request.id] = request
         }
     }
 
     /// Records the completion a web callback hands back as a one-time code.
     func appendSocialCompletion(_ completion: SocialCompletion) {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            accounts.socialCompletions.append(completion)
+        profiles.state.withLock { state in
+            state.accountSurface.socialCompletions.append(completion)
         }
     }
 
@@ -161,14 +161,14 @@ struct OAuthFlowsStore: Sendable {
         returnTo: String,
         code: String
     ) -> WebLoginRecordOutcome {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            let existing = accounts.accounts[email]
-            let existingIdentity = accounts.linkedIdentities.first {
+        profiles.state.withLock { state in
+            let existing = state.accountSurface.accounts[email]
+            let existingIdentity = state.accountSurface.linkedIdentities.first {
                 $0.provider == provider && $0.providerUserId == providerUserId
             }
             if let existing, existingIdentity?.userId != existing.id {
                 guard linkOnConflict else { return .accountConflict }
-                accounts.socialCompletions.append(SocialCompletion(
+                state.accountSurface.socialCompletions.append(SocialCompletion(
                     provider: provider, code: code, mode: "login",
                     intendedAction: "link", email: email,
                     returnTo: returnTo, userId: nil,
@@ -176,7 +176,7 @@ struct OAuthFlowsStore: Sendable {
                 ))
                 return .recorded
             }
-            accounts.socialCompletions.append(SocialCompletion(
+            state.accountSurface.socialCompletions.append(SocialCompletion(
                 provider: provider, code: code, mode: "login",
                 intendedAction: "login", email: email,
                 returnTo: returnTo,
@@ -198,8 +198,8 @@ struct OAuthFlowsStore: Sendable {
         callerId: String?,
         now: Date
     ) -> NativeAppleClaim {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            guard var request = accounts.mobileRequests[requestId],
+        profiles.state.withLock { state in
+            guard var request = state.accountSurface.mobileRequests[requestId],
                   request.provider == "apple",
                   request.mode == mode,
                   request.codeChallenge == codeChallenge,
@@ -211,12 +211,12 @@ struct OAuthFlowsStore: Sendable {
             }
             if request.expiresAt < now {
                 request.status = "expired"
-                accounts.mobileRequests[requestId] = request
+                state.accountSurface.mobileRequests[requestId] = request
                 return .expired
             }
             guard request.status == "pending_provider" else { return .consumed }
             request.status = "provider_processing"
-            accounts.mobileRequests[requestId] = request
+            state.accountSurface.mobileRequests[requestId] = request
             return .claimed(request.codeChallenge)
         }
     }
@@ -224,8 +224,8 @@ struct OAuthFlowsStore: Sendable {
     /// A previously linked Apple subject can supply the verified email Apple
     /// omits on a later login.
     func storedAppleIdentity(subject: String) -> (userId: String, email: String)? {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            guard let row = accounts.linkedIdentities.first(where: {
+        profiles.state.withLock { state in
+            guard let row = state.accountSurface.linkedIdentities.first(where: {
                 $0.provider == "apple" && $0.providerUserId == subject
             }) else { return nil }
             let email = row.providerEmail?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -235,12 +235,12 @@ struct OAuthFlowsStore: Sendable {
     }
 
     func failNativeAppleIfProcessing(requestId: String) {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            guard var request = accounts.mobileRequests[requestId],
+        profiles.state.withLock { state in
+            guard var request = state.accountSurface.mobileRequests[requestId],
                   request.status == "provider_processing"
             else { return }
             request.status = "failed"
-            accounts.mobileRequests[requestId] = request
+            state.accountSurface.mobileRequests[requestId] = request
         }
     }
 
@@ -252,8 +252,8 @@ struct OAuthFlowsStore: Sendable {
         loginUserId: String?,
         handoff: String
     ) -> String? {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            guard var request = accounts.mobileRequests[requestId],
+        profiles.state.withLock { state in
+            guard var request = state.accountSurface.mobileRequests[requestId],
                   request.status == "provider_processing"
             else { return nil }
             request.status = "provider_completed"
@@ -265,7 +265,7 @@ struct OAuthFlowsStore: Sendable {
                 request.userId = loginUserId
             }
             let mode = request.mode
-            accounts.mobileRequests[requestId] = request
+            state.accountSurface.mobileRequests[requestId] = request
             return mode
         }
     }
@@ -285,8 +285,8 @@ struct OAuthFlowsStore: Sendable {
         profile: MobileProviderProfile?,
         handoff: String
     ) -> MobileCallbackOutcome {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            guard var request = accounts.mobileRequests[requestId],
+        profiles.state.withLock { state in
+            guard var request = state.accountSurface.mobileRequests[requestId],
                   request.provider == provider,
                   request.mode == mode,
                   !request.codeChallenge.isEmpty
@@ -296,7 +296,7 @@ struct OAuthFlowsStore: Sendable {
             }
             func fail(_ error: String) -> MobileCallbackOutcome {
                 request.status = "failed"
-                accounts.mobileRequests[requestId] = request
+                state.accountSurface.mobileRequests[requestId] = request
                 return .failed(returnUri: request.returnUri, mode: request.mode, error: error)
             }
             if code == nil || code?.isEmpty == true {
@@ -308,14 +308,14 @@ struct OAuthFlowsStore: Sendable {
             let email = AccountNaming.normalize(profile.email)
             var intendedAction = "login"
             if request.mode == "login",
-               let existing = accounts.accounts[email],
-               accounts.linkedIdentities.first(where: {
+               let existing = state.accountSurface.accounts[email],
+               state.accountSurface.linkedIdentities.first(where: {
                    $0.provider == provider && $0.providerUserId == profile.providerUserId
                })?.userId != existing.id {
                 guard request.linkOnConflict else { return fail("account_conflict") }
                 intendedAction = "link"
             }
-            accounts.providerExchanges += 1
+            state.accountSurface.providerExchanges += 1
             request.status = "provider_completed"
             request.intendedAction = intendedAction
             request.handoffCode = handoff
@@ -323,7 +323,7 @@ struct OAuthFlowsStore: Sendable {
             request.profileEmail = email
             request.profileUserId = profile.providerUserId
             request.profileName = profile.displayName
-            accounts.mobileRequests[requestId] = request
+            state.accountSurface.mobileRequests[requestId] = request
             return .completed(returnUri: request.returnUri, mode: request.mode)
         }
     }
@@ -343,66 +343,66 @@ struct OAuthFlowsStore: Sendable {
         privacyVersion: String?,
         now: Date
     ) -> MobileCompletionOutcome {
-        profiles.withOAuthFlowState { accounts, _, legalAcceptances in
-            if accounts.consumedHandoffs.contains(code) { return .refused(.consumed) }
-            guard let requestId = accounts.mobileRequests.first(where: { $0.value.handoffCode == code })?.key,
-                  var request = accounts.mobileRequests[requestId],
+        profiles.state.withLock { state in
+            if state.accountSurface.consumedHandoffs.contains(code) { return .refused(.consumed) }
+            guard let requestId = state.accountSurface.mobileRequests.first(where: { $0.value.handoffCode == code })?.key,
+                  var request = state.accountSurface.mobileRequests[requestId],
                   request.status == "provider_completed"
             else { return .refused(.invalid) }
             if request.expiresAt < now {
                 request.status = "expired"
-                accounts.mobileRequests[requestId] = request
+                state.accountSurface.mobileRequests[requestId] = request
                 return .refused(.expired)
             }
             if verifier.isEmpty { return .refused(.invalid) }
             if AuthTokenCodec.pkceS256(verifier) != request.codeChallenge {
                 request.status = "failed"
-                accounts.mobileRequests[requestId] = request
+                state.accountSurface.mobileRequests[requestId] = request
                 return .refused(.pkceMismatch)
             }
             if let rawToken = pendingLinkToken, !rawToken.isEmpty {
-                guard var pending = accounts.pendingSocialLinks[rawToken], !pending.consumed, !pending.cancelled,
+                guard var pending = state.accountSurface.pendingSocialLinks[rawToken], !pending.consumed, !pending.cancelled,
                       pending.expiresAt > now
                 else { return .refused(.pendingLinkExpired) }
-                let identityOwner = accounts.linkedIdentities.first {
+                let identityOwner = state.accountSurface.linkedIdentities.first {
                     $0.provider == request.provider && $0.providerUserId == (request.profileUserId ?? "")
                 }?.userId
-                let pendingOwner = accounts.accounts[pending.email]?.id
+                let pendingOwner = state.accountSurface.accounts[pending.email]?.id
                 guard let identityOwner, identityOwner == pendingOwner else {
                     request.status = "failed"
-                    accounts.mobileRequests[requestId] = request
+                    state.accountSurface.mobileRequests[requestId] = request
                     return .refused(.pendingLinkAccountMismatch)
                 }
                 pending.consumed = true
-                accounts.pendingSocialLinks[rawToken] = pending
-                if !accounts.linkedIdentities.contains(where: {
+                state.accountSurface.pendingSocialLinks[rawToken] = pending
+                if !state.accountSurface.linkedIdentities.contains(where: {
                     $0.userId == identityOwner && $0.provider == pending.provider
                         && $0.providerUserId == pending.providerUserId
                 }) {
-                    accounts.linkedIdentities.append(LinkedIdentity(
+                    state.accountSurface.linkedIdentities.append(LinkedIdentity(
                         userId: identityOwner, provider: pending.provider,
                         providerUserId: pending.providerUserId, providerEmail: pending.email
                     ))
                 }
                 request.status = "completed"
-                accounts.mobileRequests[requestId] = request
-                accounts.consumedHandoffs.insert(code)
-                let tokens = Self.openSession(&accounts, userId: identityOwner)
+                state.accountSurface.mobileRequests[requestId] = request
+                state.accountSurface.consumedHandoffs.insert(code)
+                let tokens = Self.openSession(&state.accountSurface, userId: identityOwner)
                 return .pendingLinkSpent(userId: identityOwner, linkedProvider: pending.provider, tokens: tokens)
             }
             if request.intendedAction == "link", let email = request.profileEmail,
-               let existing = accounts.accounts[email] {
+               let existing = state.accountSurface.accounts[email] {
                 let token = AuthTokenCodec.randomHex(32)
                 let expiresAt = now.addingTimeInterval(600)
-                accounts.pendingSocialLinks[token] = PendingSocialLink(
+                state.accountSurface.pendingSocialLinks[token] = PendingSocialLink(
                     token: token, provider: request.provider, providerUserId: request.profileUserId ?? "",
                     email: email, returnTo: nil, returnUri: request.returnUri,
                     expiresAt: expiresAt
                 )
                 request.status = "completed"
-                accounts.mobileRequests[requestId] = request
-                accounts.consumedHandoffs.insert(code)
-                let providers = Set(accounts.linkedIdentities.filter { $0.userId == existing.id }.map(\.provider)).sorted()
+                state.accountSurface.mobileRequests[requestId] = request
+                state.accountSurface.consumedHandoffs.insert(code)
+                let providers = Set(state.accountSurface.linkedIdentities.filter { $0.userId == existing.id }.map(\.provider)).sorted()
                 return .linkRequired(
                     token: token,
                     provider: request.provider,
@@ -414,14 +414,14 @@ struct OAuthFlowsStore: Sendable {
                 )
             }
             if request.mode == "login", let existingId = request.userId {
-                guard let account = accounts.accounts.values.first(where: { $0.id == existingId }) else {
+                guard let account = state.accountSurface.accounts.values.first(where: { $0.id == existingId }) else {
                     return .refused(.invalid)
                 }
-                let tokens = Self.openSession(&accounts, userId: account.id)
+                let tokens = Self.openSession(&state.accountSurface, userId: account.id)
                 request.status = "completed"
                 request.handoffCode = nil
-                accounts.mobileRequests[requestId] = request
-                accounts.consumedHandoffs.insert(code)
+                state.accountSurface.mobileRequests[requestId] = request
+                state.accountSurface.consumedHandoffs.insert(code)
                 return .signedIn(MobileSignedIn(
                     userId: account.id, email: account.email, name: account.name,
                     provider: request.provider, mode: request.mode, returnUri: request.returnUri,
@@ -434,10 +434,10 @@ struct OAuthFlowsStore: Sendable {
             }
             let email = request.profileEmail ?? ""
             guard !email.isEmpty else { return .refused(.invalid) }
-            let taken = Set(accounts.accounts.values.map(\.name))
+            let taken = Set(state.accountSurface.accounts.values.map(\.name))
             let pendingName = AccountNaming.pendingHandle(taken: taken)
             let id = UUID().uuidString.lowercased()
-            accounts.accounts[email] = Account(
+            state.accountSurface.accounts[email] = Account(
                 id: id,
                 email: email,
                 passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
@@ -448,7 +448,7 @@ struct OAuthFlowsStore: Sendable {
                 ),
                 profileSetupProvider: request.provider
             )
-            legalAcceptances[id] = EmailLegalAcceptance(
+            state.legalAcceptances[id] = EmailLegalAcceptance(
                 termsVersion: AuthLegalPolicy.termsVersion,
                 privacyVersion: AuthLegalPolicy.privacyVersion,
                 termsUrl: AuthLegalPolicy.termsURL,
@@ -457,12 +457,12 @@ struct OAuthFlowsStore: Sendable {
                 userAgentHash: nil,
                 locale: nil
             )
-            let tokens = Self.openSession(&accounts, userId: id)
+            let tokens = Self.openSession(&state.accountSurface, userId: id)
             let providerUserId = request.profileUserId ?? ""
-            if !providerUserId.isEmpty, !accounts.linkedIdentities.contains(where: {
+            if !providerUserId.isEmpty, !state.accountSurface.linkedIdentities.contains(where: {
                 $0.userId == id && $0.provider == request.provider && $0.providerUserId == providerUserId
             }) {
-                accounts.linkedIdentities.append(LinkedIdentity(
+                state.accountSurface.linkedIdentities.append(LinkedIdentity(
                     userId: id,
                     provider: request.provider,
                     providerUserId: providerUserId
@@ -470,8 +470,8 @@ struct OAuthFlowsStore: Sendable {
             }
             request.status = "completed"
             request.handoffCode = nil
-            accounts.mobileRequests[requestId] = request
-            accounts.consumedHandoffs.insert(code)
+            state.accountSurface.mobileRequests[requestId] = request
+            state.accountSurface.consumedHandoffs.insert(code)
             return .signedIn(MobileSignedIn(
                 userId: id, email: email, name: pendingName,
                 provider: request.provider, mode: request.mode, returnUri: request.returnUri,
@@ -490,21 +490,21 @@ struct OAuthFlowsStore: Sendable {
         verifier: String,
         now: Date
     ) -> MobileLinkCompletionOutcome {
-        profiles.withOAuthFlowState { accounts, _, _ in
-            if accounts.consumedHandoffs.contains(code) { return .refused(.consumed) }
-            guard let requestId = accounts.mobileRequests.first(where: { $0.value.handoffCode == code })?.key,
-                  var request = accounts.mobileRequests[requestId],
+        profiles.state.withLock { state in
+            if state.accountSurface.consumedHandoffs.contains(code) { return .refused(.consumed) }
+            guard let requestId = state.accountSurface.mobileRequests.first(where: { $0.value.handoffCode == code })?.key,
+                  var request = state.accountSurface.mobileRequests[requestId],
                   request.status == "provider_completed"
             else { return .refused(.invalid) }
             if request.expiresAt < now {
                 request.status = "expired"
-                accounts.mobileRequests[requestId] = request
+                state.accountSurface.mobileRequests[requestId] = request
                 return .refused(.expired)
             }
             if verifier.isEmpty { return .refused(.invalid) }
             if AuthTokenCodec.pkceS256(verifier) != request.codeChallenge {
                 request.status = "failed"
-                accounts.mobileRequests[requestId] = request
+                state.accountSurface.mobileRequests[requestId] = request
                 return .refused(.pkceMismatch)
             }
             if request.provider != provider { return .refused(.providerMismatch) }
@@ -512,10 +512,10 @@ struct OAuthFlowsStore: Sendable {
             guard request.userId == callerId else { return .refused(.linkMismatch) }
             let providerUserId = request.profileUserId ?? ""
             let providerEmail = request.profileEmail ?? ""
-            if !accounts.linkedIdentities.contains(where: {
+            if !state.accountSurface.linkedIdentities.contains(where: {
                 $0.userId == callerId && $0.provider == provider && $0.providerUserId == providerUserId
             }) {
-                accounts.linkedIdentities.append(LinkedIdentity(
+                state.accountSurface.linkedIdentities.append(LinkedIdentity(
                     userId: callerId,
                     provider: provider,
                     providerUserId: providerUserId,
@@ -524,9 +524,9 @@ struct OAuthFlowsStore: Sendable {
             }
             request.status = "completed"
             request.handoffCode = nil
-            accounts.mobileRequests[requestId] = request
-            accounts.consumedHandoffs.insert(code)
-            let identities = accounts.linkedIdentities.filter { $0.userId == callerId }.map {
+            state.accountSurface.mobileRequests[requestId] = request
+            state.accountSurface.consumedHandoffs.insert(code)
+            let identities = state.accountSurface.linkedIdentities.filter { $0.userId == callerId }.map {
                 (provider: $0.provider, providerEmail: $0.providerEmail ?? "")
             }
             return .linked(returnUri: request.returnUri, identities: identities)

@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import Synchronization
 
 /// Owner-only public visibility and search settings, plus the timestamps the
 /// public search index reads.
@@ -13,18 +14,42 @@ import Foundation
 /// channel and thread; a reply edit moves only the thread; a private channel
 /// edit moves nothing.
 
-public final class PublicServerDirectory: @unchecked Sendable {
-    public var rolloutEnabled: Bool
-    public var guestRolloutEnabled: Bool
-    public var translationAvailable: Bool
-    public var searchIndexEnabled: Bool
-    let lock = NSLock()
-    private var clock: Int
-    private var nextPublicId = 1
-    private var tokens: [String: String] = [:]
-    private var emails: [String: String] = [:]
-    private var invites: [String: EmailInvite] = [:]
-    var servers: [Server] = []
+public final class PublicServerDirectory: Sendable {
+    struct State: Sendable {
+        var rolloutEnabled: Bool
+        var guestRolloutEnabled: Bool
+        var translationAvailable: Bool
+        var searchIndexEnabled: Bool
+        var clock: Int
+        var nextPublicId = 1
+        var tokens: [String: String] = [:]
+        var emails: [String: String] = [:]
+        var invites: [String: EmailInvite] = [:]
+        var servers: [Server] = []
+    }
+
+    /// Internal so the dedicated test seam can borrow the same protected state.
+    let state: Mutex<State>
+
+    public var rolloutEnabled: Bool {
+        get { state.withLock { $0.rolloutEnabled } }
+        set { state.withLock { $0.rolloutEnabled = newValue } }
+    }
+
+    public var guestRolloutEnabled: Bool {
+        get { state.withLock { $0.guestRolloutEnabled } }
+        set { state.withLock { $0.guestRolloutEnabled = newValue } }
+    }
+
+    public var translationAvailable: Bool {
+        get { state.withLock { $0.translationAvailable } }
+        set { state.withLock { $0.translationAvailable = newValue } }
+    }
+
+    public var searchIndexEnabled: Bool {
+        get { state.withLock { $0.searchIndexEnabled } }
+        set { state.withLock { $0.searchIndexEnabled = newValue } }
+    }
 
     public init(
         rolloutEnabled: Bool = true,
@@ -33,11 +58,13 @@ public final class PublicServerDirectory: @unchecked Sendable {
         searchIndexEnabled: Bool = true,
         clock: Int = 1_700_000_000_000
     ) {
-        self.rolloutEnabled = rolloutEnabled
-        self.guestRolloutEnabled = guestRolloutEnabled
-        self.translationAvailable = translationAvailable
-        self.searchIndexEnabled = searchIndexEnabled
-        self.clock = clock
+        state = Mutex(State(
+            rolloutEnabled: rolloutEnabled,
+            guestRolloutEnabled: guestRolloutEnabled,
+            translationAvailable: translationAvailable,
+            searchIndexEnabled: searchIndexEnabled,
+            clock: clock
+        ))
     }
 
     public struct Seed: Sendable {
@@ -64,164 +91,166 @@ public final class PublicServerDirectory: @unchecked Sendable {
         publicSearchEnabled: Bool = true,
         channels: [(id: String, name: String, description: String?, guestVisible: Bool, publicId: String?, threads: [(id: String, publicId: String?, parent: String, replies: [String])])] = []
     ) -> Seed? {
-        lock.lock()
-        defer { lock.unlock() }
-        tokens[ownerToken] = ownerId
-        if let adminId, let adminToken { tokens[adminToken] = adminId }
-        var members = [ownerId: "owner"]
-        if let adminId { members[adminId] = "admin" }
-        let now = clock
-        var record = Server(
-            id: id,
-            publicId: publiclyVisible ? hexId() : nil,
-            name: name,
-            slug: slug,
-            publiclyVisible: publiclyVisible,
-            publicSearchEnabled: publicSearchEnabled,
-            publicGuestJoinEnabled: false,
-            translationEnabled: false,
-            createdAtMs: now,
-            publicChangedAtMs: now,
-            members: members,
-            channels: []
-        )
-        var seedOpen = ""
-        var seedHidden = ""
-        var seedThread = ""
-        var seedOpenPublic = ""
-        var seedThreadPublic = ""
-        for channel in channels {
-            var threads: [Thread] = []
-            for thread in channel.threads {
-                let publicId = thread.publicId ?? (publiclyVisible ? hexId() : nil)
-                threads.append(Thread(
-                    id: thread.id,
-                    publicId: publicId,
-                    parentContent: thread.parent,
-                    parentSeq: threads.count + 1,
-                    parentCreatedAtMs: now,
-                    parentUpdatedAtMs: now,
-                    senderName: "\(slug)-owner",
+        return state.withLock { state in
+            state.tokens[ownerToken] = ownerId
+            if let adminId, let adminToken { state.tokens[adminToken] = adminId }
+            var members = [ownerId: "owner"]
+            if let adminId { members[adminId] = "admin" }
+            let now = state.clock
+            var record = Server(
+                id: id,
+                publicId: publiclyVisible ? Self.hexId(state: &state) : nil,
+                name: name,
+                slug: slug,
+                publiclyVisible: publiclyVisible,
+                publicSearchEnabled: publicSearchEnabled,
+                publicGuestJoinEnabled: false,
+                translationEnabled: false,
+                createdAtMs: now,
+                publicChangedAtMs: now,
+                members: members,
+                channels: []
+            )
+            var seedOpen = ""
+            var seedHidden = ""
+            var seedThread = ""
+            var seedOpenPublic = ""
+            var seedThreadPublic = ""
+            for channel in channels {
+                var threads: [Thread] = []
+                for thread in channel.threads {
+                    let publicId = thread.publicId ?? (publiclyVisible ? Self.hexId(state: &state) : nil)
+                    threads.append(Thread(
+                        id: thread.id,
+                        publicId: publicId,
+                        parentContent: thread.parent,
+                        parentSeq: threads.count + 1,
+                        parentCreatedAtMs: now,
+                        parentUpdatedAtMs: now,
+                        senderName: "\(slug)-owner",
+                        createdAtMs: now,
+                        publicChangedAtMs: channel.guestVisible ? now : nil,
+                        replies: thread.replies.map { Reply(content: $0, createdAtMs: now, updatedAtMs: now, senderName: "\(slug)-owner") }
+                    ))
+                }
+                record.channels.append(Channel(
+                    id: channel.id,
+                    publicId: channel.publicId ?? (publiclyVisible ? Self.hexId(state: &state) : nil),
+                    name: channel.name,
+                    description: channel.description,
+                    guestVisible: channel.guestVisible,
                     createdAtMs: now,
                     publicChangedAtMs: channel.guestVisible ? now : nil,
-                    replies: thread.replies.map { Reply(content: $0, createdAtMs: now, updatedAtMs: now, senderName: "\(slug)-owner") }
+                    threads: threads
                 ))
             }
-            record.channels.append(Channel(
-                id: channel.id,
-                publicId: channel.publicId ?? (publiclyVisible ? hexId() : nil),
-                name: channel.name,
-                description: channel.description,
-                guestVisible: channel.guestVisible,
-                createdAtMs: now,
-                publicChangedAtMs: channel.guestVisible ? now : nil,
-                threads: threads
-            ))
+            state.servers.append(record)
+            if let open = record.channels.first(where: { $0.guestVisible }), let thread = open.threads.first {
+                seedOpen = open.id
+                seedOpenPublic = open.publicId ?? ""
+                seedThread = thread.id
+                seedThreadPublic = thread.publicId ?? ""
+            }
+            if let hidden = record.channels.first(where: { !$0.guestVisible }) { seedHidden = hidden.id }
+            return Seed(
+                serverId: id,
+                openChannelId: seedOpen,
+                hiddenChannelId: seedHidden,
+                threadId: seedThread,
+                serverPublicId: record.publicId ?? "",
+                openPublicId: seedOpenPublic,
+                threadPublicId: seedThreadPublic,
+                ownerToken: ownerToken
+            )
         }
-        servers.append(record)
-        if let open = record.channels.first(where: { $0.guestVisible }), let thread = open.threads.first {
-            seedOpen = open.id
-            seedOpenPublic = open.publicId ?? ""
-            seedThread = thread.id
-            seedThreadPublic = thread.publicId ?? ""
-        }
-        if let hidden = record.channels.first(where: { !$0.guestVisible }) { seedHidden = hidden.id }
-        return Seed(
-            serverId: id,
-            openChannelId: seedOpen,
-            hiddenChannelId: seedHidden,
-            threadId: seedThread,
-            serverPublicId: record.publicId ?? "",
-            openPublicId: seedOpenPublic,
-            threadPublicId: seedThreadPublic,
-            ownerToken: ownerToken
-        )
     }
 
     public func patchVisibility(serverId: String, authorization: String?, body: String) throws -> PublicVisibilityUpdateResponse {
         guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenVisibility }
-        lock.lock()
-        defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenVisibility }
-        guard rolloutEnabled else { throw PublicSettingsError.notFound }
-        guard let publiclyVisible = jsonBool(body, key: "publiclyVisible") else {
-            throw PublicSettingsError.invalidVisibility
+        return try state.withLock { state in
+            guard state.servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenVisibility }
+            guard state.rolloutEnabled else { throw PublicSettingsError.notFound }
+            guard let publiclyVisible = jsonBool(body, key: "publiclyVisible") else {
+                throw PublicSettingsError.invalidVisibility
+            }
+            guard let index = state.servers.firstIndex(where: { $0.id == serverId }) else {
+                throw PublicSettingsError.serverNotFound
+            }
+            state.servers[index].publiclyVisible = publiclyVisible
+            if !publiclyVisible { state.servers[index].publicGuestJoinEnabled = false }
+            let changedAt = Self.bumpLocked(state: &state)
+            state.servers[index].publicChangedAtMs = changedAt
+            if publiclyVisible { Self.backfillLocked(state: &state, index) }
+            let server = state.servers[index]
+            return PublicVisibilityUpdateResponse(
+                publiclyVisible: server.publiclyVisible,
+                publicGuestJoinEnabled: server.publicGuestJoinEnabled,
+                publicSearchEnabled: server.publicSearchEnabled
+            )
         }
-        guard let index = servers.firstIndex(where: { $0.id == serverId }) else {
-            throw PublicSettingsError.serverNotFound
-        }
-        servers[index].publiclyVisible = publiclyVisible
-        if !publiclyVisible { servers[index].publicGuestJoinEnabled = false }
-        servers[index].publicChangedAtMs = bumpLocked()
-        if publiclyVisible { backfillLocked(index) }
-        let server = servers[index]
-        return PublicVisibilityUpdateResponse(
-            publiclyVisible: server.publiclyVisible,
-            publicGuestJoinEnabled: server.publicGuestJoinEnabled,
-            publicSearchEnabled: server.publicSearchEnabled
-        )
     }
 
     public func patchSearch(serverId: String, authorization: String?, body: String) throws -> PublicSearchSettingResponse {
         guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenSearch }
-        lock.lock()
-        defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenSearch }
-        guard rolloutEnabled else { throw PublicSettingsError.notFound }
-        guard let enabled = jsonBool(body, key: "publicSearchEnabled") else {
-            throw PublicSettingsError.invalidSearch
+        return try state.withLock { state in
+            guard state.servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenSearch }
+            guard state.rolloutEnabled else { throw PublicSettingsError.notFound }
+            guard let enabled = jsonBool(body, key: "publicSearchEnabled") else {
+                throw PublicSettingsError.invalidSearch
+            }
+            guard let index = state.servers.firstIndex(where: { $0.id == serverId }) else {
+                throw PublicSettingsError.serverNotFound
+            }
+            state.servers[index].publicSearchEnabled = enabled
+            let changedAt = Self.bumpLocked(state: &state)
+            state.servers[index].publicChangedAtMs = changedAt
+            return PublicSearchSettingResponse(publicSearchEnabled: enabled)
         }
-        guard let index = servers.firstIndex(where: { $0.id == serverId }) else {
-            throw PublicSettingsError.serverNotFound
-        }
-        servers[index].publicSearchEnabled = enabled
-        servers[index].publicChangedAtMs = bumpLocked()
-        return PublicSearchSettingResponse(publicSearchEnabled: enabled)
     }
 
     /// Owner-only Guest admission. It cannot open before Public, and an admin cannot touch it.
     public func patchGuestJoin(serverId: String, authorization: String?, body: String) throws -> PublicGuestJoinSettingResponse {
         guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenGuestJoin }
-        lock.lock()
-        defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenGuestJoin }
-        guard rolloutEnabled, guestRolloutEnabled else { throw PublicSettingsError.notFound }
-        guard let enabled = jsonBool(body, key: "publicGuestJoinEnabled") else {
-            throw PublicSettingsError.invalidGuestJoin
+        return try state.withLock { state in
+            guard state.servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenGuestJoin }
+            guard state.rolloutEnabled, state.guestRolloutEnabled else { throw PublicSettingsError.notFound }
+            guard let enabled = jsonBool(body, key: "publicGuestJoinEnabled") else {
+                throw PublicSettingsError.invalidGuestJoin
+            }
+            guard let index = state.servers.firstIndex(where: { $0.id == serverId }) else {
+                throw PublicSettingsError.serverNotFound
+            }
+            if enabled, !state.servers[index].publiclyVisible {
+                throw PublicSettingsError.publicRequired
+            }
+            state.servers[index].publicGuestJoinEnabled = enabled
+            return PublicGuestJoinSettingResponse(publicGuestJoinEnabled: enabled)
         }
-        guard let index = servers.firstIndex(where: { $0.id == serverId }) else {
-            throw PublicSettingsError.serverNotFound
-        }
-        if enabled, !servers[index].publiclyVisible {
-            throw PublicSettingsError.publicRequired
-        }
-        servers[index].publicGuestJoinEnabled = enabled
-        return PublicGuestJoinSettingResponse(publicGuestJoinEnabled: enabled)
     }
 
     public func addAccount(id: String, email: String, token: String) {
-        lock.lock()
-        tokens[token] = id
-        emails[id] = email.lowercased()
-        lock.unlock()
+        state.withLock { state in
+            state.tokens[token] = id
+            state.emails[id] = email.lowercased()
+        }
     }
 
     public func addEmailInvite(serverId: String, email: String, role: String, rawToken: String, expiresAt: Date) {
-        lock.lock()
-        invites[Self.sha256Hex(rawToken)] = EmailInvite(
-            serverId: serverId,
-            email: email.lowercased(),
-            role: role,
-            expiresAt: expiresAt,
-            status: "pending"
-        )
-        lock.unlock()
+        state.withLock { state in
+            state.invites[Self.sha256Hex(rawToken)] = EmailInvite(
+                serverId: serverId,
+                email: email.lowercased(),
+                role: role,
+                expiresAt: expiresAt,
+                status: "pending"
+            )
+        }
     }
 
     public func memberRole(serverId: String, userId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return servers.first { $0.id == serverId }?.members[userId]
+        return state.withLock { state in
+            return state.servers.first { $0.id == serverId }?.members[userId]
+        }
     }
 
     /// Email invites keep the role stored on the invite. Public admission is not consulted.
@@ -232,80 +261,80 @@ public final class PublicServerDirectory: @unchecked Sendable {
         guard let token = jsonStringValue(body, key: "token"), !token.isEmpty else {
             throw PublicSettingsError.inviteTokenRequired
         }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let email = emails[userId] else { throw PublicSettingsError.authentication(invalidToken: true) }
-        let hash = Self.sha256Hex(token)
-        guard var invite = invites[hash], invite.status == "pending", invite.expiresAt > now else {
-            throw PublicSettingsError.invalidInvite
+        return try state.withLock { state in
+            guard let email = state.emails[userId] else { throw PublicSettingsError.authentication(invalidToken: true) }
+            let hash = Self.sha256Hex(token)
+            guard var invite = state.invites[hash], invite.status == "pending", invite.expiresAt > now else {
+                throw PublicSettingsError.invalidInvite
+            }
+            guard invite.email == email else {
+                throw PublicSettingsError.wrongEmail
+            }
+            guard let index = state.servers.firstIndex(where: { $0.id == invite.serverId }) else {
+                throw PublicSettingsError.serverNotFound
+            }
+            guard state.servers[index].members[userId] == nil else {
+                throw PublicSettingsError.alreadyMember
+            }
+            state.servers[index].members[userId] = invite.role
+            invite.status = "accepted"
+            state.invites[hash] = invite
+            let server = state.servers[index]
+            return PublicServerJoinedResponse(serverId: server.id, serverName: server.name)
         }
-        guard invite.email == email else {
-            throw PublicSettingsError.wrongEmail
-        }
-        guard let index = servers.firstIndex(where: { $0.id == invite.serverId }) else {
-            throw PublicSettingsError.serverNotFound
-        }
-        guard servers[index].members[userId] == nil else {
-            throw PublicSettingsError.alreadyMember
-        }
-        servers[index].members[userId] = invite.role
-        invite.status = "accepted"
-        invites[hash] = invite
-        let server = servers[index]
-        return PublicServerJoinedResponse(serverId: server.id, serverName: server.name)
     }
 
     public func setTranslationEnabled(serverId: String, enabled: Bool) {
-        lock.lock()
-        if let index = servers.firstIndex(where: { $0.id == serverId }) {
-            servers[index].translationEnabled = enabled
+        state.withLock { state in
+            if let index = state.servers.firstIndex(where: { $0.id == serverId }) {
+                state.servers[index].translationEnabled = enabled
+            }
         }
-        lock.unlock()
     }
 
     public func readVisibility(serverId: String, authorization: String?) throws -> PublicVisibilityResponse {
         guard let userId = userId(authorization) else { throw PublicSettingsError.forbiddenVisibility }
-        lock.lock()
-        defer { lock.unlock() }
-        guard servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenVisibility }
-        guard rolloutEnabled else { throw PublicSettingsError.notFound }
-        guard let server = servers.first(where: { $0.id == serverId }) else { throw PublicSettingsError.serverNotFound }
-        let exposed = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
-        return PublicVisibilityResponse(
-            settings: PublicVisibilityUpdateResponse(
-                publiclyVisible: server.publiclyVisible,
-                publicGuestJoinEnabled: server.publicGuestJoinEnabled,
-                publicSearchEnabled: server.publicSearchEnabled
-            ),
-            slug: server.slug,
-            exposedChannels: exposed.map { .init(id: $0.id, name: $0.name, description: $0.description) }
-        )
+        return try state.withLock { state in
+            guard state.servers.first(where: { $0.id == serverId })?.members[userId] == "owner" else { throw PublicSettingsError.forbiddenVisibility }
+            guard state.rolloutEnabled else { throw PublicSettingsError.notFound }
+            guard let server = state.servers.first(where: { $0.id == serverId }) else { throw PublicSettingsError.serverNotFound }
+            let exposed = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
+            return PublicVisibilityResponse(
+                settings: PublicVisibilityUpdateResponse(
+                    publiclyVisible: server.publiclyVisible,
+                    publicGuestJoinEnabled: server.publicGuestJoinEnabled,
+                    publicSearchEnabled: server.publicSearchEnabled
+                ),
+                slug: server.slug,
+                exposedChannels: exposed.map { .init(id: $0.id, name: $0.name, description: $0.description) }
+            )
+        }
     }
 
     /// Unknown and non-public slugs share one refusal.
     public func publicCard(slug: String) throws -> PublicDirectoryCardResponse {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let server = servers.first(where: { $0.slug == slug }), rolloutEnabled, server.publiclyVisible else {
-            throw PublicSettingsError.notFound
+        return try state.withLock { state in
+            guard let server = state.servers.first(where: { $0.slug == slug }), state.rolloutEnabled, server.publiclyVisible else {
+                throw PublicSettingsError.notFound
+            }
+            let channels = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
+            return PublicDirectoryCardResponse(
+                serverId: server.id, serverName: server.name, slug: server.slug,
+                translationEnabled: server.translationEnabled, channelIds: channels.map(\.id),
+                canJoinAsGuest: server.publicGuestJoinEnabled && state.guestRolloutEnabled,
+                translationAvailable: state.translationAvailable
+            )
         }
-        let channels = server.channels.filter(\.guestVisible).sorted { $0.name < $1.name }
-        return PublicDirectoryCardResponse(
-            serverId: server.id, serverName: server.name, slug: server.slug,
-            translationEnabled: server.translationEnabled, channelIds: channels.map(\.id),
-            canJoinAsGuest: server.publicGuestJoinEnabled && guestRolloutEnabled,
-            translationAvailable: translationAvailable
-        )
     }
 
     public func publicIds(serverId: String) -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let server = servers.first(where: { $0.id == serverId }) else { return [] }
-        return server.channels.flatMap { channel -> [String] in
-            var ids = channel.publicId.map { [$0] } ?? []
-            ids.append(contentsOf: channel.threads.compactMap(\.publicId))
-            return ids
+        return state.withLock { state in
+            guard let server = state.servers.first(where: { $0.id == serverId }) else { return [] }
+            return server.channels.flatMap { channel -> [String] in
+                var ids = channel.publicId.map { [$0] } ?? []
+                ids.append(contentsOf: channel.threads.compactMap(\.publicId))
+                return ids
+            }
         }
     }
 
@@ -327,167 +356,172 @@ public final class PublicServerDirectory: @unchecked Sendable {
     }
 
     public func apply(_ edit: Edit) {
-        lock.lock()
-        defer { lock.unlock() }
-        let now = bumpLocked()
-        switch edit {
-        case .renameChannel(let id, let name):
-            mutateChannel(id) { channel in
-                channel.name = name
-                if channel.guestVisible { channel.publicChangedAtMs = now }
-            }
-        case .editChannelDescription(let id, let description):
-            mutateChannel(id) { channel in
-                channel.description = description
-                if channel.guestVisible { channel.publicChangedAtMs = now }
-            }
-        case .editParent(let channelId, let content):
-            mutateChannel(channelId) { channel in
-                if !channel.threads.isEmpty { channel.threads[0].parentContent = content; channel.threads[0].parentUpdatedAtMs = now }
-            }
-        case .editReply(let threadId, let content):
-            mutateThread(threadId) { thread in
-                if !thread.replies.isEmpty { thread.replies[0].content = content; thread.replies[0].updatedAtMs = now }
-            }
-        case .addReply(let threadId, let content):
-            mutateThread(threadId) { thread in
-                thread.replies.append(Reply(content: content, createdAtMs: now, updatedAtMs: now, senderName: thread.senderName))
-            }
-        case .renameServer(let id, let name):
-            if let index = servers.firstIndex(where: { $0.id == id }) {
-                servers[index].name = name
-                servers[index].publicChangedAtMs = now
-            }
-        case .renamePrivateChannel(let id, let name):
-            mutateChannel(id) { channel in
-                channel.name = name
-            }
-        case .setServerPublic(let id, let visible):
-            if let index = servers.firstIndex(where: { $0.id == id }) {
-                servers[index].publiclyVisible = visible
-                servers[index].publicChangedAtMs = now
-            }
-        case .setServerSearch(let id, let enabled):
-            if let index = servers.firstIndex(where: { $0.id == id }) {
-                servers[index].publicSearchEnabled = enabled
-                servers[index].publicChangedAtMs = now
-            }
-        case .setServerDeleted(let id, let deleted):
-            if let index = servers.firstIndex(where: { $0.id == id }) { servers[index].deleted = deleted }
-        case .setChannelGuestVisible(let id, let visible):
-            mutateChannel(id) { channel in
-                channel.guestVisible = visible
-                if visible { channel.publicChangedAtMs = now }
-            }
-        case .setChannelArchived(let id, let archived):
-            mutateChannel(id) { channel in
-                channel.archived = archived
-                channel.publicChangedAtMs = now
-            }
-        case .setChannelDeleted(let id, let deleted):
-            mutateChannel(id) { channel in
-                channel.deleted = deleted
-                channel.publicChangedAtMs = now
-            }
-        case .setChannelPrivate(let id, let privateChannel):
-            mutateChannel(id) { channel in
-                channel.isPrivate = privateChannel
-                channel.publicChangedAtMs = now
+        return state.withLock { state in
+            let now = Self.bumpLocked(state: &state)
+            switch edit {
+            case .renameChannel(let id, let name):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.name = name
+                    if channel.guestVisible { channel.publicChangedAtMs = now }
+                }
+            case .editChannelDescription(let id, let description):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.description = description
+                    if channel.guestVisible { channel.publicChangedAtMs = now }
+                }
+            case .editParent(let channelId, let content):
+                Self.mutateChannel(state: &state, channelId) { channel in
+                    if !channel.threads.isEmpty { channel.threads[0].parentContent = content; channel.threads[0].parentUpdatedAtMs = now }
+                }
+            case .editReply(let threadId, let content):
+                Self.mutateThread(state: &state, threadId) { thread in
+                    if !thread.replies.isEmpty { thread.replies[0].content = content; thread.replies[0].updatedAtMs = now }
+                }
+            case .addReply(let threadId, let content):
+                Self.mutateThread(state: &state, threadId) { thread in
+                    thread.replies.append(Reply(content: content, createdAtMs: now, updatedAtMs: now, senderName: thread.senderName))
+                }
+            case .renameServer(let id, let name):
+                if let index = state.servers.firstIndex(where: { $0.id == id }) {
+                    state.servers[index].name = name
+                    state.servers[index].publicChangedAtMs = now
+                }
+            case .renamePrivateChannel(let id, let name):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.name = name
+                }
+            case .setServerPublic(let id, let visible):
+                if let index = state.servers.firstIndex(where: { $0.id == id }) {
+                    state.servers[index].publiclyVisible = visible
+                    state.servers[index].publicChangedAtMs = now
+                }
+            case .setServerSearch(let id, let enabled):
+                if let index = state.servers.firstIndex(where: { $0.id == id }) {
+                    state.servers[index].publicSearchEnabled = enabled
+                    state.servers[index].publicChangedAtMs = now
+                }
+            case .setServerDeleted(let id, let deleted):
+                if let index = state.servers.firstIndex(where: { $0.id == id }) { state.servers[index].deleted = deleted }
+            case .setChannelGuestVisible(let id, let visible):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.guestVisible = visible
+                    if visible { channel.publicChangedAtMs = now }
+                }
+            case .setChannelArchived(let id, let archived):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.archived = archived
+                    channel.publicChangedAtMs = now
+                }
+            case .setChannelDeleted(let id, let deleted):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.deleted = deleted
+                    channel.publicChangedAtMs = now
+                }
+            case .setChannelPrivate(let id, let privateChannel):
+                Self.mutateChannel(state: &state, id) { channel in
+                    channel.isPrivate = privateChannel
+                    channel.publicChangedAtMs = now
+                }
             }
         }
     }
 
     public func projectedCatalog() -> PublicSearchCatalog {
-        lock.lock()
-        defer { lock.unlock() }
-        let projected = servers.compactMap { server -> PublicSearchServer? in
-            guard rolloutEnabled, server.publiclyVisible, !server.deleted, let publicId = server.publicId else { return nil }
-            let serverLast = iso(serverLastmod(server))
-            let channels = server.channels.compactMap { channel -> PublicSearchChannel? in
-                guard let channelPublicId = channel.publicId, !channel.archived, !channel.deleted, !channel.isPrivate else { return nil }
-                let threads = channel.threads.compactMap { thread -> PublicSearchThread? in
-                    guard let threadPublicId = thread.publicId else { return nil }
-                    return PublicSearchThread(
-                        publicId: threadPublicId,
-                        parentContent: thread.parentContent,
-                        parentSeq: thread.parentSeq,
-                        parentCreatedAt: iso(thread.parentCreatedAtMs),
-                        parentUpdatedAt: iso(thread.parentUpdatedAtMs),
-                        senderName: thread.senderName,
-                        replies: thread.replies.map {
-                            PublicSearchReply(content: $0.content, createdAt: iso($0.createdAtMs), updatedAt: iso($0.updatedAtMs), senderName: $0.senderName)
-                        },
-                        indexLastmod: iso(threadLastmod(server, channel, thread))
+        return state.withLock { state in
+            let projected = state.servers.compactMap { server -> PublicSearchServer? in
+                guard state.rolloutEnabled, server.publiclyVisible, !server.deleted, let publicId = server.publicId else { return nil }
+                let serverLast = iso(serverLastmod(server))
+                let channels = server.channels.compactMap { channel -> PublicSearchChannel? in
+                    guard let channelPublicId = channel.publicId, !channel.archived, !channel.deleted, !channel.isPrivate else { return nil }
+                    let threads = channel.threads.compactMap { thread -> PublicSearchThread? in
+                        guard let threadPublicId = thread.publicId else { return nil }
+                        return PublicSearchThread(
+                            publicId: threadPublicId,
+                            parentContent: thread.parentContent,
+                            parentSeq: thread.parentSeq,
+                            parentCreatedAt: iso(thread.parentCreatedAtMs),
+                            parentUpdatedAt: iso(thread.parentUpdatedAtMs),
+                            senderName: thread.senderName,
+                            replies: thread.replies.map {
+                                PublicSearchReply(content: $0.content, createdAt: iso($0.createdAtMs), updatedAt: iso($0.updatedAtMs), senderName: $0.senderName)
+                            },
+                            indexLastmod: iso(threadLastmod(server, channel, thread))
+                        )
+                    }
+                    return PublicSearchChannel(
+                        publicId: channelPublicId,
+                        name: channel.name,
+                        description: channel.description,
+                        guestVisible: channel.guestVisible,
+                        threads: threads,
+                        indexLastmod: iso(channelLastmod(server, channel))
                     )
                 }
-                return PublicSearchChannel(
-                    publicId: channelPublicId,
-                    name: channel.name,
-                    description: channel.description,
-                    guestVisible: channel.guestVisible,
-                    threads: threads,
-                    indexLastmod: iso(channelLastmod(server, channel))
+                return PublicSearchServer(
+                    publicId: publicId,
+                    name: server.name,
+                    slug: server.slug,
+                    updatedAt: serverLast,
+                    searchable: server.publicSearchEnabled,
+                    channels: server.publicSearchEnabled ? channels : [],
+                    indexLastmod: serverLast
                 )
             }
-            return PublicSearchServer(
-                publicId: publicId,
-                name: server.name,
-                slug: server.slug,
-                updatedAt: serverLast,
-                searchable: server.publicSearchEnabled,
-                channels: server.publicSearchEnabled ? channels : [],
-                indexLastmod: serverLast
-            )
+            return PublicSearchCatalog(servers: projected)
         }
-        return PublicSearchCatalog(servers: projected)
     }
 
     private func userId(_ authorization: String?) -> String? {
         guard let header = authorization, header.hasPrefix("Bearer ") else { return nil }
         let token = String(header.dropFirst("Bearer ".count))
-        lock.lock()
-        defer { lock.unlock() }
-        return tokens[token]
+        return state.withLock { state in
+            return state.tokens[token]
+        }
     }
 
-    private func backfillLocked(_ index: Int) {
-        if servers[index].publicId == nil { servers[index].publicId = hexId() }
-        for channelIndex in servers[index].channels.indices {
-            if servers[index].channels[channelIndex].publicId == nil {
-                servers[index].channels[channelIndex].publicId = hexId()
+    private static func backfillLocked(state: inout State, _ index: Int) {
+        if state.servers[index].publicId == nil {
+            let publicId = Self.hexId(state: &state)
+            state.servers[index].publicId = publicId
+        }
+        for channelIndex in state.servers[index].channels.indices {
+            if state.servers[index].channels[channelIndex].publicId == nil {
+                let publicId = Self.hexId(state: &state)
+                state.servers[index].channels[channelIndex].publicId = publicId
             }
-            for threadIndex in servers[index].channels[channelIndex].threads.indices {
-                if servers[index].channels[channelIndex].threads[threadIndex].publicId == nil {
-                    servers[index].channels[channelIndex].threads[threadIndex].publicId = hexId()
+            for threadIndex in state.servers[index].channels[channelIndex].threads.indices {
+                if state.servers[index].channels[channelIndex].threads[threadIndex].publicId == nil {
+                    let publicId = Self.hexId(state: &state)
+                    state.servers[index].channels[channelIndex].threads[threadIndex].publicId = publicId
                 }
             }
         }
     }
 
-    private func bumpLocked() -> Int {
-        clock += 1
-        return clock
+    private static func bumpLocked(state: inout State) -> Int {
+        state.clock += 1
+        return state.clock
     }
 
-    private func hexId() -> String {
-        nextPublicId += 1
-        return String(format: "%032x", nextPublicId)
+    private static func hexId(state: inout State) -> String {
+        state.nextPublicId += 1
+        return String(format: "%032x", state.nextPublicId)
     }
 
-    private func mutateChannel(_ id: String, _ body: (inout Channel) -> Void) {
-        for serverIndex in servers.indices {
-            if let channelIndex = servers[serverIndex].channels.firstIndex(where: { $0.id == id }) {
-                body(&servers[serverIndex].channels[channelIndex])
+    private static func mutateChannel(state: inout State, _ id: String, _ body: (inout Channel) -> Void) {
+        for serverIndex in state.servers.indices {
+            if let channelIndex = state.servers[serverIndex].channels.firstIndex(where: { $0.id == id }) {
+                body(&state.servers[serverIndex].channels[channelIndex])
                 return
             }
         }
     }
 
-    private func mutateThread(_ id: String, _ body: (inout Thread) -> Void) {
-        for serverIndex in servers.indices {
-            for channelIndex in servers[serverIndex].channels.indices {
-                if let threadIndex = servers[serverIndex].channels[channelIndex].threads.firstIndex(where: { $0.id == id }) {
-                    body(&servers[serverIndex].channels[channelIndex].threads[threadIndex])
+    private static func mutateThread(state: inout State, _ id: String, _ body: (inout Thread) -> Void) {
+        for serverIndex in state.servers.indices {
+            for channelIndex in state.servers[serverIndex].channels.indices {
+                if let threadIndex = state.servers[serverIndex].channels[channelIndex].threads.firstIndex(where: { $0.id == id }) {
+                    body(&state.servers[serverIndex].channels[channelIndex].threads[threadIndex])
                     return
                 }
             }
@@ -547,7 +581,7 @@ public final class PublicServerDirectory: @unchecked Sendable {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private struct EmailInvite {
+    struct EmailInvite: Sendable {
         var serverId: String
         var email: String
         var role: String
@@ -567,14 +601,14 @@ public final class PublicServerDirectory: @unchecked Sendable {
         )
     }
 
-    struct Reply {
+    struct Reply: Sendable {
         var content: String
         var createdAtMs: Int
         var updatedAtMs: Int
         var senderName: String
     }
 
-    struct Thread {
+    struct Thread: Sendable {
         var id: String
         var publicId: String?
         var parentContent: String
@@ -587,7 +621,7 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var replies: [Reply]
     }
 
-    struct Channel {
+    struct Channel: Sendable {
         var id: String
         var publicId: String?
         var name: String
@@ -601,7 +635,7 @@ public final class PublicServerDirectory: @unchecked Sendable {
         var isPrivate: Bool = false
     }
 
-    struct Server {
+    struct Server: Sendable {
         var id: String
         var publicId: String?
         var name: String

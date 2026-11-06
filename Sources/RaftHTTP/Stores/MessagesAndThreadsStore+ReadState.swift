@@ -5,18 +5,18 @@ extension MessagesAndThreadsStore {
 
     /// Message rows plus the legacy thread-follow rows the delivery ack reads,
     /// copied in one critical section.
-    struct DeliveryAckMessageSnapshot {
+    struct DeliveryAckMessageSnapshot: Sendable {
         let rows: [StoredHumanMessage]
         let threadFollows: [String: (serverId: String, userId: String, threadChannelId: String, parentMessageId: String)]
     }
 
     func deliveryAckMessageSnapshot() -> DeliveryAckMessageSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return DeliveryAckMessageSnapshot(
-            rows: storage.humanMessageRows,
-            threadFollows: storage.threadFollows
-        )
+        withState { state in
+            return DeliveryAckMessageSnapshot(
+                rows: state.humanMessageRows,
+                threadFollows: state.threadFollows
+            )
+        }
     }
 
     /// Read-modify-write of every per-channel agent cursor the ack advanced.
@@ -24,13 +24,13 @@ extension MessagesAndThreadsStore {
     /// critical section, so concurrent acks cannot both read version N and
     /// write N+1.
     func advanceAgentReadCursors(agentId: String, maxSeqByChannel: [String: Int]) {
-        lock.lock()
-        defer { lock.unlock() }
-        for (channelId, maxSeq) in maxSeqByChannel {
-            let key = "\(channelId)\n\(agentId)"
-            let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-            guard maxSeq > previous.seq else { continue }
-            storage.agentChannelReadCursors[key] = (maxSeq, previous.version + 1)
+        withState { state in
+            for (channelId, maxSeq) in maxSeqByChannel {
+                let key = "\(channelId)\n\(agentId)"
+                let previous = state.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+                guard maxSeq > previous.seq else { continue }
+                state.agentChannelReadCursors[key] = (maxSeq, previous.version + 1)
+            }
         }
     }
 
@@ -38,21 +38,21 @@ extension MessagesAndThreadsStore {
 
     /// Bumps one human's channel read-state version and returns the new value.
     func bumpChannelReadVersion(channelId: String, userId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = "\(channelId)\n\(userId)"
-        let version = (storage.channelReadVersions[key] ?? 0) + 1
-        storage.channelReadVersions[key] = version
-        return version
+        withState { state in
+            let key = "\(channelId)\n\(userId)"
+            let version = (state.channelReadVersions[key] ?? 0) + 1
+            state.channelReadVersions[key] = version
+            return version
+        }
     }
 
     func channelReadVersion(channelId: String, userId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.channelReadVersions["\(channelId)\n\(userId)"] ?? 0
+        withState { state in
+            return state.channelReadVersions["\(channelId)\n\(userId)"] ?? 0
+        }
     }
 
-    enum ChannelReadAdvance: Equatable {
+    enum ChannelReadAdvance: Sendable, Equatable {
         /// The frontier already covers `seq`; nothing was written.
         case unchanged(maxReadSeq: Int, version: Int)
         case advanced(version: Int)
@@ -67,19 +67,19 @@ extension MessagesAndThreadsStore {
         seq: Int,
         maxReadSeq: () -> Int
     ) -> ChannelReadAdvance {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = "\(channelId)\n\(userId)"
-        let frontier = maxReadSeq()
-        if seq <= frontier {
-            return .unchanged(maxReadSeq: frontier, version: storage.channelReadVersions[key] ?? 0)
+        withState { state in
+            let key = "\(channelId)\n\(userId)"
+            let frontier = maxReadSeq()
+            if seq <= frontier {
+                return .unchanged(maxReadSeq: frontier, version: state.channelReadVersions[key] ?? 0)
+            }
+            let version = (state.channelReadVersions[key] ?? 0) + 1
+            state.channelReadVersions[key] = version
+            return .advanced(version: version)
         }
-        let version = (storage.channelReadVersions[key] ?? 0) + 1
-        storage.channelReadVersions[key] = version
-        return .advanced(version: version)
     }
 
-    struct AgentReadAdvance: Equatable {
+    struct AgentReadAdvance: Sendable, Equatable {
         var seq: Int
         var version: Int
         var advanced: Bool
@@ -88,33 +88,33 @@ extension MessagesAndThreadsStore {
     /// `POST /api/channels/:id/read-all` delegated to an agent receiver: the
     /// previous cursor, the version bump and the write are one critical section.
     func advanceAgentChannelRead(channelId: String, agentId: String, latestSeq: Int) -> AgentReadAdvance {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = "\(channelId)\n\(agentId)"
-        let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-        let advanced = latestSeq > previous.seq
-        let version = advanced ? previous.version + 1 : previous.version
-        storage.agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
-        return AgentReadAdvance(seq: max(previous.seq, latestSeq), version: version, advanced: advanced)
+        withState { state in
+            let key = "\(channelId)\n\(agentId)"
+            let previous = state.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+            let advanced = latestSeq > previous.seq
+            let version = advanced ? previous.version + 1 : previous.version
+            state.agentChannelReadCursors[key] = (seq: max(previous.seq, latestSeq), version: version)
+            return AgentReadAdvance(seq: max(previous.seq, latestSeq), version: version, advanced: advanced)
+        }
     }
 
     /// The Done-inbox stamp and the read-version bump of a receiver-owned
     /// residue read-all, in one critical section; returns the new version.
     func markInboxScopeDone(channelId: String, userId: String, at date: Date) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.inboxDoneScopes.insert("\(userId)\n\(channelId)")
-        storage.inboxDoneAt["\(userId)\n\(channelId)"] = date
-        let key = "\(channelId)\n\(userId)"
-        let version = (storage.channelReadVersions[key] ?? 0) + 1
-        storage.channelReadVersions[key] = version
-        return version
+        withState { state in
+            state.inboxDoneScopes.insert("\(userId)\n\(channelId)")
+            state.inboxDoneAt["\(userId)\n\(channelId)"] = date
+            let key = "\(channelId)\n\(userId)"
+            let version = (state.channelReadVersions[key] ?? 0) + 1
+            state.channelReadVersions[key] = version
+            return version
+        }
     }
 
     func agentChannelReadSeq(channelId: String, agentId: String) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+        withState { state in
+            return state.agentChannelReadCursors["\(channelId)\n\(agentId)"]?.seq ?? 0
+        }
     }
 }
 
@@ -122,11 +122,11 @@ extension MessagesAndThreadsStore {
     /// A system notice the acting agent caused is born read for that agent: the
     /// cursor passes `seq` and its version bumps, in one critical section.
     func markBornRead(channelId: String, agentId: String, seq: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        let key = "\(channelId)\n\(agentId)"
-        let previous = storage.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
-        storage.agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
+        withState { state in
+            let key = "\(channelId)\n\(agentId)"
+            let previous = state.agentChannelReadCursors[key] ?? (seq: 0, version: 0)
+            state.agentChannelReadCursors[key] = (max(previous.seq, seq), previous.version + 1)
+        }
     }
 }
 
@@ -185,30 +185,30 @@ extension MessagesAndThreadsStore {
     /// critical section, so two concurrent read-alls cannot interleave a cursor
     /// read with another request's write.
     func advanceConversationReadAll(userId: String, channelId: String) -> [ReadAllScopeResult] {
-        lock.lock()
-        defer { lock.unlock() }
-        var scopeIds = [channelId]
-        for (_, follow) in storage.threadFollows where follow.userId == userId && follow.parentMessageId != "" {
-            guard let parentRow = storage.humanMessageRows.first(where: { $0.id == follow.parentMessageId }),
-                  parentRow.channelId == channelId
-            else { continue }
-            if !scopeIds.contains(follow.threadChannelId) { scopeIds.append(follow.threadChannelId) }
-        }
-        return scopeIds.map { scope in
-            let latest = storage.humanMessageRows.filter { $0.channelId == scope }.map(\.seq).max() ?? 0
-            let key = "\(userId)\n\(scope)"
-            let previous = storage.userChannelReadCursors[key] ?? 0
-            let version = previous + 1
-            storage.userChannelReadCursors[key] = max(previous, latest)
-            return ReadAllScopeResult(scopeId: scope, maxReadSeq: latest, readStateVersion: version)
+        withState { state in
+            var scopeIds = [channelId]
+            for (_, follow) in state.threadFollows where follow.userId == userId && follow.parentMessageId != "" {
+                guard let parentRow = state.humanMessageRows.first(where: { $0.id == follow.parentMessageId }),
+                      parentRow.channelId == channelId
+                else { continue }
+                if !scopeIds.contains(follow.threadChannelId) { scopeIds.append(follow.threadChannelId) }
+            }
+            return scopeIds.map { scope in
+                let latest = state.humanMessageRows.filter { $0.channelId == scope }.map(\.seq).max() ?? 0
+                let key = "\(userId)\n\(scope)"
+                let previous = state.userChannelReadCursors[key] ?? 0
+                let version = previous + 1
+                state.userChannelReadCursors[key] = max(previous, latest)
+                return ReadAllScopeResult(scopeId: scope, maxReadSeq: latest, readStateVersion: version)
+            }
         }
     }
 
     /// Whether `userId` already owns a read cursor for `scopeId`.
     func hasUserReadCursor(userId: String, scopeId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.userChannelReadCursors["\(userId)\n\(scopeId)"] != nil
+        withState { state in
+            return state.userChannelReadCursors["\(userId)\n\(scopeId)"] != nil
+        }
     }
 
     /// The replay a stored mutation answers, without writing.
@@ -217,19 +217,20 @@ extension MessagesAndThreadsStore {
         fingerprint: String,
         userId: String
     ) -> ReadMutationReplay? {
-        lock.lock()
-        defer { lock.unlock() }
-        return readMutationReplayLocked(key: key, fingerprint: fingerprint, userId: userId)
+        withState { state in
+            return readMutationReplayLocked(key: key, fingerprint: fingerprint, userId: userId, state: &state)
+        }
     }
 
     private func readMutationReplayLocked(
         key: String,
         fingerprint: String,
-        userId: String
+        userId: String,
+        state: inout State
     ) -> ReadMutationReplay? {
-        guard let existing = storage.readMutationRecords[key] else { return nil }
+        guard let existing = state.readMutationRecords[key] else { return nil }
         guard existing.fingerprint == fingerprint else { return .payloadMismatch }
-        let cursor = storage.userChannelReadCursors["\(userId)\n\(existing.scopeId ?? "")"] ?? 0
+        let cursor = state.userChannelReadCursors["\(userId)\n\(existing.scopeId ?? "")"] ?? 0
         if existing.kind == "channel_read_all", cursor > 0 {
             return .alreadyTerminal(scopeId: existing.scopeId ?? "", cursor: cursor)
         }
@@ -246,47 +247,47 @@ extension MessagesAndThreadsStore {
         fingerprint: String,
         record: (_ authoritySeq: Int) -> ReadMutationRecord
     ) -> ReadMutationAdmission {
-        lock.lock()
-        defer { lock.unlock() }
-        if let replay = readMutationReplayLocked(key: key, fingerprint: fingerprint, userId: userId) {
-            return .replay(replay)
+        withState { state in
+            if let replay = readMutationReplayLocked(key: key, fingerprint: fingerprint, userId: userId, state: &state) {
+                return .replay(replay)
+            }
+            let seq = (state.readMutationAuthoritySeq[sequenceKey] ?? 0) + 1
+            state.readMutationAuthoritySeq[sequenceKey] = seq
+            state.readMutationRecords[key] = record(seq)
+            state.readMutationOrder.append(key)
+            return .admitted(authoritySeq: seq)
         }
-        let seq = (storage.readMutationAuthoritySeq[sequenceKey] ?? 0) + 1
-        storage.readMutationAuthoritySeq[sequenceKey] = seq
-        storage.readMutationRecords[key] = record(seq)
-        storage.readMutationOrder.append(key)
-        return .admitted(authoritySeq: seq)
     }
 
     /// The principal's mutation frontier and requested scope cursors from one
     /// snapshot.
     func readMutationFrontier(userId: String, scopeIds: [String]?) -> ReadMutationFrontierSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        let sequences = storage.readMutationAuthoritySeq.filter {
-            $0.key.hasSuffix("\n\(userId)") || $0.key.contains("\n\(userId)")
-        }
-        let upper = sequences.values.max() ?? 0
-        let keys = storage.readMutationOrder.filter { storage.readMutationRecords[$0]?.principalId == userId }
-        let records = keys.compactMap { storage.readMutationRecords[$0] }
-        var lastTerminal = 0
-        let items = records.map { record -> ReadMutationFrontierSnapshot.Item in
-            if record.state != "admitted" { lastTerminal = max(lastTerminal, record.authoritySeq) }
-            return ReadMutationFrontierSnapshot.Item(
-                mutationId: record.mutationId, authoritySeq: record.authoritySeq, state: record.state
+        withState { state in
+            let sequences = state.readMutationAuthoritySeq.filter {
+                $0.key.hasSuffix("\n\(userId)") || $0.key.contains("\n\(userId)")
+            }
+            let upper = sequences.values.max() ?? 0
+            let keys = state.readMutationOrder.filter { state.readMutationRecords[$0]?.principalId == userId }
+            let records = keys.compactMap { state.readMutationRecords[$0] }
+            var lastTerminal = 0
+            let items = records.map { record -> ReadMutationFrontierSnapshot.Item in
+                if record.state != "admitted" { lastTerminal = max(lastTerminal, record.authoritySeq) }
+                return ReadMutationFrontierSnapshot.Item(
+                    mutationId: record.mutationId, authoritySeq: record.authoritySeq, state: record.state
+                )
+            }
+            let cursors = scopeIds.map { ids in
+                ids.map { scope in
+                    (scopeId: scope, maxReadSeq: state.userChannelReadCursors["\(userId)\n\(scope)"] ?? 0)
+                }
+            }
+            return ReadMutationFrontierSnapshot(
+                snapshotUpperAuthoritySeq: upper,
+                lastTerminalAuthoritySeq: lastTerminal,
+                items: items,
+                scopeCursors: cursors
             )
         }
-        let cursors = scopeIds.map { ids in
-            ids.map { scope in
-                (scopeId: scope, maxReadSeq: storage.userChannelReadCursors["\(userId)\n\(scope)"] ?? 0)
-            }
-        }
-        return ReadMutationFrontierSnapshot(
-            snapshotUpperAuthoritySeq: upper,
-            lastTerminalAuthoritySeq: lastTerminal,
-            items: items,
-            scopeCursors: cursors
-        )
     }
 
     /// Drops the follow rows of every thread in `threadChannelIds` whose
@@ -295,43 +296,43 @@ extension MessagesAndThreadsStore {
         inThreads threadChannelIds: Set<String>,
         exceptUsers keepUserIds: Set<String>
     ) {
-        lock.lock()
-        defer { lock.unlock() }
-        for (key, follow) in storage.threadFollows
-        where threadChannelIds.contains(follow.threadChannelId) && !keepUserIds.contains(follow.userId) {
-            storage.threadFollows.removeValue(forKey: key)
+        withState { state in
+            for (key, follow) in state.threadFollows
+            where threadChannelIds.contains(follow.threadChannelId) && !keepUserIds.contains(follow.userId) {
+                state.threadFollows.removeValue(forKey: key)
+            }
         }
     }
 
     /// The stored external-avatar asset and the storage-availability flag from
     /// one snapshot.
     func externalAvatarSnapshot(id: String) -> (asset: ExternalAvatarAsset?, storageAvailable: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (storage.externalAvatarAssets[id], storage.externalAvatarStorageAvailable)
+        withState { state in
+            return (state.externalAvatarAssets[id], state.externalAvatarStorageAvailable)
+        }
     }
 
     /// Thread-unread facts the summary builds from, from one snapshot.
     func threadUnreadFacts(channelId: String) -> [StoredHumanMessage] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.humanMessageRows.filter { $0.channelId == channelId }
+        withState { state in
+            return state.humanMessageRows.filter { $0.channelId == channelId }
+        }
     }
 
     /// Whether `userId` follows the thread and has not archived it to Done.
     func followsActiveThread(serverId: String, userId: String, threadChannelId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
-            && !storage.inboxDoneScopes.contains("\(userId)\n\(threadChannelId)")
+        withState { state in
+            return state.threadFollows["\(serverId)\n\(userId)\n\(threadChannelId)"] != nil
+                && !state.inboxDoneScopes.contains("\(userId)\n\(threadChannelId)")
+        }
     }
 
     /// The mention rows that target `userId` in `channelId`.
     func userMentionExists(channelId: String, userId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.storedMentions.contains {
-            $0.channelId == channelId && $0.targetType == "user" && $0.targetId == userId
+        withState { state in
+            return state.storedMentions.contains {
+                $0.channelId == channelId && $0.targetType == "user" && $0.targetId == userId
+            }
         }
     }
 }

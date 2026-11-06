@@ -3,7 +3,7 @@ import Foundation
 // The session core's read-modify-write sections: social completion, register,
 // staging retirement, device grants, refresh rotation and logout. Each one used
 // to run under the directory lock; each is now exactly one critical section of
-// this store's lock, so two concurrent requests cannot both pass a check that
+// this store's Mutex, so two concurrent requests cannot both pass a check that
 // the first one's write invalidates. Nothing here builds JSON or an HTTP reply.
 
 /// One linked identity row as the link-completion reply lists it.
@@ -115,16 +115,16 @@ extension AuthProfileStore {
     /// The account id behind an access token without the revoked-family check
     /// (the staging retirement keeps working after its own revoke).
     func accessTokenOwner(_ token: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return accountSurface.accessTokens[token]
+        return state.withLock { state in
+            return state.accountSurface.accessTokens[token]
+        }
     }
 
     /// Opens one session family for `userId` (one critical section).
     func openSession(userId: String) -> IssuedSessionTokens {
-        lock.lock()
-        defer { lock.unlock() }
-        return openSessionLocked(userId: userId)
+        return state.withLock { state in
+            return Self.openSessionLocked(state: &state, userId: userId)
+        }
     }
 
     // MARK: - Social completion
@@ -134,133 +134,133 @@ extension AuthProfileStore {
     /// the session open are one critical section: two concurrent requests with
     /// one code cannot both spend it.
     func completeSocial(_ attempt: SocialCompletionAttempt) -> SocialCompletionOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = accountSurface.socialCompletions.firstIndex(where: {
-            $0.provider == attempt.provider && $0.code == attempt.code
-        }) else { return .invalidCompletion }
-        let completion = accountSurface.socialCompletions[index]
-        if completion.mode == "link" {
-            guard let token = attempt.bearerToken,
-                  let caller = accountSurface.accessTokens[token]
-            else { return .linkAuthRequired }
-            guard completion.userId == caller else { return .linkMismatch }
-            accountSurface.socialCompletions.remove(at: index)
-            let providerUserId = completion.providerUserId ?? ""
-            if !accountSurface.linkedIdentities.contains(where: {
-                $0.userId == caller && $0.provider == attempt.provider && $0.providerUserId == providerUserId
-            }) {
-                accountSurface.linkedIdentities.append(LinkedIdentity(
-                    userId: caller,
-                    provider: attempt.provider,
-                    providerUserId: providerUserId
+        return state.withLock { state in
+            guard let index = state.accountSurface.socialCompletions.firstIndex(where: {
+                $0.provider == attempt.provider && $0.code == attempt.code
+            }) else { return .invalidCompletion }
+            let completion = state.accountSurface.socialCompletions[index]
+            if completion.mode == "link" {
+                guard let token = attempt.bearerToken,
+                      let caller = state.accountSurface.accessTokens[token]
+                else { return .linkAuthRequired }
+                guard completion.userId == caller else { return .linkMismatch }
+                state.accountSurface.socialCompletions.remove(at: index)
+                let providerUserId = completion.providerUserId ?? ""
+                if !state.accountSurface.linkedIdentities.contains(where: {
+                    $0.userId == caller && $0.provider == attempt.provider && $0.providerUserId == providerUserId
+                }) {
+                    state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                        userId: caller,
+                        provider: attempt.provider,
+                        providerUserId: providerUserId
+                    ))
+                }
+                let rows = state.accountSurface.linkedIdentities.filter { $0.userId == caller }
+                return .linked(
+                    returnTo: completion.returnTo,
+                    identities: rows.map { LinkedIdentityRow(provider: $0.provider, providerUserId: $0.providerUserId) }
+                )
+            }
+            if let rawToken = attempt.pendingLinkToken, !rawToken.isEmpty {
+                guard var pending = state.accountSurface.pendingSocialLinks[rawToken], !pending.consumed,
+                      !pending.cancelled, pending.expiresAt > attempt.now
+                else { return .pendingLinkExpired }
+                let identityOwner = state.accountSurface.linkedIdentities.first {
+                    $0.provider == attempt.provider && $0.providerUserId == (completion.providerUserId ?? "")
+                }?.userId
+                let pendingOwner = state.accountSurface.accounts[pending.email]?.id
+                guard let identityOwner, identityOwner == pendingOwner else { return .pendingLinkAccountMismatch }
+                pending.consumed = true
+                state.accountSurface.pendingSocialLinks[rawToken] = pending
+                if !state.accountSurface.linkedIdentities.contains(where: {
+                    $0.userId == identityOwner && $0.provider == pending.provider
+                        && $0.providerUserId == pending.providerUserId
+                }) {
+                    state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                        userId: identityOwner, provider: pending.provider,
+                        providerUserId: pending.providerUserId, providerEmail: pending.email
+                    ))
+                }
+                state.accountSurface.socialCompletions.remove(at: index)
+                let tokens = Self.bareSessionLocked(state: &state, userId: identityOwner)
+                return .pendingLinkLogin(
+                    returnTo: completion.returnTo,
+                    tokens: tokens,
+                    linkedProvider: pending.provider
+                )
+            }
+            if completion.userId == nil, completion.intendedAction == "link",
+               completion.linkOnConflict, let existing = state.accountSurface.accounts[completion.email] {
+                let token = AuthTokenCodec.randomHex(32)
+                state.accountSurface.pendingSocialLinks[token] = PendingSocialLink(
+                    token: token, provider: attempt.provider,
+                    providerUserId: completion.providerUserId ?? "",
+                    email: completion.email, returnTo: completion.returnTo, returnUri: nil,
+                    expiresAt: attempt.now.addingTimeInterval(600)
+                )
+                let linkedProviders = Set(
+                    state.accountSurface.linkedIdentities.filter { $0.userId == existing.id }.map(\.provider)
+                ).sorted()
+                return .accountLinkRequired(AccountLinkRequired(
+                    pendingLinkToken: token,
+                    email: existing.email,
+                    hasPassword: existing.passwordCredentialEstablishedAt != nil,
+                    linkedProviders: linkedProviders,
+                    returnTo: completion.returnTo
                 ))
             }
-            let rows = accountSurface.linkedIdentities.filter { $0.userId == caller }
-            return .linked(
-                returnTo: completion.returnTo,
-                identities: rows.map { LinkedIdentityRow(provider: $0.provider, providerUserId: $0.providerUserId) }
-            )
-        }
-        if let rawToken = attempt.pendingLinkToken, !rawToken.isEmpty {
-            guard var pending = accountSurface.pendingSocialLinks[rawToken], !pending.consumed,
-                  !pending.cancelled, pending.expiresAt > attempt.now
-            else { return .pendingLinkExpired }
-            let identityOwner = accountSurface.linkedIdentities.first {
-                $0.provider == attempt.provider && $0.providerUserId == (completion.providerUserId ?? "")
-            }?.userId
-            let pendingOwner = accountSurface.accounts[pending.email]?.id
-            guard let identityOwner, identityOwner == pendingOwner else { return .pendingLinkAccountMismatch }
-            pending.consumed = true
-            accountSurface.pendingSocialLinks[rawToken] = pending
-            if !accountSurface.linkedIdentities.contains(where: {
-                $0.userId == identityOwner && $0.provider == pending.provider
-                    && $0.providerUserId == pending.providerUserId
-            }) {
-                accountSurface.linkedIdentities.append(LinkedIdentity(
-                    userId: identityOwner, provider: pending.provider,
-                    providerUserId: pending.providerUserId, providerEmail: pending.email
-                ))
+            if completion.mode == "login", completion.userId == nil {
+                if !attempt.acceptTerms { return .legalRequired }
+                if attempt.termsVersion != AuthLegalPolicy.termsVersion
+                    || attempt.privacyVersion != AuthLegalPolicy.privacyVersion {
+                    return .termsChanged
+                }
             }
-            accountSurface.socialCompletions.remove(at: index)
-            let tokens = bareSessionLocked(userId: identityOwner)
-            return .pendingLinkLogin(
-                returnTo: completion.returnTo,
-                tokens: tokens,
-                linkedProvider: pending.provider
+            state.accountSurface.socialCompletions.remove(at: index)
+            let id = completion.userId ?? UUID().uuidString.lowercased()
+            let taken = Set(state.accountSurface.accounts.values.map(\.name))
+            let pendingName = AccountNaming.pendingHandle(taken: taken)
+            let suggested = AccountNaming.availableUserName(
+                seed: String(completion.email.split(separator: "@").first ?? "user"),
+                taken: taken
             )
-        }
-        if completion.userId == nil, completion.intendedAction == "link",
-           completion.linkOnConflict, let existing = accountSurface.accounts[completion.email] {
-            let token = AuthTokenCodec.randomHex(32)
-            accountSurface.pendingSocialLinks[token] = PendingSocialLink(
-                token: token, provider: attempt.provider,
-                providerUserId: completion.providerUserId ?? "",
-                email: completion.email, returnTo: completion.returnTo, returnUri: nil,
-                expiresAt: attempt.now.addingTimeInterval(600)
-            )
-            let linkedProviders = Set(
-                accountSurface.linkedIdentities.filter { $0.userId == existing.id }.map(\.provider)
-            ).sorted()
-            return .accountLinkRequired(AccountLinkRequired(
-                pendingLinkToken: token,
-                email: existing.email,
-                hasPassword: existing.passwordCredentialEstablishedAt != nil,
-                linkedProviders: linkedProviders,
-                returnTo: completion.returnTo
-            ))
-        }
-        if completion.mode == "login", completion.userId == nil {
-            if !attempt.acceptTerms { return .legalRequired }
-            if attempt.termsVersion != AuthLegalPolicy.termsVersion
-                || attempt.privacyVersion != AuthLegalPolicy.privacyVersion {
-                return .termsChanged
+            if completion.userId == nil, state.accountSurface.accounts[completion.email] != nil {
+                return .emailExists
             }
-        }
-        accountSurface.socialCompletions.remove(at: index)
-        let id = completion.userId ?? UUID().uuidString.lowercased()
-        let taken = Set(accountSurface.accounts.values.map(\.name))
-        let pendingName = AccountNaming.pendingHandle(taken: taken)
-        let suggested = AccountNaming.availableUserName(
-            seed: String(completion.email.split(separator: "@").first ?? "user"),
-            taken: taken
-        )
-        if completion.userId == nil, accountSurface.accounts[completion.email] != nil {
-            return .emailExists
-        }
-        if completion.userId == nil {
-            accountSurface.accounts[completion.email] = Account(
-                id: id,
-                email: completion.email,
-                passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
-                displayLanguage: nil,
-                name: pendingName,
-                profileSetupSuggestedHandle: suggested
-            )
-            legalAcceptances[id] = EmailLegalAcceptance(
-                termsVersion: AuthLegalPolicy.termsVersion,
-                privacyVersion: AuthLegalPolicy.privacyVersion,
-                termsUrl: AuthLegalPolicy.termsURL,
-                privacyUrl: AuthLegalPolicy.privacyURL,
-                source: attempt.legalAcceptanceSource == "invite" ? "invite" : "oauth",
-                userAgentHash: attempt.userAgentHash,
-                locale: attempt.locale
+            if completion.userId == nil {
+                state.accountSurface.accounts[completion.email] = Account(
+                    id: id,
+                    email: completion.email,
+                    passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
+                    displayLanguage: nil,
+                    name: pendingName,
+                    profileSetupSuggestedHandle: suggested
+                )
+                state.legalAcceptances[id] = EmailLegalAcceptance(
+                    termsVersion: AuthLegalPolicy.termsVersion,
+                    privacyVersion: AuthLegalPolicy.privacyVersion,
+                    termsUrl: AuthLegalPolicy.termsURL,
+                    privacyUrl: AuthLegalPolicy.privacyURL,
+                    source: attempt.legalAcceptanceSource == "invite" ? "invite" : "oauth",
+                    userAgentHash: attempt.userAgentHash,
+                    locale: attempt.locale
+                )
+            }
+            return .loggedIn(
+                mode: completion.mode,
+                returnTo: completion.returnTo,
+                tokens: Self.bareSessionLocked(state: &state, userId: id)
             )
         }
-        return .loggedIn(
-            mode: completion.mode,
-            returnTo: completion.returnTo,
-            tokens: bareSessionLocked(userId: id)
-        )
     }
 
     /// A session without a family row: the social-completion login published
     /// no `sessionFamilies` entry, and that stays the observable shape.
-    private func bareSessionLocked(userId: String) -> IssuedSessionTokens {
+    private static func bareSessionLocked(state: inout State, userId: String) -> IssuedSessionTokens {
         let accessToken = AuthTokenCodec.token()
         let refreshToken = AuthTokenCodec.token()
-        accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: UUID().uuidString.lowercased())
-        accountSurface.accessTokens[accessToken] = userId
+        state.accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: UUID().uuidString.lowercased())
+        state.accountSurface.accessTokens[accessToken] = userId
         return IssuedSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
     }
 
@@ -270,59 +270,60 @@ extension AuthProfileStore {
     /// session in one critical section, so two concurrent registrations of one
     /// address cannot both create it.
     func registerAccount(_ attempt: RegistrationAttempt) -> RegistrationOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        let normalized = attempt.normalizedEmail
-        if accountSurface.accounts[normalized] != nil { return .emailTaken }
-        let taken = Set(accountSurface.accounts.values.map(\.name))
-        let pendingName = AccountNaming.pendingHandle(taken: taken)
-        let suggested = AccountNaming.availableUserName(
-            seed: (attempt.requestedName?.isEmpty == false
-                ? attempt.requestedName!
-                : String(normalized.split(separator: "@").first ?? "user")),
-            taken: taken
-        )
-        let id = UUID().uuidString.lowercased()
-        accountSurface.accounts[normalized] = Account(
-            id: id,
-            email: normalized,
-            passwordHash: attempt.passwordHash,
-            displayLanguage: nil,
-            name: pendingName,
-            profileSetupSuggestedHandle: suggested,
-            stagingSelfAccountCapabilityHash: attempt.capabilityHash
-        )
-        legalAcceptances[id] = EmailLegalAcceptance(
-            termsVersion: AuthLegalPolicy.termsVersion,
-            privacyVersion: AuthLegalPolicy.privacyVersion,
-            termsUrl: AuthLegalPolicy.termsURL,
-            privacyUrl: AuthLegalPolicy.privacyURL,
-            source: attempt.legalAcceptanceSource,
-            userAgentHash: attempt.userAgentHash,
-            locale: attempt.locale
-        )
-        // Upstream inserts a 24h `email_verifications` row during createUser.
-        let verificationToken = AuthTokenCodec.randomHex(32)
-        issueVerificationTokenLocked(
-            userId: id,
-            token: verificationToken,
-            tokenHash: AuthTokenCodec.sha256(verificationToken),
-            now: attempt.now,
-            ttl: 24 * 60 * 60
-        )
-        if attempt.autoVerify {
-            accountSurface.accounts[normalized]?.emailVerified = true
+        return state.withLock { state in
+            let normalized = attempt.normalizedEmail
+            if state.accountSurface.accounts[normalized] != nil { return .emailTaken }
+            let taken = Set(state.accountSurface.accounts.values.map(\.name))
+            let pendingName = AccountNaming.pendingHandle(taken: taken)
+            let suggested = AccountNaming.availableUserName(
+                seed: (attempt.requestedName?.isEmpty == false
+                    ? attempt.requestedName!
+                    : String(normalized.split(separator: "@").first ?? "user")),
+                taken: taken
+            )
+            let id = UUID().uuidString.lowercased()
+            state.accountSurface.accounts[normalized] = Account(
+                id: id,
+                email: normalized,
+                passwordHash: attempt.passwordHash,
+                displayLanguage: nil,
+                name: pendingName,
+                profileSetupSuggestedHandle: suggested,
+                stagingSelfAccountCapabilityHash: attempt.capabilityHash
+            )
+            state.legalAcceptances[id] = EmailLegalAcceptance(
+                termsVersion: AuthLegalPolicy.termsVersion,
+                privacyVersion: AuthLegalPolicy.privacyVersion,
+                termsUrl: AuthLegalPolicy.termsURL,
+                privacyUrl: AuthLegalPolicy.privacyURL,
+                source: attempt.legalAcceptanceSource,
+                userAgentHash: attempt.userAgentHash,
+                locale: attempt.locale
+            )
+            // Upstream inserts a 24h `email_verifications` row during createUser.
+            let verificationToken = AuthTokenCodec.randomHex(32)
+            Self.issueVerificationTokenLocked(
+                state: &state,
+                userId: id,
+                token: verificationToken,
+                tokenHash: AuthTokenCodec.sha256(verificationToken),
+                now: attempt.now,
+                ttl: 24 * 60 * 60
+            )
+            if attempt.autoVerify {
+                state.accountSurface.accounts[normalized]?.emailVerified = true
+            }
+            let tokens = Self.openSessionLocked(state: &state, userId: id)
+            state.accountSurface.emailVerifications += 1
+            return .created(RegisteredAccount(
+                id: id,
+                email: normalized,
+                name: pendingName,
+                suggestedHandle: suggested,
+                emailVerified: attempt.autoVerify,
+                tokens: tokens
+            ))
         }
-        let tokens = openSessionLocked(userId: id)
-        accountSurface.emailVerifications += 1
-        return .created(RegisteredAccount(
-            id: id,
-            email: normalized,
-            name: pendingName,
-            suggestedHandle: suggested,
-            emailVerified: attempt.autoVerify,
-            tokens: tokens
-        ))
     }
 
     // MARK: - Staging retirement
@@ -336,44 +337,44 @@ extension AuthProfileStore {
         capabilityHash: String,
         now: Date
     ) -> StagingRetirementOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let key = accountSurface.accounts.first(where: { $0.value.id == userId })?.key,
-              var account = accountSurface.accounts[key]
-        else { return .userNotFound }
-        if !account.emailVerified || account.email.wholeMatch(of: /(?i).*@mail\.build/) == nil {
-            return .unsupportedAccount
-        }
-        if account.stagingSelfAccountCapabilityHash == nil
-            || account.stagingSelfAccountCapabilityHash != capabilityHash {
-            return .invalidCapability
-        }
-        if account.retiredAt != nil {
-            return .alreadyRetired(accountSurface.retirementReceipts[userId])
-        }
-        account.retiredAt = now
-        accountSurface.accounts[key] = account
-        let live = accountSurface.sessions.filter { $0.value.userId == userId }
-        for (token, session) in live {
-            accountSurface.sessions.removeValue(forKey: token)
-            accountSurface.revokedFamilies.insert(session.familyId)
-        }
-        let familyIds = accountSurface.sessionFamilies.compactMap { $0.value.userId == userId ? $0.key : nil }
-        for familyId in familyIds {
-            accountSurface.revokedFamilies.insert(familyId)
-            if accountSurface.sessionFamilies[familyId]?.revokedAt == nil {
-                accountSurface.sessionFamilies[familyId]?.revokedAt = now
+        return state.withLock { state in
+            guard let key = state.accountSurface.accounts.first(where: { $0.value.id == userId })?.key,
+                  var account = state.accountSurface.accounts[key]
+            else { return .userNotFound }
+            if !account.emailVerified || account.email.wholeMatch(of: /(?i).*@mail\.build/) == nil {
+                return .unsupportedAccount
             }
+            if account.stagingSelfAccountCapabilityHash == nil
+                || account.stagingSelfAccountCapabilityHash != capabilityHash {
+                return .invalidCapability
+            }
+            if account.retiredAt != nil {
+                return .alreadyRetired(state.accountSurface.retirementReceipts[userId])
+            }
+            account.retiredAt = now
+            state.accountSurface.accounts[key] = account
+            let live = state.accountSurface.sessions.filter { $0.value.userId == userId }
+            for (token, session) in live {
+                state.accountSurface.sessions.removeValue(forKey: token)
+                state.accountSurface.revokedFamilies.insert(session.familyId)
+            }
+            let familyIds = state.accountSurface.sessionFamilies.compactMap { $0.value.userId == userId ? $0.key : nil }
+            for familyId in familyIds {
+                state.accountSurface.revokedFamilies.insert(familyId)
+                if state.accountSurface.sessionFamilies[familyId]?.revokedAt == nil {
+                    state.accountSurface.sessionFamilies[familyId]?.revokedAt = now
+                }
+            }
+            let receipt = RetirementReceipt(
+                userId: userId,
+                actorUserId: actorUserId,
+                environment: "staging",
+                terminalState: "retired",
+                sessionsRevoked: live.count
+            )
+            state.accountSurface.retirementReceipts[userId] = receipt
+            return .retired(receipt)
         }
-        let receipt = RetirementReceipt(
-            userId: userId,
-            actorUserId: actorUserId,
-            environment: "staging",
-            terminalState: "retired",
-            sessionsRevoked: live.count
-        )
-        accountSurface.retirementReceipts[userId] = receipt
-        return .retired(receipt)
     }
 
     // MARK: - Device grants
@@ -384,17 +385,17 @@ extension AuthProfileStore {
         clientName: String?,
         expiresAt: Date
     ) {
-        lock.lock()
-        accountSurface.deviceGrants[deviceCode] = DeviceGrant(
-            deviceCode: deviceCode,
-            userCode: userCode,
-            status: "pending",
-            approvedByUserId: nil,
-            expiresAt: expiresAt,
-            clientName: clientName
-        )
-        accountSurface.deviceUserCodes[userCode] = deviceCode
-        lock.unlock()
+        state.withLock { state in
+            state.accountSurface.deviceGrants[deviceCode] = DeviceGrant(
+                deviceCode: deviceCode,
+                userCode: userCode,
+                status: "pending",
+                approvedByUserId: nil,
+                expiresAt: expiresAt,
+                clientName: clientName
+            )
+            state.accountSurface.deviceUserCodes[userCode] = deviceCode
+        }
     }
 
     /// Approves or denies one pending grant. The lookup, the pending and expiry
@@ -406,37 +407,37 @@ extension AuthProfileStore {
         actorUserId: String,
         now: Date
     ) -> DeviceDecisionOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let deviceCode = accountSurface.deviceUserCodes[userCode],
-              var grant = accountSurface.deviceGrants[deviceCode]
-        else { return .userCodeInvalid }
-        if grant.status != "pending" { return .alreadyResolved }
-        if grant.expiresAt <= now { return .expired }
-        if approve {
-            grant.status = "approved"
-            grant.approvedByUserId = actorUserId
-        } else {
-            grant.status = "denied"
-            grant.approvedByUserId = nil
+        return state.withLock { state in
+            guard let deviceCode = state.accountSurface.deviceUserCodes[userCode],
+                  var grant = state.accountSurface.deviceGrants[deviceCode]
+            else { return .userCodeInvalid }
+            if grant.status != "pending" { return .alreadyResolved }
+            if grant.expiresAt <= now { return .expired }
+            if approve {
+                grant.status = "approved"
+                grant.approvedByUserId = actorUserId
+            } else {
+                grant.status = "denied"
+                grant.approvedByUserId = nil
+            }
+            state.accountSurface.deviceGrants[deviceCode] = grant
+            return .decided
         }
-        accountSurface.deviceGrants[deviceCode] = grant
-        return .decided
     }
 
     /// Spends one approved grant and opens its session in one critical section:
     /// two concurrent polls of one approved code issue exactly one session.
     func consumeDeviceGrant(deviceCode: String, now: Date) -> DeviceTokenOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var grant = accountSurface.deviceGrants[deviceCode] else { return .deviceCodeInvalid }
-        if grant.status == "consumed" { return .consumed }
-        if grant.expiresAt <= now { return .expired }
-        if grant.status == "denied" { return .denied }
-        guard grant.status == "approved", let userId = grant.approvedByUserId else { return .pending }
-        grant.status = "consumed"
-        accountSurface.deviceGrants[deviceCode] = grant
-        return .issued(userId: userId, tokens: openSessionLocked(userId: userId))
+        return state.withLock { state in
+            guard var grant = state.accountSurface.deviceGrants[deviceCode] else { return .deviceCodeInvalid }
+            if grant.status == "consumed" { return .consumed }
+            if grant.expiresAt <= now { return .expired }
+            if grant.status == "denied" { return .denied }
+            guard grant.status == "approved", let userId = grant.approvedByUserId else { return .pending }
+            grant.status = "consumed"
+            state.accountSurface.deviceGrants[deviceCode] = grant
+            return .issued(userId: userId, tokens: Self.openSessionLocked(state: &state, userId: userId))
+        }
     }
 
     // MARK: - Refresh and logout
@@ -451,41 +452,43 @@ extension AuthProfileStore {
         installationId: String?,
         now: Date
     ) -> RefreshRotation? {
-        lock.lock()
-        defer { lock.unlock() }
-        if let attemptId, let installationId {
-            return durableRotationLocked(
-                refreshToken: refreshToken,
-                attemptId: attemptId,
-                installationId: installationId,
-                now: now
-            )
+        return state.withLock { state in
+            if let attemptId, let installationId {
+                return Self.durableRotationLocked(
+                    state: &state,
+                    refreshToken: refreshToken,
+                    attemptId: attemptId,
+                    installationId: installationId,
+                    now: now
+                )
+            }
+            guard let live = state.accountSurface.sessions[refreshToken],
+                  !state.accountSurface.revokedFamilies.contains(live.familyId)
+            else { return nil }
+            state.accountSurface.sessions.removeValue(forKey: refreshToken)
+            state.accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] = live.familyId
+            let successor = AuthTokenCodec.token()
+            state.accountSurface.sessions[successor] = live
+            let accessToken = AuthTokenCodec.token()
+            state.accountSurface.accessTokens[accessToken] = live.userId
+            state.accountSurface.accessTokenFamilies[accessToken] = live.familyId
+            return RefreshRotation(accessToken: accessToken, refreshToken: successor)
         }
-        guard let live = accountSurface.sessions[refreshToken],
-              !accountSurface.revokedFamilies.contains(live.familyId)
-        else { return nil }
-        accountSurface.sessions.removeValue(forKey: refreshToken)
-        accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] = live.familyId
-        let successor = AuthTokenCodec.token()
-        accountSurface.sessions[successor] = live
-        let accessToken = AuthTokenCodec.token()
-        accountSurface.accessTokens[accessToken] = live.userId
-        accountSurface.accessTokenFamilies[accessToken] = live.familyId
-        return RefreshRotation(accessToken: accessToken, refreshToken: successor)
     }
 
-    private func durableRotationLocked(
+    private static func durableRotationLocked(
+        state: inout State,
         refreshToken: String,
         attemptId: String,
         installationId: String,
         now: Date
     ) -> RefreshRotation? {
         let hash = AuthTokenCodec.sha256(refreshToken)
-        if let live = accountSurface.sessions.removeValue(forKey: refreshToken) {
-            if accountSurface.revokedFamilies.contains(live.familyId) { return nil }
+        if let live = state.accountSurface.sessions.removeValue(forKey: refreshToken) {
+            if state.accountSurface.revokedFamilies.contains(live.familyId) { return nil }
             let successor = AuthTokenCodec.token()
-            accountSurface.sessions[successor] = live
-            accountSurface.rotationReceipts[hash] = RotationReceipt(
+            state.accountSurface.sessions[successor] = live
+            state.accountSurface.rotationReceipts[hash] = RotationReceipt(
                 attemptId: attemptId,
                 installationId: installationId,
                 userId: live.userId,
@@ -495,42 +498,42 @@ extension AuthProfileStore {
                 expiresAt: now.addingTimeInterval(15 * 60)
             )
             let accessToken = AuthTokenCodec.token()
-            accountSurface.accessTokens[accessToken] = live.userId
-            accountSurface.accessTokenFamilies[accessToken] = live.familyId
+            state.accountSurface.accessTokens[accessToken] = live.userId
+            state.accountSurface.accessTokenFamilies[accessToken] = live.familyId
             return RefreshRotation(accessToken: accessToken, refreshToken: successor)
         }
-        guard let receipt = accountSurface.rotationReceipts[hash] else { return nil }
+        guard let receipt = state.accountSurface.rotationReceipts[hash] else { return nil }
         if receipt.attemptId != attemptId || receipt.installationId != installationId { return nil }
-        if receipt.expiresAt <= now || accountSurface.revokedFamilies.contains(receipt.familyId) { return nil }
+        if receipt.expiresAt <= now || state.accountSurface.revokedFamilies.contains(receipt.familyId) { return nil }
         let accessToken = AuthTokenCodec.token()
-        accountSurface.accessTokens[accessToken] = receipt.userId
-        accountSurface.accessTokenFamilies[accessToken] = receipt.familyId
+        state.accountSurface.accessTokens[accessToken] = receipt.userId
+        state.accountSurface.accessTokenFamilies[accessToken] = receipt.familyId
         return RefreshRotation(accessToken: accessToken, refreshToken: receipt.successor)
     }
 
     /// Revokes the family behind one refresh token (live, predecessor or
     /// replay receipt) in one critical section.
     func revokeRefreshFamily(refreshToken: String, now: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        let retainUntil = now.addingTimeInterval(30 * 24 * 60 * 60)
-        if let live = accountSurface.sessions.removeValue(forKey: refreshToken) {
-            revokeFamilyLocked(live.familyId, now: now, retainUntil: retainUntil, dropSessions: true)
-        } else if let predecessorFamily = accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] {
-            revokeFamilyLocked(predecessorFamily, now: now, retainUntil: retainUntil, dropSessions: true)
-        } else if let receipt = accountSurface.rotationReceipts[AuthTokenCodec.sha256(refreshToken)] {
-            revokeFamilyLocked(receipt.familyId, now: now, retainUntil: retainUntil, dropSessions: false)
+        return state.withLock { state in
+            let retainUntil = now.addingTimeInterval(30 * 24 * 60 * 60)
+            if let live = state.accountSurface.sessions.removeValue(forKey: refreshToken) {
+                Self.revokeFamilyLocked(state: &state, live.familyId, now: now, retainUntil: retainUntil, dropSessions: true)
+            } else if let predecessorFamily = state.accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] {
+                Self.revokeFamilyLocked(state: &state, predecessorFamily, now: now, retainUntil: retainUntil, dropSessions: true)
+            } else if let receipt = state.accountSurface.rotationReceipts[AuthTokenCodec.sha256(refreshToken)] {
+                Self.revokeFamilyLocked(state: &state, receipt.familyId, now: now, retainUntil: retainUntil, dropSessions: false)
+            }
         }
     }
 
-    private func revokeFamilyLocked(_ familyId: String, now: Date, retainUntil: Date, dropSessions: Bool) {
-        accountSurface.revokedFamilies.insert(familyId)
-        accountSurface.sessionFamilies[familyId]?.revokedAt = now
-        accountSurface.sessionFamilies[familyId]?.revokedReason = "logout"
-        accountSurface.sessionFamilies[familyId]?.capabilityRetainUntil = retainUntil
+    private static func revokeFamilyLocked(state: inout State, _ familyId: String, now: Date, retainUntil: Date, dropSessions: Bool) {
+        state.accountSurface.revokedFamilies.insert(familyId)
+        state.accountSurface.sessionFamilies[familyId]?.revokedAt = now
+        state.accountSurface.sessionFamilies[familyId]?.revokedReason = "logout"
+        state.accountSurface.sessionFamilies[familyId]?.capabilityRetainUntil = retainUntil
         if dropSessions {
-            let familyTokens = accountSurface.sessions.filter { $0.value.familyId == familyId }.map { $0.key }
-            for token in familyTokens { accountSurface.sessions.removeValue(forKey: token) }
+            let familyTokens = state.accountSurface.sessions.filter { $0.value.familyId == familyId }.map { $0.key }
+            for token in familyTokens { state.accountSurface.sessions.removeValue(forKey: token) }
         }
     }
 }

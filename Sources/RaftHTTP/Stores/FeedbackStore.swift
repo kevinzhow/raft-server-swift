@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -11,11 +12,11 @@ import FoundationNetworking
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class FeedbackStore: @unchecked Sendable {
+final class FeedbackStore: Sendable {
     /// Every row this store owns. Grouping them lets one locked value be the
     /// whole store snapshot; each accessor below copies it, which is cheap
     /// because the collections are copy-on-write.
-    struct State {
+    struct State: Sendable {
         var appAgentReminderLedger: [String: String] = [:]
         var agentReminderSurfaceChannels: [String: String] = [:]
         var productFeedbackReporterSessionCache: [String: (token: String, expiresAt: Date)] = [:]
@@ -27,7 +28,7 @@ final class FeedbackStore: @unchecked Sendable {
         var handsFeedbackLegacyEnvironment: [String: String]? = nil
         // Injectable Hands feedback transport configuration that used to live
         // inline on `EmailLoginDirectory`.
-        var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? = nil
+        var handsFeedbackUpstreamHandler: (@Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data))? = nil
         var handsConversationAppTokenOverride: String? = nil
         var handsFeedbackBaseURLOverride: String? = nil
         var handsFeedbackAppIdOverride: String? = nil
@@ -37,46 +38,37 @@ final class FeedbackStore: @unchecked Sendable {
         var marketplaceReviewerOverride: Set<String>? = nil
     }
 
-    private let lock = NSLock()
-    private var storage = State()
+    private let storage = Mutex(State())
 
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
     }
 
     var appAgentReminderLedger: [String: String] {
-        get { state.appAgentReminderLedger }
-        set { state.appAgentReminderLedger = newValue }
+        get { storage.withLock { $0.appAgentReminderLedger } }
+        set { storage.withLock { $0.appAgentReminderLedger = newValue } }
     }
 
     var agentReminderSurfaceChannels: [String: String] {
-        get { state.agentReminderSurfaceChannels }
-        set { state.agentReminderSurfaceChannels = newValue }
+        get { storage.withLock { $0.agentReminderSurfaceChannels } }
+        set { storage.withLock { $0.agentReminderSurfaceChannels = newValue } }
     }
 
     var productFeedbackRouteVerifiedCommitments: Set<String> {
-        get { state.productFeedbackRouteVerifiedCommitments }
-        set { state.productFeedbackRouteVerifiedCommitments = newValue }
+        get { storage.withLock { $0.productFeedbackRouteVerifiedCommitments } }
+        set { storage.withLock { $0.productFeedbackRouteVerifiedCommitments = newValue } }
     }
 
     var feedbackLocatorRecords: [FeedbackLocatorRecord] {
-        get { state.feedbackLocatorRecords }
-        set { state.feedbackLocatorRecords = newValue }
+        get { storage.withLock { $0.feedbackLocatorRecords } }
+        set { storage.withLock { $0.feedbackLocatorRecords = newValue } }
     }
 
     /// The outcome of one locator insert. The receipt belongs to the stored row
     /// so a replay answers the original id.
-    enum FeedbackLocatorInsertOutcome: Equatable {
+    enum FeedbackLocatorInsertOutcome: Equatable, Sendable {
         case inserted
         case duplicate(receiptId: String)
         case conflict
@@ -86,77 +78,77 @@ final class FeedbackStore: @unchecked Sendable {
     /// append are one critical section: two concurrent first reports for the
     /// same identity cannot both be inserted.
     func insertFeedbackLocator(_ record: FeedbackLocatorRecord) -> FeedbackLocatorInsertOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        if let existing = storage.feedbackLocatorRecords.first(where: {
-            $0.serverId == record.serverId && $0.reportId == record.reportId
-        }) {
-            return existing.payloadSha256 == record.payloadSha256
-                ? .duplicate(receiptId: existing.receiptId)
-                : .conflict
+        return storage.withLock { storage in
+            if let existing = storage.feedbackLocatorRecords.first(where: {
+                $0.serverId == record.serverId && $0.reportId == record.reportId
+            }) {
+                return existing.payloadSha256 == record.payloadSha256
+                    ? .duplicate(receiptId: existing.receiptId)
+                    : .conflict
+            }
+            storage.feedbackLocatorRecords.append(record)
+            return .inserted
         }
-        storage.feedbackLocatorRecords.append(record)
-        return .inserted
     }
 
     /// One locked snapshot of a server's rows; filtering and paging stay in the
     /// service and cannot interleave with an insert.
     func feedbackLocatorSnapshot(serverId: String) -> [FeedbackLocatorRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.feedbackLocatorRecords.filter { $0.serverId == serverId }
+        return storage.withLock { storage in
+            return storage.feedbackLocatorRecords.filter { $0.serverId == serverId }
+        }
     }
 
     var handsFeedbackAppsJSON: String? {
-        get { state.handsFeedbackAppsJSON }
-        set { state.handsFeedbackAppsJSON = newValue }
+        get { storage.withLock { $0.handsFeedbackAppsJSON } }
+        set { storage.withLock { $0.handsFeedbackAppsJSON = newValue } }
     }
 
     var handsFeedbackLegacyEnvironment: [String: String]? {
-        get { state.handsFeedbackLegacyEnvironment }
-        set { state.handsFeedbackLegacyEnvironment = newValue }
+        get { storage.withLock { $0.handsFeedbackLegacyEnvironment } }
+        set { storage.withLock { $0.handsFeedbackLegacyEnvironment = newValue } }
     }
 
     // MARK: - Injected Hands feedback transport configuration
 
-    var handsFeedbackUpstreamHandler: ((URLRequest) -> (status: Int, headers: [String: String], body: Data))? {
-        get { state.handsFeedbackUpstreamHandler }
-        set { state.handsFeedbackUpstreamHandler = newValue }
+    var handsFeedbackUpstreamHandler: (@Sendable (URLRequest) -> (status: Int, headers: [String: String], body: Data))? {
+        get { storage.withLock { $0.handsFeedbackUpstreamHandler } }
+        set { storage.withLock { $0.handsFeedbackUpstreamHandler = newValue } }
     }
 
     var handsConversationAppTokenOverride: String? {
-        get { state.handsConversationAppTokenOverride }
-        set { state.handsConversationAppTokenOverride = newValue }
+        get { storage.withLock { $0.handsConversationAppTokenOverride } }
+        set { storage.withLock { $0.handsConversationAppTokenOverride = newValue } }
     }
 
     var handsFeedbackBaseURLOverride: String? {
-        get { state.handsFeedbackBaseURLOverride }
-        set { state.handsFeedbackBaseURLOverride = newValue }
+        get { storage.withLock { $0.handsFeedbackBaseURLOverride } }
+        set { storage.withLock { $0.handsFeedbackBaseURLOverride = newValue } }
     }
 
     var handsFeedbackAppIdOverride: String? {
-        get { state.handsFeedbackAppIdOverride }
-        set { state.handsFeedbackAppIdOverride = newValue }
+        get { storage.withLock { $0.handsFeedbackAppIdOverride } }
+        set { storage.withLock { $0.handsFeedbackAppIdOverride = newValue } }
     }
 
     var handsFeedbackAppSlugOverride: String? {
-        get { state.handsFeedbackAppSlugOverride }
-        set { state.handsFeedbackAppSlugOverride = newValue }
+        get { storage.withLock { $0.handsFeedbackAppSlugOverride } }
+        set { storage.withLock { $0.handsFeedbackAppSlugOverride = newValue } }
     }
 
     var handsFeedbackAppTokenOverride: String? {
-        get { state.handsFeedbackAppTokenOverride }
-        set { state.handsFeedbackAppTokenOverride = newValue }
+        get { storage.withLock { $0.handsFeedbackAppTokenOverride } }
+        set { storage.withLock { $0.handsFeedbackAppTokenOverride = newValue } }
     }
 
     var handsFeedbackConfigured: Bool {
-        get { state.handsFeedbackConfigured }
-        set { state.handsFeedbackConfigured = newValue }
+        get { storage.withLock { $0.handsFeedbackConfigured } }
+        set { storage.withLock { $0.handsFeedbackConfigured = newValue } }
     }
 
     var marketplaceReviewerOverride: Set<String>? {
-        get { state.marketplaceReviewerOverride }
-        set { state.marketplaceReviewerOverride = newValue }
+        get { storage.withLock { $0.marketplaceReviewerOverride } }
+        set { storage.withLock { $0.marketplaceReviewerOverride = newValue } }
     }
 
     // MARK: - Hands feedback configuration
@@ -173,13 +165,13 @@ final class FeedbackStore: @unchecked Sendable {
         base: [String: String],
         conversationSessionEnabled: Bool?
     ) -> [String: String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Self.mergedEnvironment(
-            storage,
-            base: base,
-            conversationSessionEnabled: conversationSessionEnabled
-        )
+        return storage.withLock { storage in
+            return Self.mergedEnvironment(
+                storage,
+                base: base,
+                conversationSessionEnabled: conversationSessionEnabled
+            )
+        }
     }
 
     /// One atomic read of the three configuration facts the submission path
@@ -189,17 +181,17 @@ final class FeedbackStore: @unchecked Sendable {
         base: [String: String],
         conversationSessionEnabled: Bool?
     ) -> (environment: [String: String], appsJSON: String?, configured: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (
-            Self.mergedEnvironment(
-                storage,
-                base: base,
-                conversationSessionEnabled: conversationSessionEnabled
-            ),
-            storage.handsFeedbackAppsJSON,
-            storage.handsFeedbackConfigured
-        )
+        return storage.withLock { storage in
+            return (
+                Self.mergedEnvironment(
+                    storage,
+                    base: base,
+                    conversationSessionEnabled: conversationSessionEnabled
+                ),
+                storage.handsFeedbackAppsJSON,
+                storage.handsFeedbackConfigured
+            )
+        }
     }
 
     private static func mergedEnvironment(
@@ -238,39 +230,39 @@ final class FeedbackStore: @unchecked Sendable {
 extension FeedbackStore {
     /// The message an installation already recorded for the idempotency key.
     func appAgentReminderMessageId(ledgerKey: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.appAgentReminderLedger[ledgerKey]
+        return storage.withLock { storage in
+            return storage.appAgentReminderLedger[ledgerKey]
+        }
     }
 
     /// The agent's reminders DM channel id, when one was created.
     func agentReminderSurfaceChannelId(agentId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentReminderSurfaceChannels[agentId]
+        return storage.withLock { storage in
+            return storage.agentReminderSurfaceChannels[agentId]
+        }
     }
 
     /// Forgets the reminders surface when it still points at `channelId` (it
     /// was soft-deleted), so the next write creates a fresh one.
     func clearAgentReminderSurface(agentId: String, ifChannelId channelId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        if storage.agentReminderSurfaceChannels[agentId] == channelId {
-            storage.agentReminderSurfaceChannels.removeValue(forKey: agentId)
+        storage.withLock { storage -> Void in
+            if storage.agentReminderSurfaceChannels[agentId] == channelId {
+                storage.agentReminderSurfaceChannels.removeValue(forKey: agentId)
+            }
         }
     }
 
     func setAgentReminderSurface(agentId: String, channelId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.agentReminderSurfaceChannels[agentId] = channelId
+        storage.withLock { storage -> Void in
+            storage.agentReminderSurfaceChannels[agentId] = channelId
+        }
     }
 
     /// Records the delivered reminder for the idempotency key.
     func recordAppAgentReminder(ledgerKey: String, messageId: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.appAgentReminderLedger[ledgerKey] = messageId
+        storage.withLock { storage -> Void in
+            storage.appAgentReminderLedger[ledgerKey] = messageId
+        }
     }
 }
 
@@ -278,7 +270,7 @@ extension FeedbackStore {
 
 extension FeedbackStore {
     /// The outcome of one route-binding cache probe.
-    enum RouteBindingCheck: Equatable {
+    enum RouteBindingCheck: Equatable, Sendable {
         /// A different root commitment is already recorded for the label.
         case commitmentMismatch
         /// A live success for the cache key is cached.
@@ -296,62 +288,62 @@ extension FeedbackStore {
         cacheKey: String,
         now: Date
     ) -> RouteBindingCheck {
-        lock.lock()
-        defer { lock.unlock() }
-        if let existing = storage.productFeedbackRouteCommitments[commitmentLabel] {
-            if existing != commitment { return .commitmentMismatch }
-        } else {
-            storage.productFeedbackRouteCommitments[commitmentLabel] = commitment
+        return storage.withLock { storage in
+            if let existing = storage.productFeedbackRouteCommitments[commitmentLabel] {
+                if existing != commitment { return .commitmentMismatch }
+            } else {
+                storage.productFeedbackRouteCommitments[commitmentLabel] = commitment
+            }
+            if let expiresAt = storage.productFeedbackRouteBindingSuccesses[cacheKey], expiresAt > now {
+                return .cached
+            }
+            return .miss
         }
-        if let expiresAt = storage.productFeedbackRouteBindingSuccesses[cacheKey], expiresAt > now {
-            return .cached
-        }
-        return .miss
     }
 
     func recordRouteBindingSuccess(cacheKey: String, expiresAt: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.productFeedbackRouteBindingSuccesses[cacheKey] = expiresAt
+        storage.withLock { storage -> Void in
+            storage.productFeedbackRouteBindingSuccesses[cacheKey] = expiresAt
+        }
     }
 
     /// The cached reporter session token that stays valid past `validAfter`.
     func cachedReporterSession(cacheKey: String, validAfter: Date) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let cached = storage.productFeedbackReporterSessionCache[cacheKey],
-              cached.expiresAt > validAfter
-        else { return nil }
-        return cached.token
+        return storage.withLock { storage in
+            guard let cached = storage.productFeedbackReporterSessionCache[cacheKey],
+                  cached.expiresAt > validAfter
+            else { return nil }
+            return cached.token
+        }
     }
 
     func storeReporterSession(cacheKey: String, token: String, expiresAt: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.productFeedbackReporterSessionCache[cacheKey] = (token, expiresAt)
+        storage.withLock { storage -> Void in
+            storage.productFeedbackReporterSessionCache[cacheKey] = (token, expiresAt)
+        }
     }
 
     /// Drops the cached route-binding successes and verified commitments; the
     /// recorded commitments survive unless `includingCommitments` is set.
     func clearRouteBindingCache(includingCommitments: Bool = false, includingReporterSessions: Bool = false) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.productFeedbackRouteBindingSuccesses.removeAll()
-        storage.productFeedbackRouteVerifiedCommitments.removeAll()
-        if includingCommitments { storage.productFeedbackRouteCommitments.removeAll() }
-        if includingReporterSessions { storage.productFeedbackReporterSessionCache.removeAll() }
+        storage.withLock { storage -> Void in
+            storage.productFeedbackRouteBindingSuccesses.removeAll()
+            storage.productFeedbackRouteVerifiedCommitments.removeAll()
+            if includingCommitments { storage.productFeedbackRouteCommitments.removeAll() }
+            if includingReporterSessions { storage.productFeedbackReporterSessionCache.removeAll() }
+        }
     }
 
     func clearReporterSessions() {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.productFeedbackReporterSessionCache.removeAll()
+        storage.withLock { storage -> Void in
+            storage.productFeedbackReporterSessionCache.removeAll()
+        }
     }
 
     /// Labels committed by route binding, sorted.
     func routeCommitmentLabels() -> [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.productFeedbackRouteCommitments.keys.sorted()
+        return storage.withLock { storage in
+            return storage.productFeedbackRouteCommitments.keys.sorted()
+        }
     }
 }

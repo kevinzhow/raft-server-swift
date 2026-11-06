@@ -4,17 +4,17 @@ import Foundation
 import FoundationNetworking
 #endif
 
-/// `POST /api/auth/login`.
+/// Dependency assembly for the HTTP domain services.
 ///
-/// A non-string or empty email or password is refused before any account lookup.
-/// A missing account and a wrong password share one 401, and neither issues a session.
+/// Services implement authentication and domain decisions; stores own state.
+/// A global transaction lock still protects unmigrated directory operations.
 ///
-/// This type is the composition root for the HTTP surface: the directory lock,
-/// the lock-guarded relay slots, one store per ledger family, and the OAuth
-/// ledger. Store forwarding accessors live in
-/// `EmailLogin+StoreForwarders.swift`; domain services live under
-/// `Services/`; test seams belong in the `TestSupport` target.
-public final class EmailLoginDirectory: @unchecked Sendable {
+/// The root holds immutable references to its stores, OAuth ledger, and locks.
+/// Checked Sendable validates those references; it does not remove the
+/// transaction coordination still used by the directory's remaining helpers.
+/// Store forwarding accessors live in `Stores/DirectoryStoreForwarders.swift`;
+/// domain services live under `Services/`, with test seams in `TestSupport`.
+public final class EmailLoginDirectory: Sendable {
     let lock = NSLock()
 
     // Domain stores. Each owns one ledger family behind its own lock, and the

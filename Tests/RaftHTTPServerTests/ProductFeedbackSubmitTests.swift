@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import Synchronization
 import Testing
 import TestSupport
 import Vapor
@@ -245,9 +246,9 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
 @Test func trustedClientKindHeaderMustMatchNativeMetadata() async throws {
     let fixture = SubmitFixture()
     fixture.accounts.setHandsFeedbackForTesting(baseURL: "https://hands.test", appId: "raft-web", appToken: "t", appSlug: "raft-web")
-    var upstreamCalls = 0
+    let upstreamCalls = Mutex(0)
     fixture.accounts.setHandsFeedbackUpstreamForTesting { _ in
-        upstreamCalls += 1
+        upstreamCalls.withLock { $0 += 1 }
         return (201, [:], Data("{\"id\":\"ticket\",\"status\":\"open\"}".utf8))
     }
     try await withApp { app in
@@ -263,7 +264,7 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
             #expect(absent.body["code"] as? String == "feedback_invalid")
             let mismatched = try await submitForm(client, fixture, base, clientKind: "android")
             #expect(mismatched.status == .badRequest)
-            #expect(upstreamCalls == 0)
+            #expect(upstreamCalls.withLock { $0 } == 0)
 
             fixture.accounts.setHandsFeedbackForTesting(baseURL: nil, appId: nil, appToken: nil)
             let trusted = try await submitForm(client, fixture, base, clientKind: "ios")

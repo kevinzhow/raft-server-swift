@@ -15,37 +15,37 @@ extension OAuthLedger {
         envVarsJSON: String? = nil
     ) -> String {
         let id = UUID().uuidString.lowercased()
-        lock.lock()
-        agents[id] = Agent(
-            id: id,
-            serverId: serverId,
-            name: name,
-            displayName: displayName ?? name,
-            avatarUrl: avatarUrl,
-            description: description,
-            creatorUserId: creatorUserId,
-            runtime: runtime,
-            runtimeConfigJSON: runtimeConfigJSON,
-            envVarsJSON: envVarsJSON
-        )
-        agentRoles["\(serverId)\n\(id)"] = "member"
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id] = Agent(
+                id: id,
+                serverId: serverId,
+                name: name,
+                displayName: displayName ?? name,
+                avatarUrl: avatarUrl,
+                description: description,
+                creatorUserId: creatorUserId,
+                runtime: runtime,
+                runtimeConfigJSON: runtimeConfigJSON,
+                envVarsJSON: envVarsJSON
+            )
+            ledgerState.agentRoles["\(serverId)\n\(id)"] = "member"
+        }
         return id
     }
 
     @discardableResult
     public func setAgentCreator(id: String, creatorUserId: String?) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let key = agents.keys.first(where: { $0 == id }) else { return false }
-        agents[key]?.creatorUserId = creatorUserId
-        return true
+        return self.state.withLock { ledgerState in
+            guard let key = ledgerState.agents.keys.first(where: { $0 == id }) else { return false }
+            ledgerState.agents[key]?.creatorUserId = creatorUserId
+            return true
+        }
     }
 
     public func setAgentRuntime(id: String, runtime: String) {
-        lock.lock()
-        agents[id]?.runtime = runtime
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.runtime = runtime
+        }
     }
 
     public struct AgentAudienceClient: Sendable {
@@ -61,23 +61,23 @@ extension OAuthLedger {
     /// App needs an active installation on this Server; a server-local App
     /// needs to belong to it.
     public func localClientForAgentAudience(clientId: String, serverId: String) -> AgentAudienceClient? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { candidate in
-            guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
-            if candidate.appType == "server_local" { return candidate.serverId == serverId }
-            return installations.contains(where: {
-                $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
-            })
-        }) else { return nil }
-        return AgentAudienceClient(
-            id: client.id,
-            clientId: client.clientId,
-            name: client.name,
-            appType: client.appType,
-            enabled: client.enabled,
-            allowedScopes: client.allowedScopes ?? []
-        )
+        return self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { candidate in
+                guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
+                if candidate.appType == "server_local" { return candidate.serverId == serverId }
+                return ledgerState.installations.contains(where: {
+                    $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+                })
+            }) else { return nil }
+            return AgentAudienceClient(
+                id: client.id,
+                clientId: client.clientId,
+                name: client.name,
+                appType: client.appType,
+                enabled: client.enabled,
+                allowedScopes: client.allowedScopes ?? []
+            )
+        }
     }
 
     /// The App row as the legacy Agent JWT settings route reads it.
@@ -92,39 +92,39 @@ extension OAuthLedger {
     }
 
     public func legacyAgentJWTClient(clientRecordId: String) -> LegacyAgentJWTClient? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { $0.id == clientRecordId && isUserManaged($0) }) else {
-            return nil
+        return self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { $0.id == clientRecordId && isUserManaged($0) }) else {
+                return nil
+            }
+            let installation = ledgerState.installations.first { $0.clientId == client.id }
+            return LegacyAgentJWTClient(
+                id: client.id,
+                clientKey: client.clientId,
+                serverId: client.serverId,
+                appType: client.appType,
+                enabled: client.enabled,
+                allowedScopes: client.allowedScopes ?? [],
+                installationStatus: installation?.status
+            )
         }
-        let installation = installations.first { $0.clientId == client.id }
-        return LegacyAgentJWTClient(
-            id: client.id,
-            clientKey: client.clientId,
-            serverId: client.serverId,
-            appType: client.appType,
-            enabled: client.enabled,
-            allowedScopes: client.allowedScopes ?? [],
-            installationStatus: installation?.status
-        )
     }
 
     public func legacyAgentJWTInstallationStatus(clientRecordId: String, serverId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.status
+        return self.state.withLock { ledgerState in
+            return ledgerState.installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.status
+        }
     }
 
     public func clientAgentJWTEnabled(clientRecordId: String) -> Bool? {
-        lock.lock()
-        defer { lock.unlock() }
-        return clients.first { $0.id == clientRecordId }?.agentJwtEnabled
+        return self.state.withLock { ledgerState in
+            return ledgerState.clients.first { $0.id == clientRecordId }?.agentJwtEnabled
+        }
     }
 
     public func installationAgentJWTEnabled(clientRecordId: String, serverId: String) -> Bool? {
-        lock.lock()
-        defer { lock.unlock() }
-        return installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.agentJwtEnabled
+        return self.state.withLock { ledgerState in
+            return ledgerState.installations.first { $0.clientId == clientRecordId && $0.serverId == serverId }?.agentJwtEnabled
+        }
     }
 
     public func signAgentAudienceToken(
@@ -135,9 +135,7 @@ extension OAuthLedger {
         serverSlug: String,
         issuer: String
     ) -> (token: String, jti: String, issuedAt: Int)? {
-        lock.lock()
         let secret = jwtSecret
-        lock.unlock()
         return OAuthIDToken.signAgentAudience(
             agentId: agentId,
             agentName: agentName,
@@ -150,9 +148,9 @@ extension OAuthLedger {
     }
 
     public func setAgentRole(serverId: String, agentId: String, role: String) {
-        lock.lock()
-        agentRoles["\(serverId)\n\(agentId)"] = role
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agentRoles["\(serverId)\n\(agentId)"] = role
+        }
     }
 
     @discardableResult
@@ -165,29 +163,29 @@ extension OAuthLedger {
         avatarUrl: String?,
         role: String
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let key = agents.keys.first(where: { $0 == agentId }), agents[key]?.serverId == serverId else {
-            return false
+        return self.state.withLock { ledgerState in
+            guard let key = ledgerState.agents.keys.first(where: { $0 == agentId }), ledgerState.agents[key]?.serverId == serverId else {
+                return false
+            }
+            ledgerState.agents[key]?.name = name
+            ledgerState.agents[key]?.displayName = displayName
+            ledgerState.agents[key]?.description = description
+            ledgerState.agents[key]?.avatarUrl = avatarUrl
+            ledgerState.agentRoles["\(serverId)\n\(agentId)"] = role
+            return true
         }
-        agents[key]?.name = name
-        agents[key]?.displayName = displayName
-        agents[key]?.description = description
-        agents[key]?.avatarUrl = avatarUrl
-        agentRoles["\(serverId)\n\(agentId)"] = role
-        return true
     }
 
     public func agentRole(serverId: String, agentId: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return agentRoles["\(serverId)\n\(agentId)"]
+        return self.state.withLock { ledgerState in
+            return ledgerState.agentRoles["\(serverId)\n\(agentId)"]
+        }
     }
 
     public func removeAgentMember(serverId: String, agentId: String) {
-        lock.lock()
-        agentRoles.removeValue(forKey: "\(serverId)\n\(agentId)")
-        lock.unlock()
+        _ = self.state.withLock { ledgerState in
+            ledgerState.agentRoles.removeValue(forKey: "\(serverId)\n\(agentId)")
+        }
     }
 
     public struct ProviderAgentInfo: Sendable {
@@ -199,16 +197,16 @@ extension OAuthLedger {
     }
 
     public func providerAgentInfo(serverId: String, agentId: String) -> ProviderAgentInfo? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let agent = agents[agentId], agent.serverId == serverId else { return nil }
-        return ProviderAgentInfo(
-            name: agent.name,
-            displayName: agent.displayName,
-            runtime: "builtin",
-            status: "inactive",
-            deleted: agent.deleted
-        )
+        return self.state.withLock { ledgerState in
+            guard let agent = ledgerState.agents[agentId], agent.serverId == serverId else { return nil }
+            return ProviderAgentInfo(
+                name: agent.name,
+                displayName: agent.displayName,
+                runtime: "builtin",
+                status: "inactive",
+                deleted: agent.deleted
+            )
+        }
     }
 
     public struct AgentManagementInfo: Sendable {
@@ -231,51 +229,51 @@ extension OAuthLedger {
     }
 
     public func manageableAgents(userId: String) -> (agents: [ManageableAgent], serverCount: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        var rows: [ManageableAgent] = []
-        var contributingServers = Set<String>()
-        for key in members.keys {
-            let parts = key.split(separator: "\n", maxSplits: 1).map(String.init)
-            guard parts.count == 2, parts[1] == userId, let server = servers[parts[0]], !server.deleted else { continue }
-            let role = members[key] ?? ""
-            let serverAgents = agents.values.filter { $0.serverId == server.id && !$0.deleted }
-            let visible: [Agent]
-            if role == "owner" || role == "admin" {
-                visible = serverAgents
-            } else {
-                visible = serverAgents.filter { $0.creatorUserId == userId }
+        return self.state.withLock { ledgerState in
+            var rows: [ManageableAgent] = []
+            var contributingServers = Set<String>()
+            for key in ledgerState.members.keys {
+                let parts = key.split(separator: "\n", maxSplits: 1).map(String.init)
+                guard parts.count == 2, parts[1] == userId, let server = ledgerState.servers[parts[0]], !server.deleted else { continue }
+                let role = ledgerState.members[key] ?? ""
+                let serverAgents = ledgerState.agents.values.filter { $0.serverId == server.id && !$0.deleted }
+                let visible: [Agent]
+                if role == "owner" || role == "admin" {
+                    visible = serverAgents
+                } else {
+                    visible = serverAgents.filter { $0.creatorUserId == userId }
+                }
+                if role == "owner" || role == "admin" || !visible.isEmpty {
+                    contributingServers.insert(server.id)
+                }
+                for agent in visible {
+                    rows.append(ManageableAgent(
+                        id: agent.id,
+                        name: agent.name,
+                        serverId: server.id,
+                        serverName: server.name
+                    ))
+                }
             }
-            if role == "owner" || role == "admin" || !visible.isEmpty {
-                contributingServers.insert(server.id)
-            }
-            for agent in visible {
-                rows.append(ManageableAgent(
-                    id: agent.id,
-                    name: agent.name,
-                    serverId: server.id,
-                    serverName: server.name
-                ))
-            }
+            return (rows, contributingServers.count)
         }
-        return (rows, contributingServers.count)
     }
 
     public func agentManagementInfo(id: String) -> AgentManagementInfo? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let agent = agents[id] else { return nil }
-        return AgentManagementInfo(
-            id: agent.id,
-            serverId: agent.serverId,
-            name: agent.name,
-            description: agent.description,
-            creatorUserId: agent.creatorUserId,
-            runtime: agent.runtime,
-            runtimeConfigJSON: agent.runtimeConfigJSON,
-            envVarsJSON: agent.envVarsJSON,
-            deleted: agent.deleted
-        )
+        return self.state.withLock { ledgerState in
+            guard let agent = ledgerState.agents[id] else { return nil }
+            return AgentManagementInfo(
+                id: agent.id,
+                serverId: agent.serverId,
+                name: agent.name,
+                description: agent.description,
+                creatorUserId: agent.creatorUserId,
+                runtime: agent.runtime,
+                runtimeConfigJSON: agent.runtimeConfigJSON,
+                envVarsJSON: agent.envVarsJSON,
+                deleted: agent.deleted
+            )
+        }
     }
 
     public struct AgentRuntimeInfo: Sendable {
@@ -294,89 +292,89 @@ extension OAuthLedger {
     }
 
     public func agentRuntimeInfo(id: String) -> AgentRuntimeInfo? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let agent = agents[id] else { return nil }
-        return AgentRuntimeInfo(
-            id: agent.id,
-            serverId: agent.serverId,
-            name: agent.name,
-            displayName: agent.displayName,
-            description: agent.description,
-            avatarUrl: agent.avatarUrl,
-            creatorUserId: agent.creatorUserId,
-            runtime: agent.runtime,
-            runtimeConfigJSON: agent.runtimeConfigJSON,
-            envVarsJSON: agent.envVarsJSON,
-            status: agent.status,
-            deleted: agent.deleted
-        )
+        return self.state.withLock { ledgerState in
+            guard let agent = ledgerState.agents[id] else { return nil }
+            return AgentRuntimeInfo(
+                id: agent.id,
+                serverId: agent.serverId,
+                name: agent.name,
+                displayName: agent.displayName,
+                description: agent.description,
+                avatarUrl: agent.avatarUrl,
+                creatorUserId: agent.creatorUserId,
+                runtime: agent.runtime,
+                runtimeConfigJSON: agent.runtimeConfigJSON,
+                envVarsJSON: agent.envVarsJSON,
+                status: agent.status,
+                deleted: agent.deleted
+            )
+        }
     }
 
     public func serverAgents(serverId: String) -> [AgentRuntimeInfo] {
-        lock.lock()
-        defer { lock.unlock() }
-        return agents.values
-            .filter { $0.serverId == serverId && !$0.deleted }
-            .map { agent in
-                AgentRuntimeInfo(
-                    id: agent.id,
-                    serverId: agent.serverId,
-                    name: agent.name,
-                    displayName: agent.displayName,
-                    description: agent.description,
-                    avatarUrl: agent.avatarUrl,
-                    creatorUserId: agent.creatorUserId,
-                    runtime: agent.runtime,
-                    runtimeConfigJSON: agent.runtimeConfigJSON,
-                    envVarsJSON: agent.envVarsJSON,
-                    status: agent.status,
-                    deleted: agent.deleted
-                )
-            }
+        return self.state.withLock { ledgerState in
+            return ledgerState.agents.values
+                .filter { $0.serverId == serverId && !$0.deleted }
+                .map { agent in
+                    AgentRuntimeInfo(
+                        id: agent.id,
+                        serverId: agent.serverId,
+                        name: agent.name,
+                        displayName: agent.displayName,
+                        description: agent.description,
+                        avatarUrl: agent.avatarUrl,
+                        creatorUserId: agent.creatorUserId,
+                        runtime: agent.runtime,
+                        runtimeConfigJSON: agent.runtimeConfigJSON,
+                        envVarsJSON: agent.envVarsJSON,
+                        status: agent.status,
+                        deleted: agent.deleted
+                    )
+                }
+        }
     }
 
     public func setAgentStatus(id: String, status: String) {
-        lock.lock()
-        agents[id]?.status = status
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.status = status
+        }
     }
 
     public func updateAgentRuntimeId(id: String, runtime: String) {
-        lock.lock()
-        agents[id]?.runtime = runtime
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.runtime = runtime
+        }
     }
 
     public func updateAgentRuntime(id: String, runtimeConfigJSON: String?, envVarsJSON: String?) {
-        lock.lock()
-        agents[id]?.runtimeConfigJSON = runtimeConfigJSON
-        agents[id]?.envVarsJSON = envVarsJSON
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.runtimeConfigJSON = runtimeConfigJSON
+            ledgerState.agents[id]?.envVarsJSON = envVarsJSON
+        }
     }
 
     public func updateAgentAvatar(id: String, avatarUrl: String?) {
-        lock.lock()
-        agents[id]?.avatarUrl = avatarUrl
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.avatarUrl = avatarUrl
+        }
     }
 
     public func updateAgentDisplayName(id: String, displayName: String) {
-        lock.lock()
-        agents[id]?.displayName = displayName
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.displayName = displayName
+        }
     }
 
     public func updateAgentDescription(id: String, description: String) {
-        lock.lock()
-        agents[id]?.description = description
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.description = description
+        }
     }
 
     public func deleteAgent(id: String) {
-        lock.lock()
-        agents[id]?.deleted = true
-        lock.unlock()
+        self.state.withLock { ledgerState in
+            ledgerState.agents[id]?.deleted = true
+        }
     }
 
     /// The URL-safe key the pixel avatar route uses.

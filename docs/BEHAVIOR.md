@@ -2086,3 +2086,11 @@ RFC 074 personal assistant：
 - Public search service 的一分钟 rate 预算与 in-flight 槽位相互独立：并发抢占不能超额，重复 release 不把计数降成负值，窗口重置不释放尚占用的槽位；Retry-After 保留原取整规则。
 - 同一桌面 feed cache 的不同 key 并发写入互不丢失，读取保留原 timestamp、version 与 asset 列表；缓存正/负结果 TTL 和上游失败降级仍由原发布路径决定。
 - 服务密钥读取抛错、空集、非法/重复 key、查询超时继续 fail closed；超时后后台读取可以完成，不能改变该次已返回的 unavailable 决策。
+
+### 领域账本与公开目录的原子操作
+
+- 并发普通 refresh、password reset、verification consume、pending social-link consume 和 OAuth/OIDC code redemption 保留一次消费；durable refresh 重放返回同一后继会话，旧 predecessor 登出仍撤销该后继。Mobile handoff 的 account、legal、identity 与 session 同段提交；两个最终凭证 unlink 不能把账户的全部登录凭证删空。
+- Agent access-request 的 grant/兑换与撤销阻断保留同一事务；cards 的配置 CAS、注册提交、队列 drain 保持配对结果且不重复交付。send-commit barrier 内允许既有 receipt 操作重新进入记录 State，barrier 不与 State Mutex 合并。
+- 任务批次编号、claim/revision、reminder CAS/event、join-link 次数与审核记录保留原子配对。兼容字段 setter 只写目标字段，不再把较早的整份 State 覆盖到其他字段的新值上。
+- 消息 read cursor/version、mention 去重/notify claim、follow/unfollow/suppression 保留各自完整事务；reaction 与其他配置字段的并发更新互不覆盖。此项不宣称剩余目录 helper 的跨 Store 操作已经成为原子快照。
+- Public server visibility backfill 与 public ID 分配、email invite 单次消费、visits 去重/上限、join agreement audit 与 analytics 配对保留原顺序；seen 标记仍在 cap 拒绝之前写入。公开目录四项 rollout/search/translation flag 的读取和写入也由同一个状态 Mutex 保护。

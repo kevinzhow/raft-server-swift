@@ -86,58 +86,58 @@ extension OAuthLedger {
         case .invalid:
             throw OAuthLedgerError(.sessionTokenInvalid)
         case .user(let human):
-            lock.lock()
-            defer { lock.unlock() }
-            guard let role = members["\(serverId)\n\(human.id)"] else {
-                throw OAuthLedgerError(.clientNotFoundForServer)
-            }
-            let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            if let client = clients.first(where: { candidate in
-                guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
-                if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
-                return installations.contains(where: {
-                    $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
-                })
-            }) {
-                let allowed = client.allowedScopes ?? ["openid", "profile", "identity"]
-                var scopeValidation: OAuthClientLookupResponse.ScopeValidation?
-                if !requested.isEmpty {
-                    let validation = validateScopes(requested, allowed: allowed, clientId: client.clientId)
-                    scopeValidation = OAuthClientLookupResponse.ScopeValidation(
-                        allowed: validation.allowed,
-                        reason: validation.reason,
-                        disallowedScopes: validation.disallowed
+            return try self.state.withLock { ledgerState in
+                guard let role = ledgerState.members["\(serverId)\n\(human.id)"] else {
+                    throw OAuthLedgerError(.clientNotFoundForServer)
+                }
+                let requested = scope.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+                if let client = ledgerState.clients.first(where: { candidate in
+                    guard candidate.clientId == clientId, isUserManaged(candidate) else { return false }
+                    if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
+                    return ledgerState.installations.contains(where: {
+                        $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+                    })
+                }) {
+                    let allowed = client.allowedScopes ?? ["openid", "profile", "identity"]
+                    var scopeValidation: OAuthClientLookupResponse.ScopeValidation?
+                    if !requested.isEmpty {
+                        let validation = validateScopes(requested, allowed: allowed, clientId: client.clientId)
+                        scopeValidation = OAuthClientLookupResponse.ScopeValidation(
+                            allowed: validation.allowed,
+                            reason: validation.reason,
+                            disallowedScopes: validation.disallowed
+                        )
+                    }
+                    return .ready(
+                        clientId: client.clientId,
+                        appType: client.appType,
+                        name: client.name,
+                        description: client.descriptionText,
+                        homepageUrl: client.homepageUrl,
+                        returnUrl: client.returnUrl,
+                        allowedScopes: allowed,
+                        marketplace: isMarketplaceVisible(client),
+                        scopeValidation: scopeValidation
                     )
                 }
-                return .ready(
-                    clientId: client.clientId,
-                    appType: client.appType,
-                    name: client.name,
-                    description: client.descriptionText,
-                    homepageUrl: client.homepageUrl,
-                    returnUrl: client.returnUrl,
-                    allowedScopes: allowed,
-                    marketplace: isMarketplaceVisible(client),
-                    scopeValidation: scopeValidation
+                guard let published = ledgerState.clients.first(where: {
+                    $0.clientId == clientId && isUserManaged($0) && isMarketplaceVisible($0)
+                }) else {
+                    throw OAuthLedgerError(.clientNotFoundForServer)
+                }
+                return .installRequired(
+                    id: published.id,
+                    clientId: published.clientId,
+                    appType: published.appType,
+                    name: published.name,
+                    description: published.descriptionText,
+                    homepageUrl: published.homepageUrl,
+                    returnUrl: published.returnUrl,
+                    allowedScopes: published.allowedScopes,
+                    serverId: serverId,
+                    canInstall: role == "owner" || role == "admin"
                 )
             }
-            guard let published = clients.first(where: {
-                $0.clientId == clientId && isUserManaged($0) && isMarketplaceVisible($0)
-            }) else {
-                throw OAuthLedgerError(.clientNotFoundForServer)
-            }
-            return .installRequired(
-                id: published.id,
-                clientId: published.clientId,
-                appType: published.appType,
-                name: published.name,
-                description: published.descriptionText,
-                homepageUrl: published.homepageUrl,
-                returnUrl: published.returnUrl,
-                allowedScopes: published.allowedScopes,
-                serverId: serverId,
-                canInstall: role == "owner" || role == "admin"
-            )
         }
     }
     func issueHumanAuthorization(human: OAuthHuman, body: String) throws -> OAuthHumanAuthorizationResponse {
@@ -148,99 +148,99 @@ extension OAuthLedger {
         guard let serverId = object?.string("serverId"), !serverId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw OAuthLedgerError(.serverIdRequired)
         }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let client = clients.first(where: { candidate in
-            guard candidate.clientId == clientKey.trimmingCharacters(in: .whitespacesAndNewlines),
-                  isUserManaged(candidate)
-            else { return false }
-            if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
-            return candidate.appType == "third_party_global" && installations.contains(where: {
-                $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
-            })
-        }) else {
-            throw OAuthLedgerError(.clientNotFoundForServer)
-        }
-        let requested = object?.value("scopes")
-        let oidc = object?.bool("oidc") ?? false
-        var nonce: String?
-        var challenge: String?
-        if oidc {
-            if let hint = object?.string("server"), !hint.isEmpty {
-                guard let hinted = servers.values.first(where: { ($0.id == hint || $0.slug == hint) && !$0.deleted }),
-                      hinted.id == serverId
-                else {
-                    throw OAuthLedgerError(.serverHintMismatch)
+        return try self.state.withLock { ledgerState in
+            guard let client = ledgerState.clients.first(where: { candidate in
+                guard candidate.clientId == clientKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                      isUserManaged(candidate)
+                else { return false }
+                if candidate.appType == "server_local" && candidate.serverId == serverId { return true }
+                return candidate.appType == "third_party_global" && ledgerState.installations.contains(where: {
+                    $0.clientId == candidate.id && $0.serverId == serverId && $0.status == "active"
+                })
+            }) else {
+                throw OAuthLedgerError(.clientNotFoundForServer)
+            }
+            let requested = object?.value("scopes")
+            let oidc = object?.bool("oidc") ?? false
+            var nonce: String?
+            var challenge: String?
+            if oidc {
+                if let hint = object?.string("server"), !hint.isEmpty {
+                    guard let hinted = ledgerState.servers.values.first(where: { ($0.id == hint || $0.slug == hint) && !$0.deleted }),
+                          hinted.id == serverId
+                    else {
+                        throw OAuthLedgerError(.serverHintMismatch)
+                    }
                 }
-            }
-            nonce = object?.string("nonce")
-            if let nonce, nonce.utf8.count > 512 {
-                throw OAuthLedgerError(.invalidRequestBare)
-            }
-            challenge = object?.string("codeChallenge")
-            if let challenge {
-                guard challenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil,
-                      object?.string("codeChallengeMethod") == "S256"
-                else {
+                nonce = object?.string("nonce")
+                if let nonce, nonce.utf8.count > 512 {
                     throw OAuthLedgerError(.invalidRequestBare)
                 }
-            }
-        }
-        let scopes: [String]
-        switch requested {
-        case nil, .null?:
-            scopes = ["openid", "profile"]
-        case let value?:
-            let validation = validateScopes(value, allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId)
-            guard validation.allowed, !validation.scopes.isEmpty else {
-                if validation.disallowed.isEmpty {
-                    throw OAuthLedgerError(.invalidScopeBare)
+                challenge = object?.string("codeChallenge")
+                if let challenge {
+                    guard challenge.wholeMatch(of: /^[A-Za-z0-9_-]{43}$/) != nil,
+                          object?.string("codeChallengeMethod") == "S256"
+                    else {
+                        throw OAuthLedgerError(.invalidRequestBare)
+                    }
                 }
-                throw OAuthLedgerError(.scopeRejected(.init(reason: validation.reason, disallowed: validation.disallowed)))
             }
-            scopes = validation.scopes.sorted()
-        }
-        if let requestedReturnURL = object?.string("returnUrl").flatMap({ $0.isEmpty ? nil : $0 }) {
-            guard client.returnUrl == requestedReturnURL, Self.isSafeReturnURL(requestedReturnURL) else {
-                throw OAuthLedgerError(.returnUrlNotAllowed)
+            let scopes: [String]
+            switch requested {
+            case nil, .null?:
+                scopes = ["openid", "profile"]
+            case let value?:
+                let validation = validateScopes(value, allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId)
+                guard validation.allowed, !validation.scopes.isEmpty else {
+                    if validation.disallowed.isEmpty {
+                        throw OAuthLedgerError(.invalidScopeBare)
+                    }
+                    throw OAuthLedgerError(.scopeRejected(.init(reason: validation.reason, disallowed: validation.disallowed)))
+                }
+                scopes = validation.scopes.sorted()
             }
+            if let requestedReturnURL = object?.string("returnUrl").flatMap({ $0.isEmpty ? nil : $0 }) {
+                guard client.returnUrl == requestedReturnURL, Self.isSafeReturnURL(requestedReturnURL) else {
+                    throw OAuthLedgerError(.returnUrlNotAllowed)
+                }
+            }
+            guard let server = ledgerState.servers[serverId], !server.deleted, let role = ledgerState.members["\(serverId)\n\(human.id)"] else {
+                throw OAuthLedgerError(.notServerMember)
+            }
+            let code: String
+            if oidc {
+                var raw = Data(count: 24)
+                for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
+                code = "raft_oidc_" + base64url(raw)
+            } else {
+                code = UUID().uuidString.lowercased()
+            }
+            ledgerState.requests.append(AccessRequest(
+                id: code,
+                serverId: serverId,
+                userId: human.id,
+                clientId: client.id,
+                scopes: scopes,
+                humanName: human.name,
+                humanEmail: human.email,
+                humanEmailVerified: human.emailVerified,
+                humanAvatarUrl: human.avatarUrl,
+                oidc: oidc,
+                nonce: nonce,
+                codeChallenge: challenge,
+                oidcRedirectURI: oidc ? client.returnUrl : nil,
+                createdAt: Date()
+            ))
+            return OAuthHumanAuthorizationResponse(
+                code: code,
+                client: OAuthClientSummary(clientId: client.clientId, appType: client.appType, name: client.name),
+                serverId: server.id,
+                serverSlug: server.slug,
+                role: role,
+                scopes: scopes,
+                returnUrl: client.returnUrl
+            )
         }
-        guard let server = servers[serverId], !server.deleted, let role = members["\(serverId)\n\(human.id)"] else {
-            throw OAuthLedgerError(.notServerMember)
-        }
-        let code: String
-        if oidc {
-            var raw = Data(count: 24)
-            for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
-            code = "raft_oidc_" + base64url(raw)
-        } else {
-            code = UUID().uuidString.lowercased()
-        }
-        requests.append(AccessRequest(
-            id: code,
-            serverId: serverId,
-            userId: human.id,
-            clientId: client.id,
-            scopes: scopes,
-            humanName: human.name,
-            humanEmail: human.email,
-            humanEmailVerified: human.emailVerified,
-            humanAvatarUrl: human.avatarUrl,
-            oidc: oidc,
-            nonce: nonce,
-            codeChallenge: challenge,
-            oidcRedirectURI: oidc ? client.returnUrl : nil,
-            createdAt: Date()
-        ))
-        return OAuthHumanAuthorizationResponse(
-            code: code,
-            client: OAuthClientSummary(clientId: client.clientId, appType: client.appType, name: client.name),
-            serverId: server.id,
-            serverSlug: server.slug,
-            role: role,
-            scopes: scopes,
-            returnUrl: client.returnUrl
-        )
     }
 
     struct ScopeValidation: Sendable {

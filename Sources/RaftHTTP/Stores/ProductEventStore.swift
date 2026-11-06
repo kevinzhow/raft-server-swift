@@ -1,47 +1,43 @@
 import Foundation
+import Synchronization
 
 /// Owns product/client event facts behind its own lock.
 ///
 /// R3 store extraction: `EmailLoginDirectory` keeps the HTTP/auth/analytics
 /// decisions; this store only owns the ledger rows and the client-event
 /// idempotency set, so event traffic no longer shares the directory lock.
-final class ProductEventStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var productEvents: [RecordedProductEvent] = []
-    private var clientEvents: [ClientEventRecord] = []
-    private var seenClientEventIDs: Set<String> = []
+final class ProductEventStore: Sendable {
+    private struct State: Sendable {
+        var productEvents: [RecordedProductEvent] = []
+        var clientEvents: [ClientEventRecord] = []
+        var seenClientEventIDs: Set<String> = []
+    }
+
+    private let state = Mutex(State())
 
     func append(_ event: RecordedProductEvent) {
-        lock.lock()
-        productEvents.append(event)
-        lock.unlock()
+        state.withLock { $0.productEvents.append(event) }
     }
 
     func productEvents(subjectId: String) -> [RecordedProductEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return productEvents.filter { $0.subjectId == subjectId }
+        state.withLock { $0.productEvents.filter { $0.subjectId == subjectId } }
     }
 
     func clientEvents(serverId: String) -> [ClientEventRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return clientEvents.filter { $0.serverId == serverId }
+        state.withLock { $0.clientEvents.filter { $0.serverId == serverId } }
     }
 
     func containsSeenClientEvent(_ id: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return seenClientEventIDs.contains(id)
+        state.withLock { $0.seenClientEventIDs.contains(id) }
     }
 
     /// Appends accepted rows and records every syntactically valid batch id as
     /// seen in one critical section, matching the original batch semantics.
     func appendClientEvents(_ rows: [ClientEventRecord], seenIDs: [String]) {
-        lock.lock()
-        clientEvents.append(contentsOf: rows)
-        seenClientEventIDs.formUnion(seenIDs)
-        lock.unlock()
+        state.withLock {
+            $0.clientEvents.append(contentsOf: rows)
+            $0.seenClientEventIDs.formUnion(seenIDs)
+        }
     }
 }
 
@@ -59,18 +55,18 @@ extension ProductEventStore {
     /// one critical section. Two concurrent deliveries of the same batch
     /// therefore store its events once. Returns the number of rows appended.
     func admitClientEvents(_ candidates: [ClientEventCandidate], seenIDs: [String]) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        var admitted: [ClientEventRecord] = []
-        var batchSeen: Set<String> = []
-        for candidate in candidates {
-            if seenClientEventIDs.contains(candidate.eventId) || !batchSeen.insert(candidate.eventId).inserted {
-                continue
+        state.withLock { state in
+            var admitted: [ClientEventRecord] = []
+            var batchSeen: Set<String> = []
+            for candidate in candidates {
+                if state.seenClientEventIDs.contains(candidate.eventId) || !batchSeen.insert(candidate.eventId).inserted {
+                    continue
+                }
+                admitted.append(candidate.record)
             }
-            admitted.append(candidate.record)
+            state.clientEvents.append(contentsOf: admitted)
+            state.seenClientEventIDs.formUnion(seenIDs)
+            return admitted.count
         }
-        clientEvents.append(contentsOf: admitted)
-        seenClientEventIDs.formUnion(seenIDs)
-        return admitted.count
     }
 }

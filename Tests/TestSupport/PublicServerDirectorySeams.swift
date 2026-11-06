@@ -4,10 +4,10 @@ import Foundation
 
 extension PublicServerDirectory {
     public func setServerPublicIdForTesting(serverId: String, publicId: String) {
-        lock.lock()
-        if let index = servers.firstIndex(where: { $0.id == serverId }) {
-            servers[index].publicId = publicId
+        state.withLock { state in
+            if let index = state.servers.firstIndex(where: { $0.id == serverId }) {
+                state.servers[index].publicId = publicId
+            }
         }
-        lock.unlock()
     }
 }

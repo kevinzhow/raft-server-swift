@@ -1,6 +1,7 @@
 import Foundation
+import Synchronization
 
-struct StoredInboxFact {
+struct StoredInboxFact: Sendable {
     var messageId: String
     var receiverType: String
     var receiverId: String
@@ -15,19 +16,14 @@ struct StoredInboxFact {
 /// Handlers query it while holding the directory lock today; the snapshot API
 /// keeps the migration mechanical. Domain-specific queries can move into this
 /// store without touching the directory's session/channel state.
-final class InboxFactStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var facts: [StoredInboxFact] = []
+final class InboxFactStore: Sendable {
+    private let facts = Mutex<[StoredInboxFact]>([])
 
     func append(_ fact: StoredInboxFact) {
-        lock.lock()
-        facts.append(fact)
-        lock.unlock()
+        facts.withLock { $0.append(fact) }
     }
 
     func all() -> [StoredInboxFact] {
-        lock.lock()
-        defer { lock.unlock() }
-        return facts
+        facts.withLock { $0 }
     }
 }

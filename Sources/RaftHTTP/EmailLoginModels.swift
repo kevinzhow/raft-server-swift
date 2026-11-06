@@ -68,7 +68,7 @@ struct FeedbackSourceEntry {
         var token: String
     }
 
-struct ProviderConnection {
+struct ProviderConnection: Sendable {
         var id: String
         var serverId: String
         var name: String
@@ -83,7 +83,7 @@ struct ProviderConnection {
         var updatedAt: Date
     }
 
-struct ProviderAssignment {
+struct ProviderAssignment: Sendable {
         var connectionId: String
         var serverId: String
         var agentId: String
@@ -95,7 +95,7 @@ struct WebPushSubscription: Sendable {
         var endpoint: String
     }
 
-struct ExternalAvatarAsset {
+struct ExternalAvatarAsset: Sendable {
         var id: String
         var contentType: String
         var bytes: Data
@@ -103,7 +103,7 @@ struct ExternalAvatarAsset {
         var active: Bool
     }
 
-struct ReminderEvent {
+struct ReminderEvent: Sendable {
         var reminderId: String
         var serverId: String
         var ownerAgentId: String
@@ -115,7 +115,7 @@ struct ReminderEvent {
         var fireAt: Date?
     }
 
-struct ReminderRecord {
+struct ReminderRecord: Sendable {
         var id: String
         var serverId: String
         var ownerAgentId: String
@@ -131,7 +131,7 @@ struct ReminderRecord {
         var updatedAt: Date = Date()
     }
 
-struct AgentApiIdempotencyRecord {
+struct AgentApiIdempotencyRecord: Sendable {
         var agentId: String
         var route: String
         var key: String
@@ -141,7 +141,7 @@ struct AgentApiIdempotencyRecord {
         var createdAt: Date
     }
 
-struct TaskRecord {
+struct TaskRecord: Sendable {
         var id: String
         var channelId: String
         var title: String
@@ -239,7 +239,7 @@ enum DMPeerResolution {
         case notFound
     }
 
-struct ServerLabsState: Equatable {
+struct ServerLabsState: Sendable, Equatable {
         var accessEnabled = false
         var version = 0
         var enrolled: Set<String> = []
@@ -258,7 +258,7 @@ enum SidebarPinnedChannelResolution {
         case dm((kind: String, id: String), legacyId: String)
     }
 
-struct MachineRecord {
+struct MachineRecord: Sendable {
         var id: String
         var serverId: String
         var userId: String
@@ -272,7 +272,7 @@ struct MachineRecord {
         var runtimes: [String] = []
     }
 
-struct UserOnboarding {
+struct UserOnboarding: Sendable {
         var reminderOptOut = false
         var dismissed: [String: Date] = [:]
         var currentStep: String?
@@ -296,7 +296,7 @@ struct HostedConnectionConnectorRecord {
         var current: Bool
     }
 
-struct AttachedComputer {
+struct AttachedComputer: Sendable {
         let id: String
         let serverId: String
         let userId: String
@@ -304,7 +304,7 @@ struct AttachedComputer {
         let apiKey: String
     }
 
-struct ChannelAttachment {
+struct ChannelAttachment: Sendable {
         var id: String
         var channelId: String
         var uploaderId: String
@@ -327,7 +327,7 @@ enum ChannelProbeAccess {
         case hidden
     }
 
-struct StoredHumanMessage {
+struct StoredHumanMessage: Sendable {
         var id: String
         var channelId: String
         var senderId: String
@@ -356,25 +356,25 @@ struct StoredHumanMessage {
         var mentions: [StoredMessageMention] = []
     }
 
-struct StoredMessageMention: Equatable {
+struct StoredMessageMention: Equatable, Sendable {
         var type: String
         var id: String
         var name: String
     }
 
-struct StoredReaction {
+struct StoredReaction: Sendable {
         var messageId: String
         var emoji: String
         var reactorId: String
         var reactorType: String
     }
 
-struct SystemAttentionReceipt {
+struct SystemAttentionReceipt: Sendable {
         var seenAt: Date?
         var dismissedAt: Date?
     }
 
-struct SystemAttentionIncident {
+struct SystemAttentionIncident: Sendable {
         var id: String
         var serverId: String
         var machineId: String
@@ -388,7 +388,7 @@ struct SystemAttentionIncident {
         var state: String
     }
 
-struct JoinLinkRecord {
+struct JoinLinkRecord: Sendable {
         var id: String
         var token: String
         var serverId: String
@@ -400,7 +400,7 @@ struct JoinLinkRecord {
         var revokedAt: Date?
     }
 
-struct ServerAgent {
+struct ServerAgent: Sendable {
         var id: String
         var serverId: String
         var name: String
@@ -414,7 +414,7 @@ struct MentionInput {
         var name: String
     }
 
-struct AgentCredential {
+struct AgentCredential: Sendable {
         var id: String = UUID().uuidString.lowercased()
         var agentId: String
         var scopes: Set<String>
@@ -424,7 +424,7 @@ struct AgentCredential {
         var revokedAt: Date?
     }
 
-struct StoredMention {
+struct StoredMention: Sendable {
         var id: String
         var messageId: String
         var channelId: String
@@ -441,7 +441,7 @@ struct StoredMention {
         var terminalCode: String? = nil
     }
 
-struct PostableChannel {
+struct PostableChannel: Sendable {
         var serverId: String
         var memberIds: Set<String>
         var kind: String = "channel"
@@ -453,7 +453,7 @@ struct PostableChannel {
         var name: String = ""
     }
 
-struct JointChannelLink {
+struct JointChannelLink: Sendable {
         var localChannelId: String
         var canonicalChannelId: String
         var serverId: String
@@ -465,7 +465,7 @@ struct Issue {
         var message: String
     }
 
-struct Account {
+struct Account: Sendable {
         var id: String
         var email: String
         var passwordHash: String
@@ -494,14 +494,14 @@ struct Account {
         var referralSourceSkippedAt: Date? = nil
     }
 
-struct LinkedIdentity {
+struct LinkedIdentity: Sendable {
         var userId: String
         var provider: String
         var providerUserId: String
         var providerEmail: String? = nil
     }
 
-struct SocialCompletion {
+struct SocialCompletion: Sendable {
         var provider: String
         var code: String
         var mode: String
@@ -513,7 +513,7 @@ struct SocialCompletion {
         var linkOnConflict: Bool = false
     }
 
-struct RotationReceipt {
+struct RotationReceipt: Sendable {
         var attemptId: String
         var installationId: String
         var userId: String
@@ -523,7 +523,7 @@ struct RotationReceipt {
         var expiresAt: Date
     }
 
-struct DeviceGrant {
+struct DeviceGrant: Sendable {
         var deviceCode: String
         var userCode: String
         var status: String
@@ -532,7 +532,7 @@ struct DeviceGrant {
         var clientName: String?
     }
 
-struct RetirementReceipt {
+struct RetirementReceipt: Sendable {
         var userId: String
         var actorUserId: String
         var environment: String
@@ -540,7 +540,7 @@ struct RetirementReceipt {
         var sessionsRevoked: Int
     }
 
-struct SessionFamily {
+struct SessionFamily: Sendable {
         var userId: String
         var revokedAt: Date?
         var revokedReason: String?
@@ -548,12 +548,12 @@ struct SessionFamily {
         var capabilityRetainUntil: Date?
     }
 
-struct LiveSession {
+struct LiveSession: Sendable {
         var userId: String
         var familyId: String
     }
 
-struct MobileOAuthRequest {
+struct MobileOAuthRequest: Sendable {
         var id: String
         var provider: String
         var mode: String
@@ -612,13 +612,13 @@ struct PendingForwardSource {
         var attachments: [ChannelAttachment]
     }
 
-struct StoredForwardRecord {
+struct StoredForwardRecord: Sendable {
         var sourceIds: [String]
         var items: [ForwardItemRecord]
         var destinationTargetId: String
     }
 
-struct ForwardItemRecord {
+struct ForwardItemRecord: Sendable {
         var sourceMessageId: String
         var exposesPointers: Bool
         var sourceAuthorUniqueName: String
@@ -648,7 +648,7 @@ struct ForwardSourceContext {
         var snapshotLabelVisibility: String
     }
 
-struct ForwardAttachmentSnapshot {
+struct ForwardAttachmentSnapshot: Sendable {
         var id: String
         var filename: String
         var mimeType: String
@@ -677,7 +677,7 @@ enum NativeAppleClaim {
         case claimed(String)
     }
 
-struct PendingSocialLink {
+struct PendingSocialLink: Sendable {
         var token: String
         var provider: String
         var providerUserId: String
@@ -744,7 +744,7 @@ struct StoredEnrollmentGrant {
         var consumedAt: Date?
     }
 
-struct FeatureFlagRuleRecord {
+struct FeatureFlagRuleRecord: Sendable {
         var key: String
         var stage: String
         var decision: String
@@ -756,14 +756,14 @@ struct FeatureFlagRuleRecord {
         var createdAt = Date()
     }
 
-struct FeatureFlagRecord {
+struct FeatureFlagRecord: Sendable {
         var key: String
         var enabled = true
         var killSwitch = false
         var defaultEnabled = false
     }
 
-struct FeedbackLocatorRecord {
+struct FeedbackLocatorRecord: Sendable {
         var serverId: String
         var producerAgentId: String
         var reportId: String
@@ -781,7 +781,7 @@ struct FeedbackLocatorRecord {
         var createdAt: Date
     }
 
-struct ManagedMCPServerRecord {
+struct ManagedMCPServerRecord: Sendable {
         var id: String
         var serverId: String
         var name: String
@@ -795,7 +795,7 @@ struct ManagedMCPServerRecord {
         var credentialHeaders: [String: String] = [:]
     }
 
-struct AgentApiSendReceipt {
+struct AgentApiSendReceipt: Sendable {
         var messageId: String
         var messageSeq: Int
         var target: String
@@ -803,7 +803,7 @@ struct AgentApiSendReceipt {
         var attachmentIds: [String]
     }
 
-struct IntegrationRegisterCard {
+struct IntegrationRegisterCard: Sendable {
         var messageId: String
         var serverId: String
         var agentId: String
@@ -823,7 +823,7 @@ struct IntegrationRegisterCard {
         var resultJSON: String?
     }
 
-struct MarketplaceInstallCard {
+struct MarketplaceInstallCard: Sendable {
         var messageId: String
         var serverId: String
         var clientRecordId: String
@@ -842,7 +842,7 @@ struct MarketplaceInstallCard {
         var setupRevision: Int = 1
     }
 
-struct ActionCardRecord {
+struct ActionCardRecord: Sendable {
         var messageId: String
         var serverId: String
         var requesterAgentId: String
@@ -855,21 +855,21 @@ struct ActionCardRecord {
         var executedByUserId: String?
     }
 
-struct AnnouncementImageAsset {
+struct AnnouncementImageAsset: Sendable {
         var id: String
         var announcementId: String
         var contentType: String
         var bytes: Data
     }
 
-struct AttestedSendEventRecord {
+struct AttestedSendEventRecord: Sendable {
         var eventType: String
         var agentId: String
         var messageId: String?
         var metadataJSON: String
     }
 
-struct ThreadUnfollowRecord {
+struct ThreadUnfollowRecord: Sendable {
         var serverId: String
         var userId: String
         var threadChannelId: String
@@ -880,7 +880,7 @@ struct ThreadUnfollowRecord {
         var frozenMessages: [(id: String, content: String)]
     }
 
-struct ShareArtifactRecord {
+struct ShareArtifactRecord: Sendable {
         var bytes: Data
         var width: Int
         var height: Int
@@ -888,7 +888,7 @@ struct ShareArtifactRecord {
         var createdAt: Date
     }
 
-struct ReadMutationRecord {
+struct ReadMutationRecord: Sendable {
         var mutationId: String
         var serverId: String
         var principalId: String
@@ -899,7 +899,7 @@ struct ReadMutationRecord {
         var state: String
     }
 
-struct ServerMemberEvent {
+struct ServerMemberEvent: Sendable {
         var serverId: String
         var eventType: String
         var subjectType: String
@@ -908,7 +908,7 @@ struct ServerMemberEvent {
         var deliveryQueued: Bool
     }
 
-struct AgentArchiveRecord {
+struct AgentArchiveRecord: Sendable {
         var serverId: String
         var machineId: String?
         var machineName: String
@@ -921,7 +921,7 @@ struct AgentArchiveRecord {
         var lastErrorAt: Date?
     }
 
-struct HostedModelState {
+struct HostedModelState: Sendable {
         var models: [(id: String, label: String, provider: String)]
         var defaultModel: String?
         var defaultLabel: String?
@@ -931,7 +931,7 @@ struct HostedModelState {
         var locked: Bool
     }
 
-struct MachineMigrationRecord {
+struct MachineMigrationRecord: Sendable {
         var agentId: String
         var serverId: String
         var supportRef: String
@@ -984,7 +984,7 @@ struct MachineMigrationRecord {
         var arrivalReportSha256: String?
     }
 
-struct HostedMigrationRecord {
+struct HostedMigrationRecord: Sendable {
         var agentId: String
         var serverId: String
         var supportRef: String
@@ -998,7 +998,7 @@ struct HostedMigrationRecord {
         var cancelErrorCode: String?
     }
 
-struct AppLoginRequest {
+struct AppLoginRequest: Sendable {
         var id: String
         var returnUri: String
         var codeChallenge: String

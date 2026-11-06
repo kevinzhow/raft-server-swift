@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// One validated `system.cleaner` app-config override.
 ///
@@ -34,11 +35,10 @@ enum AppConfigPatchResult: Sendable, Equatable {
 /// `EmailLoginDirectory` keeps computed accessors that forward here so the
 /// existing extension files and tests keep their property names while the
 /// directory body stays a composition root.
-final class ManagedMCPAndCardsStore: @unchecked Sendable {
-    /// Every row this store owns. Grouping them lets one locked value be the
-    /// whole store snapshot; each accessor below copies it, which is cheap
-    /// because the collections are copy-on-write.
-    struct State {
+final class ManagedMCPAndCardsStore: Sendable {
+    /// Every owned row is a checked value. One Mutex borrow covers a transaction
+    /// across tables; read accessors return independent value snapshots.
+    struct State: Sendable {
         var managedMCPServers: [ManagedMCPServerRecord] = []
         var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] = [:]
         var actionCardRecords: [String: ActionCardRecord] = [:]
@@ -64,117 +64,108 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
     }
 
-    private let lock = NSLock()
-    private var storage = State()
+    private let storage = Mutex(State())
 
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {
-        get {
-            lock.lock()
-            defer { lock.unlock() }
-            return storage
-        }
-        set {
-            lock.lock()
-            storage = newValue
-            lock.unlock()
-        }
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
     }
 
     var managedMCPServers: [ManagedMCPServerRecord] {
-        get { state.managedMCPServers }
-        set { state.managedMCPServers = newValue }
+        get { storage.withLock { $0.managedMCPServers } }
+        set { storage.withLock { $0.managedMCPServers = newValue } }
     }
 
     var managedMCPAssignments: [String: [String: (enabled: Bool, allowedTools: [String]?)]] {
-        get { state.managedMCPAssignments }
-        set { state.managedMCPAssignments = newValue }
+        get { storage.withLock { $0.managedMCPAssignments } }
+        set { storage.withLock { $0.managedMCPAssignments = newValue } }
     }
 
     var actionCardRecords: [String: ActionCardRecord] {
-        get { state.actionCardRecords }
-        set { state.actionCardRecords = newValue }
+        get { storage.withLock { $0.actionCardRecords } }
+        set { storage.withLock { $0.actionCardRecords = newValue } }
     }
 
     var marketplaceInstallCards: [String: MarketplaceInstallCard] {
-        get { state.marketplaceInstallCards }
-        set { state.marketplaceInstallCards = newValue }
+        get { storage.withLock { $0.marketplaceInstallCards } }
+        set { storage.withLock { $0.marketplaceInstallCards = newValue } }
     }
 
     var integrationRegisterCards: [String: IntegrationRegisterCard] {
-        get { state.integrationRegisterCards }
-        set { state.integrationRegisterCards = newValue }
+        get { storage.withLock { $0.integrationRegisterCards } }
+        set { storage.withLock { $0.integrationRegisterCards = newValue } }
     }
 
     var agentApiSendReceipts: [String: AgentApiSendReceipt] {
-        get { state.agentApiSendReceipts }
-        set { state.agentApiSendReceipts = newValue }
+        get { storage.withLock { $0.agentApiSendReceipts } }
+        set { storage.withLock { $0.agentApiSendReceipts = newValue } }
     }
 
     var pendingActionMessageEvents: [(agentId: String, messageId: String, content: String)] {
-        get { state.pendingActionMessageEvents }
-        set { state.pendingActionMessageEvents = newValue }
+        get { storage.withLock { $0.pendingActionMessageEvents } }
+        set { storage.withLock { $0.pendingActionMessageEvents = newValue } }
     }
 
     var agentGrantSets: [String: Set<String>] {
-        get { state.agentGrantSets }
-        set { state.agentGrantSets = newValue }
+        get { storage.withLock { $0.agentGrantSets } }
+        set { storage.withLock { $0.agentGrantSets = newValue } }
     }
 
     var appConfigOverrides: [String: [String: [String: AppConfigValue]]] {
-        get { state.appConfigOverrides }
-        set { state.appConfigOverrides = newValue }
+        get { storage.withLock { $0.appConfigOverrides } }
+        set { storage.withLock { $0.appConfigOverrides = newValue } }
     }
 
     var appConfigRevisions: [String: [String: Int]] {
-        get { state.appConfigRevisions }
-        set { state.appConfigRevisions = newValue }
+        get { storage.withLock { $0.appConfigRevisions } }
+        set { storage.withLock { $0.appConfigRevisions = newValue } }
     }
 
     var agentIntegrationGrants: [String: Bool] {
-        get { state.agentIntegrationGrants }
-        set { state.agentIntegrationGrants = newValue }
+        get { storage.withLock { $0.agentIntegrationGrants } }
+        set { storage.withLock { $0.agentIntegrationGrants = newValue } }
     }
 
     var agentAudienceStatusOverrides: [String: String] {
-        get { state.agentAudienceStatusOverrides }
-        set { state.agentAudienceStatusOverrides = newValue }
+        get { storage.withLock { $0.agentAudienceStatusOverrides } }
+        set { storage.withLock { $0.agentAudienceStatusOverrides = newValue } }
     }
 
     var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] {
-        get { state.agentIntegrationLogins }
-        set { state.agentIntegrationLogins = newValue }
+        get { storage.withLock { $0.agentIntegrationLogins } }
+        set { storage.withLock { $0.agentIntegrationLogins = newValue } }
     }
 
     /// Records the agent's login into a service unless one exists. The lookup and
     /// the insert are one critical section, so two concurrent first logins cannot
     /// both report `logged_in`. Returns whether the login already existed.
     func recordAgentIntegrationLogin(key: String, record: AgentIntegrationLoginRecord) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if storage.agentIntegrationLogins[key] != nil { return true }
-        storage.agentIntegrationLogins[key] = record
-        return false
+        return storage.withLock { ledgerState in
+            if ledgerState.agentIntegrationLogins[key] != nil { return true }
+            ledgerState.agentIntegrationLogins[key] = record
+            return false
+        }
     }
 
     var providerConnectionsEnabledServers: Set<String> {
-        get { state.providerConnectionsEnabledServers }
-        set { state.providerConnectionsEnabledServers = newValue }
+        get { storage.withLock { $0.providerConnectionsEnabledServers } }
+        set { storage.withLock { $0.providerConnectionsEnabledServers = newValue } }
     }
 
     var providerConnections: [ProviderConnection] {
-        get { state.providerConnections }
-        set { state.providerConnections = newValue }
+        get { storage.withLock { $0.providerConnections } }
+        set { storage.withLock { $0.providerConnections = newValue } }
     }
 
     var providerAssignments: [ProviderAssignment] {
-        get { state.providerAssignments }
-        set { state.providerAssignments = newValue }
+        get { storage.withLock { $0.providerAssignments } }
+        set { storage.withLock { $0.providerAssignments = newValue } }
     }
 
     var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] {
-        get { state.agentApiIdempotencyKeys }
-        set { state.agentApiIdempotencyKeys = newValue }
+        get { storage.withLock { $0.agentApiIdempotencyKeys } }
+        set { storage.withLock { $0.agentApiIdempotencyKeys = newValue } }
     }
 
     // MARK: - Action-card execution
@@ -182,9 +173,9 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
     /// One locked read of the card a route is about to authorize. The write
     /// below re-reads under its own lock, so the read is only a snapshot.
     func actionCard(messageId: String) -> ActionCardRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.actionCardRecords[messageId]
+        return storage.withLock { ledgerState in
+            return ledgerState.actionCardRecords[messageId]
+        }
     }
 
     /// Marks the card executed and returns the updated row in one critical
@@ -192,55 +183,55 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
     /// another request. `nil` means the row vanished between authorization and
     /// the write.
     func markActionCardExecuted(messageId: String, userId: String) -> ActionCardRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var card = storage.actionCardRecords[messageId] else { return nil }
-        if card.state != "executed" {
-            card.state = "executed"
-            card.executedByUserId = userId
-            storage.actionCardRecords[messageId] = card
+        return storage.withLock { ledgerState in
+            guard var card = ledgerState.actionCardRecords[messageId] else { return nil }
+            if card.state != "executed" {
+                card.state = "executed"
+                card.executedByUserId = userId
+                ledgerState.actionCardRecords[messageId] = card
+            }
+            return card
         }
-        return card
     }
 
     /// The prepared marketplace install card a prepare/execute request is
     /// about, in one critical section.
     func marketplaceInstallCard(messageId: String) -> MarketplaceInstallCard? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.marketplaceInstallCards[messageId]
+        return storage.withLock { ledgerState in
+            return ledgerState.marketplaceInstallCards[messageId]
+        }
     }
 
     /// The prepared integration-registration card, in one critical section.
     func integrationRegisterCard(messageId: String) -> IntegrationRegisterCard? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.integrationRegisterCards[messageId]
+        return storage.withLock { ledgerState in
+            return ledgerState.integrationRegisterCards[messageId]
+        }
     }
 
     /// Inserts one prepared marketplace install card and returns the stored row.
     @discardableResult
     func insertMarketplaceInstallCard(_ card: MarketplaceInstallCard) -> MarketplaceInstallCard {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.marketplaceInstallCards[card.messageId] = card
-        return card
+        return storage.withLock { ledgerState in
+            ledgerState.marketplaceInstallCards[card.messageId] = card
+            return card
+        }
     }
 
     /// Inserts one prepared integration-registration card and returns it.
     @discardableResult
     func insertIntegrationRegisterCard(_ card: IntegrationRegisterCard) -> IntegrationRegisterCard {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.integrationRegisterCards[card.messageId] = card
-        return card
+        return storage.withLock { ledgerState in
+            ledgerState.integrationRegisterCards[card.messageId] = card
+            return card
+        }
     }
 
     /// Inserts one prepared action-card row.
     func insertActionCardRecord(_ record: ActionCardRecord) {
-        lock.lock()
-        storage.actionCardRecords[record.messageId] = record
-        lock.unlock()
+        storage.withLock { ledgerState in
+            ledgerState.actionCardRecords[record.messageId] = record
+        }
     }
 
     /// Marks the marketplace card executed and returns the updated row in one
@@ -250,16 +241,16 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         userId: String,
         resultJSON: String
     ) -> MarketplaceInstallCard? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var card = storage.marketplaceInstallCards[messageId] else { return nil }
-        if card.state != "executed" {
-            card.state = "executed"
-            card.executedByUserId = userId
-            card.resultJSON = resultJSON
-            storage.marketplaceInstallCards[messageId] = card
+        return storage.withLock { ledgerState in
+            guard var card = ledgerState.marketplaceInstallCards[messageId] else { return nil }
+            if card.state != "executed" {
+                card.state = "executed"
+                card.executedByUserId = userId
+                card.resultJSON = resultJSON
+                ledgerState.marketplaceInstallCards[messageId] = card
+            }
+            return card
         }
-        return card
     }
 
     /// The integration-registration counterpart of
@@ -269,34 +260,34 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         userId: String,
         resultJSON: String
     ) -> IntegrationRegisterCard? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var card = storage.integrationRegisterCards[messageId] else { return nil }
-        if card.state != "executed" {
-            card.state = "executed"
-            card.executedByUserId = userId
-            card.resultJSON = resultJSON
-            storage.integrationRegisterCards[messageId] = card
+        return storage.withLock { ledgerState in
+            guard var card = ledgerState.integrationRegisterCards[messageId] else { return nil }
+            if card.state != "executed" {
+                card.state = "executed"
+                card.executedByUserId = userId
+                card.resultJSON = resultJSON
+                ledgerState.integrationRegisterCards[messageId] = card
+            }
+            return card
         }
-        return card
     }
 
     /// Appends the external-agent action reply event emitted after an execute.
     func appendPendingActionMessageEvent(agentId: String, messageId: String, content: String) {
-        lock.lock()
-        storage.pendingActionMessageEvents.append((agentId, messageId, content))
-        lock.unlock()
+        storage.withLock { ledgerState in
+            ledgerState.pendingActionMessageEvents.append((agentId, messageId, content))
+        }
     }
 
     /// Removes and returns the action reply events queued for one agent, in
     /// queue order, in one critical section so two concurrent drains can never
     /// both receive the same event.
     func takePendingActionMessageEvents(agentId: String) -> [(agentId: String, messageId: String, content: String)] {
-        lock.lock()
-        defer { lock.unlock() }
-        let taken = storage.pendingActionMessageEvents.filter { $0.agentId == agentId }
-        storage.pendingActionMessageEvents.removeAll { $0.agentId == agentId }
-        return taken
+        return storage.withLock { ledgerState in
+            let taken = ledgerState.pendingActionMessageEvents.filter { $0.agentId == agentId }
+            ledgerState.pendingActionMessageEvents.removeAll { $0.agentId == agentId }
+            return taken
+        }
     }
 
     // MARK: - Agent-api idempotency
@@ -318,16 +309,16 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         fingerprint: String,
         now: Date
     ) -> AgentApiIdempotencyLookup {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let existing = storage.agentApiIdempotencyKeys.first(where: {
-            $0.agentId == agentId && $0.route == route && $0.key == key
-        }), now.timeIntervalSince(existing.createdAt) < Self.agentApiIdempotencyTTL
-        else {
-            return .none
+        return storage.withLock { ledgerState in
+            guard let existing = ledgerState.agentApiIdempotencyKeys.first(where: {
+                $0.agentId == agentId && $0.route == route && $0.key == key
+            }), now.timeIntervalSince(existing.createdAt) < Self.agentApiIdempotencyTTL
+            else {
+                return .none
+            }
+            guard existing.fingerprint == fingerprint else { return .mismatch }
+            return .replay(status: existing.status, body: existing.responseBody)
         }
-        guard existing.fingerprint == fingerprint else { return .mismatch }
-        return .replay(status: existing.status, body: existing.responseBody)
     }
 
     /// The store half: replace the row for this (agent, route, key) and keep
@@ -342,41 +333,41 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         now: Date
     ) {
         guard status == 200 || status == 201 else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        if let index = storage.agentApiIdempotencyKeys.firstIndex(where: {
-            $0.agentId == agentId && $0.route == route && $0.key == key
-        }) {
-            storage.agentApiIdempotencyKeys.remove(at: index)
+        storage.withLock { ledgerState in
+            if let index = ledgerState.agentApiIdempotencyKeys.firstIndex(where: {
+                $0.agentId == agentId && $0.route == route && $0.key == key
+            }) {
+                ledgerState.agentApiIdempotencyKeys.remove(at: index)
+            }
+            ledgerState.agentApiIdempotencyKeys.append(AgentApiIdempotencyRecord(
+                agentId: agentId,
+                route: route,
+                key: key,
+                fingerprint: fingerprint,
+                status: status,
+                responseBody: body,
+                createdAt: now
+            ))
         }
-        storage.agentApiIdempotencyKeys.append(AgentApiIdempotencyRecord(
-            agentId: agentId,
-            route: route,
-            key: key,
-            fingerprint: fingerprint,
-            status: status,
-            responseBody: body,
-            createdAt: now
-        ))
     }
 
     // MARK: - Managed MCP reads
 
     func managedMCPServers(serverId: String) -> [ManagedMCPServerRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.managedMCPServers.filter { $0.serverId == serverId }
+        return storage.withLock { ledgerState in
+            return ledgerState.managedMCPServers.filter { $0.serverId == serverId }
+        }
     }
 
     func managedMCPServer(id: String, serverId: String) -> ManagedMCPServerRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.managedMCPServers.first { $0.id == id && $0.serverId == serverId }
+        return storage.withLock { ledgerState in
+            return ledgerState.managedMCPServers.first { $0.id == id && $0.serverId == serverId }
+        }
     }
 
     // MARK: - Provider connections
 
-    enum ProviderAssignmentLookup {
+    enum ProviderAssignmentLookup: Sendable {
         case connectionNotFound
         case assignmentNotFound
         case ok
@@ -387,46 +378,46 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         connectionId: String,
         agentId: String
     ) -> ProviderAssignmentLookup {
-        lock.lock()
-        defer { lock.unlock() }
-        guard storage.providerConnections.contains(where: { $0.id == connectionId && $0.serverId == serverId }) else {
-            return .connectionNotFound
+        return storage.withLock { ledgerState in
+            guard ledgerState.providerConnections.contains(where: { $0.id == connectionId && $0.serverId == serverId }) else {
+                return .connectionNotFound
+            }
+            guard ledgerState.providerAssignments.contains(where: {
+                $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId
+            }) else {
+                return .assignmentNotFound
+            }
+            return .ok
         }
-        guard storage.providerAssignments.contains(where: {
-            $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId
-        }) else {
-            return .assignmentNotFound
-        }
-        return .ok
     }
 
     /// Removes one assignment under a single lock, the write half of detach.
     @discardableResult
     func removeProviderAssignment(serverId: String, connectionId: String, agentId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let before = storage.providerAssignments.count
-        storage.providerAssignments.removeAll {
-            $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId
+        return storage.withLock { ledgerState in
+            let before = ledgerState.providerAssignments.count
+            ledgerState.providerAssignments.removeAll {
+                $0.connectionId == connectionId && $0.serverId == serverId && $0.agentId == agentId
+            }
+            return ledgerState.providerAssignments.count != before
         }
-        return storage.providerAssignments.count != before
     }
 
-    enum ProviderConnectionLookup {
+    enum ProviderConnectionLookup: Sendable {
         case connectionNotFound
         case found(assignments: [ProviderAssignment])
     }
 
     func providerConnectionLookup(serverId: String, connectionId: String) -> ProviderConnectionLookup {
-        lock.lock()
-        defer { lock.unlock() }
-        guard storage.providerConnections.contains(where: { $0.id == connectionId && $0.serverId == serverId }) else {
-            return .connectionNotFound
+        return storage.withLock { ledgerState in
+            guard ledgerState.providerConnections.contains(where: { $0.id == connectionId && $0.serverId == serverId }) else {
+                return .connectionNotFound
+            }
+            let assignments = ledgerState.providerAssignments.filter {
+                $0.connectionId == connectionId && $0.serverId == serverId
+            }
+            return .found(assignments: assignments)
         }
-        let assignments = storage.providerAssignments.filter {
-            $0.connectionId == connectionId && $0.serverId == serverId
-        }
-        return .found(assignments: assignments)
     }
 
     /// Removes the connection and every one of its assignments in the same
@@ -434,14 +425,14 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
     /// lock.
     @discardableResult
     func deleteProviderConnection(serverId: String, connectionId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let before = storage.providerConnections.count
-        storage.providerConnections.removeAll { $0.id == connectionId && $0.serverId == serverId }
-        storage.providerAssignments.removeAll {
-            $0.connectionId == connectionId && $0.serverId == serverId
+        return storage.withLock { ledgerState in
+            let before = ledgerState.providerConnections.count
+            ledgerState.providerConnections.removeAll { $0.id == connectionId && $0.serverId == serverId }
+            ledgerState.providerAssignments.removeAll {
+                $0.connectionId == connectionId && $0.serverId == serverId
+            }
+            return ledgerState.providerConnections.count != before
         }
-        return storage.providerConnections.count != before
     }
 
     // MARK: - Agent app config
@@ -452,12 +443,12 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
     /// and then released it before rendering. Taking both under this store's
     /// lock keeps the reply's pair consistent.
     func appConfigSnapshot(agentId: String, appId: String) -> AppConfigSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return AppConfigSnapshot(
-            revision: storage.appConfigRevisions[agentId]?[appId] ?? 0,
-            overrides: storage.appConfigOverrides[agentId]?[appId] ?? [:]
-        )
+        return storage.withLock { ledgerState in
+            return AppConfigSnapshot(
+                revision: ledgerState.appConfigRevisions[agentId]?[appId] ?? 0,
+                overrides: ledgerState.appConfigOverrides[agentId]?[appId] ?? [:]
+            )
+        }
     }
 
     /// The compare-and-set app-config write.
@@ -473,33 +464,33 @@ final class ManagedMCPAndCardsStore: @unchecked Sendable {
         set: [String: AppConfigValue],
         unset: [String]
     ) -> AppConfigPatchResult {
-        lock.lock()
-        defer { lock.unlock() }
-        let current = storage.appConfigRevisions[agentId]?[appId] ?? 0
-        guard expectedRevision == current else {
-            return .revisionStale(current: current)
+        return storage.withLock { ledgerState in
+            let current = ledgerState.appConfigRevisions[agentId]?[appId] ?? 0
+            guard expectedRevision == current else {
+                return .revisionStale(current: current)
+            }
+            var overrides = ledgerState.appConfigOverrides[agentId]?[appId] ?? [:]
+            for (key, value) in set { overrides[key] = value }
+            for key in unset { overrides.removeValue(forKey: key) }
+            ledgerState.appConfigOverrides[agentId, default: [:]][appId] = overrides
+            ledgerState.appConfigRevisions[agentId, default: [:]][appId] = current + 1
+            return .applied(AppConfigSnapshot(revision: current + 1, overrides: overrides))
         }
-        var overrides = storage.appConfigOverrides[agentId]?[appId] ?? [:]
-        for (key, value) in set { overrides[key] = value }
-        for key in unset { overrides.removeValue(forKey: key) }
-        storage.appConfigOverrides[agentId, default: [:]][appId] = overrides
-        storage.appConfigRevisions[agentId, default: [:]][appId] = current + 1
-        return .applied(AppConfigSnapshot(revision: current + 1, overrides: overrides))
     }
 
     // MARK: - Agent send receipts and the send commit lock
 
     /// The stored idempotency receipt for one `server\nagent\nkey`.
     func sendReceipt(key: String) -> AgentApiSendReceipt? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentApiSendReceipts[key]
+        return storage.withLock { ledgerState in
+            return ledgerState.agentApiSendReceipts[key]
+        }
     }
 
     func setSendReceipt(_ receipt: AgentApiSendReceipt, key: String) {
-        lock.lock()
-        storage.agentApiSendReceipts[key] = receipt
-        lock.unlock()
+        storage.withLock { ledgerState in
+            ledgerState.agentApiSendReceipts[key] = receipt
+        }
     }
 
     /// The cross-store commit barrier the legacy `sendFreshnessCommitLock`
@@ -530,22 +521,22 @@ struct ProviderConnectionPatch: Sendable, Equatable {
 extension ManagedMCPAndCardsStore {
     /// Whether the provider-connections surface is enabled for the server.
     func isProviderConnectionsEnabled(serverId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.providerConnectionsEnabledServers.contains(serverId)
+        return storage.withLock { ledgerState in
+            return ledgerState.providerConnectionsEnabledServers.contains(serverId)
+        }
     }
 
     /// The server's provider connections, in creation order.
     func providerConnections(serverId: String) -> [ProviderConnection] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.providerConnections.filter { $0.serverId == serverId }
+        return storage.withLock { ledgerState in
+            return ledgerState.providerConnections.filter { $0.serverId == serverId }
+        }
     }
 
     func insertProviderConnection(_ connection: ProviderConnection) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.providerConnections.append(connection)
+        storage.withLock { ledgerState in
+            ledgerState.providerConnections.append(connection)
+        }
     }
 
     /// Applies a patch in one critical section and answers the stored row, or
@@ -556,21 +547,21 @@ extension ManagedMCPAndCardsStore {
         patch: ProviderConnectionPatch,
         now: Date
     ) -> ProviderConnection? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = storage.providerConnections.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
-            return nil
+        return storage.withLock { ledgerState in
+            guard let index = ledgerState.providerConnections.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
+                return nil
+            }
+            if let name = patch.name { ledgerState.providerConnections[index].name = name }
+            if let endpoint = patch.endpointUrl { ledgerState.providerConnections[index].endpointUrl = endpoint }
+            if let supports = patch.supportsImageInput { ledgerState.providerConnections[index].supportsImageInput = supports }
+            if patch.rotatesCredential {
+                ledgerState.providerConnections[index].credentialVersion += 1
+                ledgerState.providerConnections[index].status = "unchecked"
+                ledgerState.providerConnections[index].hasCredential = true
+            }
+            ledgerState.providerConnections[index].updatedAt = now
+            return ledgerState.providerConnections[index]
         }
-        if let name = patch.name { storage.providerConnections[index].name = name }
-        if let endpoint = patch.endpointUrl { storage.providerConnections[index].endpointUrl = endpoint }
-        if let supports = patch.supportsImageInput { storage.providerConnections[index].supportsImageInput = supports }
-        if patch.rotatesCredential {
-            storage.providerConnections[index].credentialVersion += 1
-            storage.providerConnections[index].status = "unchecked"
-            storage.providerConnections[index].hasCredential = true
-        }
-        storage.providerConnections[index].updatedAt = now
-        return storage.providerConnections[index]
     }
 
     /// Rotates the credential in one critical section and answers the stored
@@ -587,11 +578,11 @@ extension ManagedMCPAndCardsStore {
     /// Whether the connection exists and the agent assignments it carries, from
     /// one snapshot.
     func providerAssignments(serverId: String, connectionId: String) -> (known: Bool, assignments: [ProviderAssignment]) {
-        lock.lock()
-        defer { lock.unlock() }
-        let known = storage.providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
-        let assignments = storage.providerAssignments.filter { $0.connectionId == connectionId && $0.serverId == serverId }
-        return (known, assignments)
+        return storage.withLock { ledgerState in
+            let known = ledgerState.providerConnections.contains { $0.id == connectionId && $0.serverId == serverId }
+            let assignments = ledgerState.providerAssignments.filter { $0.connectionId == connectionId && $0.serverId == serverId }
+            return (known, assignments)
+        }
     }
 }
 
@@ -602,9 +593,9 @@ extension ManagedMCPAndCardsStore {
     static let agentApiIdempotencyTTL: TimeInterval = 24 * 60 * 60
 
     func appendManagedMCPServer(_ record: ManagedMCPServerRecord) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.managedMCPServers.append(record)
+        storage.withLock { ledgerState in
+            ledgerState.managedMCPServers.append(record)
+        }
     }
 
     /// Applies `mutate` to one server row inside the critical section and
@@ -616,24 +607,24 @@ extension ManagedMCPAndCardsStore {
         id: String,
         _ mutate: (inout ManagedMCPServerRecord) throws -> Void
     ) rethrows -> ManagedMCPServerRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = storage.managedMCPServers.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
-            return nil
+        return try storage.withLock { ledgerState in
+            guard let index = ledgerState.managedMCPServers.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
+                return nil
+            }
+            var record = ledgerState.managedMCPServers[index]
+            defer { ledgerState.managedMCPServers[index] = record }
+            try mutate(&record)
+            return record
         }
-        var record = storage.managedMCPServers[index]
-        defer { storage.managedMCPServers[index] = record }
-        try mutate(&record)
-        return record
     }
 
     /// Removes one server row; false when no row matched.
     func removeManagedMCPServer(serverId: String, id: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        let before = storage.managedMCPServers.count
-        storage.managedMCPServers.removeAll { $0.id == id && $0.serverId == serverId }
-        return storage.managedMCPServers.count != before
+        return storage.withLock { ledgerState in
+            let before = ledgerState.managedMCPServers.count
+            ledgerState.managedMCPServers.removeAll { $0.id == id && $0.serverId == serverId }
+            return ledgerState.managedMCPServers.count != before
+        }
     }
 
     /// Result of replacing an agent's assignment set.
@@ -650,16 +641,16 @@ extension ManagedMCPAndCardsStore {
         agentId: String,
         entries: [(mcpServerId: String?, enabled: Bool, allowedTools: [String]?)]
     ) -> ManagedMCPAssignmentWrite {
-        lock.lock()
-        defer { lock.unlock() }
-        let serverIds = Set(storage.managedMCPServers.filter { $0.serverId == serverId }.map(\.id))
-        var stored: [String: (enabled: Bool, allowedTools: [String]?)] = [:]
-        for entry in entries {
-            guard let id = entry.mcpServerId, serverIds.contains(id) else { return .unknownServer }
-            stored[id] = (entry.enabled, entry.allowedTools)
+        return storage.withLock { ledgerState in
+            let serverIds = Set(ledgerState.managedMCPServers.filter { $0.serverId == serverId }.map(\.id))
+            var stored: [String: (enabled: Bool, allowedTools: [String]?)] = [:]
+            for entry in entries {
+                guard let id = entry.mcpServerId, serverIds.contains(id) else { return .unknownServer }
+                stored[id] = (entry.enabled, entry.allowedTools)
+            }
+            ledgerState.managedMCPAssignments[agentId] = stored
+            return .stored
         }
-        storage.managedMCPAssignments[agentId] = stored
-        return .stored
     }
 
     /// Sets one assignment of one agent; unknown when the server row is absent.
@@ -670,13 +661,13 @@ extension ManagedMCPAndCardsStore {
         enabled: Bool,
         allowedTools: [String]?
     ) -> ManagedMCPAssignmentWrite {
-        lock.lock()
-        defer { lock.unlock() }
-        guard storage.managedMCPServers.contains(where: { $0.id == mcpServerId && $0.serverId == serverId }) else {
-            return .unknownServer
+        return storage.withLock { ledgerState in
+            guard ledgerState.managedMCPServers.contains(where: { $0.id == mcpServerId && $0.serverId == serverId }) else {
+                return .unknownServer
+            }
+            ledgerState.managedMCPAssignments[agentId, default: [:]][mcpServerId] = (enabled, allowedTools)
+            return .stored
         }
-        storage.managedMCPAssignments[agentId, default: [:]][mcpServerId] = (enabled, allowedTools)
-        return .stored
     }
 }
 
@@ -686,9 +677,9 @@ extension ManagedMCPAndCardsStore {
     /// The audience status of one agent; an agent without an override is
     /// `active`.
     func agentAudienceStatus(agentId: String) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.agentAudienceStatusOverrides[agentId] ?? "active"
+        return storage.withLock { ledgerState in
+            return ledgerState.agentAudienceStatusOverrides[agentId] ?? "active"
+        }
     }
 
     /// Admits an App token for the `agent\nclient` grant key unless the grant
@@ -696,10 +687,10 @@ extension ManagedMCPAndCardsStore {
     /// the write are one critical section, so a revocation cannot slip between
     /// them. `false` when the grant is revoked.
     func claimAgentIntegrationGrant(key: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if storage.agentIntegrationGrants[key] == true { return false }
-        storage.agentIntegrationGrants[key] = false
-        return true
+        return storage.withLock { ledgerState in
+            if ledgerState.agentIntegrationGrants[key] == true { return false }
+            ledgerState.agentIntegrationGrants[key] = false
+            return true
+        }
     }
 }

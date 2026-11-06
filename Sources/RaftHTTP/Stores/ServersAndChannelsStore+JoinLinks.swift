@@ -37,40 +37,40 @@ extension ServersAndChannelsStore {
     }
 
     func setSeats(serverId: String, seats: Int) {
-        lock.lock()
-        storage.proSeats[serverId] = seats
-        lock.unlock()
+        mutex.withLock { storage in
+            storage.proSeats[serverId] = seats
+        }
     }
 
     func insertJoinLink(_ link: JoinLinkRecord) {
-        lock.lock()
-        storage.joinLinks[link.token] = link
-        lock.unlock()
+        mutex.withLock { storage in
+            storage.joinLinks[link.token] = link
+        }
     }
 
     func joinLink(token: String) -> JoinLinkRecord? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.joinLinks[token.lowercased()]
+        mutex.withLock { storage in
+            return storage.joinLinks[token.lowercased()]
+        }
     }
 
     /// Unexpired, unrevoked, not-yet-exhausted links for one server, newest
     /// first.
     func activeJoinLinks(serverId: String, now: Date) -> [JoinLinkRecord] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.joinLinks.values
-            .filter { $0.serverId == serverId && $0.revokedAt == nil }
-            .filter { !Self.joinLinkExpired($0, now: now) && !Self.joinLinkExhausted($0) }
-            .sorted { $0.createdAt > $1.createdAt }
+        mutex.withLock { storage in
+            return storage.joinLinks.values
+                .filter { $0.serverId == serverId && $0.revokedAt == nil }
+                .filter { !Self.joinLinkExpired($0, now: now) && !Self.joinLinkExhausted($0) }
+                .sorted { $0.createdAt > $1.createdAt }
+        }
     }
 
     func revokeJoinLink(id: String, serverId: String, now: Date) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let key = storage.joinLinks.first(where: { $0.value.id == id && $0.value.serverId == serverId })?.key
-        else { return }
-        storage.joinLinks[key]?.revokedAt = now
+        mutex.withLock { storage in
+            guard let key = storage.joinLinks.first(where: { $0.value.id == id && $0.value.serverId == serverId })?.key
+            else { return }
+            storage.joinLinks[key]?.revokedAt = now
+        }
     }
 
     /// Decides and spends one join-link use under a single lock. The two
@@ -85,34 +85,34 @@ extension ServersAndChannelsStore {
         usedSeats: @Sendable (String) -> Int,
         activeAgreement: @Sendable (String) -> ServerAgreementDTO?
     ) -> JoinLinkAcceptance {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let link = storage.joinLinks[token.lowercased()],
-              link.revokedAt == nil,
-              !Self.joinLinkExpired(link, now: now),
-              !Self.joinLinkExhausted(link)
-        else { return .invalid }
-        if let message = seatLimitMessageLocked(serverId: link.serverId, usedSeats: usedSeats) {
-            return .seatLimit(message)
-        }
-        if let agreement = activeAgreement(link.serverId) {
-            guard let requested = requestedAgreementId else {
-                return .agreementRequired(agreement)
+        mutex.withLock { storage in
+            guard let link = storage.joinLinks[token.lowercased()],
+                  link.revokedAt == nil,
+                  !Self.joinLinkExpired(link, now: now),
+                  !Self.joinLinkExhausted(link)
+            else { return .invalid }
+            if let message = Self.seatLimitMessageLocked(state: &storage, serverId: link.serverId, usedSeats: usedSeats) {
+                return .seatLimit(message)
             }
-            guard requested == agreement.id else {
-                return .agreementChanged(agreement)
+            if let agreement = activeAgreement(link.serverId) {
+                guard let requested = requestedAgreementId else {
+                    return .agreementRequired(agreement)
+                }
+                guard requested == agreement.id else {
+                    return .agreementChanged(agreement)
+                }
+                storage.membershipAgreementAudits.append((
+                    serverId: link.serverId,
+                    subjectId: userId,
+                    actorUserId: userId,
+                    source: "invite",
+                    agreementId: agreement.id,
+                    agreementVersion: agreement.version
+                ))
             }
-            storage.membershipAgreementAudits.append((
-                serverId: link.serverId,
-                subjectId: userId,
-                actorUserId: userId,
-                source: "invite",
-                agreementId: agreement.id,
-                agreementVersion: agreement.version
-            ))
+            storage.joinLinks[token.lowercased()]?.useCount += 1
+            return .accepted(serverId: link.serverId, role: link.role)
         }
-        storage.joinLinks[token.lowercased()]?.useCount += 1
-        return .accepted(serverId: link.serverId, role: link.role)
     }
 
     /// The published seat-limit message, or nil when the server has no seat cap
@@ -122,61 +122,62 @@ extension ServersAndChannelsStore {
         serverId: String,
         usedSeats: @Sendable (String) -> Int
     ) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return seatLimitMessageLocked(serverId: serverId, usedSeats: usedSeats)
+        mutex.withLock { storage in
+            return Self.seatLimitMessageLocked(state: &storage, serverId: serverId, usedSeats: usedSeats)
+        }
     }
 
-    private func seatLimitMessageLocked(
+    private static func seatLimitMessageLocked(
+        state: inout State,
         serverId: String,
         usedSeats: @Sendable (String) -> Int
     ) -> String? {
-        guard let seats = storage.proSeats[serverId] else { return nil }
+        guard let seats = state.proSeats[serverId] else { return nil }
         let used = usedSeats(serverId)
         guard used >= seats else { return nil }
         return "Seat limit reached (\(used)/\(seats) on Pro plan)"
     }
 
     func insertServerInvite(id: String, serverId: String, email: String, role: String) {
-        lock.lock()
-        storage.serverInvites.append((
-            id: id,
-            serverId: serverId,
-            email: email,
-            role: role,
-            tokenHash: nil
-        ))
-        lock.unlock()
+        mutex.withLock { storage in
+            storage.serverInvites.append((
+                id: id,
+                serverId: serverId,
+                email: email,
+                role: role,
+                tokenHash: nil
+            ))
+        }
     }
 
     func inviteRecord(tokenHash: String) -> ServerInviteRow? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.serverInvites
-            .first { $0.tokenHash == tokenHash }
-            .map { ServerInviteRow(id: $0.id, serverId: $0.serverId, email: $0.email, role: $0.role, tokenHash: $0.tokenHash) }
+        mutex.withLock { storage in
+            return storage.serverInvites
+                .first { $0.tokenHash == tokenHash }
+                .map { ServerInviteRow(id: $0.id, serverId: $0.serverId, email: $0.email, role: $0.role, tokenHash: $0.tokenHash) }
+        }
     }
 
     func serverInviteRows(serverId: String) -> [ServerInviteRow] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.serverInvites
-            .filter { $0.serverId == serverId }
-            .map { ServerInviteRow(id: $0.id, serverId: $0.serverId, email: $0.email, role: $0.role, tokenHash: $0.tokenHash) }
+        mutex.withLock { storage in
+            return storage.serverInvites
+                .filter { $0.serverId == serverId }
+                .map { ServerInviteRow(id: $0.id, serverId: $0.serverId, email: $0.email, role: $0.role, tokenHash: $0.tokenHash) }
+        }
     }
 
     func setInviteTokenHash(id: String, tokenHash: String) {
-        lock.lock()
-        if let index = storage.serverInvites.firstIndex(where: { $0.id == id }) {
-            storage.serverInvites[index].tokenHash = tokenHash
+        mutex.withLock { storage in
+            if let index = storage.serverInvites.firstIndex(where: { $0.id == id }) {
+                storage.serverInvites[index].tokenHash = tokenHash
+            }
         }
-        lock.unlock()
     }
 
     func removeServerInvite(id: String, serverId: String) {
-        lock.lock()
-        storage.serverInvites.removeAll { $0.id == id && $0.serverId == serverId }
-        lock.unlock()
+        mutex.withLock { storage in
+            storage.serverInvites.removeAll { $0.id == id && $0.serverId == serverId }
+        }
     }
 
     /// Decides and spends one email invite under a single lock: the invite
@@ -190,33 +191,33 @@ extension ServersAndChannelsStore {
         usedSeats: @Sendable (String) -> Int,
         activeAgreement: @Sendable (String) -> ServerAgreementDTO?
     ) -> ServerInviteAcceptance {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let index = storage.serverInvites.firstIndex(where: { $0.tokenHash == tokenHash })
-        else { return .invalid }
-        let invite = storage.serverInvites[index]
-        guard userEmail == invite.email.lowercased() else { return .invalid }
-        if let message = seatLimitMessageLocked(serverId: invite.serverId, usedSeats: usedSeats) {
-            return .seatLimit(message)
-        }
-        if let agreement = activeAgreement(invite.serverId) {
-            guard let requested = requestedAgreementId else {
-                return .agreementRequired(agreement)
+        mutex.withLock { storage in
+            guard let index = storage.serverInvites.firstIndex(where: { $0.tokenHash == tokenHash })
+            else { return .invalid }
+            let invite = storage.serverInvites[index]
+            guard userEmail == invite.email.lowercased() else { return .invalid }
+            if let message = Self.seatLimitMessageLocked(state: &storage, serverId: invite.serverId, usedSeats: usedSeats) {
+                return .seatLimit(message)
             }
-            guard requested == agreement.id else {
-                return .agreementChanged(agreement)
+            if let agreement = activeAgreement(invite.serverId) {
+                guard let requested = requestedAgreementId else {
+                    return .agreementRequired(agreement)
+                }
+                guard requested == agreement.id else {
+                    return .agreementChanged(agreement)
+                }
+                storage.membershipAgreementAudits.append((
+                    serverId: invite.serverId,
+                    subjectId: userId,
+                    actorUserId: userId,
+                    source: "invite",
+                    agreementId: agreement.id,
+                    agreementVersion: agreement.version
+                ))
             }
-            storage.membershipAgreementAudits.append((
-                serverId: invite.serverId,
-                subjectId: userId,
-                actorUserId: userId,
-                source: "invite",
-                agreementId: agreement.id,
-                agreementVersion: agreement.version
-            ))
+            storage.serverInvites.remove(at: index)
+            return .accepted(serverId: invite.serverId, role: invite.role)
         }
-        storage.serverInvites.remove(at: index)
-        return .accepted(serverId: invite.serverId, role: invite.role)
     }
 
     private static func joinLinkExpired(_ link: JoinLinkRecord, now: Date) -> Bool {
