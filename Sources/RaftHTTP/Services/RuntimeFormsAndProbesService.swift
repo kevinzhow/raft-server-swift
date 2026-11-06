@@ -87,6 +87,14 @@ extension EmailLoginDirectory {
             || computers.contains { $0.apiKey == token && $0.revokedAt == nil }
     }
 
+    func computerCredentialValid(_ authorization: String?) -> Bool {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
+        let key = String(authorization.dropFirst("Bearer ".count))
+        lock.lock()
+        defer { lock.unlock() }
+        return computers.contains { $0.apiKey == key && $0.revokedAt == nil }
+    }
+
     public func computerCredentialIsLive(authorization: String?) -> Bool {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return false }
         let token = String(authorization.dropFirst("Bearer ".count))

@@ -123,12 +123,15 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request async throws -> Response in
-            routeResponse(services.emailAccounts.computerLifecycleOperation(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ComputerLifecycleRequest.self, request) ?? ComputerLifecycleRequest()
+            return try await respond(status: 201) {
+                try services.emailAccounts.computersFleet.computerLifecycleOperation(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    request: body
+                )
+            }
         }
         servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request async throws -> Response in
             try await respond(status: 404) {
@@ -443,11 +446,13 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "model-label-catalog") { request -> Response in
-            routeResponse(services.emailAccounts.modelLabelCatalog(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "model-label-catalog") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.modelLabelCatalog(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
         servers.get(":id", "product-analytics-settings") { request -> Response in
             routeResponse(services.emailAccounts.serverProductAnalyticsSettings(
@@ -495,13 +500,16 @@ public struct ServersFeature: RouteCollection, Sendable {
             ))
         }
         servers.post(":id", "machines", ":machineId", "computer", ":action") { request async throws -> Response in
-            routeResponse(services.emailAccounts.computerAction(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                action: request.parameters.get("action") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(ComputerActionRequest.self, request) ?? ComputerActionRequest()
+            return try await respond {
+                try services.emailAccounts.computersFleet.computerAction(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    action: request.parameters.get("action") ?? "",
+                    request: body
+                )
+            }
         }
         registerServerMachineDelete(on: servers)
         servers.get(":id", "usage") { request async throws -> Response in
@@ -519,12 +527,14 @@ public struct ServersFeature: RouteCollection, Sendable {
                 machineId: request.parameters.get("machineId") ?? ""
             ))
         }
-        servers.post(":id", "machines", ":machineId", "runtimes", "rescan") { request -> Response in
-            routeResponse(services.emailAccounts.machineRuntimeRescan(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.post(":id", "machines", ":machineId", "runtimes", "rescan") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.machineRuntimeRescan(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
         servers.get(":id", "machines", ":machineId", "runtime-options") { request -> Response in        routeResponse(services.emailAccounts.machineRuntimeOptions(
                 authorization: request.headers[.authorization],
@@ -615,13 +625,15 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request -> Response in
-            routeResponse(services.emailAccounts.deleteMachineWorkspace(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                directoryName: request.parameters.get("directoryName") ?? ""
-            ))
+        servers.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.deleteMachineWorkspace(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    directoryName: request.parameters.get("directoryName") ?? ""
+                )
+            }
         }
         servers.get(":id", "system-notifications") { request async throws -> Response in
             var response = try await respond {
@@ -668,27 +680,34 @@ public struct ServersFeature: RouteCollection, Sendable {
                 body: try await request.bodyText()
             ))
         }
-        servers.get(":id", "machines") { request -> Response in
-            routeResponse(services.emailAccounts.listServerMachines(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? ""
-            ))
+        servers.get(":id", "machines") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.listServerMachines(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? ""
+                )
+            }
         }
-        servers.post(":id", "machines", ":machineId", "rotate-key") { request -> Response in
-            routeResponse(services.emailAccounts.rotateServerMachineKey(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.post(":id", "machines", ":machineId", "rotate-key") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.rotateServerMachineKey(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
         registerServerMachineDelete(on: servers)
         servers.patch(":id", "machines", ":machineId") { request async throws -> Response in
-            routeResponse(services.emailAccounts.patchServerMachine(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? "",
-                body: try await request.bodyText()
-            ))
+            let body = await jsonRequestBody(MachineDescriptionRequest.self, request) ?? MachineDescriptionRequest()
+            return try await respond {
+                try services.emailAccounts.computersFleet.patchServerMachine(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? "",
+                    request: body
+                )
+            }
         }
         servers.patch(":id") { request async throws -> Response in
             routeResponse(services.emailAccounts.patchServerProfile(
@@ -803,12 +822,14 @@ public struct ServersFeature: RouteCollection, Sendable {
     /// override warning and keeps the second leaf; this helper only makes the
     /// intentional duplicate explicit instead of copy-pasting the handler.
     private func registerServerMachineDelete(on servers: any RoutesBuilder) {
-        servers.delete(":id", "machines", ":machineId") { request -> Response in
-            routeResponse(services.emailAccounts.deleteServerMachine(
-                authorization: request.headers[.authorization],
-                serverId: request.parameters.get("id") ?? "",
-                machineId: request.parameters.get("machineId") ?? ""
-            ))
+        servers.delete(":id", "machines", ":machineId") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.deleteServerMachine(
+                    authorization: request.headers[.authorization],
+                    serverId: request.parameters.get("id") ?? "",
+                    machineId: request.parameters.get("machineId") ?? ""
+                )
+            }
         }
     }
 }

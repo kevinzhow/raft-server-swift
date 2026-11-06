@@ -244,35 +244,6 @@ extension EmailLoginDirectory {
         return language.lowercased().hasPrefix("zh")
     }
 
-    static func adoptedComputerReply(
-        apiKey: String,
-        computerId: String,
-        machineId: String,
-        serverId: String,
-        resumed: Bool
-    ) -> HTTPReply {
-        Self.json(201, "{\"apiKey\":\(jsonString(apiKey)),\"computerId\":\(jsonString(computerId)),\"machineId\":\(jsonString(machineId)),\"serverId\":\(jsonString(serverId)),\"resumed\":\(resumed)}")
-    }
-
-    static func adoptedComputerName(_ supplied: String?, fallback: String) -> String {
-        if let supplied {
-            let trimmed = supplied.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty, trimmed.count <= 200 { return trimmed }
-        }
-        if !fallback.isEmpty, fallback.count <= 200 { return fallback }
-        return "raft-computer"
-    }
-
-    static func runnerModel(from runtimeConfigJSON: String?) -> String {
-        guard let runtimeConfigJSON,
-              let object = (try? JSONSerialization.jsonObject(with: Data(runtimeConfigJSON.utf8))) as? [String: Any],
-              let model = object["model"]
-        else { return "" }
-        if let text = model as? String { return text }
-        if let structured = model as? [String: Any], let id = structured["id"] as? String { return id }
-        return ""
-    }
-
     static func escapeHTML(_ value: String) -> String {
         value
             .replacingOccurrences(of: "&", with: "&amp;")

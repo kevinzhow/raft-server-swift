@@ -23,35 +23,31 @@ public struct ComputersFeature: RouteCollection, Sendable {
         let computers = routes.grouped("api", "computer")
 
         computers.post("adopt-legacy") { request async throws -> Response in
-            if let body = try? await request.content.decode(ComputerAdoptLegacyRequestDTO.self) {
-                return routeResponse(services.emailAccounts.adoptLegacyComputer(
+            let body = await jsonRequestBody(ComputerAdoptLegacyRequest.self, request) ?? ComputerAdoptLegacyRequest()
+            return try await respond(status: 201) {
+                try services.emailAccounts.computersFleet.adoptLegacyComputer(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    request: body
+                )
             }
-            return routeResponse(services.emailAccounts.adoptLegacyComputer(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText(default: "{}")
-            ))
         }
         computers.post("attach") { request async throws -> Response in
-            if let body = try? await request.content.decode(ComputerAttachRequestDTO.self) {
-                return routeResponse(services.emailAccounts.attachComputer(
+            let body = await jsonRequestBody(ComputerAttachRequest.self, request) ?? ComputerAttachRequest()
+            return try await respond(status: 201) {
+                try services.emailAccounts.computersFleet.attachComputer(
                     authorization: request.headers[.authorization],
-                    body: body.encodedBody()
-                ))
+                    request: body
+                )
             }
-            return routeResponse(services.emailAccounts.attachComputer(
-                authorization: request.headers[.authorization],
-                body: try await request.bodyText()
-            ))
         }
-        computers.get("legacy-machines") { request -> Response in
-            routeResponse(services.emailAccounts.legacyMachines(
-                authorization: request.headers[.authorization],
-                serverSlug: desktopQuery(request.url.query, "serverSlug"),
-                includeAll: desktopQuery(request.url.query, "includeAll") == "1"
-            ))
+        computers.get("legacy-machines") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.computersFleet.legacyMachines(
+                    authorization: request.headers[.authorization],
+                    serverSlug: desktopQuery(request.url.query, "serverSlug"),
+                    includeAll: desktopQuery(request.url.query, "includeAll") == "1"
+                )
+            }
         }
     }
 }

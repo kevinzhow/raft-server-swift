@@ -983,6 +983,42 @@ extension EmailLoginDirectory {
         SearchMentionsService(directory: self)
     }
 
+    /// The Computer fleet: machine roster, Computer attach/adoption, runner
+    /// control plane and the lifecycle controls. The directory supplies the
+    /// machine, agent and profile stores and the OAuth ledger; the session
+    /// lookup, the realtime emitter, the device-login gate, the agent credential
+    /// mint and the Computer credential lookup belong to unmigrated domains and
+    /// enter as closures.
+    public var computersFleet: ComputersFleetService {
+        ComputersFleetService(
+            machines: machinesAndComputersStore,
+            agents: agentsRuntimeStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            dependencies: ComputersFleetDependencies(
+                sessionUserId: { [self] authorization in
+                    sessionUserId(authorization: authorization)
+                },
+                emitRealtime: { [self] room, event, payload in
+                    emitRealtime(room, event, payload)
+                },
+                computerAttachEnabled: { [self] in
+                    computerAttachEnabled()
+                },
+                mintAgentCredential: { [self] agentId, scopes, name in
+                    let minted = mintAgentCredential(agentId: agentId, scopes: scopes, name: name)
+                    lock.lock()
+                    let credentialId = agentCredentials[minted]?.id ?? UUID().uuidString.lowercased()
+                    lock.unlock()
+                    return ComputersFleetDependencies.MintedCredential(apiKey: minted, credentialId: credentialId)
+                },
+                computerCredential: { [self] apiKey in
+                    computerCredential(apiKey: apiKey)
+                }
+            )
+        )
+    }
+
     /// Product feedback locators for `POST/GET /internal/agent-api/feedback-locators`
     /// plus the agent credential/grant decisions the rest of the agent API
     /// shares. The directory only supplies its stores and the OAuth ledger.
