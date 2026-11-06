@@ -2,10 +2,7 @@ Sources/RaftHTTP/DTO/AgentsAndComputersDTO.swift	1
 Sources/RaftHTTP/DTO/AuthIdentitiesDTO.swift	1
 Sources/RaftHTTP/DTO/ServersAndTasksDTO.swift	1
 Sources/RaftHTTP/EmailLogin.swift	1
-Sources/RaftHTTP/Services/ActionCardExecuteService.swift	1
-Sources/RaftHTTP/Services/ActionCardExecuteTypes.swift	1
 Sources/RaftHTTP/Services/ActionCardService.swift	2
-Sources/RaftHTTP/Services/AgentPrivateSurfaceService.swift	2
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/ChannelMessagingService.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors+ActionCards.swift	1

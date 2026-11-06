@@ -2177,3 +2177,9 @@ RFC 074 personal assistant：
 - OAuthFlows 与 FeedbackLocator 删除目录构造器，复用原 Profile/flag/OAuth 和 Feedback/Agents/Channels/Cards/OAuth owners。配置、provider profile、flag、credential、grant 与 route ref 仍在操作时读取；clock、receipt id 与 hash 默认实现保持，未冻结状态。
 - Locator identity 仍要求 live credential、capability 和有效 agent；另一个 capability refusal 投影保持 malformed/missing/revoked 放行、仅 live credential 缺 scope 才拒绝的旧语义。该 nil/string 投影从 Root 移回 locator 服务，原错误对象顺序不变。
 - Profile/card/marketplace/tool callers持实际 locator 值，旧七处 Source 构造及两处专属 fixture 构造迁完。Feedback 并发首次 ingest 的去重判断与 append 仍同一 owner 事务，OAuth 的 web/mobile callback、redirect/cookie 和安装 lookup 字节未改。
+
+### Agent private 与 send 构造能力
+
+- PrivateSurface 和 ActionCardExecute 删除目录构造器/live，直接持原 owners、AuthCore、credential-use、ownership/suppression、mentions、message ledger，以及 prepare/reactions/role-notice 能力。SendDeps 独立于 DTO；所有操作、原 commit/attachment/mirror 事务及 Cards 独立 barrier 保持。
+- Pending wake hints 仍使用原 Reactions 结果，只有非 nil seq 投影为原 seq/JSON 行；raw/live credential、actor、freshness subtype、assistant flag/membership、joint 附件范围与拒绝顺序保持。同实例 credential-use throttle、relay 卸载/重装、消息和 reaction 的真实 socket 帧回归继续通过。
+- Lifecycle joint 每次调用从实际 Channels owner 形成临时 facts；prepare session 捕获 AuthCore，保原 optional authenticate，不加 verified 条件。查询没有构造时缓存 State/flags/provider/slot，也未恢复已删的三个 ownership/freshness shim。

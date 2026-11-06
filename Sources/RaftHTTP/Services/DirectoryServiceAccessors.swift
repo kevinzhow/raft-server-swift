@@ -149,13 +149,23 @@ extension EmailLoginDirectory {
         machinesAndHostedRuntime.enableHostedModelPicker(serverId: serverId)
     }
 
-    /// Agent records and their private surfaces: creation, listing, the profile
-    /// patch, credentials, the wake-hint stream and the assistant-owner reads.
-    /// The directory supplies its stores; the session lookup, the realtime
-    /// emitter, the hosted provider flag, the wake-hint projection and the role
-    /// notice enter as closures.
+    /// Agent records and private surfaces, composed from their actual owners,
+    /// session authentication, credential use and existing domain capabilities.
     public var agentSurface: AgentPrivateSurfaceService {
-        AgentPrivateSurfaceService(directory: self)
+        AgentPrivateSurfaceService(
+            auth: authCore,
+            oauth: oauth,
+            agents: agentsRuntimeStore,
+            credentialUse: agentCredentialUse,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            messages: messagesAndThreadsStore,
+            cards: managedMCPAndCardsStore,
+            realtime: realtimeRelay,
+            prepare: actionCardPrepare,
+            reactions: reactionsRealtime,
+            notices: agentRoleNotices
+        )
     }
 
     var agentCredentialUse: AgentCredentialUseService {
@@ -253,8 +263,8 @@ extension EmailLoginDirectory {
                 recordAgentCredentialUse: { [credentialUse = agentCredentialUse] token in
                     credentialUse.record(token: token)
                 },
-                jointLocalChannelId: { [self] canonicalChannelId, serverId, userId in
-                    MessageChannelFacts(serversAndChannelsStore.state).localChannel(
+                jointLocalChannelId: { [channels = serversAndChannelsStore] canonicalChannelId, serverId, userId in
+                    MessageChannelFacts(channels.state).localChannel(
                         canonical: canonicalChannelId,
                         serverId: serverId,
                         userId: userId
@@ -514,19 +524,31 @@ extension EmailLoginDirectory {
             channels: serversAndChannelsStore,
             accounts: authProfileStore,
             messages: messagesAndThreadsStore,
-            sessionUserId: { self.sessionUserId(authorization: $0) },
+            sessionUserId: { [auth = authCore] authorization in try? auth.authenticate(authorization) },
             assistantOwner: { [ownership = AssistantOwnershipQuery(agents: agentsRuntimeStore, oauth: oauth)] agentId, serverId in
                 ownership.liveOwner(agentId: agentId, serverId: serverId)
             }
         )
     }
 
-    /// Agent task list, claim and update-status. The service owns the task
-    /// policy and reads the task/message/channel/agent/machine stores; the
-    /// directory accessor stays here so the feature layer never touches the
-    /// composition root.
+    /// Agent task, execute and send policy stays in its service; this accessor
+    /// supplies owners and the existing domain capabilities.
     public var actionCardExecute: ActionCardExecuteService {
-        ActionCardExecuteService(directory: self)
+        ActionCardExecuteService(
+            tasks: tasksAndRemindersStore,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            feedbackLocators: feedbackLocators,
+            cards: managedMCPAndCardsStore,
+            prepare: actionCardPrepare,
+            ownership: AssistantOwnershipQuery(agents: agentsRuntimeStore, oauth: oauth),
+            suppression: MessageSuppressionService(messages: messagesAndThreadsStore, oauth: oauth),
+            mentions: messageMentions,
+            ledger: MessageLedgerPort(oauth: oauth)
+        )
     }
 
     /// Message search, the stored context fallback, the shared message

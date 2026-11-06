@@ -29,20 +29,39 @@ public struct ActionCardExecuteService: Sendable {
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
 
-    public init(directory source: EmailLoginDirectory) {
+    init(
+        tasks: TasksAndRemindersStore,
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        agents: AgentsRuntimeStore,
+        machines: MachinesAndComputersStore,
+        oauth: OAuthLedger,
+        feedbackLocators: FeedbackLocatorService,
+        cards: ManagedMCPAndCardsStore,
+        prepare: ActionCardPrepareService,
+        ownership: AssistantOwnershipQuery,
+        suppression: MessageSuppressionService,
+        mentions: MessageMentionsService,
+        ledger: MessageLedgerPort
+    ) {
         self.init(
-            tasks: source.tasksAndRemindersStore,
-            messages: source.messagesAndThreadsStore,
-            channels: source.serversAndChannelsStore,
-            agents: source.agentsRuntimeStore,
-            machines: source.machinesAndComputersStore,
-            oauth: source.oauth,
-            feedbackLocators: source.feedbackLocators,
-            cards: source.managedMCPAndCardsStore,
-            prepare: source.actionCardPrepare,
-            dependencies: .live(directory: source),
-            now: { Date() },
-            makeMessageId: { UUID().uuidString.lowercased() }
+            tasks: tasks,
+            messages: messages,
+            channels: channels,
+            agents: agents,
+            machines: machines,
+            oauth: oauth,
+            feedbackLocators: feedbackLocators,
+            cards: cards,
+            prepare: prepare,
+            dependencies: AgentSendDependencies(
+                ownership: ownership,
+                channels: channels,
+                messages: messages,
+                suppression: suppression,
+                mentionService: mentions,
+                ledger: ledger
+            )
         )
     }
 

@@ -3,14 +3,8 @@ import RaftShared
 
 // MARK: - Injected dependencies
 
-/// Everything the agent private surface needs.
-///
-/// The agent, machine, server, message and provider-connection rows belong to
-/// their stores. The human session lookup, the realtime emitter, the hosted
-/// provider flag, the wake-hint projection (it spans the channel, message,
-/// joint and suppression ledgers) and the system notice a role change posts into
-/// the actor's DM belong to domains that have not migrated and stay behind
-/// closures; `live(directory:)` wires them at the composition root.
+/// The private surface's owners and operations, assembled from explicit
+/// session, relay, credential-use and existing domain service capabilities.
 struct AgentPrivateSurfaceDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var emitRealtime: @Sendable (String, String, String?) -> Void
@@ -37,39 +31,6 @@ struct AgentPrivateSurfaceDependencies: Sendable {
         _ from: String,
         _ to: String
     ) -> Void
-
-    static func live(directory source: EmailLoginDirectory) -> AgentPrivateSurfaceDependencies {
-        AgentPrivateSurfaceDependencies(
-            sessionUserId: { source.sessionUserId(authorization: $0) },
-            emitRealtime: { room, event, payload in
-                source.realtimeRelay.emit(room, event, payload)
-            },
-            oauth: source.oauth,
-            agents: source.agentsRuntimeStore,
-            credentialUse: source.agentCredentialUse,
-            machines: source.machinesAndComputersStore,
-            channels: source.serversAndChannelsStore,
-            messages: source.messagesAndThreadsStore,
-            cards: source.managedMCPAndCardsStore,
-            hostedProviderConfigured: { [agents = source.agentsRuntimeStore] in agents.hostedProviderConfigured() },
-            pendingWakeHints: { agentId, agent, sinceSeq, limit in
-                source.pendingWakeHints(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
-            },
-            directChannelId: { serverId, agentId, peerId in
-                source.actionCardPrepare.dmChannelId(serverId: serverId, agentId: agentId, peerId: peerId)
-            },
-            postAgentRoleNotice: { [notices = source.agentRoleNotices] serverId, actorUserId, agentId, agentName, from, to in
-                notices.post(
-                    serverId: serverId,
-                    actorUserId: actorUserId,
-                    agentId: agentId,
-                    agentName: agentName,
-                    from: from,
-                    to: to
-                )
-            }
-        )
-    }
 }
 
 // MARK: - Service
@@ -86,9 +47,47 @@ struct AgentPrivateSurfaceDependencies: Sendable {
 public struct AgentPrivateSurfaceService: Sendable {
     let dependencies: AgentPrivateSurfaceDependencies
 
-    /// Production wiring.
-    public init(directory: EmailLoginDirectory) {
-        self.init(dependencies: .live(directory: directory))
+    init(
+        auth: AuthCoreService,
+        oauth: OAuthLedger,
+        agents: AgentsRuntimeStore,
+        credentialUse: AgentCredentialUseService,
+        machines: MachinesAndComputersStore,
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        cards: ManagedMCPAndCardsStore,
+        realtime: RealtimeRelayService,
+        prepare: ActionCardPrepareService,
+        reactions: ReactionsRealtimeService,
+        notices: AgentRoleNoticeService
+    ) {
+        self.init(dependencies: AgentPrivateSurfaceDependencies(
+            sessionUserId: { try? auth.authenticate($0) },
+            emitRealtime: { room, event, payload in realtime.emit(room, event, payload) },
+            oauth: oauth,
+            agents: agents,
+            credentialUse: credentialUse,
+            machines: machines,
+            channels: channels,
+            messages: messages,
+            cards: cards,
+            hostedProviderConfigured: { agents.hostedProviderConfigured() },
+            pendingWakeHints: { agentId, agent, sinceSeq, limit in
+                reactions.pendingWakeHints(agentId: agentId, agent: agent, sinceSeq: sinceSeq, limit: limit)
+                    .hints.compactMap { hint in
+                        hint.seq.map { AgentWakeHintRow(seq: $0, json: hint.jsonBody.render()) }
+                    }
+            },
+            directChannelId: { serverId, agentId, peerId in
+                prepare.dmChannelId(serverId: serverId, agentId: agentId, peerId: peerId)
+            },
+            postAgentRoleNotice: { serverId, actorUserId, agentId, agentName, from, to in
+                notices.post(
+                    serverId: serverId, actorUserId: actorUserId, agentId: agentId,
+                    agentName: agentName, from: from, to: to
+                )
+            }
+        ))
     }
 
     init(dependencies: AgentPrivateSurfaceDependencies) {
