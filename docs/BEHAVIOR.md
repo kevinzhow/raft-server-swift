@@ -2475,3 +2475,9 @@ RFC 074 personal assistant：
 - 39原Auth注册/登录/密码语言profile/avatar、legal/retire、refresh replay精确binding、browser/mobile/PKCE/link/Apple gate与form callback函数走实际AuthFeature七服务/JSONBoundary，同13-owner AuthScene的private AuthFixture与MobileFixture。39原withApp/app.testing生命周期、所有请求字节/headers/错误/顺序/expiry与配置时点、458断言数量保；新增13Auth+10Mobile typed seeds/flatfacts对照原默认/normalization/hash/2Date/UUID/orderedIDs/perkeyexpiry，无Owner/State/map/newexchangehook。
 - 99receiver/实际存写flatfacts与3授权主体例外逐项核：原counter0改nonce拒绝Locationnil、cancel无code、exchangeFailure无code，原HTTPstatus/body/error与pending/failed事实保。它们证明公开拒绝结果，不声称provider从未调用。唯一sharedgetter删后全Tests该名0hits，Sourceprivatecounter/increment0改；无新请求/矩阵/queryspy。
 - Native5与797line后缀含JWT helper/3旧unchecked recorder-barrier整字节保，仍Root，非整44/整file/全部Auth完成。原Apple identity为RS256标签literal.sig+claim解析，请求capability真实HS256 HMAC；没有新增RSA/JWKS验签或相关覆盖声明。actual39/full/E2E24smoke49Python22arch/parity通过，Source/SDK/composer63/IDs0改，不扩大完整Fallback middleware/生产Root切换资格。
+
+### DaemonLog checked 捕获与退订退役
+
+- subscriber map/nextToken归同Mutex State；subscribe新增@Sendable是明确Swift源码bound收紧，原token递增/发布完整事务保。unsubscribe把removed handler强保到borrow外才允许最后capture析构，修lease.deinit公开log同实例的锁重入死锁，不伪装纯签名/退役语义同等。
+- 原同DateFormatter私有对象一次POSIX/UTC/格式配置保，先formatter.string(Date())构line→snapshot borrow→外Event/dispatch三域/INFO-WARN-ERROR字节保；SDK实际strictSwift6 -c接受checked holder，不冒SDK文本接口或所有交错证明。已snapshot回调可继续，无新gate/串行化/总序。
+- 新50行checked collector/immutable lease只断言实际公开INFO Event、retirement message与完整UTCline，无spy/新unsafe/线程逃逸。旧Source实际build后唯一case started→timeout124，新Source原1+新1实际2通过，旧112/新50测试字节保。full/E2E24smoke49Python22arch/parity通过，unchecked6→5/5→4files/server0；旧serialSink不宣修复、无生产接线或完整上游logger等价声明。

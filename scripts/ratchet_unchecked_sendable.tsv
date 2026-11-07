@@ -1,4 +1,3 @@
-Sources/RaftDaemonClient/DaemonLog.swift	1
 Sources/RaftDaemonClient/DaemonReconnectLoop.swift	1
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1
 Sources/RaftDaemonClient/ProcessMemory.swift	1
