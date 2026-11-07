@@ -1,7 +1,6 @@
 import Foundation
 import RaftShared
 import Testing
-import TestSupport
 @testable import RaftHTTP
 
 /// The OAuth flow service owns the published bodies and one store critical
@@ -11,25 +10,25 @@ import TestSupport
 private let returnUri = "raft://oauth/callback"
 private let verifier = String(repeating: "v", count: 43)
 
-private func challenge() -> String { EmailLoginDirectory.pkceChallengeForTesting(verifier) }
+private func challenge() -> String { AuthTokenCodec.pkceS256(verifier) }
 
-private func makeDirectory() -> EmailLoginDirectory {
-    let directory = EmailLoginDirectory()
-    directory.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
-    directory.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
-    directory.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "github", "apple"] }
-    directory.allowAppleLogin(on: ["web", "mobile"])
-    directory.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+private func makeFixture() -> OAuthFlowsUnitFixture {
+    let fixture = OAuthFlowsUnitFixture()
+    fixture.setAppURL("https://app.raft.test")
+    fixture.setServerURL("https://api.raft.test")
+    fixture.setConfiguredProviders(["google", "github", "apple"])
+    fixture.allowAppleLogin(on: ["web", "mobile"])
+    fixture.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-sub-1", email: "Person@Flows.test", displayName: "Flow Person", emailVerified: true
-    ) }
-    return directory
+    ))
+    return fixture
 }
 
-private func verifiedBearer(_ directory: EmailLoginDirectory, _ suffix: String) -> (userId: String, bearer: String) {
+private func verifiedBearer(_ fixture: OAuthFlowsUnitFixture, _ suffix: String) -> (userId: String, bearer: String) {
     let userId = "11111111-1111-4111-8111-0000030\(suffix)"
-    directory.addAccount(id: userId, email: "flows-\(suffix)@slock.test", password: "password123")
-    directory.markEmailVerified(userId: userId)
-    return (userId, "Bearer " + directory.mintAccessTokenForTesting(userId: userId))
+    fixture.addAccount(id: userId, email: "flows-\(suffix)@slock.test", password: "password123")
+    fixture.markEmailVerified(userId: userId)
+    return (userId, "Bearer " + fixture.mintAccessTokenForTesting(userId: userId))
 }
 
 private func queryItem(_ url: String, _ name: String) -> String? {
@@ -111,18 +110,18 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
 }
 
 @Test func oauthFlowsPublishProviderListRedirectAndLinkStartBytes() throws {
-    let directory = makeDirectory()
-    let service = directory.oauthFlows
+    let fixture = makeFixture()
+    let service = fixture.service
 
-    // A directory with github unconfigured and Apple allowed on mobile only.
-    let gated = EmailLoginDirectory()
-    gated.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "apple"] }
+    // A fixture with github unconfigured and Apple allowed on mobile only.
+    let gated = OAuthFlowsUnitFixture()
+    gated.setConfiguredProviders(["google", "apple"])
     gated.allowAppleLogin(on: ["mobile"])
-    #expect(try gated.oauthFlows.authProviders(platform: nil).jsonBody.render()
+    #expect(try gated.service.authProviders(platform: nil).jsonBody.render()
         == #"{"providers":[{"id":"google","label":"Google","enabled":true},{"id":"github","label":"GitHub","enabled":false},{"id":"apple","label":"Apple","enabled":false}]}"#)
-    #expect(try gated.oauthFlows.authProviders(platform: "mobile").jsonBody.render()
+    #expect(try gated.service.authProviders(platform: "mobile").jsonBody.render()
         == #"{"providers":[{"id":"google","label":"Google","enabled":true},{"id":"github","label":"GitHub","enabled":false},{"id":"apple","label":"Apple","enabled":true}]}"#)
-    #expect(throws: OAuthFlowsError.platformInvalid) { try gated.oauthFlows.authProviders(platform: "desktop") }
+    #expect(throws: OAuthFlowsError.platformInvalid) { try gated.service.authProviders(platform: "desktop") }
 
     let redirect = try service.startWebOAuth(provider: "google", returnTo: "/inbox")
     #expect(redirect.status == 302)
@@ -136,10 +135,10 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     ]))
     #expect(throws: OAuthFlowsError.notFound) { try service.startWebOAuth(provider: "nope", returnTo: nil) }
     #expect(throws: OAuthFlowsError.providerNotConfigured(provider: "github")) {
-        try gated.oauthFlows.startWebOAuth(provider: "github", returnTo: nil)
+        try gated.service.startWebOAuth(provider: "github", returnTo: nil)
     }
 
-    let (_, bearer) = verifiedBearer(directory, "01")
+    let (_, bearer) = verifiedBearer(fixture, "01")
     let link = try service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(returnTo: "/x"), authorization: bearer)
     #expect(link.jsonBody.render().hasPrefix(#"{"url":"https://github.com/login/oauth/authorize?"#))
     #expect(link.headers.values["Set-Cookie"]?.contains("slock_github_oauth_nonce=") == true)
@@ -152,8 +151,8 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
 }
 
 @Test func oauthFlowsMobileHandoffPublishesTheLegacyBodies() throws {
-    let directory = makeDirectory()
-    let service = directory.oauthFlows
+    let fixture = makeFixture()
+    let service = fixture.service
 
     let started = try service.startMobileOAuth(MobileOAuthStartRequest(
         isObject: true, returnUri: returnUri, provider: "google", mode: "login", codeChallenge: challenge()
@@ -201,13 +200,13 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     #expect(throws: OAuthFlowsError.handoffCodeConsumed) {
         try service.completeMobileOAuth(MobileOAuthCompleteRequest(code: fresh, codeVerifier: verifier))
     }
-    #expect(directory.sessionCount == 1)
+    #expect(fixture.sessionCount == 1)
 }
 
 @Test func oauthFlowsLinkCompleteListsTheLinkedIdentities() throws {
-    let directory = makeDirectory()
-    let service = directory.oauthFlows
-    let (userId, bearer) = verifiedBearer(directory, "02")
+    let fixture = makeFixture()
+    let service = fixture.service
+    let (userId, bearer) = verifiedBearer(fixture, "02")
 
     let started = try service.startMobileOAuthLink(
         provider: "google",
@@ -218,7 +217,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     let redirect = try service.mobileOAuthCallback(provider: "google", code: "c", state: state)
     let code = try #require(queryItem(redirect.location, "code"))
 
-    let other = verifiedBearer(directory, "03").bearer
+    let other = verifiedBearer(fixture, "03").bearer
     #expect(throws: OAuthFlowsError.mobileLinkMismatch) {
         try service.completeMobileOAuthLink(
             provider: "google", body: MobileOAuthCompleteRequest(code: code, codeVerifier: verifier), authorization: other
@@ -234,7 +233,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     )
     #expect(linked.jsonBody.render()
         == #"{"provider":"google","mode":"link","returnUri":"raft://oauth/callback","identities":[{"provider":"google","providerEmail":"person@flows.test"}]}"#)
-    #expect(directory.linkedProviderUserIds(userId: userId, provider: "google") == ["google-sub-1"])
+    #expect(fixture.linkedProviderUserIds(userId: userId, provider: "google") == ["google-sub-1"])
     #expect(throws: OAuthFlowsError.handoffCodeConsumed) {
         try service.completeMobileOAuthLink(
             provider: "google", body: MobileOAuthCompleteRequest(code: code, codeVerifier: verifier), authorization: bearer
@@ -269,14 +268,14 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
 // MARK: - Feature flags
 
 @Test func oauthFlowsEvaluateFeatureFlagsPublishTheLegacyBytes() throws {
-    let directory = makeDirectory()
-    let service = directory.oauthFlows
-    let (userId, bearer) = verifiedBearer(directory, "04")
-    directory.createFeatureFlagForTesting(key: "alpha.flag", defaultEnabled: true)
-    directory.createFeatureFlagForTesting(key: "beta_flag", defaultEnabled: false)
-    directory.createFeatureFlagForTesting(key: "kill", defaultEnabled: true, killSwitch: true)
-    directory.addFeatureFlagRuleForTesting(key: "beta_flag", stage: "user", decision: "allow", values: [userId])
-    directory.addFeatureFlagRuleForTesting(
+    let fixture = makeFixture()
+    let service = fixture.service
+    let (userId, bearer) = verifiedBearer(fixture, "04")
+    fixture.createFeatureFlagForTesting(key: "alpha.flag", defaultEnabled: true)
+    fixture.createFeatureFlagForTesting(key: "beta_flag", defaultEnabled: false)
+    fixture.createFeatureFlagForTesting(key: "kill", defaultEnabled: true, killSwitch: true)
+    fixture.addFeatureFlagRuleForTesting(key: "beta_flag", stage: "user", decision: "allow", values: [userId])
+    fixture.addFeatureFlagRuleForTesting(
         key: "alpha.flag", stage: "platform", decision: "deny", values: ["mobile"]
     )
 
@@ -297,11 +296,11 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     }
     #expect(throws: OAuthFlowsError.featureFlagPlatformInvalid) { try evaluate(#"{"key":"kill","platform":"tv"}"#) }
 
-    let unverified = EmailLoginDirectory()
+    let unverified = OAuthFlowsUnitFixture()
     unverified.addAccount(id: "11111111-1111-4111-8111-000003000099", email: "nv@slock.test", password: "password123")
     let token = unverified.mintAccessTokenForTesting(userId: "11111111-1111-4111-8111-000003000099")
     #expect(throws: OAuthFlowsError.emailVerificationRequired) {
-        try unverified.oauthFlows.evaluateFeatureFlags(FeatureFlagsEvaluateRequest(key: "kill"), authorization: "Bearer " + token)
+        try unverified.service.evaluateFeatureFlags(FeatureFlagsEvaluateRequest(key: "kill"), authorization: "Bearer " + token)
     }
 }
 
@@ -327,8 +326,8 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
 /// sign-up are one store critical section, so a burst of simultaneous
 /// completions creates one account and one session.
 @Test func oauthFlowsCompleteMobileSpendsAHandoffExactlyOnce() async {
-    let directory = makeDirectory()
-    let store = OAuthFlowsStore(profiles: directory.authProfileStore)
+    let fixture = makeFixture()
+    let store = fixture.store
     seedHandoff(store, id: "req-1", code: "code-1", mode: "login", userId: nil)
 
     let outcomes = await withTaskGroup(of: Bool.self) { group in
@@ -347,13 +346,13 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
         return collected
     }
     #expect(outcomes.filter { $0 }.count == 1)
-    #expect(directory.sessionCount == 1)
-    #expect(directory.authProfileStore.accounts.count == 1)
+    #expect(fixture.sessionCount == 1)
+    #expect(fixture.accountCount == 1)
 }
 
 @Test func oauthFlowsCompleteMobileLinkSpendsAHandoffExactlyOnce() async {
-    let directory = makeDirectory()
-    let store = OAuthFlowsStore(profiles: directory.authProfileStore)
+    let fixture = makeFixture()
+    let store = fixture.store
     let caller = "11111111-1111-4111-8111-000003000010"
     seedHandoff(store, id: "req-2", code: "code-2", mode: "link", userId: caller)
 
@@ -371,14 +370,14 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
         return collected
     }
     #expect(outcomes.filter { $0 }.count == 1)
-    #expect(directory.authProfileStore.linkedIdentities.filter { $0.userId == caller }.count == 1)
+    #expect(fixture.linkedIdentityCount(userId: caller) == 1)
 }
 
 /// The native Apple claim moves `pending_provider` to `provider_processing`
 /// once; every other simultaneous caller sees the request already consumed.
 @Test func oauthFlowsNativeAppleClaimIsExclusive() async {
-    let directory = makeDirectory()
-    let store = OAuthFlowsStore(profiles: directory.authProfileStore)
+    let fixture = makeFixture()
+    let store = fixture.store
     store.insertMobileRequest(MobileOAuthRequest(
         id: "native-1", provider: "apple", mode: "login", status: "pending_provider",
         codeChallenge: challenge(), returnUri: returnUri, nonce: "",
@@ -406,11 +405,11 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     #expect(claims.filter { $0 == "consumed" }.count == 23)
 }
 
-/// One callback per request row publishes one handoff and counts one exchange;
-/// a burst of callbacks for the same row cannot publish two handoff codes.
+/// Every valid callback completes; the stored handoff code and its hash are
+/// written together, even when callbacks target the same request.
 @Test func oauthFlowsMobileCallbackPublishesOneHandoffPerRequest() async {
-    let directory = makeDirectory()
-    let store = OAuthFlowsStore(profiles: directory.authProfileStore)
+    let fixture = makeFixture()
+    let store = fixture.store
     store.insertMobileRequest(MobileOAuthRequest(
         id: "cb-1", provider: "google", mode: "login", status: "pending_provider",
         codeChallenge: challenge(), returnUri: returnUri, nonce: "n",
@@ -418,31 +417,34 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     ))
     let profile = MobileProviderProfile(providerUserId: "sub", email: "cb@flows.test", displayName: nil)
 
-    await withTaskGroup(of: Void.self) { group in
+    let outcomes = await withTaskGroup(of: MobileCallbackOutcome.self) { group in
         for index in 0..<24 {
             group.addTask {
-                _ = store.mobileCallback(
+                store.mobileCallback(
                     requestId: "cb-1", provider: "google", mode: "login", stateDesktopNonce: nil,
                     code: "c", providerError: nil, profile: profile, handoff: "handoff-\(index)"
                 )
             }
         }
-        await group.waitForAll()
+        var collected: [MobileCallbackOutcome] = []
+        for await outcome in group { collected.append(outcome) }
+        return collected
     }
     // Every callback is accepted (the legacy route has no single-use rule), but
     // each one is a whole write: the stored code and its hash always agree.
-    let request = directory.authProfileStore.mobileRequests["cb-1"]
-    #expect(directory.providerExchangeCount == 24)
+    let request = fixture.mobileHandoffFacts(id: "cb-1")
+    #expect(outcomes.count == 24)
+    #expect(outcomes.allSatisfy { $0 == .completed(returnUri: returnUri, mode: "login") })
     #expect(request?.codeHash == request?.handoffCode.map { AuthTokenCodec.sha256($0) })
 }
 
 /// Recording a web login is one decision: simultaneous callbacks for a free
 /// email each append their own completion, none is lost.
 @Test func oauthFlowsRecordWebLoginKeepsEveryCompletion() async {
-    let directory = makeDirectory()
-    let store = OAuthFlowsStore(profiles: directory.authProfileStore)
+    let fixture = makeFixture()
+    let store = fixture.store
     let existing = "11111111-1111-4111-8111-000003000020"
-    directory.addAccount(id: existing, email: "taken@flows.test", password: "password123")
+    fixture.addAccount(id: existing, email: "taken@flows.test", password: "password123")
 
     let outcomes = await withTaskGroup(of: WebLoginRecordOutcome.self) { group in
         for index in 0..<24 {
@@ -460,5 +462,5 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     }
     #expect(outcomes.filter { $0 == .accountConflict }.count == 12)
     #expect(outcomes.filter { $0 == .recorded }.count == 12)
-    #expect(directory.authProfileStore.socialCompletions.count == 12)
+    #expect(fixture.socialCompletionCount == 12)
 }
