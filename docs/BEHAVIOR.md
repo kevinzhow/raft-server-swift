@@ -2481,3 +2481,9 @@ RFC 074 personal assistant：
 - subscriber map/nextToken归同Mutex State；subscribe新增@Sendable是明确Swift源码bound收紧，原token递增/发布完整事务保。unsubscribe把removed handler强保到borrow外才允许最后capture析构，修lease.deinit公开log同实例的锁重入死锁，不伪装纯签名/退役语义同等。
 - 原同DateFormatter私有对象一次POSIX/UTC/格式配置保，先formatter.string(Date())构line→snapshot borrow→外Event/dispatch三域/INFO-WARN-ERROR字节保；SDK实际strictSwift6 -c接受checked holder，不冒SDK文本接口或所有交错证明。已snapshot回调可继续，无新gate/串行化/总序。
 - 新50行checked collector/immutable lease只断言实际公开INFO Event、retirement message与完整UTCline，无spy/新unsafe/线程逃逸。旧Source实际build后唯一case started→timeout124，新Source原1+新1实际2通过，旧112/新50测试字节保。full/E2E24smoke49Python22arch/parity通过，unchecked6→5/5→4files/server0；旧serialSink不宣修复、无生产接线或完整上游logger等价声明。
+
+### Native Auth HTTP 公开结果 fixtures
+
+- 五Native函数迁同13-owner AuthScene/实际AuthFeature：原法律retry/handoff、HS256请求capability错误算法/跨request binding、row过期而requesttoken仍valid、owner-bound link/verifiedstoredemail复用、五tuple mismatch与replay的全部103条公开HTTP/row事实保。新增3scalarfacts+唯一同步provider response inputsetter；四metadata与code匹配才返token，公开200依赖该输入契约，不记录/消费/统计调用，不新Sourcehook或Owner/State逃逸。
+- 删除三旧unchecked exchange recorders/barrier及13私有观察，五处换公开拒绝无handoff、八处删除；Native116→108/全file574→566。并发准确改名OneHandoffAndOneConsumedReply：保原两同body实际HTTPasynclet及gonecode/成功handoff/hash/status/sub事实，只证明本次公开结果，不privatebeforeexchange/zero或exactcalls。七producer仅常量或appleIdentityToken叶，四case seedDate原位、并发仍provider回调内Date+300；旧barrier调度删除不是绝对时间等价。
+- 前1991line accepted39与3JWT helper39line字节保，本Auth测试file已无Root/Fallback/旧observer/unchecked；不代表所有领域或生产Root切换完成。Apple identity.literal.sig仍只parse/claims，真实HS256请求能力保，无新增RSA/JWKS验签。actual新5/full/E2E24smoke49Python22arch/parity通过；Source/SDK/Scene7caps/composer63/IDs0改，原公开输入/签名HMAC字节保，整体checked声明5/4files/server0不变。

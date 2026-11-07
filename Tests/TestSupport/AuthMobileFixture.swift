@@ -49,6 +49,27 @@ public struct AuthMobileFixture: Sendable {
         profiles.accountState.mobileRequests[id]?.codeChallenge
     }
 
+    public func setNativeAppleCodeResponses(
+        _ responses: [String: @Sendable () -> String], clientId: String, clientSecret: String
+    ) {
+        profiles.state.withLock { owned in
+            owned.configSurface.exchangeNativeAppleCode = { request in
+                guard request.clientId == clientId, request.clientSecret == clientSecret,
+                      request.grantType == "authorization_code", request.redirectUri == nil
+                else { return nil }
+                return responses[request.code]?()
+            }
+        }
+    }
+
+    public func oauthRequestExpiresAt(id: String) -> Date? {
+        profiles.accountState.mobileRequests[id]?.expiresAt
+    }
+
+    public func oauthRequestProviderEmail(id: String) -> String? {
+        profiles.accountState.mobileRequests[id]?.profileEmail
+    }
+
     public func oauthRequestProviderUserId(id: String) -> String? {
         profiles.accountState.mobileRequests[id]?.profileUserId
     }

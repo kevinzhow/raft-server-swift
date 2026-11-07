@@ -2028,48 +2028,19 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
     return "\(header).\(base64urlJSON(claims)).sig"
 }
 
-private final class NativeAppleExchanges: @unchecked Sendable {
-    var calls: [NativeAppleCodeExchange] = []
-    var tokens: [String: String] = [:]
-}
-
-private final class ExchangeCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    var value: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
-    }
-
-    func record() {
-        lock.lock()
-        count += 1
-        lock.unlock()
-    }
-}
-
 @Test func nativeAppleIOSLoginVerifiesBothCredentialsAndPreservesTheLegalHandoff() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let secret = "native-apple-request-capability-secret"
-    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
-    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
-    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = secret }
-    let exchanges = NativeAppleExchanges()
-    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { request async in
-        exchanges.calls.append(request)
-        return exchanges.tokens[request.code]
-    } }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleStateSecret = secret }
+    scene.mobile.setNativeAppleCodeResponses(
+        [:], clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+    )
     let loginChallenge = "CbJjXWCZjxcTYirPVH_43kssx7RobpovoAuVwmxXZkY"
     let verifier = "native-apple-login-verifier-0123456789abcdef"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let beforeGate = try await postJSON(
                 client,
@@ -2078,8 +2049,8 @@ private final class ExchangeCounter: @unchecked Sendable {
             )
             #expect(beforeGate.status == .notFound)
 
-            accounts.allowAppleLogin(on: ["mobile"])
-            accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "" }
+            scene.mobile.allowAppleLogin(on: ["mobile"])
+            scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "" }
             let withoutSecret = try await postJSON(
                 client,
                 "/api/auth/mobile/oauth/apple/native/start",
@@ -2087,7 +2058,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             )
             #expect(withoutSecret.status == .notFound)
 
-            accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+            scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
             let wrongPlatform = try await postJSON(
                 client,
                 "/api/auth/mobile/oauth/apple/native/start",
@@ -2112,8 +2083,8 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(startBody?["authorizationUrl"] == nil)
             let expires = ISO8601DateFormatter().date(from: startBody?["expiresAt"] as? String ?? "")
             #expect((expires ?? .distantPast) > Date())
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
-            #expect(accounts.oauthRequestCodeChallenge(id: requestId) == loginChallenge)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(scene.mobile.oauthRequestCodeChallenge(id: requestId) == loginChallenge)
 
             let expiredToken = AuthTokenCodec.signNativeAppleRequestToken(
                 secret: secret,
@@ -2140,8 +2111,8 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(wrongAlgorithmReply.status == .badRequest)
             let wrongAlgorithmBody = try JSONSerialization.jsonObject(with: Data(bodyText(wrongAlgorithmReply).utf8)) as? [String: Any]
             #expect(wrongAlgorithmBody?["code"] as? String == "native_apple_invalid_credential")
-            #expect(exchanges.calls.isEmpty)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(wrongAlgorithmBody?["handoffCode"] == nil)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
 
             let unrelated = try await postJSON(
                 client,
@@ -2158,8 +2129,8 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(crossBound.status == .badRequest)
             let crossBody = try JSONSerialization.jsonObject(with: Data(bodyText(crossBound).utf8)) as? [String: Any]
             #expect(crossBody?["code"] as? String == "native_apple_invalid_credential")
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
-            #expect(exchanges.calls.isEmpty)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(crossBody?["handoffCode"] == nil)
 
             let supplied = appleIdentityToken(
                 subject: "native-apple-login-subject",
@@ -2167,11 +2138,15 @@ private final class ExchangeCounter: @unchecked Sendable {
                 email: "native-apple-login@slock.test",
                 emailVerified: true
             )
-            exchanges.tokens["native-apple-login-code"] = appleIdentityToken(
+            let exchangedLoginToken = appleIdentityToken(
                 subject: "native-apple-login-subject",
                 nonce: loginChallenge,
                 email: "native-apple-login@slock.test",
                 emailVerified: "true"
+            )
+            scene.mobile.setNativeAppleCodeResponses(
+                ["native-apple-login-code": { exchangedLoginToken }],
+                clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
             )
             let authorize = try await postJSON(
                 client,
@@ -2185,14 +2160,9 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(handoff.isEmpty == false)
             #expect(authorizeBody?["provider"] as? String == "apple")
             #expect(authorizeBody?["mode"] as? String == "login")
-            #expect(exchanges.calls.count == 1)
-            #expect(exchanges.calls[0].clientId == "build.raft.app")
-            #expect(exchanges.calls[0].clientSecret == "native-apple-client-secret")
-            #expect(exchanges.calls[0].grantType == "authorization_code")
-            #expect(exchanges.calls[0].redirectUri == nil)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
-            #expect(accounts.oauthRequestProviderUserId(id: requestId) == "native-apple-login-subject")
-            #expect(accounts.oauthRequestProviderEmail(id: requestId) == "native-apple-login@slock.test")
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect(scene.mobile.oauthRequestProviderUserId(id: requestId) == "native-apple-login-subject")
+            #expect(scene.mobile.oauthRequestProviderEmail(id: requestId) == "native-apple-login@slock.test")
 
             let authorizeReplay = try await postJSON(
                 client,
@@ -2202,7 +2172,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(authorizeReplay.status == .gone)
             let replayBody = try JSONSerialization.jsonObject(with: Data(bodyText(authorizeReplay).utf8)) as? [String: Any]
             #expect(replayBody?["code"] as? String == "native_apple_request_consumed")
-            #expect(exchanges.calls.count == 1)
+            #expect(replayBody?["handoffCode"] == nil)
 
             let missingLegal = try await postJSON(
                 client,
@@ -2212,7 +2182,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(missingLegal.status == .unprocessableContent)
             let missingBody = try JSONSerialization.jsonObject(with: Data(bodyText(missingLegal).utf8)) as? [String: Any]
             #expect(missingBody?["error"] as? String == "LEGAL_ACCEPTANCE_REQUIRED")
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
 
             let accepted = try await postJSON(
                 client,
@@ -2226,7 +2196,7 @@ private final class ExchangeCounter: @unchecked Sendable {
             #expect(user?["email"] as? String == "native-apple-login@slock.test")
             #expect((acceptedBody?["accessToken"] as? String)?.isEmpty == false)
             #expect((acceptedBody?["refreshToken"] as? String)?.isEmpty == false)
-            #expect(accounts.linkedProviderUserIds(userId: userId, provider: "apple") == ["native-apple-login-subject"])
+            #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: "apple") == ["native-apple-login-subject"])
 
             let handoffReplay = try await postJSON(
                 client,
@@ -2240,135 +2210,23 @@ private final class ExchangeCounter: @unchecked Sendable {
     }
 }
 
-private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
-    private let lock = NSLock()
-    private var startedWaiters: [CheckedContinuation<Void, Never>] = []
-    private var started = false
-    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
-    private var released = false
-    private var consumed: ClientResponse?
-    private var consumedWaiters: [CheckedContinuation<ClientResponse, Never>] = []
-    private var exchanges = 0
-
-    var exchangeCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return exchanges
-    }
-
-    func enterExchange() async {
-        markStarted().forEach { $0.resume() }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            self.enqueueRelease(continuation)
-        }
-    }
-
-    func waitUntilStarted() async {
-        if alreadyStarted() { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            self.enqueueStarted(continuation)
-        }
-    }
-
-    func release() {
-        lock.lock()
-        released = true
-        let waiters = releaseWaiters
-        releaseWaiters = []
-        lock.unlock()
-        waiters.forEach { $0.resume() }
-    }
-
-    func recordConsumed(_ response: ClientResponse) {
-        lock.lock()
-        consumed = response
-        let waiters = consumedWaiters
-        consumedWaiters = []
-        lock.unlock()
-        waiters.forEach { $0.resume(returning: response) }
-    }
-
-    func waitConsumed() async -> ClientResponse {
-        if let existing = takeConsumed() { return existing }
-        return await withCheckedContinuation { (continuation: CheckedContinuation<ClientResponse, Never>) in
-            self.enqueueConsumed(continuation)
-        }
-    }
-
-    private func markStarted() -> [CheckedContinuation<Void, Never>] {
-        lock.lock()
-        defer { lock.unlock() }
-        exchanges += 1
-        started = true
-        let waiters = startedWaiters
-        startedWaiters = []
-        return waiters
-    }
-
-    private func enqueueRelease(_ continuation: CheckedContinuation<Void, Never>) {
-        lock.lock()
-        defer { lock.unlock() }
-        if released {
-            continuation.resume()
-        } else {
-            releaseWaiters.append(continuation)
-        }
-    }
-
-    private func alreadyStarted() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return started
-    }
-
-    private func enqueueStarted(_ continuation: CheckedContinuation<Void, Never>) {
-        lock.lock()
-        defer { lock.unlock() }
-        if started {
-            continuation.resume()
-        } else {
-            startedWaiters.append(continuation)
-        }
-    }
-
-    private func takeConsumed() -> ClientResponse? {
-        lock.lock()
-        defer { lock.unlock() }
-        return consumed
-    }
-
-    private func enqueueConsumed(_ continuation: CheckedContinuation<ClientResponse, Never>) {
-        lock.lock()
-        defer { lock.unlock() }
-        if let consumed {
-            continuation.resume(returning: consumed)
-        } else {
-            consumedWaiters.append(continuation)
-        }
-    }
-}
-
-@Test func nativeAppleAuthorizeClaimsTheRowBeforeTheCodeExchange() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
-    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
-    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
-    accounts.allowAppleLogin(on: ["mobile"])
-    let barrier = NativeAppleAuthorizeBarrier()
+@Test func nativeAppleConcurrentAuthorizeReturnsOneHandoffAndOneConsumedReply() async throws {
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
+    scene.mobile.allowAppleLogin(on: ["mobile"])
     let challenge = "rp1L600Z3zab7r8wRCcv3BMaph53yjpVOpX3oK0PafQ"
     let subject = "native-apple-concurrent-subject"
     let email = "native-apple-concurrent@slock.test"
-    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { _ in
-        await barrier.enterExchange()
-        return appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
-    } }
+    scene.mobile.setNativeAppleCodeResponses(
+        ["native-apple-concurrent-code": {
+            appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
+        }],
+        clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+    )
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -2383,24 +2241,17 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let authorizeBody = "{\"requestId\":\"\(requestId)\",\"requestToken\":\"\(requestToken)\",\"authorizationCode\":\"native-apple-concurrent-code\",\"identityToken\":\"\(supplied)\"}"
 
             func attempt() async throws -> ClientResponse {
-                let response = try await postJSON(client, "/api/auth/mobile/oauth/apple/native/authorize", body: authorizeBody)
-                if response.status == .gone {
-                    barrier.recordConsumed(response)
-                }
-                return response
+                try await postJSON(client, "/api/auth/mobile/oauth/apple/native/authorize", body: authorizeBody)
             }
 
             async let first = attempt()
             async let second = attempt()
-            await barrier.waitUntilStarted()
-            let rejected = await barrier.waitConsumed()
+            let responses = try await [first, second]
+            let rejected = responses.first { $0.status == .gone } ?? responses[0]
             #expect(rejected.status == .gone)
             let rejectedBody = try JSONSerialization.jsonObject(with: Data(bodyText(rejected).utf8)) as? [String: Any]
             #expect(rejectedBody?["code"] as? String == "native_apple_request_consumed")
-            #expect(barrier.exchangeCount == 1)
-            barrier.release()
 
-            let responses = try await [first, second]
             #expect(responses.contains { $0.status == .ok })
             #expect(responses.contains { $0.status == .gone })
             let succeeded = responses.first { $0.status == .ok }
@@ -2408,33 +2259,26 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let handoff = successBody?["handoffCode"] as? String ?? ""
             #expect(successBody?["requestId"] as? String == requestId)
             #expect(handoff.isEmpty == false)
-            #expect(barrier.exchangeCount == 1)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
-            #expect(accounts.oauthRequestCodeHash(id: requestId) == AuthTokenCodec.sha256Hex(handoff))
-            #expect(accounts.oauthRequestProviderUserId(id: requestId) == subject)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect(scene.mobile.oauthRequestCodeHash(id: requestId) == AuthTokenCodec.sha256Hex(handoff))
+            #expect(scene.mobile.oauthRequestProviderUserId(id: requestId) == subject)
         }
     }
 }
 
 @Test func nativeAppleAuthorizeExpiresFromTheRowWhileTheRequestTokenIsStillValid() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
-    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
-    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
-    accounts.allowAppleLogin(on: ["mobile"])
-    let exchanges = ExchangeCounter()
-    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { _ in
-        exchanges.record()
-        return "must-not-be-verified"
-    } }
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
+    scene.mobile.allowAppleLogin(on: ["mobile"])
+    scene.mobile.setNativeAppleCodeResponses(
+        ["must-not-be-exchanged": { "must-not-be-verified" }],
+        clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+    )
     let challenge = "gRdfxIrs8i_xC4ieRa105lwST9s0QctbbsE05_peuEM"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -2448,10 +2292,10 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let exp = jwtNumericClaim(requestToken, name: "exp") ?? 0
             #expect(exp * 1_000 > Date().timeIntervalSince1970 * 1_000)
 
-            accounts.expireMobileOAuthRequest(id: requestId)
-            let expiredAt = accounts.oauthRequestExpiresAt(id: requestId)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
-            #expect(accounts.oauthRequestCodeHash(id: requestId) == nil)
+            scene.mobile.expireMobileOAuthRequest(id: requestId)
+            let expiredAt = scene.mobile.oauthRequestExpiresAt(id: requestId)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(scene.mobile.oauthRequestCodeHash(id: requestId) == nil)
             #expect(expiredAt != nil)
             #expect((expiredAt ?? .distantFuture) < Date())
 
@@ -2464,43 +2308,36 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let authorizeBody = try JSONSerialization.jsonObject(with: Data(bodyText(authorize).utf8)) as? [String: Any]
             #expect(authorizeBody?["code"] as? String == "native_apple_request_expired")
             #expect(authorizeBody?["error"] as? String == "Apple sign-in request expired")
-            #expect(exchanges.value == 0)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "expired")
-            #expect(accounts.oauthRequestStatus(id: requestId) != "provider_processing")
-            #expect(accounts.oauthRequestCodeHash(id: requestId) == nil)
-            #expect(accounts.oauthRequestExpiresAt(id: requestId) == expiredAt)
-            #expect((accounts.oauthRequestExpiresAt(id: requestId) ?? .distantFuture) < Date())
+            #expect(authorizeBody?["handoffCode"] == nil)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "expired")
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) != "provider_processing")
+            #expect(scene.mobile.oauthRequestCodeHash(id: requestId) == nil)
+            #expect(scene.mobile.oauthRequestExpiresAt(id: requestId) == expiredAt)
+            #expect((scene.mobile.oauthRequestExpiresAt(id: requestId) ?? .distantFuture) < Date())
         }
     }
 }
 
 @Test func nativeAppleLinkIsOwnerBoundAndLaterLoginReusesTheVerifiedStoredEmail() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
-    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
-    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
-    accounts.allowAppleLogin(on: ["mobile"])
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
+    scene.mobile.allowAppleLogin(on: ["mobile"])
     let ownerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
     let otherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
     let ownerEmail = "native-apple-link-owner@slock.test"
-    accounts.addAccount(id: ownerId, email: ownerEmail, password: "password123")
-    accounts.addAccount(id: otherId, email: "native-apple-link-other@slock.test", password: "password123")
-    let exchanges = NativeAppleExchanges()
-    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { request in
-        exchanges.calls.append(request)
-        return exchanges.tokens[request.code]
-    } }
+    scene.auth.addAccount(id: ownerId, email: ownerEmail, password: "password123")
+    scene.auth.addAccount(id: otherId, email: "native-apple-link-other@slock.test", password: "password123")
+    scene.mobile.setNativeAppleCodeResponses(
+        [:], clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+    )
     let subject = "native-apple-linked-subject"
     let ownerChallenge = "J5nSViUq2sYrA9SexY8TxhLDREfA0vgW3cyst8anku8"
     let laterChallenge = "_oFr4fp0yg5ADmKHtzHzNIEEWLWUlmB1yAlENXEVZLk"
     let missingChallenge = "jEyBNT3PvU30VAJPd-WwnLB2WoE6IF_U_Jt7soGXNH0"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             func token(email: String) async throws -> String {
                 let login = try await postJSON(
@@ -2524,7 +2361,7 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let unauthenticatedBody = try JSONSerialization.jsonObject(with: Data(bodyText(unauthenticated).utf8)) as? [String: Any]
             #expect(unauthenticatedBody?["code"] as? String == "auth_required")
             #expect(unauthenticatedBody?["error"] as? String == "Apple account linking requires authentication")
-            #expect(accounts.mobileOAuthRequestCount == 0)
+            #expect(scene.mobile.mobileOAuthRequestCount == 0)
 
             let linkStart = try await postJSON(
                 client,
@@ -2537,7 +2374,11 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let requestId = started?["requestId"] as? String ?? ""
             let requestToken = started?["requestToken"] as? String ?? ""
             let supplied = appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
-            exchanges.tokens["native-apple-link-code"] = appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
+            let exchangedLinkToken = appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
+            scene.mobile.setNativeAppleCodeResponses(
+                ["native-apple-link-code": { exchangedLinkToken }],
+                clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+            )
             let authorizeBody = "{\"requestId\":\"\(requestId)\",\"requestToken\":\"\(requestToken)\",\"authorizationCode\":\"native-apple-link-code\",\"identityToken\":\"\(supplied)\"}"
 
             let noAuth = try await postJSON(client, "/api/auth/mobile/oauth/apple/native/authorize", body: authorizeBody)
@@ -2554,9 +2395,9 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let wrongOwnerBody = try JSONSerialization.jsonObject(with: Data(bodyText(wrongOwner).utf8)) as? [String: Any]
             #expect(wrongOwnerBody?["code"] as? String == "link_user_mismatch")
             #expect(wrongOwnerBody?["error"] as? String == "Apple account linking does not match the authenticated user")
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
-            #expect(exchanges.calls.isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(noAuthBody?["handoffCode"] == nil && wrongOwnerBody?["handoffCode"] == nil)
 
             let ownerAuthorize = try await postJSON(
                 client,
@@ -2568,8 +2409,7 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let ownerAuthorizeBody = try JSONSerialization.jsonObject(with: Data(bodyText(ownerAuthorize).utf8)) as? [String: Any]
             let handoff = ownerAuthorizeBody?["handoffCode"] as? String ?? ""
             #expect(handoff.isEmpty == false)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
-            #expect(exchanges.calls.count == 1)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
 
             let wrongFinal = try await postJSON(
                 client,
@@ -2578,8 +2418,8 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
                 authorization: "Bearer \(otherToken)"
             )
             #expect(wrongFinal.status == .forbidden)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
 
             let ownerComplete = try await postJSON(
                 client,
@@ -2588,8 +2428,8 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
                 authorization: "Bearer \(ownerToken)"
             )
             #expect(ownerComplete.status == .ok)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple") == [subject])
-            #expect(accounts.linkedProviderEmail(userId: ownerId, provider: "apple") == ownerEmail)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple") == [subject])
+            #expect(scene.auth.linkedProviderEmail(userId: ownerId, provider: "apple") == ownerEmail)
 
             let laterStart = try await postJSON(
                 client,
@@ -2601,7 +2441,11 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let laterId = laterStarted?["requestId"] as? String ?? ""
             let laterToken = laterStarted?["requestToken"] as? String ?? ""
             let laterSupplied = appleIdentityToken(subject: subject, nonce: laterChallenge)
-            exchanges.tokens["native-apple-later-code"] = appleIdentityToken(subject: subject, nonce: laterChallenge)
+            let exchangedLaterToken = appleIdentityToken(subject: subject, nonce: laterChallenge)
+            scene.mobile.setNativeAppleCodeResponses(
+                ["native-apple-later-code": { exchangedLaterToken }],
+                clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+            )
             let laterAuthorize = try await postJSON(
                 client,
                 "/api/auth/mobile/oauth/apple/native/authorize",
@@ -2617,7 +2461,7 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             #expect(laterComplete.status == .ok)
             let laterUser = (try JSONSerialization.jsonObject(with: Data(bodyText(laterComplete).utf8)) as? [String: Any])?["user"] as? [String: Any]
             #expect(laterUser?["id"] as? String == ownerId)
-            #expect(accounts.userCount == 2)
+            #expect(scene.auth.userCount == 2)
 
             let firstStart = try await postJSON(
                 client,
@@ -2629,9 +2473,13 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             let firstId = firstStarted?["requestId"] as? String ?? ""
             let firstToken = firstStarted?["requestToken"] as? String ?? ""
             let firstSupplied = appleIdentityToken(subject: "native-apple-new-missing-email-subject", nonce: missingChallenge)
-            exchanges.tokens["native-apple-first-missing-email-code"] = appleIdentityToken(
+            let exchangedMissingEmailToken = appleIdentityToken(
                 subject: "native-apple-new-missing-email-subject",
                 nonce: missingChallenge
+            )
+            scene.mobile.setNativeAppleCodeResponses(
+                ["native-apple-first-missing-email-code": { exchangedMissingEmailToken }],
+                clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
             )
             let firstAuthorize = try await postJSON(
                 client,
@@ -2641,23 +2489,21 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
             #expect(firstAuthorize.status == .badRequest)
             let firstBody = try JSONSerialization.jsonObject(with: Data(bodyText(firstAuthorize).utf8)) as? [String: Any]
             #expect(firstBody?["code"] as? String == "native_apple_invalid_credential")
-            #expect(accounts.oauthRequestStatus(id: firstId) == "failed")
-            #expect(accounts.userCount == 2)
+            #expect(scene.mobile.oauthRequestStatus(id: firstId) == "failed")
+            #expect(scene.auth.userCount == 2)
         }
     }
 }
 
 @Test func nativeAppleAuthorizeFailsTerminallyWhenIdentityClaimsDisagree() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
-    accounts.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
-    accounts.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
-    accounts.allowAppleLogin(on: ["mobile"])
-    let exchanges = NativeAppleExchanges()
-    accounts.configureAuthSimulationForTesting { $0.exchangeNativeAppleCode = { request in
-        exchanges.calls.append(request)
-        return exchanges.tokens[request.code]
-    } }
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientId = "build.raft.app" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleClientSecret = "native-apple-client-secret" }
+    scene.auth.configureOAuthForTesting { $0.nativeAppleStateSecret = "native-apple-request-capability-secret" }
+    scene.mobile.allowAppleLogin(on: ["mobile"])
+    scene.mobile.setNativeAppleCodeResponses(
+        [:], clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+    )
     let cases: [(name: String, challenge: String, supplied: (String) -> String, exchanged: (String) -> String)] = [
         (
             "nonce",
@@ -2753,12 +2599,7 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
         ),
     ]
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             for invalid in cases {
                 let start = try await postJSON(
@@ -2771,13 +2612,17 @@ private final class NativeAppleAuthorizeBarrier: @unchecked Sendable {
                 let requestId = started?["requestId"] as? String ?? ""
                 let requestToken = started?["requestToken"] as? String ?? ""
                 let authorizationCode = "native-apple-invalid-\(invalid.name)-code"
-                exchanges.tokens[authorizationCode] = invalid.exchanged(invalid.challenge)
+                let exchangedToken = invalid.exchanged(invalid.challenge)
+                scene.mobile.setNativeAppleCodeResponses(
+                    [authorizationCode: { exchangedToken }],
+                    clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
+                )
                 let body = "{\"requestId\":\"\(requestId)\",\"requestToken\":\"\(requestToken)\",\"authorizationCode\":\"\(authorizationCode)\",\"identityToken\":\"\(invalid.supplied(invalid.challenge))\"}"
                 let authorize = try await postJSON(client, "/api/auth/mobile/oauth/apple/native/authorize", body: body)
                 #expect(authorize.status == .badRequest)
                 let authorizeBody = try JSONSerialization.jsonObject(with: Data(bodyText(authorize).utf8)) as? [String: Any]
                 #expect(authorizeBody?["code"] as? String == "native_apple_invalid_credential")
-                #expect(accounts.oauthRequestStatus(id: requestId) == "failed")
+                #expect(scene.mobile.oauthRequestStatus(id: requestId) == "failed")
                 let replay = try await postJSON(client, "/api/auth/mobile/oauth/apple/native/authorize", body: body)
                 #expect(replay.status == .gone)
                 let replayBody = try JSONSerialization.jsonObject(with: Data(bodyText(replay).utf8)) as? [String: Any]

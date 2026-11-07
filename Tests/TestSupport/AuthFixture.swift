@@ -131,6 +131,11 @@ public struct AuthFixture: Sendable {
             .filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
     }
 
+    public func linkedProviderEmail(userId: String, provider: String) -> String? {
+        profiles.accountState.linkedIdentities
+            .first { $0.userId == userId && $0.provider == provider }?.providerEmail
+    }
+
     public func refreshRotationReceipts() -> [RefreshRotationReceipt] {
         profiles.accountState.rotationReceipts.values.map {
             RefreshRotationReceipt(
