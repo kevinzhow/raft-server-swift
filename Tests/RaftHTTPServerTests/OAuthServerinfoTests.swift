@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -12,15 +13,15 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func serverinfoReadsTheLiveServerBehindTheToken() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111207"
     let serverId = "33333333-3333-4333-8333-333333333400"
     let otherServerId = "33333333-3333-4333-8333-333333333401"
-    accounts.addAccount(id: ownerId, email: "oauth-serverinfo-207@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-serverinfo-207", name: "OAuth Serverinfo", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: otherServerId, slug: "oauth-serverinfo-other-207", name: "Other OAuth Serverinfo", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-serverinfo-207@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-serverinfo-207", name: "OAuth Serverinfo", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: otherServerId, slug: "oauth-serverinfo-other-207", name: "Other OAuth Serverinfo", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Serverinfo Client",
@@ -28,12 +29,7 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var loginHeaders = HTTPFields()
             loginHeaders[.contentType] = "application/json"
@@ -61,8 +57,8 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
             let accessToken = try serverinfoObject(exchanged)["access_token"] as? String ?? ""
 
             let serverAvatarUrl = "/api/attachments/oauth-serverinfo-avatar.webp"
-            accounts.oauth.updateServer(id: serverId, name: "Renamed OAuth Serverinfo", avatarUrl: serverAvatarUrl)
-            accounts.oauth.updateServer(id: otherServerId, name: "Wrong OAuth Serverinfo", avatarUrl: "/api/attachments/wrong-server-avatar.webp")
+            scene.oauth.updateServer(id: serverId, name: "Renamed OAuth Serverinfo", avatarUrl: serverAvatarUrl)
+            scene.oauth.updateServer(id: otherServerId, name: "Wrong OAuth Serverinfo", avatarUrl: "/api/attachments/wrong-server-avatar.webp")
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(accessToken)"
@@ -79,13 +75,13 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func serverinfoProjectsCoarsePaidTier() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111208"
     let serverId = "33333333-3333-4333-8333-333333333402"
-    accounts.addAccount(id: ownerId, email: "oauth-tier-208@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-tier-208", name: "OAuth Tier Server", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-tier-208@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-tier-208", name: "OAuth Tier Server", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Tier Client",
@@ -93,12 +89,7 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let accessToken = try await mintAccessToken(
                 client,
@@ -116,7 +107,7 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
             #expect(try serverinfoObject(free)["plan_tier"] as? String == "free")
 
             for plan in ["pro", "founder", "partner"] {
-                accounts.oauth.setServerPlan(id: serverId, plan: plan)
+                scene.oauth.setServerPlan(id: serverId, plan: plan)
                 let paid = try await client.send(.get, headers: headers, to: "/api/oauth/serverinfo")
                 #expect(paid.status == .ok)
                 #expect(try serverinfoObject(paid)["is_paid"] as? Bool == true)
@@ -127,13 +118,13 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func serverinfoFailsClosedForADeletedServer() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111209"
     let serverId = "33333333-3333-4333-8333-333333333403"
-    accounts.addAccount(id: ownerId, email: "oauth-tier-deleted-209@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-tier-deleted-209", name: "OAuth Tier Deleted", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-tier-deleted-209@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-tier-deleted-209", name: "OAuth Tier Deleted", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Tier Deleted Client",
@@ -141,12 +132,7 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let accessToken = try await mintAccessToken(
                 client,
@@ -155,8 +141,8 @@ private func serverinfoObject(_ response: ClientResponse) throws -> [String: Any
                 clientSecret: created.clientSecret,
                 serverId: serverId
             )
-            accounts.oauth.setServerPlan(id: serverId, plan: "pro")
-            accounts.oauth.deleteServer(id: serverId)
+            scene.oauth.setServerPlan(id: serverId, plan: "pro")
+            scene.oauth.deleteServer(id: serverId)
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(accessToken)"

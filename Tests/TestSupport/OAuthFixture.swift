@@ -23,10 +23,20 @@ public struct OAuthFixture: Sendable {
 
     public func createClient(
         serverId: String, createdByUserId: String, name: String, clientId: String,
-        appType: String = "server_local", allowedScopes: [String]? = nil
+        appType: String = "server_local", description: String? = nil,
+        homepageUrl: String? = nil, returnUrl: String? = nil, allowedScopes: [String]? = nil
     ) throws -> CreatedOAuthClient {
         try oauth.createClient(serverId: serverId, createdByUserId: createdByUserId,
-            name: name, clientId: clientId, appType: appType, allowedScopes: allowedScopes)
+            name: name, clientId: clientId, appType: appType, description: description,
+            homepageUrl: homepageUrl, returnUrl: returnUrl, allowedScopes: allowedScopes)
+    }
+
+    public func setClientReturnUrl(clientRecordId: String, returnUrl: String?) {
+        oauth.setClientReturnUrl(clientRecordId: clientRecordId, returnUrl: returnUrl)
+    }
+
+    public func updateClientReturnUrl(clientRecordId: String, returnUrl: String?) throws {
+        try oauth.updateClientReturnUrl(clientRecordId: clientRecordId, returnUrl: returnUrl)
     }
 
     public func createAgent(

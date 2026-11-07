@@ -2401,3 +2401,9 @@ RFC 074 personal assistant：
 - OAuthScene显式十三actual local owners→mandatorysharedcomposer，同profiles给privateAuthFixture、同OAuth给privateOAuthFixture，仅21个本批既有seed/read/mutate操作；不外露Store/State/Root、不新建全局facade/泛型mutation。AuthFixture旧profile名/displayName写迁入而原ops保；signing/config仍走同图live service。
 - focused app挂实际OAuth5再Auth7，生产JSONboundary；四既有HTTP文件15处mount/14Scene声明迁移，158expect与13require断言正文保（唯一既有TokenCount断言receiver变化），七额外ctor-only的其他字节保。28定向实际新图/ctor全绿，原profile/grantsnapshot/rawURL/缺request/cache/PKCE/并发断言继续生效；full/E2E/smoke/architecture/parity绿。
 - 此批不声称完整Fallback decoder/transport/publicDirectory或全63field运行证明；未迁测试仍各自原完整旧图验证，无同app双图；无新增ID/测试矩阵/hook/SDK/compose63field改变。
+
+### OAuthScene browser 协议第二批
+
+- 八个既有HTTP文件复用相同private13owner OAuthScene与实际OAuth/Auth/JSON registrar；12处mount、11处初始化和两localfixture struct改接新图，197expect与14require断言行逐字保，原helper/参数/时序/PKCE/nonce/P256验签/optional claims/无code错误/unsafe URL拒绝不改。
+- OAuthFixture只补createClient既有description/homepageUrl/returnUrl nullable参数并保原nil默认；unsafe setClientReturnUrl seed和throwing updateClientReturnUrl guard分开，未把legacy invalid seed校验掉。现AuthFixture配置操作原样复用，无Source/registrar/composer/首批测试/IDs改变。
+- 新图13定向与正常full/E2E24smoke49Python22architecture/parity绿，无Source/Test修复。此批275必要changedlines，不为行数加format或matrix，不声称全部OAuth/完整Fallback迁完。

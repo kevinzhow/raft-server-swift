@@ -35,7 +35,7 @@ private func interopJWT(_ token: String) -> (header: [String: Any], payload: [St
 }
 
 private struct OIDCInteropFixture {
-    let accounts: EmailLoginDirectory
+    let scene: OAuthScene
     let serverId: String
     let otherServerId: String
     let ownerId: String
@@ -47,20 +47,20 @@ private struct OIDCInteropFixture {
 }
 
 private func makeOIDCInteropFixture(suffix: String) throws -> OIDCInteropFixture {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
-    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let number = Int(suffix) ?? 0
     let serverId = String(format: "33333333-3333-4333-8333-%012d", 100_000 + number)
     let otherServerId = String(format: "33333333-3333-4333-8333-%012d", 200_000 + number)
     let ownerId = String(format: "11111111-1111-4111-8111-%012d", 800_000 + number)
     let email = "oidc-interop-\(suffix)@raft.test"
     let redirectURI = "https://open-webui.example.test/oauth/oidc/callback"
-    accounts.addAccount(id: ownerId, email: email, password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oidc-interop-\(suffix)", name: "OIDC Interop", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: otherServerId, slug: "other-oidc-interop-\(suffix)", name: "Other OIDC", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: email, password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oidc-interop-\(suffix)", name: "OIDC Interop", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: otherServerId, slug: "other-oidc-interop-\(suffix)", name: "Other OIDC", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Open WebUI",
@@ -69,7 +69,7 @@ private func makeOIDCInteropFixture(suffix: String) throws -> OIDCInteropFixture
         allowedScopes: ["openid", "profile", "email"]
     )
     return OIDCInteropFixture(
-        accounts: accounts,
+        scene: scene,
         serverId: serverId,
         otherServerId: otherServerId,
         ownerId: ownerId,
@@ -131,15 +131,10 @@ private func interopExchange(
 
 @Test func oidcStandardInteropCoversLookupAuthorizeTokenAndClaims() async throws {
     let fixture = try makeOIDCInteropFixture(suffix: "701")
-    let accounts = fixture.accounts
+    let scene = fixture.scene
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let session = try await interopLogin(client, email: fixture.email)
 
@@ -277,15 +272,10 @@ private func interopExchange(
 
 @Test func oidcWithoutEmailKeepsOptionalClaimsAndMissingCodesAreInvalidGrant() async throws {
     let fixture = try makeOIDCInteropFixture(suffix: "702")
-    let accounts = fixture.accounts
+    let scene = fixture.scene
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let session = try await interopLogin(client, email: fixture.email)
             func issueCode(nonce: String) async throws -> String {
@@ -322,7 +312,7 @@ private func interopExchange(
             #expect(try interopObject(userinfo)["email_verified"] == nil)
 
             let missingCode = try await issueCode(nonce: "missing-row-nonce")
-            accounts.oauth.removeAuthorizationCodeForTesting(id: missingCode)
+            scene.oauth.removeAuthorizationCodeForTesting(id: missingCode)
             let missing = try await interopExchange(
                 client,
                 fixture: fixture,

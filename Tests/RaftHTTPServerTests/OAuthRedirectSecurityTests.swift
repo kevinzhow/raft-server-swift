@@ -3,11 +3,12 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
 private struct RedirectFixture {
-    let accounts: EmailLoginDirectory
+    let scene: OAuthScene
     let serverId: String
     let ownerId: String
     let ownerEmail: String
@@ -15,16 +16,16 @@ private struct RedirectFixture {
 }
 
 private func makeRedirectFixture(suffix: String) -> RedirectFixture {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let number = Int(suffix) ?? 0
     let serverId = String(format: "33333333-3333-4333-8333-%012d", 900_000 + number)
     let ownerId = String(format: "11111111-1111-4111-8111-%012d", 900_000 + number)
     let ownerEmail = "oauth-redirect-\(suffix)@slock.test"
-    accounts.addAccount(id: ownerId, email: ownerEmail, password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-redirect-\(suffix)", name: "OAuth Redirect", ownerId: ownerId)
+    scene.auth.addAccount(id: ownerId, email: ownerEmail, password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-redirect-\(suffix)", name: "OAuth Redirect", ownerId: ownerId)
     return RedirectFixture(
-        accounts: accounts,
+        scene: scene,
         serverId: serverId,
         ownerId: ownerId,
         ownerEmail: ownerEmail,
@@ -47,39 +48,34 @@ private func redirectObject(_ response: ClientResponse) throws -> [String: Any] 
 
 @Test func humanOAuthCallbackRejectsUnsafeAndUnregisteredRedirects() async throws {
     let fixture = makeRedirectFixture(suffix: "931")
-    let accounts = fixture.accounts
-    let unregistered = try accounts.oauth.createClient(
+    let scene = fixture.scene
+    let unregistered = try scene.oauth.createClient(
         serverId: fixture.serverId,
         createdByUserId: fixture.ownerId,
         name: "Unregistered callback",
         clientId: "redirect-unregistered-931"
     )
-    let registered = try accounts.oauth.createClient(
+    let registered = try scene.oauth.createClient(
         serverId: fixture.serverId,
         createdByUserId: fixture.ownerId,
         name: "Audit callback",
         clientId: "redirect-audit-931",
         returnUrl: fixture.callback
     )
-    let legacy = try accounts.oauth.createClient(
+    let legacy = try scene.oauth.createClient(
         serverId: fixture.serverId,
         createdByUserId: fixture.ownerId,
         name: "Legacy callback",
         clientId: "redirect-legacy-931",
         returnUrl: fixture.callback
     )
-    accounts.oauth.setClientReturnUrl(
+    scene.oauth.setClientReturnUrl(
         clientRecordId: legacy.id,
         returnUrl: "javascript:window.auditExecuted=true//"
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let token = try await redirectLogin(client, email: fixture.ownerEmail)
             func authorize(clientKey: String, returnUrl: String) async throws -> ClientResponse {
@@ -124,7 +120,7 @@ private func redirectObject(_ response: ClientResponse) throws -> [String: Any] 
 @Test func oauthClientCreateAndUpdateRejectScriptReturnUrls() throws {
     let fixture = makeRedirectFixture(suffix: "932")
     #expect(throws: OAuthClientRejection.self) {
-        _ = try fixture.accounts.oauth.createClient(
+        _ = try fixture.scene.oauth.createClient(
             serverId: fixture.serverId,
             createdByUserId: fixture.ownerId,
             name: "Audit registration",
@@ -132,7 +128,7 @@ private func redirectObject(_ response: ClientResponse) throws -> [String: Any] 
             returnUrl: "javascript:alert(1)"
         )
     }
-    let created = try fixture.accounts.oauth.createClient(
+    let created = try fixture.scene.oauth.createClient(
         serverId: fixture.serverId,
         createdByUserId: fixture.ownerId,
         name: "Audit registration",
@@ -140,7 +136,7 @@ private func redirectObject(_ response: ClientResponse) throws -> [String: Any] 
         returnUrl: fixture.callback
     )
     #expect(throws: OAuthClientRejection.self) {
-        try fixture.accounts.oauth.updateClientReturnUrl(
+        try fixture.scene.oauth.updateClientReturnUrl(
             clientRecordId: created.id,
             returnUrl: "data:text/html,test"
         )

@@ -30,14 +30,14 @@ private func authorizeQuery(
 }
 
 @Test func browserAuthorizeHandsOffToTheSetupPage() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
-    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let ownerId = "11111111-1111-4111-8111-111111111235"
     let serverId = "33333333-3333-4333-8333-333333333430"
     let redirectURI = "https://open-webui.example.test/oauth/oidc/callback"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oidc-235", name: "OIDC Server", ownerId: ownerId)
-    _ = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oidc-235", name: "OIDC Server", ownerId: ownerId)
+    _ = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Open WebUI",
@@ -47,12 +47,7 @@ private func authorizeQuery(
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let query = authorizeQuery(clientId: "oidc-client-235", redirectURI: redirectURI)
             let response = try await client.send(.get, headers: HTTPFields(), to: URI(string: "/api/oauth/authorize?\(query)"))
@@ -93,16 +88,16 @@ private func authorizeQuery(
 }
 
 @Test func oauthProtocolBrowserAndConsentKeepDifferentQueryDialects() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111646"
     let serverId = "33333333-3333-4333-8333-333333333672"
-    accounts.addAccount(id: ownerId, email: "query-646@test.invalid", password: "password123")
-    accounts.configureOAuthForTesting { $0.appURL = "https://query-app.raft.test/base" }
-    accounts.oauth.addOwnedServer(id: serverId, slug: "query-646", name: "Query Protocol", ownerId: ownerId)
-    let registered = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "Query App", clientId: "query-client-646")
-    let session = accounts.mintAccessTokenForTesting(userId: ownerId)
+    scene.auth.addAccount(id: ownerId, email: "query-646@test.invalid", password: "password123")
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://query-app.raft.test/base" }
+    scene.oauth.addOwnedServer(id: serverId, slug: "query-646", name: "Query Protocol", ownerId: ownerId)
+    let registered = try scene.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "Query App", clientId: "query-client-646")
+    let session = scene.auth.mintAccessTokenForTesting(userId: ownerId)
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let query = "response_type=bad&response_type=code&client_id=first&client_id=second&%63lient_id=decoded+client&redirect_uri=https%3A%2F%2Frp.test%2Fcb&scope=openid+profile&state=old&state=C%2BD"
             let browser = try await client.get(URI(string: "/api/oauth/authorize?\(query)"))
@@ -149,8 +144,8 @@ private func authorizeQuery(
             }
             // Consent's member/client lookup does not add the live-server or
             // enabled gates used by other OAuth use cases.
-            accounts.oauth.setClientEnabled(clientRecordId: registered.id, enabled: false)
-            accounts.oauth.deleteServer(id: serverId)
+            scene.oauth.setClientEnabled(clientRecordId: registered.id, enabled: false)
+            scene.oauth.deleteServer(id: serverId)
             let retained = try await lookup("client_id=\(registered.clientId)&server_id=\(serverId)")
             #expect(retained.status == .ok)
             #expect(try object(retained)["availability"] as? String == "ready")
