@@ -1,6 +1,19 @@
 import Foundation
+import Synchronization
 import RaftDaemonClient
 import Testing
+
+private final class ProbeCount: Sendable {
+    private let state = Mutex(0)
+    var starts: Int { state.withLock { $0 } }
+    func next() -> Int { state.withLock { $0 += 1; return $0 } }
+}
+
+private final class ProbeStarts: Sendable {
+    private let state = Mutex([String]())
+    var keys: [String] { state.withLock { $0 } }
+    func append(_ key: String) { state.withLock { $0.append(key) } }
+}
 
 private final class Deferred<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
@@ -50,10 +63,9 @@ private struct ProbeCrash: Error {}
 @Test func concurrentRequestsForTheSameKeyShareOneRunAndResult() async throws {
     let gate = try ProbeGate(maxConcurrent: 2)
     let pending = Deferred<String>()
-    final class Counter: @unchecked Sendable { var starts = 0 }
-    let counter = Counter()
+    let counter = ProbeCount()
     let task: @Sendable () async throws -> String = {
-        counter.starts += 1
+        _ = counter.next()
         return try await pending.wait()
     }
     async let first = gate.run("runtime_models:cursor", task)
@@ -73,30 +85,27 @@ private struct ProbeCrash: Error {}
 
 @Test func settledRunStartsAFreshRunAndDifferentKeysRespectTheLimitInOrder() async throws {
     let gate = try ProbeGate(maxConcurrent: 2)
-    final class Counter: @unchecked Sendable { var starts = 0 }
-    let counter = Counter()
+    let counter = ProbeCount()
     let fresh: @Sendable () async throws -> Int = {
-        counter.starts += 1
-        return counter.starts
+        return counter.next()
     }
     #expect(try await gate.run("k", fresh) == 1)
     #expect(try await gate.run("k", fresh) == 2)
     #expect(await gate.activeKeys.isEmpty)
 
     let a = Deferred<Void>(); let b = Deferred<Void>(); let c = Deferred<Void>()
-    final class Started: @unchecked Sendable { var keys: [String] = [] }
-    let started = Started()
+    let started = ProbeStarts()
     func waitUntil(_ condition: @escaping @Sendable () -> Bool, timeoutMs: Int = 5_000) async {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000)
         while !condition() && Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
     }
-    let pa = Task { try await gate.run("a") { started.keys.append("a"); try await a.wait() } }
+    let pa = Task { try await gate.run("a") { started.append("a"); try await a.wait() } }
     await waitUntil { started.keys.contains("a") }
-    let pb = Task { try await gate.run("b") { started.keys.append("b"); try await b.wait() } }
+    let pb = Task { try await gate.run("b") { started.append("b"); try await b.wait() } }
     await waitUntil { started.keys.contains("b") }
-    let pc = Task { try await gate.run("c") { started.keys.append("c"); try await c.wait() } }
+    let pc = Task { try await gate.run("c") { started.append("c"); try await c.wait() } }
     try? await Task.sleep(nanoseconds: 100_000_000)
     #expect(Set(started.keys) == ["a", "b"], "the third waits for a free slot; got \(started.keys)")
     a.resolve(())
@@ -110,14 +119,13 @@ private struct ProbeCrash: Error {}
 @Test func failingRunRejectsJoinedCallersAndFreesKeyAndSlot() async throws {
     let gate = try ProbeGate(maxConcurrent: 1)
     let failing = Deferred<String>()
-    final class Starts: @unchecked Sendable { var values: [String] = [] }
-    let starts = Starts()
+    let starts = ProbeStarts()
     let first: @Sendable () async throws -> String = {
-        starts.values.append("first")
+        starts.append("first")
         return try await failing.wait()
     }
     let joined: @Sendable () async throws -> String = {
-        starts.values.append("joined")
+        starts.append("joined")
         return "never"
     }
     let firstRun = Task { try await gate.run("k", first) }
@@ -131,7 +139,7 @@ private struct ProbeCrash: Error {}
     do { _ = try await joinedRun.value } catch { joinedFailed = true }
     #expect(firstFailed)
     #expect(joinedFailed)
-    #expect(starts.values == ["first"], "the joined caller never started a second run")
+    #expect(starts.keys == ["first"], "the joined caller never started a second run")
     let fresh: @Sendable () async throws -> String = { "fresh" }
     #expect(try await gate.run("k", fresh) == "fresh", "the key is usable again")
     let slot: @Sendable () async throws -> String = { "slot freed" }
@@ -144,14 +152,13 @@ private struct ProbeCrash: Error {}
 
     let gate = try ProbeGate()
     let slow = [Deferred<Void>(), Deferred<Void>(), Deferred<Void>()]
-    final class Started: @unchecked Sendable { var keys: [String] = [] }
-    let started = Started()
+    let started = ProbeStarts()
     let keys = ["runtime_models:cursor", "runtime_models:codex", "runtime_account_usage:kimi"]
     var runs: [Task<Void, Error>] = []
     for (index, key) in keys.enumerated() {
         runs.append(Task {
             try await gate.run(key) {
-                started.keys.append(key)
+                started.append(key)
                 try await slow[index].wait()
             }
         })

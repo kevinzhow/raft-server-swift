@@ -2296,3 +2296,10 @@ RFC 074 personal assistant：
 - serverOrder/updateServerOrder 去除任意 memberIds callback，改为只持实际 OAuth owner 的 ServerMembershipQuery。构造不读或缓存 facts，Channels 原事务位置才调用 live leaf；orderedServerList 的外部非空检查与锁内第二次查询仍分开，metadata/role 在 Channels 锁外读取。
 - GET 只返回 sanitized IDs 与原 version，不写回订单。PATCH 仍与 raw stored IDs 比较，只有结果变化才加版本；没有 stored 时按原默认排序比较。非成员过滤、去重和剩余成员排序追加不变，八并发相同 PATCH 仍只增一次。
 - 实际 membership 增删与 guest 恢复后复用同 query，unit/HTTP 验证主订单、版本和真实 slug/role。HTTP 删除成员后读取 v7，清理持久化到 v8，恢复 guest 后读取仍 v8，再持久化到 v9。未新增 owner、Container 字段或 callback 兼容入口；另外三个 admission 与两个 thread callback API 仍待迁移。
+
+### Daemon progress、probe result 与 activity sink 的 checked 所有权
+
+- RuntimeProgressState 四个值同 Mutex，每个原操作仍为一个事务。runtime event 同时写 event/kind 并清 stale；internal progress 只写 event/清 stale；turn start 不清 stale；stale 仅取首次时间。stall age 仍从 event/turn 较晚者算，literal event age 不受 turn 影响，均不新增负值 clamp。
+- ProbeGate 的共享任务直接持 any Sendable result，删除原私有 Any ResultBox。登记在首次 await 前；相同 key 的 caller 加入同 Task；成功和失败均先清 key、释放并 FIFO 移交 slot，再完成结果/原错误。原同 key 同结果类型假设和取消 caller 不取消共享工作的语义保留。
+- LegacyActivitySink 五个不可变 Sendable callbacks 得到 checked conformance，消息、fact ID、sequence/time 与 drop/probe/heartbeat/send 的原方法体不变；不新增全局串行化或承诺外部 sequence callback 的唯一性。
+- 原十四个 helper 用例在迁移前后全部通过；probe fixture 的并发计数/数组改为 checked Mutex 观测，原调用数、sleep、timeout 和断言保持。证据来自 compiler、公开 helper 结果与源码核对，不声称真实 daemon wiring、TSan 或未专门测试的所有 reference/optional/error identity/FIFO 交错。

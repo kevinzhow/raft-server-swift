@@ -90,7 +90,7 @@ public struct ActivityTraceEvent: Sendable, Equatable {
     }
 }
 
-public final class LegacyActivitySink: @unchecked Sendable {
+public final class LegacyActivitySink: Sendable {
     public typealias Send = @Sendable (ActivityMessage) -> Void
     public typealias RecordEvent = @Sendable (String, [String: String], String?) -> Void
 

@@ -11,13 +11,8 @@ public actor ProbeGate {
         public var description: String { "ProbeGate maxConcurrent must be a positive integer or Infinity" }
     }
 
-    private final class ResultBox: @unchecked Sendable {
-        var value: Any?
-        var error: Error?
-    }
-
     private let maxConcurrent: Int
-    private var inFlight: [String: (task: Task<Void, Error>, box: ResultBox)] = [:]
+    private var inFlight: [String: Task<any Sendable, Error>] = [:]
     private var waiters: [CheckedContinuation<Void, Never>] = []
     private var running = 0
 
@@ -35,27 +30,24 @@ public actor ProbeGate {
 
     public func run<T: Sendable>(_ key: String, _ task: @escaping @Sendable () async throws -> T) async throws -> T {
         if let existing = inFlight[key] {
-            try await existing.task.value
-            if let error = existing.box.error { throw error }
-            return existing.box.value as! T
+            return try await existing.value as! T
         }
-        let box = ResultBox()
-        let handle = Task<Void, Error> { [self] in
+        // Every submitted result is Sendable. Keep its existential value in the
+        // shared Task instead of mutating an untyped box across suspension.
+        // A key still denotes one result type, as in the original API.
+        let handle = Task<any Sendable, Error> { [self] in
             await acquire()
             do {
                 let result = try await task()
-                box.value = result
+                await releaseAndClear(key)
+                return result
             } catch {
-                box.error = error
                 await releaseAndClear(key)
                 throw error
             }
-            await releaseAndClear(key)
         }
-        inFlight[key] = (handle, box)
-        try await handle.value
-        if let error = box.error { throw error }
-        return box.value as! T
+        inFlight[key] = handle
+        return try await handle.value as! T
     }
 
     private func acquire() async {
