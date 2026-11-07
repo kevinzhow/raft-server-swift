@@ -53,7 +53,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 1. 继续以固定类型窄化持锁查询能力，逐条核对当前反向边；不提前 State 快照、拆分事务或把剩余 callback API 判为安全例外。领域 Service 只接实际 owner/窄能力，不重新引入目录构造器或兼容外壳。
 2. **已完成状态隔离**：可变 Store 状态使用编译器检查的 Mutex，原 read-modify-write 事务保持完整。后续业务迁移仍不能把事务拆成分别锁住的 getter/setter。
-3. **已删除目录全局锁**：生产与 fixture 均使用实际 owner 事务；Messages→OAuth、Channels→OAuth 与原位 TaskChannelDeletionQuery 的 Tasks→Channels 固定叶边已核对，当前无反向边，Channels+Messages 不同时持锁。七个 Channels callback API 仍是单列债务，不能据此批准任意 callback。Cards freshness barrier 保持独立，后续构造迁移不得拆开已建立的业务事务。
+3. **已删除目录全局锁**：生产与 fixture 均使用实际 owner 事务；Messages→OAuth、Channels→OAuth 与原位 TaskChannelDeletionQuery 的 Tasks→Channels 固定叶边已核对，当前无反向边，Channels+Messages 不同时持锁。server-order 两 API 已以固定 ServerMembershipQuery 保原 Channels→OAuth 活读锁位、orderedList 双读和版本事务，另五个 Channels callback API 仍是单列债务，不能据此批准任意 callback。Cards freshness barrier 保持独立，后续构造迁移不得拆开已建立的业务事务。
 4. 每个切片用并发断言或 published-path 回归证明其边界，再跑完整门禁。
 
 ### 第十批：纯装配容器与剩余服务端 Sendable

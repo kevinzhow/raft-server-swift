@@ -32,7 +32,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | --- | --- | --- |
 | Feature | Registration, request extraction, response status/headers/body projection | Calls services; does not implement domain state or hand-build JSON |
 | Service | Authorization and validation order, domain orchestration, typed results/errors | Vapor-free; state belongs in stores |
-| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; the three fixed nested-owner capabilities and remaining callback debt are documented below |
+| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; the named fixed nested-owner capabilities and remaining callback debt are documented below |
 | DTO | Codable request values, `JSONBodyConvertible` response payloads, explicit domain outcomes | No mutable shared state and no Vapor dependency |
 | Support | Small functions and policies with a named responsibility | Does not become another directory or a generic reply factory |
 | Shared | Contracts consumed by multiple targets | Does not depend on server, daemon, or Vapor targets |
@@ -92,15 +92,16 @@ The 28-line directory root has only immutable checked owner references and no tr
 
 OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry.
 
-Three concrete callback-free capabilities permit nested owner transactions:
+Four concrete callback-free capabilities permit nested owner transactions:
 
 | Held owner → leaf owner | Complete operation |
 | --- | --- |
 | Messages → OAuth | Append the already constructed mirror and advance the human sender cursor before releasing Messages |
 | Channels → OAuth | Reuse the existing DM identity operation, then prepare the local projection and agent/human membership before releasing Channels |
+| Channels → OAuth | ServerMembershipQuery reads current member server IDs at the original point inside switcher order read/update |
 | Tasks → Channels | Read the current channel deletedAt at the original point inside claim/status row lookup and write; release Channels before the remaining Tasks write |
 
-The two ledger ports hold only a checked OAuthLedger reference and enter record-only leaf methods; OAuth has no reverse dependency on Messages or Channels. TaskChannelDeletionQuery holds only the actual Channels owner and performs its fixed row read without an injected callback. The current production call graph has no Channels-held → Tasks edge; channel deletion releases Channels before orphan-task cleanup. Role notices release Channels before entering Messages; Messages never takes Channels or Auth. These facts are specific to the named paths, not an approval of every callback-taking Store API: seven Channels callback entry points remain debt even though their current production binders resolve to OAuth leaves. Rendering, publication and cancellation described above run outside their State borrows. Fixed-sequence test setup uses the same Messages → OAuth mirror boundary without a production sequence override.
+The two ledger ports and ServerMembershipQuery hold only a checked OAuthLedger reference and enter record-only leaf methods; OAuth has no reverse dependency on Messages or Channels. The membership query performs no constructor read or cache, preserves orderedServerList's separate nonempty check and locked second query, and does not make those two reads one snapshot. TaskChannelDeletionQuery holds only the actual Channels owner and performs its fixed row read without an injected callback. The current production call graph has no Channels-held → Tasks edge; channel deletion releases Channels before orphan-task cleanup. Role notices release Channels before entering Messages; Messages never takes Channels or Auth. These facts are specific to the named paths, not an approval of every callback-taking Store API: five Channels callback entry points remain debt after the two server-order signatures were removed. Rendering, publication and cancellation described above run outside their State borrows. Fixed-sequence test setup uses the same Messages → OAuth mirror boundary without a production sequence override.
 
 ### 2.4 JSON and compatibility boundaries
 

@@ -149,12 +149,11 @@ extension ServersAndChannelsStore {
     // MARK: - Server switcher order
 
     /// The caller's stored switcher order intersected with their live
-    /// memberships, plus the version. `memberIds` runs inside the critical
-    /// section so the order and the membership it is sanitized against are one
-    /// read.
-    func serverOrder(userId: String, memberIds: () -> [String]) -> (ids: [String], version: Int) {
+    /// memberships, plus the version. The fixed OAuth query runs at the original
+    /// decision point inside the Channels critical section.
+    func serverOrder(userId: String, memberships: ServerMembershipQuery) -> (ids: [String], version: Int) {
         mutex.withLock { storage in
-            let members = Set(memberIds())
+            let members = Set(memberships.memberServerIds(userId: userId))
             let ordered = Self.sanitizedServerOrder(
                 stored: storage.serverSwitcherOrders[userId]?.ids ?? [],
                 requested: nil,
@@ -171,10 +170,10 @@ extension ServersAndChannelsStore {
     func updateServerOrder(
         userId: String,
         requested: [String],
-        memberIds: () -> [String]
+        memberships: ServerMembershipQuery
     ) -> (ids: [String], version: Int) {
         mutex.withLock { storage in
-            let members = Set(memberIds())
+            let members = Set(memberships.memberServerIds(userId: userId))
             let stored = storage.serverSwitcherOrders[userId]
             let current = stored?.ids ?? Self.sanitizedServerOrder(stored: [], requested: nil, memberIds: members)
             let ordered = Self.sanitizedServerOrder(stored: stored?.ids ?? [], requested: requested, memberIds: members)

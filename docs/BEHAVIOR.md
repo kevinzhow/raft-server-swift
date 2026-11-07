@@ -2290,3 +2290,9 @@ RFC 074 personal assistant：
 - OAuth owner 单锁保持 client→live server→同 server live agent→local 或 active installation→strict scope 顺序。server-local disabled 的原接受集与 global enabled 门槛保持；scopes 全字符串才进入同 validateScopes，以 live allowlist/client key 保原 legacy 例外、trim/dedup/非空/sort，不默认请求 scopes。
 - 同锁保 request UUID→existing grant→person block→live authority→可选 grant UUID/Date→每次 request Date 的顺序。已有 grant 仍 approved 且不扩 scope，最多新增一个 grant，每次成功请求均保存独立 request；person revoke 的禁止自动重授保持。
 - owner 只接 typed attempt、回 typed outcome/flat receipt；Service 锁外投影同错误与 DTO，旧 owner HTTP API/调用全部移除，不留 wrapper。原四个 characterization 函数含五种 Bool case 在迁移前后均通过，既有真实 HTTP 的 32 requests/1 grant、阻止自动重授与原文字节回归保留；本片仍经完整旧 Fallback，未声称新全图的所有 capability 已运行。
+
+### Server order 的固定 membership 叶查询
+
+- serverOrder/updateServerOrder 去除任意 memberIds callback，改为只持实际 OAuth owner 的 ServerMembershipQuery。构造不读或缓存 facts，Channels 原事务位置才调用 live leaf；orderedServerList 的外部非空检查与锁内第二次查询仍分开，metadata/role 在 Channels 锁外读取。
+- GET 只返回 sanitized IDs 与原 version，不写回订单。PATCH 仍与 raw stored IDs 比较，只有结果变化才加版本；没有 stored 时按原默认排序比较。非成员过滤、去重和剩余成员排序追加不变，八并发相同 PATCH 仍只增一次。
+- 实际 membership 增删与 guest 恢复后复用同 query，unit/HTTP 验证主订单、版本和真实 slug/role。HTTP 删除成员后读取 v7，清理持久化到 v8，恢复 guest 后读取仍 v8，再持久化到 v9。未新增 owner、Container 字段或 callback 兼容入口；另外三个 admission 与两个 thread callback API 仍待迁移。

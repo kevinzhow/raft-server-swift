@@ -125,6 +125,15 @@ import VaporTesting
             #expect(seeded["serverOrderVersion"] as? Int == 7)
 
             accounts.oauth.removeMember(serverId: serverA, userId: ownerId)
+            let reduced = try await order()
+            #expect(reduced["serverOrder"] as? [String] == [serverB, serverC])
+            #expect(reduced["serverOrderVersion"] as? Int == 7)
+            let reducedList = try await client.send(.get, headers: headers, to: "/api/servers")
+            #expect(reducedList.status == .ok)
+            let reducedRows = try JSONSerialization.jsonObject(with: Data((reducedList.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            #expect(reducedRows.compactMap { $0["id"] as? String } == [serverB, serverC])
+            #expect(reducedRows.allSatisfy { $0["serverOrderVersion"] as? Int == 7 })
+
             let patched = try await client.send(.patch, headers: headers, to: "/api/servers/order") { request in
                 request.body = .init(string: "{\"serverOrder\":[\"\(serverC)\",\"\(serverB)\"]}")
             }
@@ -134,9 +143,32 @@ import VaporTesting
             #expect(patchedBody?["serverOrderVersion"] as? Int == 8)
 
             let listed = try await client.send(.get, headers: headers, to: "/api/servers")
+            #expect(listed.status == .ok)
             let rows = try JSONSerialization.jsonObject(with: Data((listed.body.string ?? "").utf8)) as? [[String: Any]] ?? []
             #expect(rows.compactMap { $0["id"] as? String } == [serverC, serverB])
             #expect(rows.allSatisfy { $0["serverOrderVersion"] as? Int == 8 })
+
+            // The server row remains in OAuth. Restoring its membership after
+            // service construction must make that actual row visible again.
+            accounts.oauth.addMember(serverId: serverA, userId: ownerId, role: "guest")
+            let restoredList = try await client.send(.get, headers: headers, to: "/api/servers")
+            #expect(restoredList.status == .ok)
+            let restoredRows = try JSONSerialization.jsonObject(with: Data((restoredList.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            #expect(restoredRows.compactMap { $0["id"] as? String } == [serverC, serverB, serverA])
+            #expect(restoredRows.compactMap { $0["slug"] as? String } == ["mono-c", "mono-b", "mono-a"])
+            #expect(restoredRows.compactMap { $0["role"] as? String } == ["owner", "owner", "guest"])
+            #expect(restoredRows.allSatisfy { $0["serverOrderVersion"] as? Int == 8 })
+            let restored = try await order()
+            #expect(restored["serverOrder"] as? [String] == [serverC, serverB, serverA])
+            #expect(restored["serverOrderVersion"] as? Int == 8)
+
+            let persisted = try await client.send(.patch, headers: headers, to: "/api/servers/order") { request in
+                request.body = .init(string: "{\"serverOrder\":[\"\(serverC)\",\"\(serverB)\",\"\(serverA)\"]}")
+            }
+            #expect(persisted.status == .ok)
+            let persistedBody = try JSONSerialization.jsonObject(with: Data((persisted.body.string ?? "").utf8)) as? [String: Any]
+            #expect(persistedBody?["serverOrder"] as? [String] == [serverC, serverB, serverA])
+            #expect(persistedBody?["serverOrderVersion"] as? Int == 9, "the preceding GETs did not write the restored membership into stored order")
         }
     }
 }

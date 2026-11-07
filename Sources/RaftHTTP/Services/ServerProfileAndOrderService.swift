@@ -157,10 +157,10 @@ public struct ServerProfileAndOrderService: Sendable {
     /// `GET /api/servers/order`.
     public func serverOrder(authorization: String?) throws -> ServerOrderResponse {
         let userId = try requireUserWithCode(authorization)
-        let oauth = dependencies.oauth
+        let memberships = ServerMembershipQuery(oauth: dependencies.oauth)
         let snapshot = dependencies.channels.serverOrder(
             userId: userId,
-            memberIds: { oauth.serverIdsForMember(userId: userId) }
+            memberships: memberships
         )
         return ServerOrderResponse(serverOrder: snapshot.ids, serverOrderVersion: snapshot.version)
     }
@@ -176,11 +176,11 @@ public struct ServerProfileAndOrderService: Sendable {
         guard let requested = body?.serverOrder else {
             throw ServerProfileAndOrderError.invalidServerOrder
         }
-        let oauth = dependencies.oauth
+        let memberships = ServerMembershipQuery(oauth: dependencies.oauth)
         let result = dependencies.channels.updateServerOrder(
             userId: userId,
             requested: requested,
-            memberIds: { oauth.serverIdsForMember(userId: userId) }
+            memberships: memberships
         )
         return ServerOrderResponse(serverOrder: result.ids, serverOrderVersion: result.version)
     }
@@ -192,9 +192,10 @@ public struct ServerProfileAndOrderService: Sendable {
         guard let userId = dependencies.sessionUserId(authorization) else { return nil }
         let oauth = dependencies.oauth
         guard !oauth.serverIdsForMember(userId: userId).isEmpty else { return nil }
+        let memberships = ServerMembershipQuery(oauth: oauth)
         let snapshot = dependencies.channels.serverOrder(
             userId: userId,
-            memberIds: { oauth.serverIdsForMember(userId: userId) }
+            memberships: memberships
         )
         let rows = snapshot.ids.compactMap { serverId -> OrderedServerListEntry? in
             guard let details = oauth.serverDetailsValue(id: serverId) else { return nil }

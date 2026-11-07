@@ -27,7 +27,7 @@ private func profileFixture(
     let directory = profileFixture(ownerId: ownerId, serverId: serverA, slug: "order-cas-a")
     directory.oauth.addOwnedServer(id: serverB, slug: "order-cas-b", name: "B", ownerId: ownerId)
     let store = directory.serversAndChannelsStore
-    let oauth = directory.oauth
+    let memberships = ServerMembershipQuery(oauth: directory.oauth)
     // Stored order is [A, B]; eight racing patches all ask for [B, A]. Only one
     // can observe a change, so the version ends at exactly one.
     directory.seedServerSwitcherOrder(userId: ownerId, ids: [serverA, serverB], version: 0)
@@ -38,7 +38,7 @@ private func profileFixture(
                 store.updateServerOrder(
                     userId: ownerId,
                     requested: [serverB, serverA],
-                    memberIds: { oauth.serverIdsForMember(userId: ownerId) }
+                    memberships: memberships
                 ).version
             }
         }
@@ -47,7 +47,7 @@ private func profileFixture(
         return collected
     }
     #expect(versions.allSatisfy { $0 == 1 })
-    let snapshot = store.serverOrder(userId: ownerId, memberIds: { oauth.serverIdsForMember(userId: ownerId) })
+    let snapshot = store.serverOrder(userId: ownerId, memberships: memberships)
     #expect(snapshot.ids == [serverB, serverA])
     #expect(snapshot.version == 1)
 }
@@ -57,17 +57,41 @@ private func profileFixture(
     let serverA = "33333333-3333-4333-8333-000001170103"
     let serverB = "33333333-3333-4333-8333-000001170104"
     let directory = profileFixture(ownerId: ownerId, serverId: serverA, slug: "order-san-a")
-    directory.oauth.addOwnedServer(id: serverB, slug: "order-san-b", name: "B", ownerId: ownerId)
     let store = directory.serversAndChannelsStore
     let oauth = directory.oauth
+    let memberships = ServerMembershipQuery(oauth: oauth)
 
+    let initial = store.updateServerOrder(userId: ownerId, requested: [serverA], memberships: memberships)
+    #expect(initial.ids == [serverA])
+    #expect(initial.version == 0, "persisting the default order is not a version change")
+
+    // Reuse the same query after changing its actual OAuth owner's membership.
+    oauth.addOwnedServer(id: serverB, slug: "order-san-b", name: "B", ownerId: ownerId)
     let result = store.updateServerOrder(
         userId: ownerId,
         requested: [serverB, "stranger", serverB],
-        memberIds: { oauth.serverIdsForMember(userId: ownerId) }
+        memberships: memberships
     )
     #expect(result.ids == [serverB, serverA])
     #expect(result.version == 1)
+
+    oauth.removeMember(serverId: serverB, userId: ownerId)
+    let reduced = store.serverOrder(userId: ownerId, memberships: memberships)
+    #expect(reduced.ids == [serverA])
+    #expect(reduced.version == 1, "GET sanitizes its response without changing the stored order")
+    let cleaned = store.updateServerOrder(userId: ownerId, requested: [serverA], memberships: memberships)
+    #expect(cleaned.ids == [serverA])
+    #expect(cleaned.version == 2, "PATCH compares with the unsanitized stored order")
+
+    oauth.addMember(serverId: serverB, userId: ownerId, role: "guest")
+    let restored = store.serverOrder(userId: ownerId, memberships: memberships)
+    #expect(restored.ids == [serverA, serverB], "all live membership roles remain eligible")
+    #expect(restored.version == 2)
+    let reordered = store.updateServerOrder(
+        userId: ownerId, requested: [serverB, serverA], memberships: memberships
+    )
+    #expect(reordered.ids == [serverB, serverA])
+    #expect(reordered.version == 3)
 }
 
 @Test func hideHumansUpdateWritesAndReadsInOneSection() {
