@@ -165,14 +165,14 @@ extension ServersAndChannelsStore {
     /// `POST /api/channels/:id/threads`: the existing-thread lookup, the new
     /// thread's channel row and its creation order are one critical section, so
     /// two concurrent requests for the same parent message cannot both create
-    /// a thread. `createChannel` mints the ledger channel; it runs inside the
-    /// section and must not call back into this store.
+    /// a thread. The fixed OAuth command mints and appends the ledger channel
+    /// inside the existing Channels -> OAuth lock order.
     func findOrCreateThread(
         serverId: String,
         parentChannelId: String,
         parentMessageId: String,
         creatorId: String,
-        createChannel: () -> String
+        threadChannels: ThreadChannelCommand
     ) -> ThreadForParentMessage {
         mutex.withLock { storage in
             if let existing = storage.postableChannels.first(where: { _, candidate in
@@ -182,7 +182,9 @@ extension ServersAndChannelsStore {
             }) {
                 return .existing(id: existing.key)
             }
-            let threadId = createChannel()
+            let threadId = threadChannels.createThreadChannel(
+                parentChannelId: parentChannelId, parentMessageId: parentMessageId
+            )
             storage.postableChannels[threadId] = PostableChannel(
                 serverId: serverId,
                 memberIds: [creatorId],

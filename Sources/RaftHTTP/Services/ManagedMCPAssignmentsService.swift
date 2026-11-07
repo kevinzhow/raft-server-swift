@@ -273,9 +273,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             parentChannelId: channelId,
             parentMessageId: parentMessageId,
             creatorId: userId,
-            createChannel: {
-                oauth.createThreadChannel(parentChannelId: channelId, parentMessageId: parentMessageId)
-            }
+            threadChannels: ThreadChannelCommand(oauth: oauth)
         )
         switch outcome {
         case .existing(let threadId):

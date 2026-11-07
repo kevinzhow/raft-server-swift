@@ -61,6 +61,9 @@ import VaporTesting
             let created = try JSONSerialization.jsonObject(with: Data((create.body.string ?? "").utf8)) as? [String: Any] ?? [:]
             let threadId = created["threadChannelId"] as? String ?? ""
             #expect(!threadId.isEmpty)
+            #expect(accounts.oauth.channelKind(channelId: threadId) == "thread")
+            #expect(accounts.oauth.channelServerId(channelId: threadId) == serverId)
+            #expect(accounts.oauth.channelParentChannelId(id: threadId) == channel)
             #expect(created["replyCount"] as? Int == 0)
             #expect(created["lastReplyAt"] == nil || created["lastReplyAt"] is NSNull)
             #expect((created["participantIds"] as? [String] ?? []).isEmpty)
@@ -69,6 +72,7 @@ import VaporTesting
             let repeatCreate = try await client.send(.post, headers: headers(ownerToken), to: "/api/channels/\(channel)/threads") { request in
                 request.body = .init(string: "{\"parentMessageId\":\"\(parentId)\"}")
             }
+            #expect(repeatCreate.status == .ok)
             let repeated = try JSONSerialization.jsonObject(with: Data((repeatCreate.body.string ?? "").utf8)) as? [String: Any]
             #expect(repeated?["threadChannelId"] as? String == threadId)
 

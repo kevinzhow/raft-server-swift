@@ -92,7 +92,7 @@ The 28-line directory root has only immutable checked owner references and no tr
 
 OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry.
 
-Five concrete callback-free capabilities permit nested owner transactions:
+Six concrete callback-free capabilities permit nested owner transactions:
 
 | Held owner → leaf owner | Complete operation |
 | --- | --- |
@@ -100,9 +100,10 @@ Five concrete callback-free capabilities permit nested owner transactions:
 | Channels → OAuth | Reuse the existing DM identity operation, then prepare the local projection and agent/human membership before releasing Channels |
 | Channels → OAuth | ServerMembershipQuery reads current member server IDs at the original point inside switcher order read/update |
 | Channels → OAuth | ServerAdmissionQuery reads holder count only for a cap, then independently reads the active agreement before original audit/consume |
+| Channels → OAuth | ThreadChannelCommand mints/appends the original primary thread while Channels commits local rows/members and the applicable order/joint projections |
 | Tasks → Channels | Read the current channel deletedAt at the original point inside claim/status row lookup and write; release Channels before the remaining Tasks write |
 
-The two ledger ports, ServerMembershipQuery and ServerAdmissionQuery hold only a checked OAuthLedger reference and enter record-only leaf methods; OAuth has no reverse dependency on Messages or Channels. Neither query reads facts during construction. Membership preserves orderedServerList's separate nonempty check and locked second query; admission skips holder reads for no cap and keeps holder and agreement queries as two original OAuth locks. No cross-owner snapshot or global seat reservation is implied. TaskChannelDeletionQuery holds only the actual Channels owner and performs its fixed row read without an injected callback. The current production call graph has no Channels-held → Tasks edge; channel deletion releases Channels before orphan-task cleanup. Role notices release Channels before entering Messages; Messages never takes Channels or Auth. These facts are specific to the named paths, not an approval of every callback-taking Store API: only two thread callback entry points remain debt after the order/admission signatures were removed. Rendering, publication and cancellation described above run outside their State borrows. Fixed-sequence test setup uses the same Messages → OAuth mirror boundary without a production sequence override.
+The two ledger ports, membership/admission queries and ThreadChannelCommand hold only a checked OAuthLedger reference and enter record-only leaf methods; OAuth has no reverse dependency on Messages or Channels. Neither query reads facts during construction. Membership preserves orderedServerList's separate nonempty check and locked second query; admission skips holder reads for no cap and keeps holder and agreement queries as two original OAuth locks. No cross-owner snapshot or global seat reservation is implied. TaskChannelDeletionQuery holds only the actual Channels owner and performs its fixed row read without an injected callback. The current production call graph has no Channels-held → Tasks edge; channel deletion releases Channels before orphan-task cleanup. Role notices release Channels before entering Messages; Messages never takes Channels or Auth. The thread command preserves normal server/deleted filtering and order append, action-card's different lookup/no-order/fallback, and joint snapshot iteration. All seven inventoried Channels callback signatures are now fixed capabilities. These facts approve the inspected paths, not arbitrary future Store callbacks. Rendering, publication and cancellation described above run outside their State borrows. Fixed-sequence test setup uses the same Messages → OAuth mirror boundary without a production sequence override.
 
 ### 2.4 JSON and compatibility boundaries
 

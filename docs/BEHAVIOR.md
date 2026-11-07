@@ -2324,3 +2324,10 @@ RFC 074 personal assistant：
 - ReminderInboxStore 只将 Sendable items/order 同置一个 Mutex。纯校验/转换仍锁外，首次 ID 才 append、重复只覆盖、不改插入位置，list 同一借用读取两集合。128次并发替换/读取保两条真实 primary item 与既定顺序；旧身份/action/title断言不改。
 - RecentDeliveryIds 的 remember 去重→append→timestamp→cap淘汰，以及 has 的被查 ID 懒删，都保持单一事务。不全局prune、不refresh has recency、不新增 bounds/clock clamp。原TTL临界、零/负cap/TTL、回拨及旧timestamp覆盖接受集保持，size可含未查询过期项；64次并发真实记忆/容量与后续全替换结果验证关联集合一致。
 - 十四个原Source/新Source helper case均绿；这是公开结果与compiler的局部证明，不冒称daemon接线/TSan或所有交错。StandingPrompt锁内clock不混入本片，仍待单独重入/文件结果修复。
+
+### Thread factories 的固定 primary-channel command
+
+- 两个 find/create Store API 只收 ThreadChannelCommand，唯一 private actual OAuth，构造不读facts、固定调用原createThreadChannel。UUID/primary append和本地row/member/order/joint操作仍原Channels→OAuth锁位，无新owner、Container字段或callback兼容重载。
+- normal保server+kind+parent+deletedAt过滤，创建后append threadOrder。action-card故意保无server/deleted过滤、既有canonical不refreshmembers、无order append；缺carrier本地fallback仍non-nil，OAuth primary继续取父row server或空串，不强行统一两层server。
+- joint依原for-in数组快照逐个处理，新增projection/link不重访，成员合并/append位置保持；不是拓扑递归遍历。真实三父/三primary/三local/两新link及无nested/order/replay增量验证，原minted/LockedCounter factories删除。
+- 原32并发thread返回ID/只建一次/ordering、action32/replay、normal softdeleted/wrongserver与两fallback，及HTTP summary/回复/frame的对应primary kind/server/parent均保留。joint并发/重复self/inactive矩阵未新增，静态保持旧逻辑；不冒称TSan或所有锁图。原七个generic Channels API至此全部以具体能力替代。

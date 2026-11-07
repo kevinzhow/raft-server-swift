@@ -111,17 +111,16 @@ extension ServersAndChannelsStore {
     /// action-card message, plus one projection thread per Joint link, all in
     /// one critical section.
     ///
-    /// The thread ids come from `createThread` (the OAuth ledger owns the
-    /// channel record) while this store's lock is held, so two concurrent
-    /// executes cannot create two canonical threads for the same card. Returns
-    /// the canonical thread id, or `nil` when the storage channel disappeared.
+    /// The fixed OAuth command creates the ledger channel while this store's
+    /// lock is held, so concurrent executes cannot create two canonical threads
+    /// for the same card. A missing carrier keeps the fallback server id.
     func findOrCreateActionCardReplyThread(
         storageChannelId: String,
         messageId: String,
         requesterAgentId: String,
         confirmerUserId: String,
         fallbackServerId: String,
-        createThread: (String, String) -> String
+        threadChannels: ThreadChannelCommand
     ) -> String? {
         mutex.withLock { storage in
             let storageServerId = storage.postableChannels[storageChannelId]?.serverId ?? fallbackServerId
@@ -131,7 +130,9 @@ extension ServersAndChannelsStore {
                     && channel.parentMessageId == messageId
             }?.key
             if canonicalThread == nil {
-                let threadId = createThread(storageChannelId, messageId)
+                let threadId = threadChannels.createThreadChannel(
+                    parentChannelId: storageChannelId, parentMessageId: messageId
+                )
                 var thread = storage.postableChannels[threadId]
                     ?? PostableChannel(serverId: storageServerId, memberIds: [])
                 thread.serverId = storageServerId
@@ -163,7 +164,9 @@ extension ServersAndChannelsStore {
                 if let existing {
                     localThreadId = existing
                 } else {
-                    let created = createThread(link.localChannelId, messageId)
+                    let created = threadChannels.createThreadChannel(
+                        parentChannelId: link.localChannelId, parentMessageId: messageId
+                    )
                     var thread = storage.postableChannels[created]
                         ?? PostableChannel(serverId: link.serverId, memberIds: [])
                     thread.serverId = link.serverId

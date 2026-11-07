@@ -131,6 +131,9 @@ private func actionCardMessages(_ client: any Client, token: String, serverId: S
                 messageId: prepared.messageId
             )
             #expect(!threadId.isEmpty)
+            #expect(fixture.accounts.oauth.channelKind(channelId: threadId) == "thread")
+            #expect(fixture.accounts.oauth.channelServerId(channelId: threadId) == fixture.serverId)
+            #expect(fixture.accounts.oauth.channelParentChannelId(id: threadId) == fixture.channelId)
             let replies = try await actionCardMessages(client, token: owner, serverId: fixture.serverId, threadId: threadId)
             let reply = try #require(replies.first { ($0["content"] as? String)?.hasPrefix("@\(fixture.agentName) ") == true })
             let content = reply["content"] as? String ?? ""
@@ -250,6 +253,9 @@ private func actionCardMessages(_ client: any Client, token: String, serverId: S
                 messageId: prepared.messageId
             )
             #expect(!hostThread.isEmpty)
+            #expect(accounts.oauth.channelKind(channelId: hostThread) == "thread")
+            #expect(accounts.oauth.channelServerId(channelId: hostThread) == hostServerId)
+            #expect(accounts.oauth.channelParentChannelId(id: hostThread) == hostProjection)
             let replies = try await actionCardMessages(client, token: hostOwner, serverId: hostServerId, threadId: hostThread)
             let reply = try #require(replies.first { ($0["content"] as? String)?.hasPrefix("@\(agentName) ") == true })
             let replyId = reply["id"] as? String ?? ""

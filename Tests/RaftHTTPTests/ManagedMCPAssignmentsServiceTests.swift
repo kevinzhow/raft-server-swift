@@ -633,28 +633,88 @@ private func body(_ error: any DomainError) -> String {
     #expect(store.taskRecords.map(\.title) == ["a", "c"])
 }
 
-@Test func concurrentThreadCreationForOneParentCreatesOneThread() {
+@Test func concurrentThreadCreationForOneParentCreatesOneThread() throws {
     let channels = ServersAndChannelsStore()
-    let minted = Mutex(0)
+    let oauth = OAuthLedger()
+    oauth.addOwnedServer(id: "s", slug: "thread-once", name: "Thread Once", ownerId: "u-0")
+    let threadChannels = ThreadChannelCommand(oauth: oauth)
+    let parent = oauth.createChannel(serverId: "s", name: "parent", creatorUserId: "u-0")
+    channels.addPostableChannel(serverId: "s", channelId: parent, memberId: "u-0")
     let outcomes = Mutex<[String]>([])
     DispatchQueue.concurrentPerform(iterations: 32) { index in
         let outcome = channels.findOrCreateThread(
-            serverId: "s", parentChannelId: "p", parentMessageId: "m", creatorId: "u-\(index)",
-            createChannel: {
-                minted.withLock { $0 += 1 }
-                return "thread-\(UUID().uuidString.lowercased())"
-            }
+            serverId: "s", parentChannelId: parent, parentMessageId: "m", creatorId: "u-\(index)",
+            threadChannels: threadChannels
         )
         switch outcome {
         case .created(let id): outcomes.withLock { $0.append("created:\(id)") }
         case .existing(let id): outcomes.withLock { $0.append("existing:\(id)") }
         }
     }
-    #expect(minted.withLock { $0 } == 1, "the lookup and the creation are one section")
+    let rows = oauth.state.withLock { state in
+        state.channelRecords.filter {
+            $0.type == "thread" && $0.parentChannelId == parent && $0.parentMessageId == "m"
+        }
+    }
+    #expect(rows.count == 1, "the lookup and the actual OAuth creation are one section")
+    let row = try #require(rows.first)
+    #expect(row.serverId == "s")
+    #expect(row.parentChannelId == parent)
+    #expect(row.parentMessageId == "m")
+    #expect(row.name == "")
     let all = outcomes.withLock { $0 }
+    #expect(all.count == 32)
     #expect(all.filter { $0.hasPrefix("created:") }.count == 1)
     #expect(Set(all.map { $0.split(separator: ":")[1] }).count == 1)
-    #expect(channels.threadOrder.count == 1)
+    #expect(Set(all.map { String($0.split(separator: ":")[1]) }) == [row.id])
+    #expect(channels.threadOrder == [row.id])
+    let local = try #require(channels.postableChannel(id: row.id))
+    #expect(local.serverId == "s")
+    #expect(local.kind == "thread")
+    #expect(local.name == "thread")
+    #expect(local.parentChannelId == parent)
+    #expect(local.parentMessageId == "m")
+    #expect(local.memberIds.count == 1)
+    #expect(local.memberIds.isSubset(of: Set((0..<32).map { "u-\($0)" })))
+
+    let deletion = channels.softDeleteChannel(
+        channelId: row.id, serverId: "s", userId: "u-0", memberRole: "owner", now: Date()
+    )
+    #expect(deletion == .deleted)
+    let replacement = channels.findOrCreateThread(
+        serverId: "s", parentChannelId: parent, parentMessageId: "m", creatorId: "u-0",
+        threadChannels: threadChannels
+    )
+    guard case .created(let replacementId) = replacement else {
+        Issue.record("normal thread creation must skip the soft-deleted row")
+        return
+    }
+    #expect(replacementId != row.id)
+    #expect(channels.threadOrder == [row.id, replacementId])
+    let remaining = oauth.state.withLock { state in
+        state.channelRecords.filter {
+            $0.type == "thread" && $0.parentChannelId == parent && $0.parentMessageId == "m"
+        }
+    }
+    #expect(Set(remaining.map(\.id)) == [row.id, replacementId])
+    #expect(remaining.allSatisfy { $0.parentChannelId == parent && $0.parentMessageId == "m" })
+    channels.mutex.withLock { $0.postableChannels[replacementId]?.serverId = "server-2" }
+    let matchingServer = channels.findOrCreateThread(
+        serverId: "s", parentChannelId: parent, parentMessageId: "m", creatorId: "u-0",
+        threadChannels: threadChannels
+    )
+    guard case .created(let matchingId) = matchingServer else {
+        Issue.record("normal thread creation must skip a row from another server")
+        return
+    }
+    #expect(matchingId != replacementId)
+    #expect(channels.postableChannel(id: matchingId)?.serverId == "s")
+    #expect(oauth.channelServerId(channelId: matchingId) == "s")
+    #expect(channels.threadOrder == [row.id, replacementId, matchingId])
+    let finalIds = oauth.state.withLock { state in
+        state.channelRecords.filter { $0.parentChannelId == parent && $0.parentMessageId == "m" }.map(\.id)
+    }
+    #expect(Set(finalIds) == [row.id, replacementId, matchingId])
 }
 
 @Test func concurrentChannelRoleWritesBumpTheRevisionOncePerWrite() {

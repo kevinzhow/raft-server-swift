@@ -1010,12 +1010,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             requesterAgentId: card.requesterAgentId,
             confirmerUserId: confirmerUserId,
             fallbackServerId: card.serverId,
-            createThread: { parentChannelId, parentMessageId in
-                oauth.createThreadChannel(
-                    parentChannelId: parentChannelId,
-                    parentMessageId: parentMessageId
-                )
-            }
+            threadChannels: ThreadChannelCommand(oauth: oauth)
         ) else { return }
         let cardRef = "\(card.messageId.prefix(8))"
         let content: String
