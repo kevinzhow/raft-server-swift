@@ -87,6 +87,15 @@ enforces the part of it that can be measured today:
 9. Every Swift file under ``Sources/RaftHTTP/Stores/`` must stay at or below
    1,000 physical lines, including nested files and extension files.
 
+10. ``Composition/**/*.swift`` has a separate 1,000-line ceiling and hard zero
+    for code tokens Vapor, HTTPReply, JSONSerialization, Any and AnyObject.
+    Container is at most 28 physical lines with exactly nine immutable groups;
+    Groups have only checked public structs of approved concrete values. A
+    closed lexical declaration grammar enforces that layout and detects direct
+    extra extensions/aliases under Sources. It is not a Swift AST, type resolver,
+    or proof of owner identity or business-free composition. Existing Services
+    scopes, the old EmailLogin limit, and all ratchets remain unchanged.
+
 Exit codes:
     0  pass, or pass with warnings
     1  guardrail violation
@@ -1026,6 +1035,269 @@ def check_services_vapor_free(root: Path) -> dict:
     }
 
 
+def check_composition(root: Path) -> list[dict]:
+    """Closed declaration grammar, not a Swift AST or a proof of composition purity.
+
+    The canonical files accept only ASCII identifiers, checked public structs,
+    public let fields with bare approved concrete names, and the one extension
+    initializer. Comments/whitespace/semicolons do not affect that grammar.
+    Other files are checked for protected-name declarations/extensions/aliases.
+    This conservatively rejects nested or other-module reuse of those names.
+    It does not resolve types/aliases outside these files, check service internals,
+    validate Swift syntax generally, prove owner identity, or inspect free-function
+    business logic. Swift compilation and review remain required. Regex literals
+    are outside this tokenizer's supported subset; do not call it a Swift parser.
+    """
+    files = iter_swift_sources(root, (COMPOSITION_RELATIVE,))
+    texts = {p: f.read_text(encoding="utf-8", errors="replace") for p, f in files}
+    limits = [{"path": p, "lines": len(s.splitlines()), "limit": COMPOSITION_FILE_LINE_LIMIT}
+              for p, s in texts.items() if len(s.splitlines()) > COMPOSITION_FILE_LINE_LIMIT]
+    errors: list[str] = []
+    boundaries: list[str] = []
+    tokens: dict[str, list[str]] = {}
+    for path, text in texts.items():
+        try:
+            tokens[path] = composition_tokens(text)
+        except ValueError as error:
+            errors.append(f"{path}: {error}")
+            continue
+        forbidden = sorted(set(composition_tokens(text, include_interpolation=True)) & {"Vapor", "HTTPReply", "JSONSerialization", "Any", "AnyObject"})
+        if forbidden:
+            boundaries.append(f"{path}: composition hard zero: {', '.join(forbidden)}")
+    container = (COMPOSITION_RELATIVE / "ServiceContainer.swift").as_posix()
+    groups = (COMPOSITION_RELATIVE / "ServiceGroups.swift").as_posix()
+    if files:
+        for path in (container, groups):
+            if path not in texts:
+                errors.append(f"{path}: missing canonical composition declaration file")
+        if container in texts:
+            if len(texts[container].splitlines()) > CONTAINER_LINE_LIMIT:
+                errors.append(f"{container}: exceeds {CONTAINER_LINE_LIMIT} physical lines")
+            if container in tokens:
+                try:
+                    name, fields, end = composition_struct(tokens[container], 0)
+                    if name != "ServiceContainer" or fields != CONTAINER_GROUPS:
+                        raise ValueError("Container requires exactly the nine approved public let group fields")
+                    initializer = "extension ServiceContainer { public init ( ) { self = composeServices ( ) } }".split()
+                    if tokens[container][end:] != initializer:
+                        raise ValueError("only extension public init() { self = composeServices() } may follow Container")
+                except ValueError as error:
+                    errors.append(f"{container}: {error}")
+        if groups in tokens:
+            try:
+                declared: set[str] = set()
+                offset = 0
+                while offset < len(tokens[groups]):
+                    name, fields, offset = composition_struct(tokens[groups], offset)
+                    if name not in CONTAINER_GROUPS.values() or name in declared:
+                        raise ValueError(f"unexpected or duplicate Service group {name}")
+                    declared.add(name)
+                    if not fields or set(fields.values()) - COMPOSITION_SERVICE_TYPES:
+                        raise ValueError(f"{name} must contain immutable approved concrete Service/Support values only")
+                if declared != set(CONTAINER_GROUPS.values()):
+                    raise ValueError("Groups requires exactly the nine approved checked Sendable structs")
+            except ValueError as error:
+                errors.append(f"{groups}: {error}")
+    # A helper in another file must not silently grow the closed API. Scan
+    # Sources, not Tests; fixtures may declare independent private scenes.
+    # Scan even with no Composition files: moving the whole API out of that
+    # directory must not turn this check off. Include generated files for this
+    # new protected-name check only; existing ratchet exclusions stay unchanged.
+    protected = {"ServiceContainer", *CONTAINER_GROUPS.values()}
+    for path, file in iter_swift_sources(root, (SOURCES_RELATIVE,), include_generated=True):
+        if path in {container, groups}:
+            continue
+        text = texts.get(path)
+        if text is None:
+            text = file.read_text(encoding="utf-8", errors="replace")
+        if not any(name in text for name in protected):
+            continue
+        try:
+            ts = tokens[path] if path in tokens else composition_tokens(text)
+            for i, token in enumerate(ts[:-1]):
+                # A selective import uses declaration keywords without defining
+                # or extending the imported type in this file.
+                if i and ts[i - 1] == "import":
+                    continue
+                if token in {"extension", "struct", "class", "actor", "enum", "protocol"}:
+                    name = composition_reference_id(ts, i + 1)
+                    if name in protected:
+                        errors.append(f"{path}: {token} {name} is outside its canonical declaration file")
+                if token == "typealias":
+                    # Read both the declared name and a direct named RHS. This
+                    # is not indirect alias, generic or macro resolution.
+                    name = composition_reference_id(ts, i + 1, qualified=False)
+                    if name in protected:
+                        errors.append(f"{path}: protected alias declaration {name} is forbidden")
+                    j = i + 1
+                    while j < len(ts) and ts[j] not in {"=", "{", "}"}:
+                        j += 1
+                    if j < len(ts) and ts[j] == "=":
+                        target = composition_reference_id(ts, j + 1)
+                        if target in protected:
+                            errors.append(f"{path}: aliases of Container/Groups are forbidden")
+        except ValueError as error:
+            errors.append(f"{path}: {error}")
+    def result(identifier: str, title: str, detail: list[str]) -> dict:
+        return {"id": identifier, "title": title, "status": "fail" if detail else "pass",
+                "severity": "error", "path": COMPOSITION_RELATIVE.as_posix(),
+                "files": len(files), "violations_detail": detail,
+                "message": f"{len(files)} composition files; {len(detail)} violation(s)"}
+    return [
+        result("composition-file-ceiling", "Composition/** <= 1,000 physical lines",
+               [f"{v['path']}: {v['lines']} lines exceeds {v['limit']}" for v in limits]),
+        result("composition-boundaries", "Composition/** transport/Any hard zero", boundaries),
+        result("composition-declarations", "Container/Groups closed immutable declarations", errors),
+    ]
+
+
+def composition_reference_id(tokens: list[str], offset: int, *, qualified: bool = True) -> str | None:
+    """Read a direct ASCII name, optionally backticked and dot-qualified.
+
+    Only the external protected-name scan uses this reader. Canonical structs
+    retain their separate closed grammar. No generic/parenthesized type parsing,
+    scope/type resolution, indirect aliases or macro expansion is performed.
+    """
+    def identifier(index: int) -> tuple[str | None, int]:
+        if index >= len(tokens):
+            return None, index
+        escaped = tokens[index] == "`"
+        start = index + 1 if escaped else index
+        if start >= len(tokens) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", tokens[start]):
+            return None, index
+        end = start + 1
+        if escaped:
+            if end >= len(tokens) or tokens[end] != "`":
+                return None, index
+            end += 1
+        return tokens[start], end
+    name, end = identifier(offset)
+    while qualified and name is not None and end < len(tokens) and tokens[end] == ".":
+        name, end = identifier(end + 1)
+    return name
+
+
+COMPOSITION_RELATIVE = Path("Sources/RaftHTTP/Composition")
+COMPOSITION_FILE_LINE_LIMIT = 1_000
+CONTAINER_LINE_LIMIT = 28
+CONTAINER_GROUPS = {
+    "identity": "IdentityServices", "messaging": "MessagingServices", "channels": "ChannelServices",
+    "agents": "AgentServices", "machines": "MachineServices", "tasks": "TaskServices",
+    "integrations": "IntegrationServices", "notifications": "NotificationServices", "feedback": "FeedbackServices",
+}
+# Names reviewed against the concrete public API. No suffix-only 'Service'
+# heuristic: adding a new concrete type requires an explicit boundary review.
+COMPOSITION_SERVICE_TYPES = frozenset("""
+AuthCoreService AuthVerificationService AuthProfileService AuthIdentitiesService OAuthFlowsService DirectoryRuntimePolicy
+RealtimeRelayService InboxAndWakeService ReactionsRealtimeService HumanMessageCreateService MessageSendService
+SocketMembershipService ProfileAndChannelFilesService SearchMentionsService AttachmentCommentsService
+ServerMembersAndSidebarService ServerProfileAndOrderService ChannelMembershipService JoinLinksAndInvitesService
+ChannelMessagingService ThreadsService ManagedMCPAssignmentsService AgentConnectionRelayService AgentPrivateSurfaceService
+AgentsLifecycleService AgentMigrationStatusService AgentSendDeliveryService AgentChannelsService AgentHostedMigrationService
+AgentMachineMigrationControlService AgentHistoryService AgentAttachmentsService AgentIntegrationTokenService
+ComputersFleetService MachinesAndHostedRuntimeService RuntimeUsageAndAttestationsService RuntimeFormsAndProbesService
+TaskCatalogService TasksAndLabsService ActionCardMarketplaceService ActionCardPrepareService ActionCardExecuteService
+ActionCardService ActionCardIntegrationRegisterService IntegrationsAndAppAccessService AgentIntegrationAppsService
+AgentMessageLookupService ManagedMCPLifecycleService ManagedMCPProviderConnectionsService ManagedMCPOAuthService
+ManagedMCPChannelRoutesService ManagedMCPAgentCatalogService ManagedMCPControlPlaneService ManagedMCPToolExecutionService
+NativeNotificationsService ManagedMCPPushService MobileAppEmailUnsubscribe FeedbackLocatorService
+ProductFeedbackSubmissionService FeedbackMultiAppService
+""".split())
+
+
+def composition_tokens(text: str, include_interpolation: bool = False) -> list[str]:
+    """Tokenize the small declaration subset; skip nested comments and strings.
+
+    Raw/multiline strings are opaque, including nested strings in interpolation.
+    A literal is still an unexpected token in the two declaration-only files.
+    Unsupported/unterminated input fails closed rather than proving valid Swift.
+    """
+    size = len(text)
+    def comment(i: int) -> int:
+        if text.startswith("//", i):
+            end = text.find("\n", i + 2)
+            return size if end < 0 else end + 1
+        if text.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < size and depth:
+                if text.startswith("/*", i): depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i): depth, i = depth - 1, i + 2
+                else: i += 1
+            if depth: raise ValueError("unterminated block comment in composition scan")
+        return i
+    def string(opening: re.Match[str]) -> int:
+        hashes, quotes = opening.group(1) or "", opening.group(2)
+        closing, escape = quotes + hashes, "\\" + hashes
+        i = opening.end()
+        while i < size:
+            if text.startswith(closing, i): return i + len(closing)
+            if text.startswith(escape, i):
+                j = i + len(escape)
+                if j < size and text[j] == "(":
+                    i = interpolation(j + 1)
+                    if include_interpolation:
+                        out.extend(composition_tokens(text[j + 1:i - 1], True))
+                else: i = min(size, j + 1)
+            else: i += 1
+        raise ValueError("unterminated string in composition scan")
+    def interpolation(i: int) -> int:
+        depth = 1
+        while i < size:
+            end = comment(i)
+            if end != i: i = end; continue
+            opening = SWIFT_STRING_START_RE.match(text, i)
+            if opening: i = string(opening); continue
+            if text[i] == "(": depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if not depth: return i + 1
+            i += 1
+        raise ValueError("unterminated interpolation in composition scan")
+    out: list[str] = []
+    i = 0
+    while i < size:
+        if text[i].isspace() or text[i] == ";": i += 1; continue
+        end = comment(i)
+        if end != i: i = end; continue
+        opening = SWIFT_STRING_START_RE.match(text, i)
+        if opening:
+            out.append("<literal>"); i = string(opening); continue
+        identifier = re.match(r"[A-Za-z_][A-Za-z_0-9]*", text[i:])
+        if identifier:
+            out.append(identifier.group()); i += len(identifier.group())
+        else:
+            out.append(text[i]); i += 1
+    return out
+
+
+def composition_struct(tokens: list[str], offset: int) -> tuple[str, dict[str, str], int]:
+    """Consume one checked public struct of public let name: ConcreteType fields."""
+    def take(*expected: str) -> None:
+        nonlocal offset
+        if tokens[offset:offset + len(expected)] != list(expected):
+            raise ValueError("expected checked public struct with public let bare concrete fields only")
+        offset += len(expected)
+    def identifier() -> str:
+        nonlocal offset
+        if offset >= len(tokens) or not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", tokens[offset]):
+            raise ValueError("expected an unqualified ASCII declaration identifier")
+        value = tokens[offset]; offset += 1
+        return value
+    take("public", "struct")
+    name = identifier()
+    take(":", "Sendable", "{")
+    fields: dict[str, str] = {}
+    while offset < len(tokens) and tokens[offset] != "}":
+        take("public", "let")
+        field = identifier()
+        take(":")
+        concrete = identifier()
+        if field in fields: raise ValueError(f"duplicate field {field}")
+        fields[field] = concrete
+    take("}")
+    return name, fields, offset
+
+
 def evaluate(root: Path) -> dict:
     checks = [
         check_email_login_ceiling(root),
@@ -1037,6 +1309,7 @@ def evaluate(root: Path) -> dict:
         check_for_testing_tree_baseline(root),
         *(check_ratchet_metric(root, metric) for metric in RATCHET_METRICS),
         check_services_vapor_free(root),
+        *check_composition(root),
     ]
     warnings = [warning for check in checks for warning in check.get("warnings", [])]
     violations: list[str] = []
@@ -1075,6 +1348,8 @@ def evaluate(root: Path) -> dict:
             "email_login_extension_line_limit": EMAIL_LOGIN_EXTENSION_LINE_LIMIT,
             "email_login_extension_count_baseline": EMAIL_LOGIN_EXTENSION_COUNT_BASELINE,
             "service_file_line_limit": SERVICE_FILE_LINE_LIMIT,
+            "composition_file_line_limit": COMPOSITION_FILE_LINE_LIMIT,
+            "container_line_limit": CONTAINER_LINE_LIMIT,
             "store_file_line_limit": STORE_FILE_LINE_LIMIT,
             "email_login_for_testing_markers": EMAIL_LOGIN_FOR_TESTING_BASELINE,
             "email_login_private_func_for_testing": EMAIL_LOGIN_PRIVATE_FUNC_FOR_TESTING_BASELINE,

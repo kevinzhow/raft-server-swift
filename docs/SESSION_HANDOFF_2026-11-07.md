@@ -1,17 +1,24 @@
 # Phase 6 服务端架构清理：新会话交接
 
-保存时间：2026-11-07 08:10 香港时间（UTC+08；同日 09:10 日本时间）。本文件是交接入口，优先于更早的会话摘要。**当前在途共享 graph 未提交，不能当成已通过完整门禁。**
+更新时间：2026-11-07 09:05 上海时间（UTC+08）。本文件是交接入口，优先于更早的会话摘要。**共享 composer + AuthScene + guard v2 切片已通过本轮全部门禁，随本文件所在切片提交接受；完整 Fallback/main 与其余 Feature/fixtures 尚未切换。**
 
-## 1. 目标与恢复入口
+## 1. 当前目标与恢复入口
 
 继续完成第八至十批架构清理，保持上游 `v1.21.23-source.1` 的 HTTP status、JSON 原文字节/顺序、headers、认证/校验顺序和 socket frames。逐片通过全部门禁后提交并及时 push。最终须完成纯 ServiceContainer、剩余 Feature raw-ledger、领域 fixtures 与旧 Root 删除；不能因 Root 缩行或构造参数清零宣布完成。
 
-用户本次要求保存任务，准备在新会话继续；已停止新实现和构建。原 goal `goal-58b02389-6d57-4e01-b13e-a9cefac72e0a` 曾暂停为 revision 4、7/30轮；**保存收尾时最新 get_goal 返回 null，当前无绑定 goal，自动续跑已停止**。新会话获用户“继续”授权后先检查 goal；若仍无该 goal，按本目标新建，不能误标 complete。
+用户已要求继续并完成整个移植任务。当前 active goal 为 `goal-cef925d4-db4a-4005-a69c-c3b6fe6b387d`；旧暂停 goal 已无绑定，不应恢复旧 id。会话恢复后先查询最新 goal，仍 active 时按运行时要求 resume；只有整个目标完成才能 complete。
 
-- canonical checkout：`/mnt/data/raft-server-swift`，branch `main`。
-- **实际未完成代码位于** `/mnt/data/raft-server-swift/.agents/worktrees/nine-http-state`，branch `nine-http-state`。新会话必须进入这个工作树检查，不能仅查看 main 后认为代码丢失。
-- 最近已验证并 push 的生产代码基准：`4c97878`。本交接可能另有后续 docs-only commit；它不代表共享 graph 已提交。
+- canonical checkout：`/mnt/data/raft-server-swift`，branch `main`；实际实现工作树仍为 `/mnt/data/raft-server-swift/.agents/worktrees/nine-http-state`，branch `nine-http-state`。
+- 本轮从 `4d245ee` 恢复，原 18 个未提交路径逐一核对保存 manifest 的 SHA，全部一致；随后只应用 guard v1→v2 delta，未重放 D/C patch。
+- 本轮已接受的目标：十三 actual owner 的共享 composer、九组六十具体值、同 owner 私有 Auth/Invite fixtures 与真实 AuthFeature HTTP 场景。运行证据限该 Auth 场景，不代表其余五十三字段或完整新图已运行。
+- guard 两个 P2 已独立闭合：反引号 protected ID 与 protected typealias LHS；Lead 的 49 Python methods、architecture 22 checks、parity-check 全通过。独立 reviewer 另通过 20 methods 与 265 个隔离 CLI fixtures。检查仍是有限词法规则，不是 AST/owner identity/DAG 证明。
+- 正常 Swift 6.4.1、共享 canonical scratch、`-j 4`：九项定向、原样 `make test`、双 Server/Daemon E2E、24 项 single-process smoke 全通过。allocator signal6 本轮未重现，未查明根因，未修改 Source/timeout/concurrency 或 skip 用例来消除它。
+- 本轮日志：`/tmp/raft-resume-guard-{python,architecture,parity}.log`，`/tmp/raft-resume-composer-{targeted,full-test,e2e,smoke}.log`。历史失败与补丁仍在下述 Git checkpoint 归档，不得当作本轮结果。
+- 下一片先做 **G2 installation credential issue/read**：将三个真实路由移到 IntegrationsAndAppAccessService 的实际策略，OAuth owner 提供 typed atomic mint/facts。保持 mint 同锁的资格/groups/revision/token append，GET 原两次锁边界及 route-specific cache/error 顺序。channels 成功 DTO 是 `{"installation_id":…,"channels":[]}`，旧审计“只 ID”描述不完整。不得复制 ledger facade。
+- 随后按 PLAN 继续 G3/G4、共享 scope resolver 与 G5–G7、领域 fixtures 和全部 transport 依赖，最后同步切换完整 Fallback/main 并删旧 Root/六扩展/兼容入口；daemon 余项见 CONCURRENCY。OAuthFeature 写操作串行，所有 Swift 构建串行使用共享 scratch。
 - 用户授权：持续推进、独立 subagents、验证后提交/ff/push；不需要重复询问这些授权。
+
+**下方第 2–8 节保留 08:10 保存时的历史证据和归档路径。其“当前未提交”“v2 未应用”“最新失败”“优先恢复步骤”均是历史状态，由本节明确取代，不得再 apply 已整合补丁或把已闭合发现当作现存阻塞。**
 
 ## 2. 已完成并 push
 

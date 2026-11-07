@@ -1,6 +1,6 @@
 # Architecture: target Swift layering
 
-**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. `EmailLoginDirectory` is a 28-line owner assembly root, but six extensions still contain factories and transitional helper methods and services/tests still reference that type. Explicit service composition and the final `ServiceContainer` migration remain; the empty old directory and smaller root do not establish completion. The remaining milestones live in `docs/PLAN.md`.
+**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. A 17-line immutable `ServiceContainer` holds nine groups of 60 concrete Service/Support values, built by one explicit-owner composer. The first AuthScene shares that graph with private domain fixtures and the actual AuthFeature. The legacy 28-line `EmailLoginDirectory` and six factory/helper extensions still serve the complete Fallback and unmigrated fixtures. Remaining Feature/raw-ledger and fixture cutovers, followed by deletion of the old root, are required for completion. The remaining milestones live in `docs/PLAN.md`.
 
 **Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
@@ -14,7 +14,8 @@ The upstream server separates route modules, services, database schema, middlewa
 | --- | --- |
 | `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
 | `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
-| `Sources/RaftHTTP/EmailLogin.swift` | 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
+| `Sources/RaftHTTP/Composition/` | Four Swift files: 17-line ServiceContainer, nine immutable groups, shared 13-owner composer and explicit publisher variants; largest 551 lines |
+| `Sources/RaftHTTP/EmailLogin.swift` | Legacy 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
 | `Sources/RaftHTTP/Services/` | 121 Swift files of domain services and remaining directory accessors; no Vapor imports |
 | `Sources/RaftHTTP/Stores/` | 55 Swift files; implementations split by responsibility; every file at most 1,000 lines, currently largest 974 |
 | `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
@@ -31,7 +32,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | --- | --- | --- |
 | Feature | Registration, request extraction, response status/headers/body projection | Calls services; does not implement domain state or hand-build JSON |
 | Service | Authorization and validation order, domain orchestration, typed results/errors | Vapor-free; state belongs in stores |
-| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; the two fixed ledger-port edges are documented below |
+| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; the three fixed nested-owner capabilities and remaining callback debt are documented below |
 | DTO | Codable request values, `JSONBodyConvertible` response payloads, explicit domain outcomes | No mutable shared state and no Vapor dependency |
 | Support | Small functions and policies with a named responsibility | Does not become another directory or a generic reply factory |
 | Shared | Contracts consumed by multiple targets | Does not depend on server, daemon, or Vapor targets |
@@ -47,7 +48,11 @@ RaftRealtime -----------------> RaftShared
 Tests ------------------------> TestSupport
 ```
 
-This is the target boundary. Directory factory captures, policy closures in assembly, broad initialization dependencies, and raw ledger calls from Features remain migration debt, even under `Services/`. The global directory lock and field proxies are gone. The script enforces measurable rules, not every architectural property in this table.
+This is the target boundary. Directory factory captures, broad Feature initialization dependencies and raw ledger calls remain migration debt. The global directory lock and field proxies are gone. The script enforces measurable rules, not every architectural property in this table.
+
+The new composition path allocates thirteen actual owners once or requires all thirteen as explicit parameters, with no partial defaults. It binds named domain capabilities and returns only the nine immutable groups; it has no legacy-root argument, Store bag, locator, flat compatibility alias, configuration snapshot or transport installation. Published Threads/Assignments values use the base general publisher; internal domain composers require an explicit publisher for silent/custom scenes. Existing consumers retain their old variants until individually migrated.
+
+AuthScene supplies those same owner references to the shared composer and its private Auth/Invite fixtures. A focused app mounts the actual seven-service AuthFeature. HTTP seed/readback, login/me, profile completion, verification/provider updates after registration, and the three public-directory invite branches verify this scene's ownership. This is runtime evidence for those seven capabilities, not all sixty fields or the complete Fallback. Full Fallback/main and old fixtures still use the legacy graph; their cutover must preserve one graph per scene and transport scope.
 
 ### 2.1 Features and request decoding
 
@@ -122,6 +127,11 @@ Run `make architecture` or `python3 scripts/check_architecture.py`. `--json` ret
 | Retired directory | No Swift files under `Sources/RaftHTTP/EmailLogin/`; legacy per-file limit 1,600 |
 | Production test markers | `ForTesting` per-file baseline is empty across all `Sources/`; root warning baseline is also zero |
 | Service imports | `import Vapor` is a hard zero in `Services/` |
+| Composition size | Each Composition Swift file at most 1,000 lines; ServiceContainer at most 28 |
+| Composition values | Canonical checked Container has exactly nine public let groups; Groups contain only approved concrete Service/Support values |
+| Composition boundaries | Code-token hard zero for Vapor, HTTPReply, JSONSerialization, Any and AnyObject; protected declarations/extensions/direct aliases cannot move outside the canonical files |
+
+Composition declaration checks use a restricted lexical grammar with comment/string handling, not a Swift AST or type resolver. They reject extra mutable/computed fields, initializers, owners, closures and direct compatibility aliases. External protected-name checks recognize bare, backticked and qualified ASCII identifiers, and reject a protected alias declaration name even when the canonical Composition files have been removed. They do not prove shared owner identity, free-function purity, all alias chains, macro expansion or construction DAGs; regex literals are outside the tokenizer's supported subset. Swift compilation, binding review and published-path scene tests remain required.
 
 ### 3.1 Per-file ratchets
 

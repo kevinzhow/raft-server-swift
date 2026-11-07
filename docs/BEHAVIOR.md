@@ -2247,3 +2247,11 @@ RFC 074 personal assistant：
 - AuthFeature 单一构造器只持 Core、Identities、OAuthFlows、Verification、Profile、JoinLinksAndInvites、ManagedMCPLifecycle 和原可选 PublicServerDirectory，删除 FallbackServices 构造入口。原 configure 传同一 Root 的实际七服务，不混入第二套 owners。
 - 38 条注册的顺序、路径、方法和 handler 的 decode/校验/auth/error/header 时序保持，除 receiver 外操作正文不变。提前构造只保实际 owner 与延迟 provider/clock/token 函数，不冻结账户状态或配置；非 verified 会话的原可接受面保持。
 - accept-invite 仍优先 PublicDirectory，只有 DomainError 404 回原 join-link Service；成功与非404拒绝直接返回。真实 HTTP 同时覆盖三支；Root fallback 的完整成功体仍仅 ok/serverId，不添加 serverName。complete-profile 仍由 ManagedMCPLifecycle 处理，路由表与原 CAS 完成流程继续验收。
+
+### 共享 ServiceContainer 与独立 AuthScene
+
+- 新 ServiceContainer 只有九组 60 个不可变具体 Service/Support 值，不持 public Store、旧 Root、locator、flat alias 或 State/config snapshot。无参 composer 每 principal owner 分配一次，另一入口必须明确传齐十三 owner；构造之后才配置 IO/observers。
+- AuthScene 使用同十三实际 owner 调生产 composer，私有 Auth/Invite fixture 只持所属 owner。账户 seed 的 normalize、hash、password-established、name/profile 时间、analytics UUID 和同锁写入保持旧语义；seed 不经 HTTP，登录后的 session/password-established 与邀请 membership/invite 行从同 owner 读回。
+- 实际 AuthFeature 的 login/me、timezone/profile、注册与 complete-profile、verify/providers 在注册后继续读当前状态；optional PublicDirectory 的 success/真实 missing-server 404/wrong-email400 三支比较完整 HTTP JSON，后者确认不消耗本地邀请或创建 membership。该运行验收限七个 Auth 能力，未推广为其余字段或完整 Fallback 的已运行证明。
+- 新 graph 的 Threads/Assignments 是 published 变体；internal 领域 composer 要求显式 publisher，无 silent 默认值。旧 silent/custom 消费者和真实 Cards/fixture 特殊幂等 port 未被混换。完整旧 Fallback/main 与旧 fixtures 仍保各自同一 graph，未切换或混接 owners。
+- Client-events 的七日 age cutoff 保持；既有测试的“新鲜”事件改取当前毫秒 ISO8601 时间，显式 2020 过期样本和 accepted/去重/validation 断言保持，避免固定日期随日历越过业务边界。

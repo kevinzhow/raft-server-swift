@@ -6,8 +6,15 @@ import Testing
 import Vapor
 import VaporTesting
 
-private func clientEventJSON(_ event: String, properties: String, session: String, timestamp: String = "2026-10-31T00:00:00.000Z") -> String {
-    "{\"uuid\":\"\(UUID().uuidString.lowercased())\",\"event\":\"\(event)\",\"timestamp\":\"\(timestamp)\",\"client_session_id\":\"\(session)\",\"properties\":\(properties)}"
+private func freshClientEventTimestamp() -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: Date())
+}
+
+private func clientEventJSON(_ event: String, properties: String, session: String, timestamp: String? = nil) -> String {
+    let timestamp = timestamp ?? freshClientEventTimestamp()
+    return "{\"uuid\":\"\(UUID().uuidString.lowercased())\",\"event\":\"\(event)\",\"timestamp\":\"\(timestamp)\",\"client_session_id\":\"\(session)\",\"properties\":\(properties)}"
 }
 
 @Test func clientEventsRespectSharingAndDropUnregisteredRows() async throws {
@@ -94,7 +101,7 @@ private func clientEventJSON(_ event: String, properties: String, session: Strin
             #expect(malformed.status == .badRequest)
 
             let eventUUID = UUID().uuidString.lowercased()
-            let duplicate = "{\"uuid\":\"\(eventUUID)\",\"event\":\"activity_open\",\"timestamp\":\"2026-10-31T00:00:00.000Z\",\"client_session_id\":\"\(UUID().uuidString.lowercased())\",\"properties\":{\"from\":\"rail\"}}"
+            let duplicate = "{\"uuid\":\"\(eventUUID)\",\"event\":\"activity_open\",\"timestamp\":\"\(freshClientEventTimestamp())\",\"client_session_id\":\"\(UUID().uuidString.lowercased())\",\"properties\":{\"from\":\"rail\"}}"
             let first = try await batch("{\"source\":\"web\",\"events\":[\(duplicate),\(duplicate)]}")
             #expect(first.body.string == "{\"accepted\":1}")
             let again = try await batch("{\"source\":\"web\",\"events\":[\(duplicate)]}")

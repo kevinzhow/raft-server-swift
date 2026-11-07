@@ -81,6 +81,17 @@ struct AgentMessageLookupDependencies: Sendable {
     var messageVisible: @Sendable (_ channelId: String, _ serverId: String, _ agentId: String) -> Bool
 }
 
+extension AgentMessageLookupDependencies {
+    init(lookup: AgentCredentialLookup, search: SearchMentionsService) {
+        self.init(
+            agentCredential: lookup.agentCredentialAgent,
+            messageVisible: { channelId, serverId, agentId in
+                search.messageVisible(messageChannelId: channelId, serverId: serverId, viewer: .agent(agentId))
+            }
+        )
+    }
+}
+
 // MARK: - Service
 
 /// The two read-only message lookups an agent runs on its own sends and on a

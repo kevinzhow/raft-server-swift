@@ -134,6 +134,13 @@ final class NotificationsStore: Sendable {
         set { storage.withLock { $0.onAgentReadUpdated = newValue } }
     }
 
+    /// Uses the current observer once, after releasing its owner's lock.
+    /// The caller retains its existing read-update gates and audience decision.
+    func dispatchAgentReadUpdated(serverId: String, channelId: String, agentId: String, seq: Int) {
+        let observer = onAgentReadUpdated
+        observer?(serverId, channelId, agentId, seq)
+    }
+
     var nativeNotificationLiveWriteHook: (@Sendable (_ index: Int, _ eventCount: Int) async -> Void)? {
         get { storage.withLock { $0.nativeNotificationLiveWriteHook } }
         set { storage.withLock { $0.nativeNotificationLiveWriteHook = newValue } }
