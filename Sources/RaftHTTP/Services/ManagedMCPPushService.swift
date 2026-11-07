@@ -117,6 +117,11 @@ public struct ManagedMCPPushService: Sendable {
         }
     }
 
+    /// Resolves the retained nonce's user and family without consuming it.
+    public func familyRevokeTarget(capability: String) -> (userId: String, familyId: String)? {
+        profiles.familyRevokeTarget(capability: capability)
+    }
+
     // MARK: - GET /api/push/delivery-status
 
     public func pushDeliveryStatus(

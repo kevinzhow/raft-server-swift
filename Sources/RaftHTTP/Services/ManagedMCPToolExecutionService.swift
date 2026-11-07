@@ -326,6 +326,19 @@ public struct ManagedMCPToolExecutionService: Sendable {
         channels.readReceiptsEnabled(serverId: serverId)
     }
 
+    /// The startup transport's original, stricter read-receipt filter.
+    public func shouldEmitStartupScopeRead(serverId: String, channelId: String, agentId: String) -> Bool {
+        guard channels.readReceiptsEnabled(serverId: serverId),
+              let channel = oauth.channelInfo(id: channelId),
+              channel.serverId == serverId,
+              channel.name != "all",
+              let type = oauth.channelType(id: channelId),
+              ["channel", "private", "dm"].contains(type),
+              oauth.channelAgentIds(channelId: channelId).contains(agentId)
+        else { return false }
+        return true
+    }
+
     /// Publishes `scope_read:updated` for an agent's read of a channel it is a
     /// member of, when the server has read receipts enabled.
     public func emitAgentScopeRead(serverId: String, channelId: String, agentId: String, maxReadSeq: Int) {

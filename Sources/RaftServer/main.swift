@@ -149,13 +149,9 @@ enum Entrypoint {
                 realtimeServer.hub.emit(room: room, event: event, payloadJSON: payload)
             }
             emailAccounts.managedMCPToolExecution.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
-                guard emailAccounts.managedMCPToolExecution.readReceiptsEnabled(serverId: serverId),
-                      let channel = emailAccounts.oauth.channelInfo(id: channelId),
-                      channel.serverId == serverId,
-                      channel.name != "all",
-                      let type = emailAccounts.oauth.channelType(id: channelId),
-                      ["channel", "private", "dm"].contains(type),
-                      emailAccounts.oauth.channelAgentIds(channelId: channelId).contains(agentId)
+                guard emailAccounts.managedMCPToolExecution.shouldEmitStartupScopeRead(
+                    serverId: serverId, channelId: channelId, agentId: agentId
+                )
                 else { return }
                 realtimeServer.hub.emitScopeReadUpdated(
                     serverId: serverId,

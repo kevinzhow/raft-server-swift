@@ -514,7 +514,7 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 private func publishFamilyRevoke(capability: String?, services: FallbackServices) {
     guard let hub = services.realtime,
           let capability,
-          let target = services.emailAccounts.familyRevokeTarget(capability: capability)
+          let target = services.emailAccounts.managedMCPPush.familyRevokeTarget(capability: capability)
     else { return }
     hub.revokeFamily(userId: target.userId, familyId: target.familyId)
 }
