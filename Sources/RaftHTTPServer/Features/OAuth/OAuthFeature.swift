@@ -28,6 +28,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         let oidcOAuth = oidc.grouped("api", "oauth")
         let oauthFlows = services.emailAccounts.oauthFlows
         let issuerMetadata = services.emailAccounts.oauthIssuerMetadata
+        let authorization = services.emailAccounts.oauthAuthorization
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
@@ -40,20 +41,20 @@ public struct OAuthFeature: RouteCollection, Sendable {
             }
         }
         oauth.post("authorize", "human") { request async throws -> Response in
-            let session = services.emailAccounts.authIdentities.oauthSession(authorization: request.headers[.authorization])
+            let session = authorization.beginSession(authorization: request.headers[.authorization])
             let body = try await request.bodyText()
             return try await respond {
-                try services.emailAccounts.oauth.issueHumanAuthorization(session: session, body: body)
+                try authorization.issueHumanAuthorization(session: session, body: body)
             }
         }
         InstallationCredentialRoutes(apps: services.emailAccounts.integrationsAndAppAccess).registerMint(routes: oauth)
         oauth.post("token") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
-                try services.emailAccounts.oauth.exchangeToken(
+                try authorization.exchangeToken(
                     authorization: request.headers[.authorization],
                     body: body,
-                    issuer: OAuthDiscovery.issuerOrigin(oauthFlows.deploymentConfiguration.serverURL) ?? ""
+                    context: authorization.tokenContext()
                 )
             }
         }
@@ -109,9 +110,9 @@ public struct OAuthFeature: RouteCollection, Sendable {
             }
         }
         oauth.get("clients", "lookup") { request async throws -> Response in
-            let session = services.emailAccounts.authIdentities.oauthSession(authorization: request.headers[.authorization])
+            let session = authorization.beginSession(authorization: request.headers[.authorization])
             return try await respond {
-                try services.emailAccounts.oauth.clientLookup(
+                try authorization.clientLookup(
                     session: session,
                     clientId: desktopQuery(request.url.query, "client_id") ?? desktopQuery(request.url.query, "clientId") ?? "",
                     serverId: desktopQuery(request.url.query, "server_id") ?? desktopQuery(request.url.query, "serverId") ?? "",
@@ -131,9 +132,8 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         oauth.get("authorize") { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try services.emailAccounts.oauth.browserAuthorize(
-                    query: request.url.query ?? "",
-                    appURL: oauthFlows.deploymentConfiguration.appURL
+                try authorization.browserAuthorize(
+                    query: request.url.query ?? ""
                 )
             }
         }
@@ -222,10 +222,9 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
                 return try await respond(status: { $0.status }, headers: { $0.headers }) {
-                    try services.emailAccounts.oauth.browserAuthorize(
+                    try authorization.browserAuthorize(
                         query: request.url.query ?? "",
-                        appURL: oauthFlows.deploymentConfiguration.appURL,
-                        serverScope: scope.segment
+                        scope: scope
                     )
                 }
             }
@@ -236,14 +235,13 @@ public struct OAuthFeature: RouteCollection, Sendable {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
-                let origin = OAuthDiscovery.issuerOrigin(oauthFlows.deploymentConfiguration.serverURL) ?? ""
+                let context = authorization.tokenContext(scope: scope)
                 let body = try await request.bodyText()
                 return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
-                    try services.emailAccounts.oauth.exchangeToken(
+                    try authorization.exchangeToken(
                         authorization: request.headers[.authorization],
                         body: body,
-                        issuer: "\(origin)/oidc/\(segment)",
-                        scopeServerId: scope.serverId
+                        context: context
                     )
                 }
             }

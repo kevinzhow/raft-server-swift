@@ -1188,7 +1188,7 @@ CONTAINER_GROUPS = {
 # Names reviewed against the concrete public API. No suffix-only 'Service'
 # heuristic: adding a new concrete type requires an explicit boundary review.
 COMPOSITION_SERVICE_TYPES = frozenset("""
-AuthCoreService AuthVerificationService AuthProfileService AuthIdentitiesService OAuthFlowsService OAuthIssuerMetadataService DirectoryRuntimePolicy
+AuthCoreService AuthVerificationService AuthProfileService AuthIdentitiesService OAuthFlowsService OAuthIssuerMetadataService OAuthAuthorizationService DirectoryRuntimePolicy
 RealtimeRelayService InboxAndWakeService ReactionsRealtimeService HumanMessageCreateService MessageSendService
 SocketMembershipService ProfileAndChannelFilesService SearchMentionsService AttachmentCommentsService
 ServerMembersAndSidebarService ServerProfileAndOrderService ChannelMembershipService JoinLinksAndInvitesService

@@ -65,6 +65,7 @@ func composeServices(
     let identities = AuthIdentitiesService(store: profiles, oauth: oauth)
     let oauthFlows = OAuthFlowsService(store: OAuthFlowsStore(profiles: profiles), flags: agents, oauth: oauth)
     let issuerMetadata = OAuthIssuerMetadataService(profiles: profiles, oauth: oauth)
+    let authorization = OAuthAuthorizationService(profiles: profiles, oauth: oauth)
     let runtimePolicy = DirectoryRuntimePolicy(profiles: profiles)
     let realtime = RealtimeRelayService(messages: messages)
     let connections = AgentConnectionRelayService(agents: agents)
@@ -523,7 +524,7 @@ func composeServices(
     return ServiceContainer(
         identity: IdentityServices(
             core: core, verification: verification, profile: profile, identities: identities,
-            oauthFlows: oauthFlows, issuerMetadata: issuerMetadata, runtimePolicy: runtimePolicy
+            oauthFlows: oauthFlows, issuerMetadata: issuerMetadata, authorization: authorization, runtimePolicy: runtimePolicy
         ),
         messaging: MessagingServices(
             realtime: realtime, inbox: inbox, reactions: reactions, create: humanCreate, send: send,

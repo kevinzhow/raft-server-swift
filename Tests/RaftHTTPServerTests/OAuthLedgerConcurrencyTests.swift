@@ -50,7 +50,7 @@ func oauthStateCodeConsumptionHasOneWinnerUnderContention(oidc: Bool) async thro
     let app = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "App",
         clientId: "state-code", returnUrl: "https://rp.test/callback")
     let oidcFields = oidc ? ",\"oidc\":true,\"nonce\":\"state-nonce\",\"codeChallenge\":\"4lHxhn3RWN1r50LRPOPTsUXp-dh5hd_mKVHMGvXAufY\",\"codeChallengeMethod\":\"S256\"" : ""
-    let code = try accounts.oauth.issueHumanAuthorization(
+    let code = try accounts.oauthAuthorization.issueHumanAuthorization(
         session: .user(OAuthHuman(id: ownerId, email: "owner@raft.test", name: "Owner")),
         body: "{\"clientId\":\"state-code\",\"serverId\":\"\(serverId)\",\"scopes\":[\"openid\",\"profile\"]\(oidcFields)}"
     ).code

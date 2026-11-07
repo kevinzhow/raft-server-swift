@@ -91,3 +91,69 @@ private func authorizeQuery(
         }
     }
 }
+
+@Test func oauthProtocolBrowserAndConsentKeepDifferentQueryDialects() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111646"
+    let serverId = "33333333-3333-4333-8333-333333333672"
+    accounts.addAccount(id: ownerId, email: "query-646@test.invalid", password: "password123")
+    accounts.configureOAuthForTesting { $0.appURL = "https://query-app.raft.test/base" }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "query-646", name: "Query Protocol", ownerId: ownerId)
+    let registered = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "Query App", clientId: "query-client-646")
+    let session = accounts.mintAccessTokenForTesting(userId: ownerId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let query = "response_type=bad&response_type=code&client_id=first&client_id=second&%63lient_id=decoded+client&redirect_uri=https%3A%2F%2Frp.test%2Fcb&scope=openid+profile&state=old&state=C%2BD"
+            let browser = try await client.get(URI(string: "/api/oauth/authorize?\(query)"))
+            #expect(browser.status == .found)
+            let location = try #require(browser.headers[HTTPField.Name("Location")!])
+            let components = try #require(URLComponents(string: location))
+            #expect(components.host == "query-app.raft.test")
+            #expect(components.path == "/base/login-with-raft/setup")
+            let params = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+            #expect(params["client_id"] == "decoded client")
+            #expect(params["return_to"] == "https://rp.test/cb")
+            #expect(params["scope"] == "openid profile")
+            #expect(params["state"] == "C+D")
+            #expect(params["server"] == nil)
+            var lookupHeaders = HTTPFields()
+            lookupHeaders[.authorization] = "Bearer \(session)"
+            let headers = lookupHeaders
+            func lookup(_ query: String) async throws -> ClientResponse {
+                try await client.get(URI(string: "/api/oauth/clients/lookup?\(query)"), headers: headers)
+            }
+            func object(_ response: ClientResponse) throws -> [String: Any] {
+                try #require(JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])
+            }
+            let first = try await lookup("%63lient_id=ignored&client_id=\(registered.clientId)&client_id=wrong&clientId=wrong&server_id=\(serverId)&server_id=wrong&scope=openid+profile&scope=openid%20profile")
+            #expect(first.status == .ok)
+            let firstBody = try object(first)
+            #expect(firstBody["clientId"] as? String == registered.clientId)
+            let validation = try #require(firstBody["scopeValidation"] as? [String: Any])
+            #expect(validation["allowed"] as? Bool == false)
+            #expect(validation["reason"] as? String == "unsupported")
+            #expect(validation["disallowedScopes"] as? [String] == ["openid+profile"])
+            let spaced = try await lookup("client_id=\(registered.clientId)&server_id=\(serverId)&scope=openid%20profile")
+            #expect(spaced.status == .ok)
+            #expect((try object(spaced)["scopeValidation"] as? [String: Any])?["allowed"] as? Bool == true)
+            for bad in [
+                "%63lient_id=\(registered.clientId)&server_id=\(serverId)",
+                "client_id=&clientId=\(registered.clientId)&server_id=\(serverId)",
+                "client_id=\(registered.clientId)&server_id=&serverId=\(serverId)",
+            ] {
+                let refused = try await lookup(bad)
+                #expect(refused.status == .notFound)
+                #expect(refused.body.string == "{\"error\":\"OAuth client not found for server\"}")
+                #expect(refused.headers[HTTPField.Name("Cache-Control")!] == nil)
+            }
+            // Consent's member/client lookup does not add the live-server or
+            // enabled gates used by other OAuth use cases.
+            accounts.oauth.setClientEnabled(clientRecordId: registered.id, enabled: false)
+            accounts.oauth.deleteServer(id: serverId)
+            let retained = try await lookup("client_id=\(registered.clientId)&server_id=\(serverId)")
+            #expect(retained.status == .ok)
+            #expect(try object(retained)["availability"] as? String == "ready")
+        }
+    }
+}

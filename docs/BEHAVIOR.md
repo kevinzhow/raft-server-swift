@@ -2365,3 +2365,12 @@ RFC 074 personal assistant：
 - private Sendable value accumulator仅存在tracker Mutex map；begin旧finish+replace、observe整filtered batch、send状态改写及finish remove+投影均各完整borrow。v2借用内removeValue→纯fold→写回避免map保留旧嵌套值，不把引用/值挪借用外；filter保持原锁外、分类原锁内。
 - action首次顺序、explicit call/FIFO匿名匹配、okfalse优先、unknown observe建turn而unknown note不建、所有非sent算held、nil sent保last、problemLimit20-v-total、trigger空省略和maxend不改。原完整锁本已保护这些操作，本片不虚构修旧race。
 - 原5与最终v2同5公开结果均绿；新例256同步update后256同步finish竞争，唯一实际summary各action257/toolCalls771/messages257/lastr1、problem总1028但存20、end10成立。无begin或observe-finish混跑/TSan/daemon wiring/benchmark声称；unchecked15→14。
+
+### G5 OAuth 授权协议的 typed 边界
+
+- OAuthAuthorizationService只持实际profiles/oauth。specialized beginSession在body前非throw复制human五字段，仅exact Bearer/drop7/known account，不trim、不要求verified、不看revokedfamily；缺失/无效拒绝仍body收集之后。Raw空尾/尾SP/双SP的Domain Service用例区分HTTPFields正常String setter的首尾OWS规范化：公开Bearer尾SP为missing、有效token尾SP仍有效，中间双SP为invalid，不能误称Service trim。
+- browser decoded-name/last-wins/plus-space、consent raw-name/first-wins/value-only decode/plus保留及snake empty优先、token JSON/form fallback/Basic/alias/verifier-presence三种规则保持。全局token先body再live配置，scoped先G7scope→context→body；origin坏仍空/相对issuer，不加discovery503。
+- 四Store操作只接typed attempts/迟到invalid markers，回flat receipts，无whole Account/Client/AccessRequest/JSON/HTTPDTO穿锁。Human保持client→OIDC/nonceUTF8/PKCE→scope→return→server/member→RNG/code→Dateappend；nil/null默认scopes不额外allowlist验证。Consent原membership/client/install/marketplace检查不增live/enabled gate。
+- 两token路径按grant_type分流；authorization_code继续接受已有agent-backed UUID，不按agentId加强资格。Human保原secret/type/PKCE/scope/消费/10min/server/member规则，agent保原managed/global-enabled/agent/resource规则且不加human年龄/member/liveServer/install门槛，RNG/Date/append/consume时点不改。
+- Openid key读取/签名仅兑换已提交之后：空key首次500精确Failed to issue access token且无cache，再重放legacy409/OIDC400证明已消费；不预查key/回滚/由500推断没appendtoken。profile-only human和agent无id_token分支仍成功，success才no-store。
+- 新第62字段为identity.authorization，guard仅concrete type/positive fixture增加；13actual locals mandatory composer驱动实际profile早快照、live URL/context、role/key变化，JWT claims/P256对同图metadata验签及重放，旧root桥未冒充新图。旧Owner四HTTP入口与旧AuthIdentities.oauthSession API删除，仅两个既有seed receiver机械迁移，冻结v2 HTTP正文不变；原Source六函数与新98定向均绿，不称全部62field/fullFallback runtime证明。

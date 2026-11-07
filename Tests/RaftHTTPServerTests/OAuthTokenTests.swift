@@ -289,3 +289,158 @@ private func jsonString(_ value: String) -> String {
     let wrapped = data.flatMap { String(decoding: $0, as: UTF8.self) } ?? "[\"\"]"
     return String(wrapped.dropFirst().dropLast())
 }
+
+private func protocolTokenObject(_ response: ClientResponse) throws -> [String: Any] {
+    try #require(JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any])
+}
+
+private struct ProtocolTokenFixture: Sendable {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111646"
+    let serverId = "33333333-3333-4333-8333-333333333672"
+    let app: CreatedOAuthClient
+
+    init(global: Bool = false) throws {
+        accounts.addAccount(id: ownerId, email: "token-protocol-646@test.invalid", password: "password123")
+        accounts.markEmailVerified(userId: ownerId)
+        accounts.oauth.addOwnedServer(id: serverId, slug: "token-protocol-646", name: "Token Protocol", ownerId: ownerId)
+        app = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+            name: "Token Protocol App", clientId: "token-protocol-client-646", appType: global ? "third_party_global" : "server_local")
+        if global {
+            _ = accounts.oauth.installClient(serverId: serverId, clientRecordId: app.id, installedByUserId: ownerId, groups: [])
+        }
+    }
+
+    func login(_ client: any Client) async throws -> String {
+        let response = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"token-protocol-646@test.invalid\",\"password\":\"password123\"}")
+        #expect(response.status == .ok)
+        return try #require(try protocolTokenObject(response)["accessToken"] as? String)
+    }
+
+    func code(_ client: any Client, session: String, scopes: String = "\"openid\",\"profile\"") async throws -> String {
+        var headers = HTTPFields()
+        headers[.contentType] = "application/json"
+        headers[.authorization] = "Bearer \(session)"
+        let response = try await client.send(.post, headers: headers, to: "/api/oauth/authorize/human") {
+            $0.body = .init(string: "{\"clientId\":\"\(app.clientId)\",\"serverId\":\"\(serverId)\",\"scopes\":[\(scopes)]}")
+        }
+        #expect(response.status == .ok)
+        return try #require(try protocolTokenObject(response)["code"] as? String)
+    }
+
+    func body(code: String) -> String {
+        "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\"}"
+    }
+}
+
+@Test func oauthProtocolTokenParsersKeepFallbackPrecedenceAndLeaveRefusalsUnconsumed() async throws {
+    let f = try ProtocolTokenFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let session = try await f.login(client)
+            let code = try await f.code(client, session: session)
+            let credentials = "\"clientId\":\"\(f.app.clientId)\",\"clientSecret\":\"\(f.app.clientSecret)\""
+            let emptySecret = "Basic " + Data("\(f.app.clientId):".utf8).base64EncodedString()
+            let cases: [(String, String?, HTTPResponse.Status, String)] = [
+                (f.body(code: code), emptySecret, .unauthorized, "{\"error\":\"Invalid client credentials\"}"),
+                ("{\"client_id\":\"\",\(credentials),\"grantType\":\"authorization_code\",\"code\":\"\(code)\"}", nil, .unauthorized, "{\"error\":\"Client credentials are required\"}"),
+                ("{\(credentials),\"grantType\":\"\",\"grant_type\":\"authorization_code\",\"code\":\"\(code)\"}", nil, .badRequest, "{\"error\":\"Unsupported grant type\"}"),
+                ("{\"clientId\":\"missing-client\",\"clientSecret\":\"wrong\",\"grantType\":\"unsupported\"}", nil, .badRequest, "{\"error\":\"Unsupported grant type\"}"),
+                ("{\"grantType\":\"unsupported\"}", nil, .unauthorized, "{\"error\":\"Client credentials are required\"}"),
+                ("{\"clientId\":\"missing-client\",\"clientSecret\":\"wrong\",\"grantType\":\"authorization_code\",\"code\":\"malformed\"}", nil, .badRequest,
+                 "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}"),
+            ]
+            for (body, authorization, status, expected) in cases {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                headers[.authorization] = authorization
+                let response = try await client.send(.post, headers: headers, to: "/api/oauth/token") { $0.body = .init(string: body) }
+                #expect(response.status == status)
+                #expect(response.body.string == expected)
+                #expect(response.headers[HTTPField.Name("Cache-Control")!] == nil)
+            }
+            try expectAccessToken(try await postJSON(client, path: "/api/oauth/token", body: f.body(code: code)), scope: "openid profile")
+            for malformedJSON in [false, true] {
+                let fresh = try await f.code(client, session: session)
+                var headers = HTTPFields()
+                headers[.contentType] = malformedJSON ? "application/json" : "application/x-www-form-urlencoded"
+                let body = malformedJSON
+                    ? "{&client_id=\(f.app.clientId)&client_secret=\(f.app.clientSecret)&grant_type=authorization_code&code=\(fresh)"
+                    : "client_id=wrong&client%5Fid=\(f.app.clientId)&client_secret=wrong&client_secret=\(f.app.clientSecret)&grant_type=wrong&grant_type=authorization_code&code=+\(fresh.uppercased())+"
+                let response = try await client.send(.post, headers: headers, to: "/api/oauth/token") { $0.body = .init(string: body) }
+                try expectAccessToken(response, scope: "openid profile")
+                #expect(response.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            }
+            let lowerBasic = "basic " + Data("\(f.app.clientId):wrong".utf8).base64EncodedString()
+            for authorization in ["Basic !!!", lowerBasic] {
+                let fresh = try await f.code(client, session: session)
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                headers[.authorization] = authorization
+                let response = try await client.send(.post, headers: headers, to: "/api/oauth/token") { $0.body = .init(string: f.body(code: fresh)) }
+                try expectAccessToken(response, scope: "openid profile")
+            }
+        }
+    }
+}
+
+@Test(arguments: ["disabled-global", "aged", "member-removed", "server-deleted", "uninstalled"])
+func oauthProtocolGrantsKeepTheirDifferentLiveEligibility(change: String) async throws {
+    let f = try ProtocolTokenFixture(global: true)
+    let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "GrantBot", creatorUserId: f.ownerId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let session = try await f.login(client)
+            let humanCode = try await f.code(client, session: session, scopes: "\"profile\"")
+            let requested = try await postJSON(client, path: "/api/oauth/requests/agent",
+                body: "{\"clientId\":\"\(f.app.clientId)\",\"clientSecret\":\"\(f.app.clientSecret)\",\"serverSlug\":\"token-protocol-646\",\"agentId\":\"\(agentId)\",\"scopes\":[\"profile\"]}")
+            #expect(requested.status == .ok)
+            #expect(try protocolTokenObject(requested)["status"] as? String == "approved")
+            let requestId = try #require(try protocolTokenObject(requested)["requestId"] as? String)
+            switch change {
+            case "disabled-global": f.accounts.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: false)
+            case "aged":
+                f.accounts.oauth.expireAuthorizationCode(id: humanCode)
+                f.accounts.oauth.expireAuthorizationCode(id: requestId)
+            case "member-removed": f.accounts.oauth.removeMember(serverId: f.serverId, userId: f.ownerId)
+            case "server-deleted": f.accounts.oauth.deleteServer(id: f.serverId)
+            case "uninstalled": _ = f.accounts.oauth.uninstallClient(serverId: f.serverId, clientRecordId: f.app.id)
+            default: Issue.record("unknown eligibility scenario"); return
+            }
+            func expectProfileToken(_ response: ClientResponse) throws {
+                #expect(response.status == .ok)
+                let body = try protocolTokenObject(response)
+                #expect((body["access_token"] as? String)?.hasPrefix("slock_at_") == true)
+                #expect(body["scope"] as? String == "profile")
+                #expect(body["expires_in"] as? Int == 3600)
+                #expect(body["id_token"] == nil)
+                #expect(response.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            }
+            let human = try await postJSON(client, path: "/api/oauth/token", body: f.body(code: humanCode))
+            if change == "aged" {
+                #expect(human.status == .badRequest)
+                #expect(human.body.string == "{\"error\":\"authorization_code_expired\",\"error_description\":\"This Login with Raft authorization code has expired. Obtain a fresh human authorization before retrying.\",\"next_action\":\"obtain_fresh_authorization\"}")
+                #expect(human.headers[HTTPField.Name("Cache-Control")!] == nil)
+            } else if change == "member-removed" || change == "server-deleted" {
+                #expect(human.status == .badRequest)
+                #expect(human.body.string == "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization identity is no longer available\"}")
+                #expect(human.headers[HTTPField.Name("Cache-Control")!] == nil)
+            } else {
+                try expectProfileToken(human)
+            }
+            let agentBody = "{\"clientId\":\"\(f.app.clientId)\",\"clientSecret\":\"\(f.app.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"\(requestId)\"}"
+            let agent = try await postJSON(client, path: "/api/oauth/token", body: agentBody)
+            if change == "disabled-global" {
+                #expect(agent.status == .unauthorized)
+                #expect(agent.body.string == "{\"error\":\"Invalid client credentials\"}")
+                #expect(agent.headers[HTTPField.Name("Cache-Control")!] == nil)
+                f.accounts.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: true)
+                try expectProfileToken(try await postJSON(client, path: "/api/oauth/token", body: agentBody))
+            } else {
+                try expectProfileToken(agent)
+            }
+        }
+    }
+}

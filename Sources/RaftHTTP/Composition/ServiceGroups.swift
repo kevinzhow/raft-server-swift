@@ -7,6 +7,7 @@ public struct IdentityServices: Sendable {
     public let identities: AuthIdentitiesService
     public let oauthFlows: OAuthFlowsService
     public let issuerMetadata: OAuthIssuerMetadataService
+    public let authorization: OAuthAuthorizationService
     public let runtimePolicy: DirectoryRuntimePolicy
 }
 

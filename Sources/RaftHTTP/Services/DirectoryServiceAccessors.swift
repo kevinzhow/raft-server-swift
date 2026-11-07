@@ -26,6 +26,11 @@ extension EmailLoginDirectory {
         OAuthIssuerMetadataService(profiles: authProfileStore, oauth: oauth)
     }
 
+    /// OAuth protocol capability over the same two actual owners as composition.
+    public var oauthAuthorization: OAuthAuthorizationService {
+        OAuthAuthorizationService(profiles: authProfileStore, oauth: oauth)
+    }
+
     /// One flag's rollout decision for the unmigrated callers that still ask
     /// per key (`FeedbackService`, the integrations gate). The decision lives in
     /// `AgentsRuntimeStore`.

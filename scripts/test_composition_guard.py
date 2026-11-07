@@ -36,7 +36,7 @@ extension ServiceContainer {
 """
 # Each domain has a concrete published value. Field placement is a review
 # decision; this guard checks declaration shape and approved concrete types.
-GROUPS = """public struct IdentityServices: Sendable { public let core: AuthCoreService; public let issuerMetadata: OAuthIssuerMetadataService }
+GROUPS = """public struct IdentityServices: Sendable { public let core: AuthCoreService; public let issuerMetadata: OAuthIssuerMetadataService; public let authorization: OAuthAuthorizationService }
 public struct MessagingServices: Sendable { public let realtime: RealtimeRelayService }
 public struct ChannelServices: Sendable { public let threads: ThreadsService }
 public struct AgentServices: Sendable { public let history: AgentHistoryService }

@@ -446,13 +446,96 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
 
 @Test func oauthSessionIgnoresRevokedFamiliesLikeTheRetiredLookup() {
     let (directory, userId, bearer) = makeDirectory("14")
-    let service = directory.authIdentities
-    guard case .missing = service.oauthSession(authorization: nil) else { Issue.record("expected missing"); return }
-    guard case .invalid = service.oauthSession(authorization: "Bearer nope") else { Issue.record("expected invalid"); return }
-    guard case .user(let human) = service.oauthSession(authorization: "Bearer \(bearer)") else {
+    let service = directory.oauthAuthorization
+    guard case .missing = service.beginSession(authorization: nil) else { Issue.record("expected missing"); return }
+    guard case .invalid = service.beginSession(authorization: "Bearer nope") else { Issue.record("expected invalid"); return }
+    guard case .invalid = service.beginSession(authorization: "Bearer ") else { Issue.record("raw empty tail must be invalid"); return }
+    guard case .invalid = service.beginSession(authorization: "Bearer \(bearer) ") else { Issue.record("raw trailing SP must not trim"); return }
+    guard case .invalid = service.beginSession(authorization: "Bearer  \(bearer)") else { Issue.record("raw leading token SP must not trim"); return }
+    directory.revokeSessionFamilies(userId: userId)
+    guard case .user(let human) = service.beginSession(authorization: "Bearer \(bearer)") else {
         Issue.record("expected user")
         return
     }
     #expect(human.id == userId)
     #expect(human.emailVerified)
+}
+
+@Test func oauthAuthorizationFromMandatoryComposerSharesProfileSnapshotAndOAuthTransactions() throws {
+    let profiles = AuthProfileStore()
+    let notifications = NotificationsStore()
+    let productEvents = ProductEventStore()
+    let inboxFacts = InboxFactStore()
+    let threadFollows = ThreadFollowStore()
+    let messages = MessagesAndThreadsStore()
+    let agents = AgentsRuntimeStore()
+    let tasks = TasksAndRemindersStore()
+    let machines = MachinesAndComputersStore()
+    let channels = ServersAndChannelsStore()
+    let cards = ManagedMCPAndCardsStore()
+    let feedback = FeedbackStore()
+    let oauth = OAuthLedger()
+    let services = composeServices(
+        profiles: profiles, notifications: notifications, productEvents: productEvents,
+        inboxFacts: inboxFacts, threadFollows: threadFollows, messages: messages,
+        agents: agents, tasks: tasks, machines: machines, channels: channels,
+        cards: cards, feedback: feedback, oauth: oauth
+    )
+    let authorization = services.identity.authorization
+    let flows = services.identity.oauthFlows
+    let ownerId = "11111111-1111-4111-8111-111111111646"
+    let serverId = "33333333-3333-4333-8333-333333333672"
+    let email = "composed-protocol-646@test.invalid"
+    profiles.state.withLock { owned in
+        owned.accountSurface.accounts[email] = Account(
+            id: ownerId, email: email, passwordHash: AuthTokenCodec.sha256("password123"),
+            displayLanguage: nil, name: "Before snapshot", profileSetupSuggestedHandle: nil
+        )
+    }
+    let bearer = profiles.openSession(userId: ownerId).accessToken
+    let snapshot = authorization.beginSession(authorization: "Bearer \(bearer)")
+    guard case .user(let human) = snapshot else { Issue.record("must read the supplied profile owner"); return }
+    #expect(human.id == ownerId && !human.emailVerified)
+    // A real profile borrow after beginSession proves the lock is released;
+    // signing later must still use the captured five-field human value.
+    profiles.state.withLock { $0.accountSurface.accounts[email]?.name = "After snapshot" }
+    oauth.addOwnedServer(id: serverId, slug: "composed-protocol-646", name: "Composed Protocol", ownerId: ownerId)
+    let app = try oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+        name: "Composed Protocol App", clientId: "composed-protocol-client-646")
+    flows.configureDeployment(.init(serverURL: "https://before.protocol.test/base"))
+    let context = authorization.tokenContext()
+    flows.configureDeployment(.init(serverURL: "https://after.protocol.test/base"))
+    #expect(authorization.tokenContext().issuer == "https://after.protocol.test")
+    let issued = try authorization.issueHumanAuthorization(session: snapshot,
+        body: "{\"clientId\":\"\(app.clientId)\",\"serverId\":\"\(serverId)\",\"scopes\":[\"openid\",\"profile\"],\"oidc\":true,\"nonce\":\"composed-nonce\"}")
+    #expect(issued.serverId == serverId)
+    #expect(issued.code.hasPrefix("raft_oidc_"))
+    // Redemption must read this live role and the independently live key from
+    // the exact supplied OAuth owner, after the original request was created.
+    oauth.addMember(serverId: serverId, userId: ownerId, role: "admin")
+    flows.configureSigningSecret("composed-protocol-live-signing-key")
+    let body = "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(issued.code)\"}"
+    let token = try authorization.exchangeToken(authorization: nil, body: body, context: context)
+    let published = try #require(JSONSerialization.jsonObject(with: Data(token.jsonBody.render().utf8)) as? [String: Any])
+    let jwt = try #require(published["id_token"] as? String)
+    let parts = jwt.split(separator: ".").map(String.init)
+    try #require(parts.count == 3)
+    func decode(_ encoded: String) throws -> Data {
+        var value = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while value.count % 4 != 0 { value += "=" }
+        return try #require(Data(base64Encoded: value))
+    }
+    let claims = try #require(JSONSerialization.jsonObject(with: decode(parts[1])) as? [String: Any])
+    #expect(claims["iss"] as? String == "https://before.protocol.test")
+    #expect(claims["sub"] as? String == ownerId)
+    #expect(claims["name"] as? String == "Before snapshot")
+    #expect(claims["server_role"] as? String == "admin")
+    #expect(claims["nonce"] as? String == "composed-nonce")
+    let jwks = try services.identity.issuerMetadata.jwks()
+    let key = try P256.Signing.PublicKey(x963Representation: Data([0x04]) + decode(jwks.x) + decode(jwks.y))
+    let signature = try P256.Signing.ECDSASignature(rawRepresentation: decode(parts[2]))
+    #expect(key.isValidSignature(signature, for: Data("\(parts[0]).\(parts[1])".utf8)))
+    #expect(throws: OAuthLedgerError(.invalidGrant(.requestInvalidOrExpired))) {
+        try services.identity.authorization.exchangeToken(authorization: nil, body: body, context: context)
+    }
 }

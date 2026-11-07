@@ -110,7 +110,7 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
     accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-identity-bytes", name: name, ownerId: ownerId)
     let created = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: clientName,
         clientId: "oauth-identity-bytes", allowedScopes: ["openid", "profile", "email"])
-    let authorization = try accounts.oauth.issueHumanAuthorization(
+    let authorization = try accounts.oauthAuthorization.issueHumanAuthorization(
         session: .user(OAuthHuman(id: ownerId, email: "bytes@raft.test", name: name)),
         body: "{\"clientId\":\"oauth-identity-bytes\",\"serverId\":\(jsonString(serverId)),\"scopes\":[\"email\",\"profile\",\"openid\"]}"
     )
@@ -430,6 +430,195 @@ private struct AgentEventIngressReply: Sendable {
             for mutate in mutations {
                 mutate()
                 #expect(try await agentEventIngressPost(client, body: "{\"kind\":\"event\",\"summary\":\"Still valid\",\"payload\":{}}", token: token).status == .accepted)
+            }
+        }
+    }
+}
+
+private func authorizationProtocolPost(
+    _ client: any Client, path: String, body: String, authorization: String? = nil
+) async throws -> ClientResponse {
+    var headers = HTTPFields()
+    headers[.contentType] = "application/json"
+    headers[.authorization] = authorization
+    return try await client.send(.post, headers: headers, to: URI(string: path)) {
+        $0.body = .init(string: body)
+    }
+}
+
+private struct AuthorizationProtocolFixture: Sendable {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111646"
+    let serverId = "33333333-3333-4333-8333-333333333672"
+    let app: CreatedOAuthClient
+    let session: String
+
+    init(allowedScopes: [String]? = nil) throws {
+        accounts.addAccount(id: ownerId, email: "protocol-646@test.invalid", password: "password123")
+        accounts.configureOAuthForTesting { $0.serverURL = "https://protocol.raft.test" }
+        accounts.oauth.addOwnedServer(id: serverId, slug: "protocol-646", name: "Protocol 646", ownerId: ownerId)
+        app = try accounts.oauth.createClient(
+            serverId: serverId, createdByUserId: ownerId, name: "Protocol App", clientId: "protocol-client-646",
+            returnUrl: "https://rp.test/callback", allowedScopes: allowedScopes
+        )
+        session = accounts.mintAccessTokenForTesting(userId: ownerId)
+    }
+
+    func humanBody(_ fields: String) -> String {
+        "{\"clientId\":\"\(app.clientId)\",\"serverId\":\"\(serverId)\"\(fields)}"
+    }
+
+    func issue(_ client: any Client, fields: String) async throws -> String {
+        let response = try await authorizationProtocolPost(client, path: "/api/oauth/authorize/human",
+            body: humanBody(fields), authorization: "Bearer \(session)")
+        #expect(response.status == .ok)
+        return try #require(try oauthBytesObject(response)["code"] as? String)
+    }
+
+    func exchange(_ client: any Client, code: String, path: String = "/api/oauth/token") async throws -> ClientResponse {
+        try await authorizationProtocolPost(client, path: path,
+            body: "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\",\"redirect_uri\":\"https://rp.test/callback\"}")
+    }
+}
+
+@Test func oauthProtocolSpecializedSessionsKeepUnverifiedRevokedAndEmptyBearerSemantics() async throws {
+    let f = try AuthorizationProtocolFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let lookup = URI(string: "/api/oauth/clients/lookup?client_id=\(f.app.clientId)&server_id=\(f.serverId)")
+            // HTTPFields strips edge SP/HTAB before the Feature sees the
+            // header. The second space after Bearer remains inside its value.
+            let refusals: [(String?, String)] = [
+                (nil, "Missing or invalid Authorization header"),
+                ("bearer \(f.session)", "Missing or invalid Authorization header"),
+                ("Bearer ", "Missing or invalid Authorization header"),
+                ("Bearer unknown-token", "Invalid or expired token"),
+                ("Bearer  \(f.session)", "Invalid or expired token"),
+            ]
+            for (authorization, message) in refusals {
+                let human = try await authorizationProtocolPost(client, path: "/api/oauth/authorize/human", body: "{", authorization: authorization)
+                #expect(human.status == .unauthorized)
+                expectOAuthBytes(human, "{\"error\":\(jsonString(message)),\"code\":\"auth_required\"}")
+                var headers = HTTPFields()
+                headers[.authorization] = authorization
+                let consent = try await client.get(lookup, headers: headers)
+                #expect(consent.status == .unauthorized)
+                expectOAuthBytes(consent, "{\"error\":\(jsonString(message)),\"code\":\"auth_required\"}")
+            }
+            // The account is deliberately unverified. Revocation marks the
+            // existing real family without removing its access-token mapping.
+            for revoked in [false, true] {
+                if revoked { f.accounts.revokeSessionFamilies(userId: f.ownerId) }
+                for authorization in ["Bearer \(f.session)", "Bearer \(f.session) "] {
+                    var headers = HTTPFields()
+                    headers[.authorization] = authorization
+                    let consent = try await client.get(lookup, headers: headers)
+                    #expect(consent.status == .ok)
+                    #expect(try oauthBytesObject(consent)["availability"] as? String == "ready")
+                    let malformed = try await authorizationProtocolPost(client, path: "/api/oauth/authorize/human", body: "{", authorization: authorization)
+                    #expect(malformed.status == .badRequest)
+                    expectOAuthBytes(malformed, "{\"error\":\"clientId is required\"}")
+                }
+                let code = try await f.issue(client, fields: ",\"scopes\":[\"profile\"]")
+                #expect(!code.isEmpty)
+            }
+        }
+    }
+}
+
+@Test func oauthProtocolHumanDefaultsAndRefusalsKeepTheirOriginalOrder() async throws {
+    let f = try AuthorizationProtocolFixture(allowedScopes: ["email"])
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            func human(_ fields: String) async throws -> ClientResponse {
+                try await authorizationProtocolPost(client, path: "/api/oauth/authorize/human", body: f.humanBody(fields), authorization: "Bearer \(f.session)")
+            }
+            for fields in ["", ",\"scopes\":null"] {
+                let defaults = try await human(fields)
+                #expect(defaults.status == .ok)
+                #expect(try oauthBytesObject(defaults)["scopes"] as? [String] == ["openid", "profile"])
+            }
+            let explicit = try await human(",\"scopes\":[\"openid\",\"profile\"]")
+            #expect(explicit.status == .badRequest)
+            expectOAuthBytes(explicit, "{\"error\":\"invalid_scope\",\"errorCode\":\"OAUTH_SCOPE_NOT_ALLOWED\",\"error_description\":\"This OAuth client is not allowed to request: openid, profile. Update the client's allowed scopes and try again.\",\"disallowedScopes\":[\"openid\",\"profile\"]}")
+            let oversized = jsonString(String(repeating: "é", count: 257))
+            let badFields = ",\"oidc\":1,\"nonce\":\(oversized),\"scopes\":[\"unsupported\"],\"returnUrl\":\"https://wrong.test/callback\""
+            let missingClient = try await authorizationProtocolPost(client, path: "/api/oauth/authorize/human",
+                body: "{\"clientId\":\"missing-client\",\"serverId\":\"\(f.serverId)\"\(badFields)}", authorization: "Bearer \(f.session)")
+            #expect(missingClient.status == .notFound)
+            expectOAuthBytes(missingClient, "{\"error\":\"OAuth client not found for server\"}")
+            let nonceFirst = try await human(badFields)
+            #expect(nonceFirst.status == .badRequest)
+            expectOAuthBytes(nonceFirst, "{\"error\":\"invalid_request\"}")
+            let boundary = try await human(",\"oidc\":1,\"nonce\":\(jsonString(String(repeating: "é", count: 256))),\"scopes\":[\"email\"]")
+            #expect(boundary.status == .ok)
+            #expect((try oauthBytesObject(boundary)["code"] as? String)?.hasPrefix("raft_oidc_") == true)
+            f.accounts.oauth.removeMember(serverId: f.serverId, userId: f.ownerId)
+            let ordered: [(String, HTTPResponse.Status, String)] = [
+                (",\"scopes\":[\"unsupported\"],\"returnUrl\":\"https://wrong.test/callback\"", .badRequest,
+                 "{\"error\":\"invalid_scope\",\"errorCode\":\"OAUTH_SCOPE_UNSUPPORTED\",\"error_description\":\"Raft does not support the requested OAuth scope: unsupported. Update the requested scopes and try again.\",\"disallowedScopes\":[\"unsupported\"]}"),
+                (",\"scopes\":[\"email\"],\"returnUrl\":\"https://wrong.test/callback\"", .badRequest, "{\"error\":\"returnUrl is not allowed\"}"),
+                (",\"scopes\":[\"email\"]", .notFound, "{\"error\":\"User is not a member of this server\"}"),
+            ]
+            for (fields, status, bytes) in ordered {
+                let response = try await human(fields)
+                #expect(response.status == status)
+                expectOAuthBytes(response, bytes)
+            }
+        }
+    }
+}
+
+@Test func oauthProtocolSigningFailureConsumesCodesAndInvalidOriginStillIssuesTokens() async throws {
+    let f = try AuthorizationProtocolFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            f.accounts.oauth.jwtSecret = ""
+            for oidc in [false, true] {
+                let code = try await f.issue(client, fields: ",\"scopes\":[\"openid\"],\"oidc\":\(oidc)")
+                let failure = try await f.exchange(client, code: code)
+                #expect(failure.status == .internalServerError)
+                expectOAuthBytes(failure, "{\"error\":\"Failed to issue access token\"}")
+                let replay = try await f.exchange(client, code: code)
+                #expect(replay.status == (oidc ? .badRequest : .conflict))
+                expectOAuthBytes(replay, oidc
+                    ? "{\"error\":\"invalid_grant\",\"error_description\":\"The authorization request is invalid or has expired\"}"
+                    : "{\"error\":\"request_already_consumed\",\"error_description\":\"This Login with Raft request is one-time and has already been exchanged. Discard it and obtain a fresh request before retrying.\",\"next_action\":\"obtain_fresh_request\"}")
+            }
+            let profileCode = try await f.issue(client, fields: ",\"scopes\":[\"profile\"]")
+            let profile = try await f.exchange(client, code: profileCode)
+            #expect(profile.status == .ok)
+            let profileToken = try #require(try oauthBytesObject(profile)["access_token"] as? String)
+            expectOAuthBytes(profile, "{\"access_token\":\(jsonString(profileToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"profile\"}", cache: "no-store")
+            let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "ProtocolBot", creatorUserId: f.ownerId)
+            let requested = try await authorizationProtocolPost(client, path: "/api/oauth/requests/agent",
+                body: "{\"clientId\":\"\(f.app.clientId)\",\"clientSecret\":\"\(f.app.clientSecret)\",\"serverSlug\":\"protocol-646\",\"agentId\":\"\(agentId)\",\"scopes\":[\"openid\"]}")
+            #expect(requested.status == .ok)
+            #expect(try oauthBytesObject(requested)["status"] as? String == "approved")
+            let requestId = try #require(try oauthBytesObject(requested)["requestId"] as? String)
+            let agent = try await authorizationProtocolPost(client, path: "/api/oauth/token",
+                body: "{\"clientId\":\"\(f.app.clientId)\",\"clientSecret\":\"\(f.app.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"\(requestId)\"}")
+            #expect(agent.status == .ok)
+            let agentToken = try #require(try oauthBytesObject(agent)["access_token"] as? String)
+            expectOAuthBytes(agent, "{\"access_token\":\(jsonString(agentToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"openid\"}", cache: "no-store")
+            f.accounts.oauth.jwtSecret = "protocol-restored-key"
+            f.accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
+            for (path, issuer) in [("/api/oauth/token", ""), ("/oidc/protocol-646/api/oauth/token", "/oidc/protocol-646")] {
+                let code = try await f.issue(client, fields: ",\"scopes\":[\"openid\"]")
+                let response = try await f.exchange(client, code: code, path: path)
+                #expect(response.status == .ok)
+                #expect(response.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+                let jwt = try #require(try oauthBytesObject(response)["id_token"] as? String)
+                let parts = jwt.split(separator: ".")
+                #expect(parts.count == 3)
+                var encoded = String(try #require(parts.dropFirst().first)).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+                while encoded.count % 4 != 0 { encoded += "=" }
+                let payload = try #require(Data(base64Encoded: encoded))
+                let claims = try #require(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+                #expect(claims["iss"] as? String == issuer)
             }
         }
     }

@@ -194,22 +194,6 @@ public struct AuthIdentitiesService: Sendable {
         return userId
     }
 
-    /// The user behind a normal access token for the OAuth authorize routes.
-    /// `requireAuth` there does not demand a verified email and ignores a
-    /// revoked session family, exactly like the retired directory lookup.
-    public func oauthSession(authorization: String?) -> OAuthSession {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return .missing }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        guard let account = store.account(forAnyAccessToken: token) else { return .invalid }
-        return .user(OAuthHuman(
-            id: account.id,
-            email: account.email,
-            name: account.name,
-            emailVerified: account.emailVerified,
-            avatarUrl: account.avatarUrl
-        ))
-    }
-
     // MARK: Identities
 
     /// `GET /api/auth/identities`.
