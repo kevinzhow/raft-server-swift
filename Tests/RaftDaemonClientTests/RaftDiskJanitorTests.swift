@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Synchronization
 import Testing
@@ -217,6 +218,45 @@ private final class JanitorPasses: Sendable {
 
     func waitForReturns(_ count: Int) -> Bool {
         waitForJanitorEvent(returnChanged) { state.withLock { $0.returned >= count } }
+    }
+}
+
+private final class DeadlineUpdatingWalkClock: Sendable {
+    private struct State: Sendable {
+        weak var budget: RaftDisk.WalkBudget?
+        var launched = false
+    }
+
+    private let state = Mutex(State())
+    private let updated = DispatchSemaphore(value: 0)
+    private let workerExited = DispatchSemaphore(value: 0)
+
+    func bind(_ budget: RaftDisk.WalkBudget) {
+        state.withLock { $0.budget = budget }
+    }
+
+    func now() -> Int {
+        let budget = state.withLock { state -> RaftDisk.WalkBudget? in
+            guard !state.launched, let budget = state.budget else { return nil }
+            state.launched = true
+            return budget
+        }
+        guard let budget else { return 10 }
+        Thread.detachNewThread { [self, budget] in
+            defer { workerExited.signal() }
+            let deadline = budget.deadlineMs
+            budget.deadlineMs = deadline + 15
+            updated.signal()
+        }
+        // A clock accidentally called under the budget lock must still return,
+        // allowing the waiting worker to finish after that lock is released.
+        _ = updated.wait(timeout: .now() + .seconds(2))
+        return 10
+    }
+
+    func drain() -> Bool {
+        guard state.withLock({ $0.launched }) else { return true }
+        return workerExited.wait(timeout: .now() + .seconds(2)) == .success
     }
 }
 
@@ -535,5 +575,57 @@ struct RaftDiskJanitorTests {
     weakSchedule?.stop()
     passes.releaseAll()
     #expect(passes.started == 0)
+}
+
+@Test(arguments: [64, 65]) func walkBudgetFlatBatchesOverdrawUntilTheNextProbe(_ fileCount: Int) throws {
+    try withHome { home in
+        let root = home + "/a"
+        for index in 0..<fileCount { try writeBytes(root + "/\(index)", 1) }
+        let budget = RaftDisk.WalkBudget(maxEntries: 1, nowMs: 0, now: { 0 })
+        let bytes = RaftDisk.measureDirectoryBytes(root, budget: budget)
+        #expect(bytes == 64)
+        #expect(budget.entriesLeft == -63)
+        let expected: RaftDisk.MeasureOutcome = fileCount == 64 ? .complete : .truncated
+        #expect(budget.outcome == expected, "a final batch has no later probe to mark truncation")
+    }
+}
+
+@Test func sharedWalkBudgetKeepsAllConcurrentMeasurementsAndConsumption() throws {
+    try withHome { home in
+        let root = home + "/a"
+        try writeBytes(root + "/one", 7)
+        let budget = RaftDisk.WalkBudget(maxEntries: 512, nowMs: 0, now: { 0 })
+        let measured = Mutex<[Int]>([])
+        DispatchQueue.concurrentPerform(iterations: 256) { _ in
+            let bytes = RaftDisk.measureDirectoryBytes(root, budget: budget)
+            measured.withLock { $0.append(bytes) }
+        }
+        let bytes = measured.withLock { $0 }
+        #expect(bytes.count == 256)
+        #expect(bytes.allSatisfy { $0 == 7 })
+        #expect(bytes.reduce(0, +) == 1_792)
+        #expect(budget.entriesLeft == 256)
+        #expect(budget.outcome == .complete)
+    }
+}
+
+@Test func walkBudgetClockCanUpdateTheLiveDeadlineOutsideOwnedLocks() throws {
+    try withHome { home in
+        let root = home + "/a"
+        try writeBytes(root + "/one", 7)
+        let clock = DeadlineUpdatingWalkClock()
+        let budget = RaftDisk.WalkBudget(maxEntries: 1, deadlineMs: 5, nowMs: 0, now: { clock.now() })
+        clock.bind(budget)
+        let bytes = RaftDisk.measureDirectoryBytes(root, budget: budget)
+        // Drain before any throwing assertion. The worker only touches budget
+        // values; it never owns or accesses this temporary directory.
+        let drained = clock.drain()
+        #expect(drained, "the clock worker must finish after the measurement returns")
+        guard drained else { return }
+        #expect(bytes == 7, "now=10 must compare against the worker-updated deadline=20, not the old 5")
+        #expect(budget.outcome == .complete)
+        #expect(budget.entriesLeft == 0)
+        #expect(budget.deadlineMs == 20, "the measurement must sample the clock and retain its public deadline update")
+    }
 }
 }

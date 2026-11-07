@@ -25,27 +25,61 @@ public enum RaftDisk {
         case complete, truncated, timeout
     }
 
-    public final class WalkBudget: @unchecked Sendable {
-        public var entriesLeft: Int
-        public var deadlineMs: Int
-        public var outcome: MeasureOutcome = .complete
+    public final class WalkBudget: Sendable {
+        private struct State: Sendable {
+            var entriesLeft: Int
+            var deadlineMs: Int
+            var outcome: MeasureOutcome = .complete
+        }
+
+        private let state: Mutex<State>
         private let now: @Sendable () -> Int
+
+        // Public property assignments remain independent operations.
+        public var entriesLeft: Int {
+            get { state.withLock { $0.entriesLeft } }
+            set { state.withLock { $0.entriesLeft = newValue } }
+        }
+
+        public var deadlineMs: Int {
+            get { state.withLock { $0.deadlineMs } }
+            set { state.withLock { $0.deadlineMs = newValue } }
+        }
+
+        public var outcome: MeasureOutcome {
+            get { state.withLock { $0.outcome } }
+            set { state.withLock { $0.outcome = newValue } }
+        }
+
         public init(
             maxEntries: Int = RaftDisk.walkMaxEntries,
             deadlineMs: Int = RaftDisk.walkDeadlineMs,
             nowMs: Int? = nil,
             now: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970 * 1000) }
         ) {
-            self.entriesLeft = maxEntries
             self.now = now
-            self.deadlineMs = (nowMs ?? now()) + deadlineMs
+            let absoluteDeadline = (nowMs ?? now()) + deadlineMs
+            self.state = Mutex(State(entriesLeft: maxEntries, deadlineMs: absoluteDeadline))
         }
 
         public var isExhausted: Bool {
-            if outcome != .complete { return true }
-            if entriesLeft <= 0 { outcome = .truncated; return true }
-            if now() >= deadlineMs { outcome = .timeout; return true }
-            return false
+            let exhausted = state.withLock { state in
+                if state.outcome != .complete { return true }
+                if state.entriesLeft <= 0 { state.outcome = .truncated; return true }
+                return false
+            }
+            if exhausted { return true }
+            // The foreign clock can read or update the budget. Preserve the
+            // original deadline read after it returns, without rechecking guards.
+            let sampledNow = now()
+            return state.withLock { state in
+                if sampledNow >= state.deadlineMs { state.outcome = .timeout; return true }
+                return false
+            }
+        }
+
+        fileprivate func consumeEntries(_ count: Int) {
+            state.withLock { $0.entriesLeft -= count }
         }
     }
 
@@ -65,7 +99,7 @@ public enum RaftDisk {
             while index < names.count {
                 if budget.isExhausted { return bytes }
                 let batch = Array(names[index..<min(index + walkBatchSize, names.count)])
-                budget.entriesLeft -= batch.count
+                budget.consumeEntries(batch.count)
                 for name in batch {
                     let entryPath = dir + "/" + name
                     guard let attributes = try? FileManager.default.attributesOfItem(atPath: entryPath) else { continue }

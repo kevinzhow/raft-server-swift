@@ -2387,3 +2387,10 @@ RFC 074 personal assistant：
 - 三query只回flatimmutablefacts，Owner不回whole token/client/server/request/HTTPDTO/JSON。Service投影原orderedDTO/email省略/null/cache：A成功与Owner错误no-store，U/S nil，G7scope错误保原。旧Owner三HTTP入口删，G4 principalTokenLocked与G7serverScopeId原helper保留。
 - 旧Source v2四函数真绿，v3在同human后仅加existing request删除：root/scoped U401 exact/nilcache而S200/nilcache，补充human单例绿+另3未动v2绿；不谎称v3重四例。v1新case误把flat auth/me当login user包装，修单行保三个实际profile断言，是测试构造P1，非Source行为红。
 - 新identity.principal为当前第63字段，仅approvedtype/positiveguard增加；13actual local owners mandatorycomposer，经同图G5mint/真实profile名后改及live URL/key/role/server/partner/list/client/request变化，公有U/S/A结果证明同owner，含request消失S/A仍通。四v3HTTP字节冻结、0receiverdelta，无新TestSupport/SDK hook；新Source102定向、full/E2E/smoke/guard/parity绿。病理crossservercaller/unknownkind/duphash与ties仍Source等价限度，非HTTP或全63field/fullFallback证明。
+
+### WalkBudget 完整内部消费与锁外 clock
+
+- entries/deadline/outcome为private checked Mutex state，public三个setter仍独立。内部减法固定consumeEntries完整RMW；原outcome→entries早拒绝不采clock，其他路径释放状态后采一次clock，再读callback后deadline比较，不缓存旧deadline/增加postclock重查。
+- 原64批检查与消费分开、不reserve/clamp/即时改outcome：budget1/64个1byte平文件实际64bytes/-63/complete，65个实际64bytes/-63/truncated。Clock有界worker把live deadline5→20，now10返回后实际7byte测量成功，保原callback可读写与deadline求值顺序。
+- 原5policy绿，新256实际7byte共享measure全返回7/总1792且complete，但旧Source剩余473而应256，漏记217次消费，唯一真实red；新Source冻结同测试通过并精确剩256。目标8定义含9展开case全绿，原14测试与JanitorSchedule body/政策/I/O其余Source bytes保留，无256/2s缩减或加gate取红。
+- 不承诺全局硬配额、独立publicgetter/setter复合事务、跨clock方法线性化、文件系统快照/TSan；unchecked13→12。
