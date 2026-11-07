@@ -56,6 +56,17 @@ public struct AuthFixture: Sendable {
         profiles.identitySnapshot(userId: userId).passwordConfigured
     }
 
+    public func setAccountProfileForTesting(id: String, name: String, displayName: String? = nil) {
+        profiles.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == id })?.key,
+               var account = owned.accountSurface.accounts[key] {
+                account.name = name
+                account.displayName = displayName ?? name
+                owned.accountSurface.accounts[key] = account
+            }
+        }
+    }
+
     public func configureOAuthForTesting(_ update: (inout OAuthFlowsService.DeploymentConfiguration) -> Void) {
         profiles.state.withLock { update(&$0.configSurface.oauthDeployment) }
     }

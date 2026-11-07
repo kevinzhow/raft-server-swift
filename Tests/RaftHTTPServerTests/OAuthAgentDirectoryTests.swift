@@ -13,19 +13,19 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
 }
 
 @Test func agentDirectoryListsOnlyThisServersLiveAgents() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111231"
     let serverId = "33333333-3333-4333-8333-333333333425"
     let otherServerId = "33333333-3333-4333-8333-333333333426"
-    accounts.addAccount(id: ownerId, email: "directory-231@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "directory-231", name: "Directory", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: otherServerId, slug: "other-231", name: "Other", ownerId: ownerId)
-    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "DirectoryAgent")
-    _ = accounts.oauth.createAgent(serverId: otherServerId, name: "ForeignAgent")
-    let deletedId = accounts.oauth.createAgent(serverId: serverId, name: "DeletedAgent")
-    accounts.oauth.deleteAgent(id: deletedId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "directory-231@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "directory-231", name: "Directory", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: otherServerId, slug: "other-231", name: "Other", ownerId: ownerId)
+    let agentId = scene.oauth.createAgent(serverId: serverId, name: "DirectoryAgent")
+    _ = scene.oauth.createAgent(serverId: otherServerId, name: "ForeignAgent")
+    let deletedId = scene.oauth.createAgent(serverId: serverId, name: "DeletedAgent")
+    scene.oauth.deleteAgent(id: deletedId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Directory only",
@@ -34,12 +34,7 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             func login() async throws -> String {
                 var headers = HTTPFields()
@@ -112,14 +107,14 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             identityHeaders[.authorization] = "Bearer \(identityOnly)"
             #expect(try await client.send(.get, headers: identityHeaders, to: "/api/oauth/agents").status == .forbidden)
 
-            accounts.oauth.setClientEnabled(clientRecordId: created.id, enabled: false)
+            scene.oauth.setClientEnabled(clientRecordId: created.id, enabled: false)
             #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .forbidden)
-            accounts.oauth.setClientEnabled(clientRecordId: created.id, enabled: true)
+            scene.oauth.setClientEnabled(clientRecordId: created.id, enabled: true)
 
-            accounts.oauth.removeMember(serverId: serverId, userId: ownerId)
+            scene.oauth.removeMember(serverId: serverId, userId: ownerId)
             #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .unauthorized)
 
-            accounts.oauth.addMember(serverId: serverId, userId: ownerId, role: "owner")
+            scene.oauth.addMember(serverId: serverId, userId: ownerId, role: "owner")
             var requestHeaders = HTTPFields()
             requestHeaders[.contentType] = "application/json"
             let requested = try await client.send(.post, headers: requestHeaders, to: "/api/oauth/requests/agent") { request in
@@ -152,7 +147,7 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             }
             #expect(humanWrite.status == .forbidden)
 
-            accounts.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
+            scene.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
             #expect(try await client.send(.get, headers: agentHeaders, to: "/api/oauth/agents").status == .unauthorized)
 
             for missing in ["not-a-token", ""] {
@@ -167,14 +162,14 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
 }
 
 @Test func agentDirectoryRejectsIdentityOnlyExpiredAndRevokedCredentials() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111232"
     let serverId = "33333333-3333-4333-8333-333333333427"
-    accounts.addAccount(id: ownerId, email: "directory-232@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "directory-232", name: "Directory", ownerId: ownerId)
-    _ = accounts.oauth.createAgent(serverId: serverId, name: "DirectoryAgent")
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "directory-232@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "directory-232", name: "Directory", ownerId: ownerId)
+    _ = scene.oauth.createAgent(serverId: serverId, name: "DirectoryAgent")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Directory only",
@@ -183,12 +178,7 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var loginHeaders = HTTPFields()
             loginHeaders[.contentType] = "application/json"
@@ -218,7 +208,7 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             let webhookScope = try await authorize("\"agent:read\"")
             #expect(webhookScope.status == .badRequest)
 
-            accounts.oauth.setClientAllowedScopes(
+            scene.oauth.setClientAllowedScopes(
                 clientRecordId: created.id,
                 scopes: ["openid", "profile", "agent:read"]
             )
@@ -242,13 +232,13 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             headers[.authorization] = "Bearer \(bearer)"
             #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .ok)
 
-            accounts.oauth.revokeAccessTokens(clientRecordId: created.id)
+            scene.oauth.revokeAccessTokens(clientRecordId: created.id)
             #expect(try await client.send(.get, headers: headers, to: "/api/oauth/agents").status == .unauthorized)
 
             let expiring = try await exchange(try directoryObject(try await authorize("\"openid\",\"profile\",\"agent:read\""))["code"] as? String ?? "")
             var expiringHeaders = HTTPFields()
             expiringHeaders[.authorization] = "Bearer \(expiring)"
-            accounts.oauth.expireAccessTokensForTesting(clientRecordId: created.id)
+            scene.oauth.expireAccessTokensForTesting(clientRecordId: created.id)
             #expect(try await client.send(.get, headers: expiringHeaders, to: "/api/oauth/agents").status == .unauthorized)
 
             let renewed = try await exchange(try directoryObject(try await authorize("\"openid\",\"profile\",\"agent:read\""))["code"] as? String ?? "")
@@ -269,32 +259,32 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             agentHeaders[.authorization] = "Bearer \(try directoryObject(agentTokenResponse)["access_token"] as? String ?? "")"
             #expect(try await client.send(.get, headers: agentHeaders, to: "/api/oauth/agents").status == .ok)
 
-            accounts.oauth.revokeAgentGrants(clientRecordId: created.id)
+            scene.oauth.revokeAgentGrants(clientRecordId: created.id)
             #expect(try await client.send(.get, headers: agentHeaders, to: "/api/oauth/agents").status == .unauthorized)
         }
     }
 }
 
 @Test func oauthPrincipalDirectorySortsNamesAndKeepsLiveRolelessAndExternalEntries() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111647"
     let serverId = "33333333-3333-4333-8333-333333333673"
     let otherServerId = "33333333-3333-4333-8333-333333333674"
-    accounts.addAccount(id: ownerId, email: "principal-directory-647@test.invalid", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "principal-directory-647", name: "Principal Directory", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: otherServerId, slug: "principal-foreign-647", name: "Foreign Directory", ownerId: ownerId)
-    let lower = accounts.oauth.createAgent(serverId: serverId, name: "alpha", displayName: "Middle display", avatarUrl: "/lower.svg")
-    let zulu = accounts.oauth.createAgent(serverId: serverId, name: "Zulu", displayName: "A display", avatarUrl: "https://cdn.test/z.svg")
-    let alpha = accounts.oauth.createAgent(serverId: serverId, name: "Alpha", displayName: "Z display", avatarUrl: "HTTPS://cdn.test/a.svg", runtime: "external")
-    accounts.oauth.removeAgentMember(serverId: serverId, agentId: alpha)
-    _ = accounts.oauth.createAgent(serverId: otherServerId, name: "Foreign")
-    let deleted = accounts.oauth.createAgent(serverId: serverId, name: "Deleted")
-    accounts.oauth.deleteAgent(id: deleted)
-    let appClient = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+    scene.auth.addAccount(id: ownerId, email: "principal-directory-647@test.invalid", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "principal-directory-647", name: "Principal Directory", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: otherServerId, slug: "principal-foreign-647", name: "Foreign Directory", ownerId: ownerId)
+    let lower = scene.oauth.createAgent(serverId: serverId, name: "alpha", displayName: "Middle display", avatarUrl: "/lower.svg")
+    let zulu = scene.oauth.createAgent(serverId: serverId, name: "Zulu", displayName: "A display", avatarUrl: "https://cdn.test/z.svg")
+    let alpha = scene.oauth.createAgent(serverId: serverId, name: "Alpha", displayName: "Z display", avatarUrl: "HTTPS://cdn.test/a.svg", runtime: "external")
+    scene.oauth.removeAgentMember(serverId: serverId, agentId: alpha)
+    _ = scene.oauth.createAgent(serverId: otherServerId, name: "Foreign")
+    let deleted = scene.oauth.createAgent(serverId: serverId, name: "Deleted")
+    scene.oauth.deleteAgent(id: deleted)
+    let appClient = try scene.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
         name: "Principal Directory App", clientId: "principal-directory-client-647", allowedScopes: ["agent:read"])
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             func post(_ path: String, _ body: String, authorization: String? = nil) async throws -> ClientResponse {
                 var headers = HTTPFields()
@@ -313,8 +303,8 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
             let token = try #require(try directoryObject(minted)["access_token"] as? String)
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
-            accounts.oauthFlows.configureDeployment(.init(serverURL: " raw directory///"))
-            accounts.oauth.jwtSecret = ""
+            scene.services.identity.oauthFlows.configureDeployment(.init(serverURL: " raw directory///"))
+            scene.services.identity.oauthFlows.configureSigningSecret("")
             for mount in ["", "/oidc/principal-directory-647"] {
                 let response = try await client.get(URI(string: "\(mount)/api/oauth/agents?server_id=\(otherServerId)&agentId=foreign"), headers: headers)
                 #expect(response.status == .ok)

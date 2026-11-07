@@ -35,9 +35,13 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
     accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test/base/" }
     accounts.oauth.addOwnedServer(id: UUID().uuidString.lowercased(), slug: "oauth-bytes", name: "Bytes", ownerId: "owner")
     try await withApp { app in
-        try await app.register(collection: OAuthFeature(services: FallbackServices(
-            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
-        )))
+        try await app.register(collection: OAuthFeature(
+            oauthFlows: accounts.oauthFlows,
+            issuerMetadata: accounts.oauthIssuerMetadata,
+            authorization: accounts.oauthAuthorization,
+            principal: accounts.oauthPrincipal,
+            apps: accounts.integrationsAndAppAccess
+        ))
         try await app.testing { client in
             for path in ["/.well-known/openid-configuration", "/api/oauth/.well-known/openid-configuration"] {
                 let response = try await client.get(URI(string: path))
@@ -116,9 +120,13 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
     )
     #expect(authorization.jsonBody.render() == "{\"code\":\(jsonString(authorization.code)),\"client\":{\"clientId\":\"oauth-identity-bytes\",\"appType\":\"server_local\",\"name\":\(jsonString(clientName)),\"description\":null,\"homepageUrl\":null},\"server\":{\"id\":\(jsonString(serverId)),\"slug\":\"oauth-identity-bytes\",\"role\":\"owner\"},\"scopes\":[\"email\",\"openid\",\"profile\"],\"returnUrl\":null}")
     try await withApp { app in
-        try await app.register(collection: OAuthFeature(services: FallbackServices(
-            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
-        )))
+        try await app.register(collection: OAuthFeature(
+            oauthFlows: accounts.oauthFlows,
+            issuerMetadata: accounts.oauthIssuerMetadata,
+            authorization: accounts.oauthAuthorization,
+            principal: accounts.oauthPrincipal,
+            apps: accounts.integrationsAndAppAccess
+        ))
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -159,7 +167,13 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 @Test func oauthLedgerRefusalsKeepTheirDistinctCacheHeaders() async throws {
     let services = FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {})
     try await withApp { app in
-        try await app.register(collection: OAuthFeature(services: services))
+        try await app.register(collection: OAuthFeature(
+            oauthFlows: services.emailAccounts.oauthFlows,
+            issuerMetadata: services.emailAccounts.oauthIssuerMetadata,
+            authorization: services.emailAccounts.oauthAuthorization,
+            principal: services.emailAccounts.oauthPrincipal,
+            apps: services.emailAccounts.integrationsAndAppAccess
+        ))
         try await app.register(collection: IntegrationsFeature(services: services))
         try await app.testing { client in
             let cases: [(HTTPRequest.Method, String, String, String?)] = [
@@ -189,9 +203,13 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
     let created = try accounts.oauth.createClient(serverId: serverId, createdByUserId: "unrelated", name: "Event App",
         clientId: "oauth-event-bytes", allowedScopes: ["agent:event:write"])
     try await withApp { app in
-        try await app.register(collection: OAuthFeature(services: FallbackServices(
-            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
-        )))
+        try await app.register(collection: OAuthFeature(
+            oauthFlows: accounts.oauthFlows,
+            issuerMetadata: accounts.oauthIssuerMetadata,
+            authorization: accounts.oauthAuthorization,
+            principal: accounts.oauthPrincipal,
+            apps: accounts.integrationsAndAppAccess
+        ))
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"

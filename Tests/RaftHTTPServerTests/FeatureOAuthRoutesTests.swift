@@ -48,7 +48,13 @@ struct FeatureOAuthRoutesTests {
         )
 
         try await withApp { app in
-            try await app.register(collection: OAuthFeature(services: services))
+            try await app.register(collection: OAuthFeature(
+            oauthFlows: services.emailAccounts.oauthFlows,
+            issuerMetadata: services.emailAccounts.oauthIssuerMetadata,
+            authorization: services.emailAccounts.oauthAuthorization,
+            principal: services.emailAccounts.oauthPrincipal,
+            apps: services.emailAccounts.integrationsAndAppAccess
+        ))
 
             let registered = Set(app.routes.all.map { "\($0.method.rawValue) \($0.path.string)" })
             let expected = Set(expectedOAuthRoutes.map { "\($0.0.rawValue) \($0.1)" })

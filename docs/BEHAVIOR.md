@@ -2394,3 +2394,10 @@ RFC 074 personal assistant：
 - 原64批检查与消费分开、不reserve/clamp/即时改outcome：budget1/64个1byte平文件实际64bytes/-63/complete，65个实际64bytes/-63/truncated。Clock有界worker把live deadline5→20，now10返回后实际7byte测量成功，保原callback可读写与deadline求值顺序。
 - 原5policy绿，新256实际7byte共享measure全返回7/总1792且complete，但旧Source剩余473而应256，漏记217次消费，唯一真实red；新Source冻结同测试通过并精确剩256。目标8定义含9展开case全绿，原14测试与JanitorSchedule body/政策/I/O其余Source bytes保留，无256/2s缩减或加gate取红。
 - 不承诺全局硬配额、独立publicgetter/setter复合事务、跨clock方法线性化、文件系统快照/TSan；unchecked13→12。
+
+### OAuthScene 与五个显式 Feature 服务
+
+- OAuthFeature仅持private immutable flows/metadata/authorization/principal/apps五具体Service，唯一显式构造器无FallbackServices/Root-taking兼容入口。完整Fallback仍在原注册点传原图五值；七处直接caller同点传原Root五值，原boot/register顺序、live配置读取、HTTP path/body/cache与协议时点不改。
+- OAuthScene显式十三actual local owners→mandatorysharedcomposer，同profiles给privateAuthFixture、同OAuth给privateOAuthFixture，仅21个本批既有seed/read/mutate操作；不外露Store/State/Root、不新建全局facade/泛型mutation。AuthFixture旧profile名/displayName写迁入而原ops保；signing/config仍走同图live service。
+- focused app挂实际OAuth5再Auth7，生产JSONboundary；四既有HTTP文件15处mount/14Scene声明迁移，158expect与13require断言正文保（唯一既有TokenCount断言receiver变化），七额外ctor-only的其他字节保。28定向实际新图/ctor全绿，原profile/grantsnapshot/rawURL/缺request/cache/PKCE/并发断言继续生效；full/E2E/smoke/architecture/parity绿。
+- 此批不声称完整Fallback decoder/transport/publicDirectory或全63field运行证明；未迁测试仍各自原完整旧图验证，无同app双图；无新增ID/测试矩阵/hook/SDK/compose63field改变。

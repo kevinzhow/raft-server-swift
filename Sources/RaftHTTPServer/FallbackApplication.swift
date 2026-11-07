@@ -249,7 +249,13 @@ public func configure(_ app: Application, services: FallbackServices) {
     ServersFeature(services: services).register(routes: app)
     ChannelsFeature(services: services).register(routes: app)
     MessagingFeature(services: services).register(routes: app)
-    OAuthFeature(services: services).register(routes: app)
+    OAuthFeature(
+        oauthFlows: services.emailAccounts.oauthFlows,
+        issuerMetadata: services.emailAccounts.oauthIssuerMetadata,
+        authorization: services.emailAccounts.oauthAuthorization,
+        principal: services.emailAccounts.oauthPrincipal,
+        apps: services.emailAccounts.integrationsAndAppAccess
+    ).register(routes: app)
     FeedbackFeature(services: services).register(routes: app)
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)

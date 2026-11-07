@@ -57,9 +57,13 @@ func oauthStateCodeConsumptionHasOneWinnerUnderContention(oidc: Bool) async thro
     let verifier = oidc ? ",\"redirect_uri\":\"https://rp.test/callback\",\"code_verifier\":\"oidc-standard-verifier-abcdefghijklmnopqrstuvwxyz-0123456789\"" : ""
     let body = "{\"clientId\":\"state-code\",\"clientSecret\":\"\(app.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\"\(verifier)}"
     try await withApp { application in
-        try await application.register(collection: OAuthFeature(services: FallbackServices(
-            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
-        )))
+        try await application.register(collection: OAuthFeature(
+            oauthFlows: accounts.oauthFlows,
+            issuerMetadata: accounts.oauthIssuerMetadata,
+            authorization: accounts.oauthAuthorization,
+            principal: accounts.oauthPrincipal,
+            apps: accounts.integrationsAndAppAccess
+        ))
         try await application.testing { client in
             let replies = try await contendOAuth(client, path: "/api/oauth/token", body: body)
             #expect(replies.filter { $0.status == 200 }.count == 1)
@@ -86,9 +90,13 @@ func oauthStateCodeConsumptionHasOneWinnerUnderContention(oidc: Bool) async thro
     let app = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "App", clientId: "state-agent")
     let body = "{\"clientId\":\"state-agent\",\"clientSecret\":\"\(app.clientSecret)\",\"serverSlug\":\"state-agent\",\"agentId\":\"\(agentId)\",\"scopes\":[\"openid\",\"profile\"]}"
     try await withApp { application in
-        try await application.register(collection: OAuthFeature(services: FallbackServices(
-            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
-        )))
+        try await application.register(collection: OAuthFeature(
+            oauthFlows: accounts.oauthFlows,
+            issuerMetadata: accounts.oauthIssuerMetadata,
+            authorization: accounts.oauthAuthorization,
+            principal: accounts.oauthPrincipal,
+            apps: accounts.integrationsAndAppAccess
+        ))
         try await application.testing { client in
             let replies = try await contendOAuth(client, path: "/api/oauth/requests/agent", body: body)
             #expect(replies.allSatisfy { $0.status == 200 })

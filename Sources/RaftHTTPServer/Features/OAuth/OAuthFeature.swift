@@ -11,10 +11,24 @@ import Vapor
 /// `boot` delegates to the same synchronous `register(routes:)` used by the
 /// pinned Vapor async boot path.
 public struct OAuthFeature: RouteCollection, Sendable {
-    public let services: FallbackServices
+    private let oauthFlows: OAuthFlowsService
+    private let issuerMetadata: OAuthIssuerMetadataService
+    private let authorization: OAuthAuthorizationService
+    private let principal: OAuthPrincipalService
+    private let apps: IntegrationsAndAppAccessService
 
-    public init(services: FallbackServices) {
-        self.services = services
+    public init(
+        oauthFlows: OAuthFlowsService,
+        issuerMetadata: OAuthIssuerMetadataService,
+        authorization: OAuthAuthorizationService,
+        principal: OAuthPrincipalService,
+        apps: IntegrationsAndAppAccessService
+    ) {
+        self.oauthFlows = oauthFlows
+        self.issuerMetadata = issuerMetadata
+        self.authorization = authorization
+        self.principal = principal
+        self.apps = apps
     }
 
     public func boot(routes: any RoutesBuilder) async throws {
@@ -26,15 +40,16 @@ public struct OAuthFeature: RouteCollection, Sendable {
         let oauth = app.grouped("api", "oauth")
         let oidc = app.grouped("oidc", ":server")
         let oidcOAuth = oidc.grouped("api", "oauth")
-        let oauthFlows = services.emailAccounts.oauthFlows
-        let issuerMetadata = services.emailAccounts.oauthIssuerMetadata
-        let authorization = services.emailAccounts.oauthAuthorization
-        let principal = services.emailAccounts.oauthPrincipal
+        let oauthFlows = self.oauthFlows
+        let issuerMetadata = self.issuerMetadata
+        let authorization = self.authorization
+        let principal = self.principal
+        let apps = self.apps
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
             return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
-                try services.emailAccounts.integrationsAndAppAccess.reportInstallationSetup(
+                try apps.reportInstallationSetup(
                     authorization: request.headers[.authorization],
                     installationId: request.parameters.get("installationId") ?? "",
                     body: body
@@ -48,7 +63,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 try authorization.issueHumanAuthorization(session: session, body: body)
             }
         }
-        InstallationCredentialRoutes(apps: services.emailAccounts.integrationsAndAppAccess).registerMint(routes: oauth)
+        InstallationCredentialRoutes(apps: apps).registerMint(routes: oauth)
         oauth.post("token") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
@@ -92,7 +107,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         oauth.post("requests", "agent") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond {
-                try services.emailAccounts.integrationsAndAppAccess.requestAgentAccess(
+                try apps.requestAgentAccess(
                     authorization: request.headers[.authorization],
                     body: body
                 )
@@ -101,7 +116,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         oauth.post("agent-events") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond(status: { $0.httpStatus }, headers: { _ in .standard() }) {
-                try services.emailAccounts.integrationsAndAppAccess.postAgentEvent(
+                try apps.postAgentEvent(
                     authorization: request.headers[.authorization],
                     body: body
                 )

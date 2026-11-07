@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -11,13 +12,13 @@ private func bodyText(_ response: ClientResponse) -> String {
 }
 
 @Test func oauthTokenEndpointAcceptsPostBodyAndBasicClientAuth() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111195"
     let serverId = "33333333-3333-4333-8333-333333333387"
-    accounts.addAccount(id: userId, email: "oauth-token-195@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-token-auth-195", name: "OAuth Token Auth", ownerId: userId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-token-195@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-token-auth-195", name: "OAuth Token Auth", ownerId: userId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: userId,
         name: "OAuth Token Auth Client",
@@ -26,12 +27,7 @@ private func bodyText(_ response: ClientResponse) -> String {
     #expect(created.clientSecret.wholeMatch(of: /^raft_secret_[0-9a-f]{48}$/) != nil)
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"oauth-token-195@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -79,13 +75,13 @@ private func bodyText(_ response: ClientResponse) -> String {
 }
 
 @Test func expiredHumanAuthorizationCodeIsRejectedAndMintsNoToken() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111196"
     let serverId = "33333333-3333-4333-8333-333333333388"
-    accounts.addAccount(id: userId, email: "oauth-expired-196@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-expired-196", name: "OAuth Expired Code", ownerId: userId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-expired-196@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-expired-196", name: "OAuth Expired Code", ownerId: userId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: userId,
         name: "OAuth Expired Code Client",
@@ -93,12 +89,7 @@ private func bodyText(_ response: ClientResponse) -> String {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"oauth-expired-196@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -110,7 +101,7 @@ private func bodyText(_ response: ClientResponse) -> String {
             }
             #expect(authorize.status == .ok)
             let code = ((try JSONSerialization.jsonObject(with: Data(bodyText(authorize).utf8)) as? [String: Any])?["code"] as? String) ?? ""
-            accounts.oauth.expireAuthorizationCode(id: code)
+            scene.oauth.expireAuthorizationCode(id: code)
 
             var tokenHeaders = HTTPFields()
             tokenHeaders[.contentType] = "application/json"
@@ -122,26 +113,26 @@ private func bodyText(_ response: ClientResponse) -> String {
             #expect(body?["error"] as? String == "authorization_code_expired")
             #expect(body?["error_description"] as? String == "This Login with Raft authorization code has expired. Obtain a fresh human authorization before retrying.")
             #expect(body?["next_action"] as? String == "obtain_fresh_authorization")
-            #expect(accounts.oauth.accessTokenCount(requestId: code) == 0)
+            #expect(scene.oauth.accessTokenCount(requestId: code) == 0)
         }
     }
 }
 
 @Test func installationTokenIsMintedForAnActiveInstall() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111197"
     let serverId = "33333333-3333-4333-8333-333333333389"
-    accounts.addAccount(id: userId, email: "oauth-install-197@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-install-197", name: "OAuth Installation Boundary", ownerId: userId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-install-197@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-install-197", name: "OAuth Installation Boundary", ownerId: userId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: userId,
         name: "OAuth Installation Boundary Client",
         clientId: "oauth-install-197",
         appType: "third_party_global"
     )
-    let installationId = accounts.oauth.installClient(
+    let installationId = scene.oauth.installClient(
         serverId: serverId,
         clientRecordId: created.id,
         installedByUserId: userId,
@@ -149,12 +140,7 @@ private func bodyText(_ response: ClientResponse) -> String {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -175,20 +161,20 @@ private func bodyText(_ response: ClientResponse) -> String {
 }
 
 @Test func installationTokenIsRejectedByTheOAuthPrincipalSurfaces() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111198"
     let serverId = "33333333-3333-4333-8333-333333333390"
-    accounts.addAccount(id: userId, email: "oauth-boundary-198@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-boundary-198", name: "OAuth Principal Boundary", ownerId: userId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-boundary-198@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-boundary-198", name: "OAuth Principal Boundary", ownerId: userId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: userId,
         name: "OAuth Principal Boundary Client",
         clientId: "oauth-boundary-198",
         appType: "third_party_global"
     )
-    let installationId = accounts.oauth.installClient(
+    let installationId = scene.oauth.installClient(
         serverId: serverId,
         clientRecordId: created.id,
         installedByUserId: userId,
@@ -196,12 +182,7 @@ private func bodyText(_ response: ClientResponse) -> String {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var mintHeaders = HTTPFields()
             mintHeaders[.contentType] = "application/json"
@@ -227,11 +208,11 @@ private func bodyText(_ response: ClientResponse) -> String {
 }
 
 @Test func malformedAgentRequestIdsAreRejectedBeforeLookup() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111211"
     let serverId = "33333333-3333-4333-8333-333333333405"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-malformed-211", name: "OAuth Malformed Request", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-malformed-211", name: "OAuth Malformed Request", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Malformed Request Client",
@@ -239,12 +220,7 @@ private func bodyText(_ response: ClientResponse) -> String {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -297,19 +273,19 @@ private func protocolTokenObject(_ response: ClientResponse) throws -> [String: 
 }
 
 private struct ProtocolTokenFixture: Sendable {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111646"
     let serverId = "33333333-3333-4333-8333-333333333672"
     let app: CreatedOAuthClient
 
     init(global: Bool = false) throws {
-        accounts.addAccount(id: ownerId, email: "token-protocol-646@test.invalid", password: "password123")
-        accounts.markEmailVerified(userId: ownerId)
-        accounts.oauth.addOwnedServer(id: serverId, slug: "token-protocol-646", name: "Token Protocol", ownerId: ownerId)
-        app = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+        scene.auth.addAccount(id: ownerId, email: "token-protocol-646@test.invalid", password: "password123")
+        scene.auth.markEmailVerified(userId: ownerId)
+        scene.oauth.addOwnedServer(id: serverId, slug: "token-protocol-646", name: "Token Protocol", ownerId: ownerId)
+        app = try scene.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
             name: "Token Protocol App", clientId: "token-protocol-client-646", appType: global ? "third_party_global" : "server_local")
         if global {
-            _ = accounts.oauth.installClient(serverId: serverId, clientRecordId: app.id, installedByUserId: ownerId, groups: [])
+            _ = scene.oauth.installClient(serverId: serverId, clientRecordId: app.id, installedByUserId: ownerId, groups: [])
         }
     }
 
@@ -338,7 +314,7 @@ private struct ProtocolTokenFixture: Sendable {
 @Test func oauthProtocolTokenParsersKeepFallbackPrecedenceAndLeaveRefusalsUnconsumed() async throws {
     let f = try ProtocolTokenFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let session = try await f.login(client)
             let code = try await f.code(client, session: session)
@@ -390,9 +366,9 @@ private struct ProtocolTokenFixture: Sendable {
 @Test(arguments: ["disabled-global", "aged", "member-removed", "server-deleted", "uninstalled"])
 func oauthProtocolGrantsKeepTheirDifferentLiveEligibility(change: String) async throws {
     let f = try ProtocolTokenFixture(global: true)
-    let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "GrantBot", creatorUserId: f.ownerId)
+    let agentId = f.scene.oauth.createAgent(serverId: f.serverId, name: "GrantBot", creatorUserId: f.ownerId)
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let session = try await f.login(client)
             let humanCode = try await f.code(client, session: session, scopes: "\"profile\"")
@@ -402,13 +378,13 @@ func oauthProtocolGrantsKeepTheirDifferentLiveEligibility(change: String) async 
             #expect(try protocolTokenObject(requested)["status"] as? String == "approved")
             let requestId = try #require(try protocolTokenObject(requested)["requestId"] as? String)
             switch change {
-            case "disabled-global": f.accounts.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: false)
+            case "disabled-global": f.scene.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: false)
             case "aged":
-                f.accounts.oauth.expireAuthorizationCode(id: humanCode)
-                f.accounts.oauth.expireAuthorizationCode(id: requestId)
-            case "member-removed": f.accounts.oauth.removeMember(serverId: f.serverId, userId: f.ownerId)
-            case "server-deleted": f.accounts.oauth.deleteServer(id: f.serverId)
-            case "uninstalled": _ = f.accounts.oauth.uninstallClient(serverId: f.serverId, clientRecordId: f.app.id)
+                f.scene.oauth.expireAuthorizationCode(id: humanCode)
+                f.scene.oauth.expireAuthorizationCode(id: requestId)
+            case "member-removed": f.scene.oauth.removeMember(serverId: f.serverId, userId: f.ownerId)
+            case "server-deleted": f.scene.oauth.deleteServer(id: f.serverId)
+            case "uninstalled": _ = f.scene.oauth.uninstallClient(serverId: f.serverId, clientRecordId: f.app.id)
             default: Issue.record("unknown eligibility scenario"); return
             }
             func expectProfileToken(_ response: ClientResponse) throws {
@@ -438,7 +414,7 @@ func oauthProtocolGrantsKeepTheirDifferentLiveEligibility(change: String) async 
                 #expect(agent.status == .unauthorized)
                 #expect(agent.body.string == "{\"error\":\"Invalid client credentials\"}")
                 #expect(agent.headers[HTTPField.Name("Cache-Control")!] == nil)
-                f.accounts.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: true)
+                f.scene.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: true)
                 try expectProfileToken(try await postJSON(client, path: "/api/oauth/token", body: agentBody))
             } else {
                 try expectProfileToken(agent)

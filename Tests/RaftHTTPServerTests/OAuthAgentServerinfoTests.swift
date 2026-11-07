@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -12,14 +13,14 @@ private func agentObject(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func agentOAuthServerinfoUsesTheServerScopedToken() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111210"
     let serverId = "33333333-3333-4333-8333-333333333404"
-    accounts.addAccount(id: ownerId, email: "oauth-agent-serverinfo-210@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-serverinfo-210", name: "OAuth Agent Serverinfo", ownerId: ownerId)
-    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthAgentServerinfoBot")
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-agent-serverinfo-210@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-serverinfo-210", name: "OAuth Agent Serverinfo", ownerId: ownerId)
+    _ = scene.oauth.createAgent(serverId: serverId, name: "OauthAgentServerinfoBot")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Agent Serverinfo Client",
@@ -27,12 +28,7 @@ private func agentObject(_ response: ClientResponse) throws -> [String: Any] {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var requestHeaders = HTTPFields()
             requestHeaders[.contentType] = "application/json"
@@ -65,18 +61,18 @@ private func agentObject(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func oauthPrincipalAgentSurfacesKeepRoleEnabledAndScopeRefusalsDistinct() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111647"
     let serverId = "33333333-3333-4333-8333-333333333673"
     let otherServerId = "33333333-3333-4333-8333-333333333674"
-    accounts.addAccount(id: ownerId, email: "principal-agent-647@test.invalid", password: "password123")
-    accounts.oauth.addOwnedServer(id: serverId, slug: "principal-agent-647", name: "Principal Agent", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: otherServerId, slug: "principal-other-647", name: "Other Principal", ownerId: ownerId)
-    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "PrincipalAgent", creatorUserId: ownerId)
-    let appClient = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+    scene.auth.addAccount(id: ownerId, email: "principal-agent-647@test.invalid", password: "password123")
+    scene.oauth.addOwnedServer(id: serverId, slug: "principal-agent-647", name: "Principal Agent", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: otherServerId, slug: "principal-other-647", name: "Other Principal", ownerId: ownerId)
+    let agentId = scene.oauth.createAgent(serverId: serverId, name: "PrincipalAgent", creatorUserId: ownerId)
+    let appClient = try scene.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
         name: "Principal Agent App", clientId: "principal-agent-client-647", allowedScopes: ["profile", "agent:read"])
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             func post(_ path: String, _ body: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
@@ -111,11 +107,11 @@ private func agentObject(_ response: ClientResponse) throws -> [String: Any] {
                 let cache: String? = endpoint == "agents" ? "no-store" : nil
                 #expect(response.headers[HTTPField.Name("Cache-Control")!] == cache)
             }
-            accounts.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
+            scene.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
             refusal(try await get("userinfo", token), status: .unauthorized, message: "Invalid or expired access token")
             #expect(try await get("serverinfo", token).status == .ok)
             refusal(try await get("agents", token), status: .unauthorized, message: "Invalid or expired access token", cache: "no-store")
-            accounts.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "")
+            scene.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "")
             let emptyRole = try await get("userinfo", token)
             #expect(emptyRole.status == .ok)
             #expect(try agentObject(emptyRole)["server_role"] as? String == "")
@@ -124,7 +120,7 @@ private func agentObject(_ response: ClientResponse) throws -> [String: Any] {
                 message: "Access token was issued for a different Server than this issuer", cache: "no-store")
             refusal(try await get("agents", identityOnly, mount: wrongMount), status: .forbidden,
                 message: "agent:read permission is required from an enabled App", cache: "no-store")
-            accounts.oauth.setClientEnabled(clientRecordId: appClient.id, enabled: false)
+            scene.oauth.setClientEnabled(clientRecordId: appClient.id, enabled: false)
             for endpoint in ["userinfo", "serverinfo"] {
                 #expect(try await get(endpoint, token).status == .ok)
                 refusal(try await get(endpoint, token, mount: wrongMount), status: .unauthorized,
@@ -134,8 +130,8 @@ private func agentObject(_ response: ClientResponse) throws -> [String: Any] {
                 refusal(try await get("agents", token, mount: mount), status: .forbidden,
                     message: "agent:read permission is required from an enabled App", cache: "no-store")
             }
-            accounts.oauth.setClientEnabled(clientRecordId: appClient.id, enabled: true)
-            accounts.oauth.deleteAgent(id: agentId)
+            scene.oauth.setClientEnabled(clientRecordId: appClient.id, enabled: true)
+            scene.oauth.deleteAgent(id: agentId)
             for endpoint in ["userinfo", "serverinfo", "agents"] {
                 refusal(try await get(endpoint, token), status: .unauthorized, message: "Invalid or expired access token",
                     cache: endpoint == "agents" ? "no-store" : nil)
