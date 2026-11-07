@@ -66,6 +66,17 @@ public struct ManagedMCPAssignmentsService: Sendable {
         self.publishTaskUpdated = publishTaskUpdated
     }
 
+    public func bindingTaskPublication(
+        publishTaskUpdated: @escaping @Sendable (String) -> Void
+    ) -> Self {
+        Self(
+            channels: channels, messages: messages, tasks: tasks, agents: agents,
+            profiles: profiles, oauth: oauth, auth: auth, ownership: ownership,
+            probe: probe, notices: notices, membership: membership, catalog: catalog,
+            now: now, publishTaskUpdated: publishTaskUpdated
+        )
+    }
+
     private func taskFragment(_ task: TaskRecord, _ channelName: String, _ channelType: String, _ summary: Bool) -> String {
         summary
             ? catalog.summaryTaskJSON(task, channelName: channelName, channelType: channelType)

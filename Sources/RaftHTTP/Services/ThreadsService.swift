@@ -136,6 +136,12 @@ public struct ThreadsService: Sendable {
         self.publishFollowersUpdated = publishFollowersUpdated
     }
 
+    public func bindingFollowersPublication(
+        publishFollowersUpdated: @escaping @Sendable (ThreadFollowersUpdatedPayload) -> Void
+    ) -> Self {
+        Self(store: store, dependencies: dependencies, publishFollowersUpdated: publishFollowersUpdated)
+    }
+
     // MARK: - GET /api/channels/threads/followers
 
     /// The follower roster for the requested thread channels, in request order.
