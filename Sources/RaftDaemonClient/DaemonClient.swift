@@ -348,7 +348,10 @@ public enum DaemonClient {
             let bootstrap = ClientBootstrap(group: group)
                 .connectTimeout(nioTimeout(timeout))
                 .channelInitializer { channel in
-                    channel.pipeline.addHandler(DaemonUpgradeHandler(clientKey: websocketKey, once: once))
+                    channel.eventLoop.preconditionInEventLoop()
+                    return channel.eventLoop.makeCompletedFuture {
+                        try channel.pipeline.syncOperations.addHandler(DaemonUpgradeHandler(clientKey: websocketKey, once: once))
+                    }
                 }
             let connected = try await bootstrap.connect(host: host, port: port).get()
             channel = connected
@@ -472,7 +475,7 @@ private final class Once<Success: Sendable>: Sendable {
     }
 }
 
-private final class DaemonUpgradeHandler: ChannelInboundHandler, @unchecked Sendable {
+private final class DaemonUpgradeHandler: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
 
     private var accumulator: DaemonUpgradeAccumulator
@@ -485,6 +488,7 @@ private final class DaemonUpgradeHandler: ChannelInboundHandler, @unchecked Send
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        context.eventLoop.preconditionInEventLoop()
         guard !done else { return }
         var buffer = unwrapInboundIn(data)
         let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
@@ -492,6 +496,7 @@ private final class DaemonUpgradeHandler: ChannelInboundHandler, @unchecked Send
     }
 
     func channelInactive(context: ChannelHandlerContext) {
+        context.eventLoop.preconditionInEventLoop()
         guard !done else { return }
         switch accumulator.current() {
         case .needMore:
@@ -503,6 +508,7 @@ private final class DaemonUpgradeHandler: ChannelInboundHandler, @unchecked Send
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.eventLoop.preconditionInEventLoop()
         guard !done else { return }
         switch accumulator.current() {
         case .needMore:

@@ -2438,3 +2438,9 @@ RFC 074 personal assistant：
 - ID/map归checked Mutex，private checked NativeWorkItem另以Mutex隔离实际non-Sendable SDK对象。保reserveID→锁外构造→mapinsert→原queue/deadline求值→enqueue，ownerMap锁不跨SDK；deadline在per-item借用前采样，cancel先remove到强local再原生cancel。
 - per-item借用仅原SDK enqueue/cancel，不inline调用client、不join已开始回调；queue可能立即另线程执行。真实SDK对象、fired项保到cancel/deinit、取消资源可能保到下一attempt/当前完成、scheduler释放后queue仍保body均保持；不手写flags/清body/自动删fired项/deinit取消/queue捕获owner。
 - 原十model用例与三新native公开输出用例在原/最终Source均13绿，包含0/负延时、重入、pending取消、admitted取消在释放clientwork前返回及weak owner已nil仍回调。两Test及窗外Source字节不变；最终package编译/full/E2E24smoke49Python22arch/parity绿，unchecked10→9/9→8files/server0。原NSLock已保护map操作，证据不作新race红、所有交错、精确capture退场/整队列join、生产wiring或TSan证明。
+
+### DaemonUpgradeHandler NIO 安装边界
+
+- private handler不宣Sendable，在channelInitializer所属loop检查后，以non-escaping makeCompletedFuture同步构造/安装；保原NIO on-loop addHandlerSync位置、安装失败future及Happy Eyeballs每次新parser/共享Once。read/inactive/error三入口先校验context loop再原逻辑，无跨loop handler捕获、额外Mutex/storedloop或装饰NIOLoopBound。
+- timeoutTask仅checkedOnce，parser/header/status/frame/error优先、done/Once顺序、inactive/error重复current读取、close/shutdown与其他Source窗外字节保；原九例在前后均绿（五真实upgrade与四request/frame/parser），原Test219行完全不变，无新测试/IDs。
+- 实际package编译/九定向/full/E2E24smoke49Python22arch/parity绿，unchecked9→8/8→7files/server0。证据为实际安装与loop confinement，不作旧race修复/全NIO协议/所有交错/TSan或性能声明。
