@@ -2463,3 +2463,9 @@ RFC 074 personal assistant：
 - 十二既有函数由local fixture持private profile/flags（同actual13 composer的agents实例），仅给明确flow service/internal Store subject；无Rootalias、publicTestSupport owner/internal类型逃逸、Source新visibility或全图facade。五步config/Appleunion/gated与unverifiedfresh默认保，PKCE复用原Codec；16typed seeds/flatfacts保持normalize/hash/2Date/analyticsUUID/flag3+rule2/orderedIDs。
 - 原24 mobileCallback参数/Date/handoff原位，收原typed MobileCallbackOutcome，断言24全部.completed(同returnUri/login)，取代私有exchange计数spy，不误断言callback单winner。旧handoff/hash事实原式保同borrow可选两Stringtuple；其他24complete→oneSessionAccount、24link→oneidentity、24Apple→1claim23consumed、24web→12conflict12recorded且12真实completion保。
 - 112expect→113/6require不减，6receiver/3真实存写scalar/sole spy→2typed实际断言例外逐项核，其余publishedbytes/legacycasts/query/legal/body/helpers/函数名参数/并发保；两file冻hash与fulltransform核同。实际新package十二定向、full/E2E24smoke49Python22arch/parity首次全绿，Source/TestSupport/Auth/Scene/composer63/IDs0改。仅该unit域，不扩大其他Auth/domainfixtures或完整Fallback/main/transport/Root切换资格。
+
+### RuntimeModelSourceCache 时钟重入与 checked 状态
+
+- entries/refreshing由同Mutex State持有，原五个保护域、fresh严格比较/forced/foreground独立/单background claim、weakself先升级再await/store/cleanup原序、transient矩阵与cachedOutcome兼容API保。live store仅在借用外采样原一次clock并构造完整Entry后发布，其他outcome不采样，修同实例publicstore→clock→nonlive.store重入死锁。
+- 新37行回归只用checked弱桥与公开store/read结果：clock先清→outerlive发布；read先copyouter再clock清仍返回outer/fresh；下一read返回unsupported/miss。旧Source实际编译后精确用例started并有界timeout124，新Source实际package原10+新1共11通过，旧149/new37测试字节固定，不借私有cachedOutcome或querycount/observer证明。
+- full/E2E24smoke49Python22arch/parity通过，unchecked7→6/6→5files/server0。旧completion覆盖newpush、前台miss不合并政策不修，不新generation/drainer；未见Swift生产构造，非outerprobeGate/生产接线/所有cache顺序/TSan或benchmark声明。

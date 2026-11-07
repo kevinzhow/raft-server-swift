@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// How long a live model list is served without a refresh.
 public let runtimeModelCacheFreshMs = 60_000
@@ -17,19 +18,21 @@ public typealias RuntimeModelDetectMode = String
 /// Only a live list is cached; a definitive non-live answer drops the entry; a
 /// transient failure keeps the previous list. Ported from the upstream daemon
 /// cache.
-public final class RuntimeModelSourceCache: @unchecked Sendable {
+public final class RuntimeModelSourceCache: Sendable {
     public typealias Detect = @Sendable (RuntimeModelDetectMode) async -> RuntimeModelSourceOutcome
 
-    private struct Entry {
+    private struct Entry: Sendable {
         var outcome: RuntimeModelSourceOutcome
         var atMs: Int
     }
 
-    private let lock = NSLock()
+    private struct State: Sendable {
+        var entries: [String: Entry] = [:]
+        var refreshing: Set<String> = []
+    }
+    private let state = Mutex(State())
     private let now: @Sendable () -> Int
     private let freshMs: Int
-    private var entries: [String: Entry] = [:]
-    private var refreshing: Set<String> = []
 
     public init(now: @escaping @Sendable () -> Int, freshMs: Int = runtimeModelCacheFreshMs) {
         self.now = now
@@ -41,7 +44,7 @@ public final class RuntimeModelSourceCache: @unchecked Sendable {
         detect: @escaping Detect,
         force: Bool = false
     ) async -> (outcome: RuntimeModelSourceOutcome, cache: RuntimeModelCacheRead) {
-        let entry = lock.withLock { force ? nil : entries[runtime] }
+        let entry = state.withLock { force ? nil : $0.entries[runtime] }
         if let entry {
             if now() - entry.atMs < freshMs { return (entry.outcome, .fresh) }
             refreshInBackground(runtime: runtime, detect: detect)
@@ -53,18 +56,26 @@ public final class RuntimeModelSourceCache: @unchecked Sendable {
 
     /// Observer/test seam: the currently cached outcome for a runtime, if any.
     public func cachedOutcome(runtime: String) -> RuntimeModelSourceOutcome? {
-        lock.lock(); defer { lock.unlock() }
-        return entries[runtime]?.outcome
+        return state.withLock { state in
+            return state.entries[runtime]?.outcome
+        }
     }
 
     /// Record a detection run elsewhere (the connect-time catalog push), so it
     /// warms the cache too.
     public func store(runtime: String, outcome: RuntimeModelSourceOutcome) {
-        lock.lock(); defer { lock.unlock() }
+        let liveEntry: Entry?
         if case .live = outcome {
-            entries[runtime] = Entry(outcome: outcome, atMs: now())
-        } else if !Self.isTransientFailure(outcome) {
-            entries[runtime] = nil
+            liveEntry = Entry(outcome: outcome, atMs: now())
+        } else {
+            liveEntry = nil
+        }
+        state.withLock { state in
+            if let liveEntry {
+                state.entries[runtime] = liveEntry
+            } else if !Self.isTransientFailure(outcome) {
+                state.entries[runtime] = nil
+            }
         }
     }
 
@@ -78,16 +89,18 @@ public final class RuntimeModelSourceCache: @unchecked Sendable {
     }
 
     private func refreshInBackground(runtime: String, detect: @escaping Detect) {
-        lock.lock()
-        if refreshing.contains(runtime) { lock.unlock(); return }
-        refreshing.insert(runtime)
-        lock.unlock()
+        let shouldRefresh = state.withLock { state in
+            if state.refreshing.contains(runtime) { return false }
+            state.refreshing.insert(runtime)
+            return true
+        }
+        guard shouldRefresh else { return }
         Task { [weak self] in
             guard let self else { return }
             _ = await self.detectAndStore(runtime: runtime) { await detect("background") }
             // A thrown refresh leaves the previous list in place; async closures
             // here are non-throwing, so only the final cleanup is needed.
-            self.lock.withLock { self.refreshing.remove(runtime) }
+            self.state.withLock { $0.refreshing.remove(runtime) }
         }
     }
 

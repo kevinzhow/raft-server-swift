@@ -2,5 +2,4 @@ Sources/RaftDaemonClient/DaemonLog.swift	1
 Sources/RaftDaemonClient/DaemonReconnectLoop.swift	1
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1
 Sources/RaftDaemonClient/ProcessMemory.swift	1
-Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1
 Sources/RaftDaemonClient/ScopedAppStorage.swift	2
