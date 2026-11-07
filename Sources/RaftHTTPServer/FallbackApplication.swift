@@ -255,7 +255,27 @@ public func configure(_ app: Application, services: FallbackServices) {
     RemindersFeature(services: services).register(routes: app)
     NotificationsFeature(services: services).register(routes: app)
     ServersFeature(services: services).register(routes: app)
-    ChannelsFeature(services: services).register(routes: app)
+    let hostMessaging = services.channelMessaging
+    ChannelsFeature(
+        threads: services.emailAccounts.threads().bindingFollowersPublication(
+            publishFollowersUpdated: hostMessaging.publishThreadFollowers
+        ),
+        reactions: services.emailAccounts.reactionsRealtime,
+        inbox: services.emailAccounts.inboxAndWake,
+        assignments: services.emailAccounts.channelAssignments().bindingTaskPublication(publishTaskUpdated: { _ in }),
+        readState: services.emailAccounts.managedMCPToolExecution,
+        membership: services.emailAccounts.channelMembership,
+        search: services.emailAccounts.searchMentions,
+        send: services.emailAccounts.messageSend,
+        reminders: services.emailAccounts.managedMCPAgentCatalog,
+        oauth: services.emailAccounts.managedMCPOAuth,
+        lifecycle: services.emailAccounts.managedMCPLifecycle,
+        agentsLifecycle: services.emailAccounts.agentsLifecycle,
+        socketMembership: services.emailAccounts.socketMembership,
+        channelRoutes: services.emailAccounts.managedMCPChannelRoutes,
+        channelMessaging: hostMessaging,
+        realtime: services.realtime
+    ).register(routes: app)
     MessagingFeature(services: services).register(routes: app)
     OAuthFeature(
         oauthFlows: services.emailAccounts.oauthFlows,

@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -67,14 +68,9 @@ private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
 ]
 
 @Test func channelsFeatureRegistersEveryChannelsRoute() async throws {
-    let services = FallbackServices(
-        nodeEnv: "test",
-        tracker: DbLivenessTracker(ping: {}),
-        pingDatabase: {},
-        emailAccounts: EmailLoginDirectory()
-    )
+    let scene = ChannelsScene()
     try await withApp { app in
-        try await app.register(collection: ChannelsFeature(services: services))
+        try await app.register(collection: makeChannelsSceneFeature(scene, realtime: nil))
 
         let registered = Set(app.routes.all.map { route in
             "\(route.method.rawValue) /" + route.path.map { "\($0)" }.joined(separator: "/")

@@ -2523,3 +2523,9 @@ RFC 074 personal assistant：
 - Threads.bindingFollowersPublication与Assignments.bindingTaskPublication只换显式publisher参数，保原全部private owners/capabilities/catalog与custom now，旧value保原publisher；不重建policy或clock，不增加state/owner/public owner initializer。
 - 原graph先无follow，silent copy的namedfollow与taskclaim真实写入后由原graph业务DTO读见，但两个真实socket的完整FIFO fence窗为空。原published value的namedunfollow/taskclaim各发一次精确frame；published receiver用parent-message-only follow成功写入仍静默，保原named-thread-only发布条件。
 - custom copies在general relay替换前已构建，替换后custom unfollow/taskclaim仅到新host且各一次，未保旧publisher双发。原graph inbox/原silent assignment的任务业务DTO看见同owner更新与customnow；claim/inbox默认ISO与catalog summary fractional ISO分别保原格式。nil user binding不关闭general发布；固定userHub与四个Feature调用方的最终映射仍属后续同图切换。
+
+### Explicit Channels service entry and shared-owner HTTP scene
+
+- ChannelsFeature仅接受15个具体Service和显式可选Hub；caller选择custom Threads与silent Assignments。54条注册顺序、body/header/refusal、成功后room副作用以及thread body fallback/activity固定Content-Length合同保持，原route-table54条与五处断言保留。
+- 同13-owner ChannelsScene经真实HTTP创建channel和empty thread。POST存description但原created DTO仍省略它，固定Hub独立发原channel:updated(desc null)并实际授予新room；新room probe不由测试join掩盖。非creator member相同PATCH先403，注册后真实角色晋升后200并保stored description/system sequence；兄弟GET读同id/newName/admin authority，继续省description字段。现有family撤销后同GET401，服务值保live role/profile。
+- named follow经原general relay仅到B，已构建Feature之后重装relay到A，unfollow仅到A，保持唯一canonical follower frame。thread订阅是明确transport setup，各Hub阳性probe后再取mutation前起点；三阶段六个完整FIFO wire窗口验证固定user与live general的区别。focused mount只用公开JSON边界，不冒称完整Fallback私有decoder或Main/transport图构造已切换。

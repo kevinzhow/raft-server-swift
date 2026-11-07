@@ -1,6 +1,7 @@
 import Foundation
 import HTTPTypes
 import RaftHTTP
+import RaftRealtime
 import Vapor
 
 /// `/api/channels/...` route surface extracted from `FallbackApplication.configure`.
@@ -16,10 +17,57 @@ import Vapor
 /// root decides when it is live. `boot` delegates to the same synchronous
 /// `register(routes:)` used by `configure` for non-async mounts.
 public struct ChannelsFeature: RouteCollection, Sendable {
-    public let services: FallbackServices
+    private let threads: ThreadsService
+    private let reactions: ReactionsRealtimeService
+    private let inbox: InboxAndWakeService
+    private let assignments: ManagedMCPAssignmentsService
+    private let readState: ManagedMCPToolExecutionService
+    private let membership: ChannelMembershipService
+    private let search: SearchMentionsService
+    private let send: MessageSendService
+    private let reminders: ManagedMCPAgentCatalogService
+    private let oauth: ManagedMCPOAuthService
+    private let lifecycle: ManagedMCPLifecycleService
+    private let agentsLifecycle: AgentsLifecycleService
+    private let socketMembership: SocketMembershipService
+    private let channelRoutes: ManagedMCPChannelRoutesService
+    private let channelMessaging: ChannelMessagingService
+    private let realtime: RealtimeHub?
 
-    public init(services: FallbackServices) {
-        self.services = services
+    public init(
+        threads: ThreadsService,
+        reactions: ReactionsRealtimeService,
+        inbox: InboxAndWakeService,
+        assignments: ManagedMCPAssignmentsService,
+        readState: ManagedMCPToolExecutionService,
+        membership: ChannelMembershipService,
+        search: SearchMentionsService,
+        send: MessageSendService,
+        reminders: ManagedMCPAgentCatalogService,
+        oauth: ManagedMCPOAuthService,
+        lifecycle: ManagedMCPLifecycleService,
+        agentsLifecycle: AgentsLifecycleService,
+        socketMembership: SocketMembershipService,
+        channelRoutes: ManagedMCPChannelRoutesService,
+        channelMessaging: ChannelMessagingService,
+        realtime: RealtimeHub?
+    ) {
+        self.threads = threads
+        self.reactions = reactions
+        self.inbox = inbox
+        self.assignments = assignments
+        self.readState = readState
+        self.membership = membership
+        self.search = search
+        self.send = send
+        self.reminders = reminders
+        self.oauth = oauth
+        self.lifecycle = lifecycle
+        self.agentsLifecycle = agentsLifecycle
+        self.socketMembership = socketMembership
+        self.channelRoutes = channelRoutes
+        self.channelMessaging = channelMessaging
+        self.realtime = realtime
     }
 
     public func boot(routes: any RoutesBuilder) async throws {
@@ -29,18 +77,9 @@ public struct ChannelsFeature: RouteCollection, Sendable {
     /// Synchronous mount for `configure`, whose call sites are not `async`.
     public func register(routes: any RoutesBuilder) {
         let channels = routes.grouped("api", "channels")
-        let threads = services.emailAccounts.threads(
-            publishFollowersUpdated: { [messaging = services.channelMessaging] payload in
-                messaging.publishThreadFollowers(payload)
-            }
-        )
-        let inbox = services.emailAccounts.reactionsRealtime
-        let servedInbox = services.emailAccounts.inboxAndWake
-        let assignments = services.emailAccounts.channelAssignments()
-        let readState = services.emailAccounts.managedMCPToolExecution
         channels.post(":channelId", "archive") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.channelMembership.setChannelArchived(
+                try membership.setChannelArchived(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -51,7 +90,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.post(":channelId", "unarchive") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.channelMembership.setChannelArchived(
+                try membership.setChannelArchived(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -62,7 +101,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.post(":channelId", "join") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.channelMembership.joinChannel(
+                try membership.joinChannel(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? ""
@@ -73,7 +112,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post("inbox", "done") { request async throws -> Response in
             let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
             return try await respond {
-                try inbox.channelInboxDone(
+                try reactions.channelInboxDone(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     body: body
@@ -83,7 +122,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.post("inbox", "read-all") { request async throws -> Response in
             try await respond {
-                try inbox.inboxReadAll(
+                try reactions.inboxReadAll(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!]
                 )
@@ -92,7 +131,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.get("inbox", "done") { request async throws -> Response in
             try await respond {
-                try servedInbox.doneInbox(
+                try inbox.doneInbox(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     query: request.url.query
@@ -103,7 +142,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post("inbox", "undone") { request async throws -> Response in
             let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
             return try await respond {
-                try inbox.inboxUndone(
+                try reactions.inboxUndone(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     body: body
@@ -114,7 +153,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post("threads", "undone") { request async throws -> Response in
             let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
             return try await respond {
-                try inbox.threadInboxUndone(
+                try reactions.threadInboxUndone(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     body: body
@@ -125,7 +164,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post("threads", "done") { request async throws -> Response in
             let body = await jsonRequestBody(InboxScopeRequest.self, request, emptyDefault: "{}")
             return try await respond {
-                try inbox.threadInboxDone(
+                try reactions.threadInboxDone(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     body: body
@@ -146,7 +185,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.get("inbox") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try inbox.channelInbox(
+                try reactions.channelInbox(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],
                     filter: desktopQuery(request.url.query, "filter"),
@@ -157,7 +196,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.delete(":channelId") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.searchMentions.deleteChannel(
+                try search.deleteChannel(
                     channelId: request.parameters.get("channelId") ?? "",
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!]
@@ -167,7 +206,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.delete("threads", ":threadId", "followers", "agents", ":agentId") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.messageSend.removeThreadFollower(
+                try send.removeThreadFollower(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     threadId: request.parameters.get("threadId") ?? "",
@@ -183,7 +222,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 RestoreThreadFollowerRequest.self, request, decoding: .json, emptyDefault: "{}"
             )) ?? RestoreThreadFollowerRequest()
             return try await respond {
-                try services.emailAccounts.messageSend.restoreThreadFollower(
+                try send.restoreThreadFollower(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     threadId: request.parameters.get("threadId") ?? "",
@@ -283,7 +322,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post("saved") { request async throws -> Response in
             let body = await jsonRequestBody(SaveChannelMessageRequest.self, request)
             return try await respond {
-                try services.emailAccounts.managedMCPAgentCatalog.saveChannelMessage(
+                try reminders.saveChannelMessage(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     body: body
@@ -400,7 +439,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.post(":channelId", "unread") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.managedMCPOAuth.markChannelUnread(
+                try oauth.markChannelUnread(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? ""
@@ -410,7 +449,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.get("unread") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try services.emailAccounts.managedMCPOAuth.channelUnread(
+                try oauth.channelUnread(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     summary: desktopQuery(request.url.query, "summary") == "1"
@@ -430,7 +469,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.post(":channelId", "conversation-read-all") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.managedMCPLifecycle.conversationReadAll(
+                try lifecycle.conversationReadAll(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? ""
@@ -462,12 +501,12 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                 )
             }
             if response.status == .ok,
-               let hub = services.realtime,
-               let userId = services.emailAccounts.sessionUserId(authorization: authorization) {
+               let hub = realtime,
+               let userId = agentsLifecycle.sessionUserId(authorization: authorization) {
                 hub.leaveUserRooms(
                     userId: userId,
                     serverId: serverId,
-                    rooms: services.emailAccounts.socketMembership.channelRoomIds(channelId: channelId).rooms
+                    rooms: socketMembership.channelRoomIds(channelId: channelId).rooms
                 )
             }
             return response
@@ -487,7 +526,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.post("joint-invites", ":inviteId", "accept") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.managedMCPLifecycle.acceptJointChannelInvite(
+                try lifecycle.acceptJointChannelInvite(
                     authorization: request.headers[.authorization],
                     inviteId: request.parameters.get("inviteId") ?? ""
                 )
@@ -543,11 +582,11 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                     memberId: memberId
                 )
             }
-            if response.status == .ok, let hub = services.realtime {
+            if response.status == .ok, let hub = realtime {
                 hub.leaveUserRooms(
                     userId: memberId,
                     serverId: serverId,
-                    rooms: services.emailAccounts.socketMembership.channelRoomIds(channelId: channelId).rooms
+                    rooms: socketMembership.channelRoomIds(channelId: channelId).rooms
                 )
             }
             return response
@@ -566,7 +605,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.get(":channelId", "files") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentsLifecycle.channelFiles(
+                try agentsLifecycle.channelFiles(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -598,7 +637,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.get(":channelId", "notification-settings") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.managedMCPOAuth.channelNotificationSettings(
+                try oauth.channelNotificationSettings(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? ""
@@ -609,7 +648,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.patch(":channelId", "notification-settings") { request async throws -> Response in
             let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
             return try await respond {
-                try services.emailAccounts.managedMCPOAuth.patchChannelNotificationSettings(
+                try oauth.patchChannelNotificationSettings(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -621,7 +660,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.patch(":channelId") { request async throws -> Response in
             let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
             return try await respond {
-                try services.emailAccounts.managedMCPChannelRoutes.patchChannel(
+                try channelRoutes.patchChannel(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -633,14 +672,14 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         channels.post { request async throws -> Response in
             let body = await jsonRequestBody(ManagedMCPChannelCreateRequest.self, request)
             return try await respond {
-                let created = try services.emailAccounts.managedMCPChannelRoutes.createChannel(
+                let created = try channelRoutes.createChannel(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     body: body
                 )
                 // Only a successful create reaches here; the room grant and the
                 // `channel:updated` frame read the published reply body.
-                services.channelMessaging.publishCreatedChannel(
+                channelMessaging.publishCreatedChannel(
                     status: 200,
                     replyBody: created.jsonBody.render(),
                     authorization: request.headers[.authorization]
@@ -651,7 +690,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
 
         channels.get { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.managedMCPLifecycle.listChannels(
+                try lifecycle.listChannels(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     archived: desktopQuery(request.url.query, "archived")
