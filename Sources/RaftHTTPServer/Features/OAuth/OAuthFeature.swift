@@ -92,7 +92,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         oauth.post("requests", "agent") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond {
-                try services.emailAccounts.oauth.requestAgentAccess(
+                try services.emailAccounts.integrationsAndAppAccess.requestAgentAccess(
                     authorization: request.headers[.authorization],
                     body: body
                 )

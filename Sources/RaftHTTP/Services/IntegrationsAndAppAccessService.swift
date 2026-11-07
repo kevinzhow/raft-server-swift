@@ -126,7 +126,7 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
 }
 
 /// App setup declarations, Marketplace installs, installation credentials,
-/// agent grants and the agent app event feed.
+/// App-initiated access requests, agent grants and the agent app event feed.
 ///
 /// All state lives in the OAuth ledger (its own lock; each call below is one
 /// ledger critical section or a read). The one cross-domain dependency is the
@@ -381,6 +381,68 @@ public struct IntegrationsAndAppAccessService: Sendable {
         }
         _ = oauth.uninstallClient(serverId: serverId, clientRecordId: recordId)
         return OkResponse()
+    }
+
+    // MARK: - App-initiated agent access
+
+    /// `POST /api/oauth/requests/agent`. This endpoint accepts a JSON object,
+    /// with the original Basic/body credential precedence. Pure shape parsing
+    /// never refuses a selector or scope before the owner's live-state gates.
+    public func requestAgentAccess(
+        authorization: String?, body: String
+    ) throws -> OAuthAgentAccessRequestResponse {
+        let object = OAuthRequestBody.parse(body)
+        var fields: [String: String] = [:]
+        for key in ["client_id", "clientId", "client_secret", "clientSecret"] {
+            if let value = object?.string(key) { fields[key] = value }
+        }
+        guard let credentials = OAuthRequestParsing.clientCredentials(authorization: authorization, fields: fields) else {
+            throw OAuthLedgerError(.clientCredentialsRequired)
+        }
+        let serverSlug = (object?.string("serverSlug") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let selector: AppAgentAccessSelector
+        if let rawId = object?.string("agentId"), !rawId.isEmpty {
+            if rawId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil {
+                selector = .id(rawId.lowercased())
+            } else {
+                selector = .invalidId
+            }
+        } else {
+            selector = .name((object?.string("agentName") ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let scopeCandidates: [String]? = {
+            guard case .array(let list)? = object?.value("scopes") else { return nil }
+            var strings: [String] = []
+            for item in list {
+                guard case .string(let text) = item else { return nil }
+                strings.append(text)
+            }
+            return strings
+        }()
+        let attempt = AppAgentAccessRequestAttempt(
+            clientId: credentials.clientId, clientSecret: credentials.clientSecret,
+            serverSlug: serverSlug, selector: selector, scopeCandidates: scopeCandidates,
+            initiatedByAgent: object?.bool("initiatedByAgent") == true
+        )
+        switch oauth.submitAgentAccessRequest(attempt) {
+        case .invalidClient:
+            throw OAuthLedgerError(.invalidClientCredentials)
+        case .serverUnavailable:
+            throw OAuthLedgerError(.serverNotFound)
+        case .agentUnavailable:
+            throw OAuthLedgerError(.agentNotFound)
+        case .appUnavailableOnServer:
+            throw OAuthLedgerError(.clientNotFoundForServer)
+        case .invalidScopes:
+            throw OAuthLedgerError(.invalidScopeBare)
+        case .completed(let receipt):
+            return OAuthAgentAccessRequestResponse(
+                requestId: receipt.requestId, status: receipt.status,
+                client: OAuthClientSummary(clientId: receipt.clientId, appType: receipt.clientAppType, name: receipt.clientName),
+                agentId: receipt.agentId, agentName: receipt.agentName, agentDisplayName: receipt.agentDisplayName,
+                serverId: receipt.serverId, serverSlug: receipt.serverSlug, scopes: receipt.scopes
+            )
+        }
     }
 
     // MARK: - Agent grants

@@ -156,56 +156,47 @@ extension OAuthLedger {
         }
     }
 
-    /// `POST /api/oauth/requests/agent`. A server-local or installed App asks
-    /// for an Agent; the owner behind the App may auto-grant.
-    public func requestAgentAccess(authorization: String?, body: String) throws -> OAuthAgentAccessRequestResponse {
-        let object = OAuthRequestBody.parse(body)
-        var fields: [String: String] = [:]
-        for key in ["client_id", "clientId", "client_secret", "clientSecret"] {
-            if let value = object?.string(key) { fields[key] = value }
-        }
-        guard let credentials = OAuthRequestParsing.clientCredentials(authorization: authorization, fields: fields) else {
-            throw OAuthLedgerError(.clientCredentialsRequired)
-        }
-        return try self.state.withLock { ledgerState in
+    /// Resolves the live App/server/agent and scopes, then decides and appends
+    /// the optional grant and mandatory request in one owner transaction.
+    func submitAgentAccessRequest(_ attempt: AppAgentAccessRequestAttempt) -> AppAgentAccessRequestOutcome {
+        return self.state.withLock { ledgerState in
             guard let client = ledgerState.clients.first(where: {
-                $0.clientId == credentials.clientId
+                $0.clientId == attempt.clientId
                     && isUserManaged($0)
                     && ($0.appType != "third_party_global" || $0.enabled)
-                    && $0.secretHash == sha256(credentials.clientSecret)
+                    && $0.secretHash == sha256(attempt.clientSecret)
             }) else {
-                throw OAuthLedgerError(.invalidClientCredentials)
+                return .invalidClient
             }
-            let serverSlug = (object?.string("serverSlug") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let server = ledgerState.servers.values.first(where: { $0.slug == serverSlug && !$0.deleted }) else {
-                throw OAuthLedgerError(.serverNotFound)
+            guard let server = ledgerState.servers.values.first(where: { $0.slug == attempt.serverSlug && !$0.deleted }) else {
+                return .serverUnavailable
             }
             let agent: Agent?
-            if let rawId = object?.string("agentId"), !rawId.isEmpty {
-                guard rawId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
-                    throw OAuthLedgerError(.agentNotFound)
-                }
-                agent = ledgerState.agents[rawId.lowercased()].flatMap { $0.serverId == server.id && !$0.deleted ? $0 : nil }
-            } else {
-                let agentName = (object?.string("agentName") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                agent = ledgerState.agents.values.first(where: { $0.serverId == server.id && $0.name == agentName && !$0.deleted })
+            switch attempt.selector {
+            case .id(let id):
+                agent = ledgerState.agents[id].flatMap { $0.serverId == server.id && !$0.deleted ? $0 : nil }
+            case .name(let name):
+                agent = ledgerState.agents.values.first(where: { $0.serverId == server.id && $0.name == name && !$0.deleted })
+            case .invalidId:
+                return .agentUnavailable
             }
             guard let agent else {
-                throw OAuthLedgerError(.agentNotFound)
+                return .agentUnavailable
             }
             let installed = ledgerState.installations.contains(where: {
                 $0.clientId == client.id && $0.serverId == server.id && $0.status == "active"
             })
             guard (client.appType == "server_local" && client.serverId == server.id) || installed else {
-                throw OAuthLedgerError(.clientNotFoundForServer)
+                return .appUnavailableOnServer
             }
-            guard let scopes = normalizeScopes(object?.value("scopes"), allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId) else {
-                throw OAuthLedgerError(.invalidScopeBare)
-            }
+            guard let candidates = attempt.scopeCandidates else { return .invalidScopes }
+            let validation = validateScopes(candidates, allowed: client.allowedScopes ?? ["openid", "profile", "identity"], clientId: client.clientId)
+            guard validation.allowed, !validation.scopes.isEmpty else { return .invalidScopes }
+            let scopes = validation.scopes.sorted()
             let requestId = UUID().uuidString.lowercased()
             let existingGrant = activeAgentGrantLocked(agentId: agent.id, clientRecordId: client.id, state: ledgerState)
             let blocked = ledgerState.autoGrantBlocked.contains(agentGrantKey(agent.id, client.id))
-            let initiatedByAgent = object?.bool("initiatedByAgent") == true
+            let initiatedByAgent = attempt.initiatedByAgent
             let hasAuthority = isAgentAuthorityLocked(userId: client.createdByUserId, agent: agent, serverId: server.id, state: ledgerState)
             var status = "pending"
             if existingGrant != nil {
@@ -233,17 +224,19 @@ extension OAuthLedger {
                 status: status,
                 createdAt: Date()
             ))
-            return OAuthAgentAccessRequestResponse(
+            return .completed(AppAgentAccessRequestReceipt(
                 requestId: requestId,
                 status: status,
-                client: OAuthClientSummary(clientId: client.clientId, appType: client.appType, name: client.name),
+                clientId: client.clientId,
+                clientAppType: client.appType,
+                clientName: client.name,
                 agentId: agent.id,
                 agentName: agent.name,
                 agentDisplayName: agent.displayName,
                 serverId: server.id,
                 serverSlug: server.slug,
                 scopes: scopes
-            )
+            ))
         }
     }
 }

@@ -2283,3 +2283,10 @@ RFC 074 personal assistant：
 - 同一旧 timer 重复或迟到交付不能启动重叠 pass，也不能擦掉新 timer 的 token。stop 原子关闭未来准入/rearm 后才调用外部 timer；cancel 重入 stop 或交付旧 callback 不重新开 pass。stop 不 join 已准入 pass 或在途注册。
 - 已准入 Task 沿用原 strong self 跨 await 保活，pending callback 仍 weak；永久阻塞的注入 timer 操作可占用 drainer，迟到 token 的取消需等待注册返回。原 initial/interval、WalkBudget、磁盘扫描和删除规则不变。
 - 默认并发 suite 中十四例实际执行：原六例与两个兼容 guard 在旧实现通过，六个新核心回归以十四条断言失败；新实现十四例全部通过。证据限公开 Timers seam 的确定性交错和原 orderly fake timer，不声称真实 timer/磁盘 pass 联合、daemon 接线或 TSan 证明。
+
+### App-initiated agent access request 的领域边界
+
+- `POST /api/oauth/requests/agent` 由 integration Service 接收 JSON-only 兼容解析、四种 credential field 的 Basic/body 优先、slug/name trim、非空 agent ID 的原 UUID 校验/lowercase 和 Bool/0/1 兼容。无效 ID 与 scope shape 仅生成 typed marker，不提前压过 live client/server/agent/installation 的拒绝。
+- OAuth owner 单锁保持 client→live server→同 server live agent→local 或 active installation→strict scope 顺序。server-local disabled 的原接受集与 global enabled 门槛保持；scopes 全字符串才进入同 validateScopes，以 live allowlist/client key 保原 legacy 例外、trim/dedup/非空/sort，不默认请求 scopes。
+- 同锁保 request UUID→existing grant→person block→live authority→可选 grant UUID/Date→每次 request Date 的顺序。已有 grant 仍 approved 且不扩 scope，最多新增一个 grant，每次成功请求均保存独立 request；person revoke 的禁止自动重授保持。
+- owner 只接 typed attempt、回 typed outcome/flat receipt；Service 锁外投影同错误与 DTO，旧 owner HTTP API/调用全部移除，不留 wrapper。原四个 characterization 函数含五种 Bool case 在迁移前后均通过，既有真实 HTTP 的 32 requests/1 grant、阻止自动重授与原文字节回归保留；本片仍经完整旧 Fallback，未声称新全图的所有 capability 已运行。

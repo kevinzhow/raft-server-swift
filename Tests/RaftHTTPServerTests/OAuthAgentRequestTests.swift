@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import TestSupport
 import Testing
 import Vapor
 import VaporTesting
@@ -372,6 +373,194 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
             #expect(body["id"] as? String == eventId)
             #expect(body["status"] as? String == "queued")
             #expect(body["deduped"] as? Bool == true)
+        }
+    }
+}
+
+private struct AppAgentRequestBoundaryFixture: Sendable {
+    let accounts: EmailLoginDirectory
+    let ownerId: String
+    let serverId: String
+    let foreignServerId: String
+    let agentId: String
+    let foreignAgentId: String
+    let local: CreatedOAuthClient
+    let global: CreatedOAuthClient
+
+    init() throws {
+        let accounts = EmailLoginDirectory()
+        let ownerId = "11111111-1111-4111-8111-111111111643"
+        let serverId = "33333333-3333-4333-8333-333333333668"
+        let foreignServerId = "33333333-3333-4333-8333-333333333669"
+        accounts.addAccount(id: ownerId, email: "g3-boundary-643@test.invalid", password: "password123")
+        accounts.markEmailVerified(userId: ownerId)
+        accounts.oauth.addOwnedServer(id: serverId, slug: "g3-request-boundary", name: "G3 Boundary", ownerId: ownerId)
+        accounts.oauth.addOwnedServer(id: foreignServerId, slug: "g3-request-foreign", name: "G3 Foreign", ownerId: ownerId)
+        let agentId = accounts.oauth.createAgent(serverId: serverId, name: "BoundaryBot", displayName: "显示 / Bot", creatorUserId: ownerId)
+        let foreignAgentId = accounts.oauth.createAgent(serverId: foreignServerId, name: "ForeignBot", creatorUserId: ownerId)
+        let local = try accounts.oauth.createClient(
+            serverId: serverId, createdByUserId: ownerId, name: "请求 / App", clientId: "g3-local-boundary"
+        )
+        let global = try accounts.oauth.createClient(
+            serverId: foreignServerId, createdByUserId: ownerId, name: "Global App", clientId: "g3-global-boundary", appType: "third_party_global"
+        )
+        self.accounts = accounts
+        self.ownerId = ownerId
+        self.serverId = serverId
+        self.foreignServerId = foreignServerId
+        self.agentId = agentId
+        self.foreignAgentId = foreignAgentId
+        self.local = local
+        self.global = global
+    }
+}
+
+private func appAgentBoundaryBody(
+    _ app: CreatedOAuthClient, selector: String, scopes: String? = "[\"openid\"]",
+    serverSlug: String = "g3-request-boundary", extra: String = ""
+) -> String {
+    let scopeField = scopes.map { ",\"scopes\":\($0)" } ?? ""
+    return "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"serverSlug\":\"\(serverSlug)\",\(selector)\(scopeField)\(extra)}"
+}
+
+private func postAppAgentBoundary(
+    _ client: any Client, body: String, authorization: String? = nil
+) async throws -> ClientResponse {
+    var headers = HTTPFields()
+    headers[.contentType] = "application/json"
+    headers[.authorization] = authorization
+    return try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") {
+        $0.body = .init(string: body)
+    }
+}
+
+private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTPResponse.Status, body: String) {
+    #expect(response.status == status)
+    #expect(response.body.string == body)
+    #expect(response.headers[.contentType] == AppFallback.jsonContentType)
+    #expect(response.headers[.contentLength] == String(body.utf8.count))
+    #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] == AppFallback.robotsTag)
+    #expect(response.headers[HTTPField.Name("Cache-Control")!] == nil)
+}
+
+@Test func appAgentRequestRefusalsKeepClientServerAgentInstallationScopeOrder() async throws {
+    let f = try AppAgentRequestBoundaryFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let badSelector = "\"agentId\":\"invalid\",\"agentName\":\"BoundaryBot\""
+            let cases: [(String, HTTPResponse.Status, String)] = [
+                ("{\"serverSlug\":\"missing\",\"agentId\":\"invalid\",\"scopes\":[7]}", .unauthorized, "Client credentials are required"),
+                ("{\"clientId\":\"wrong\",\"clientSecret\":\"wrong\",\"serverSlug\":\"missing\",\"agentId\":\"invalid\",\"scopes\":[7]}", .unauthorized, "Invalid client credentials"),
+                (appAgentBoundaryBody(f.local, selector: badSelector, scopes: "[7]", serverSlug: "missing"), .notFound, "Server not found"),
+                (appAgentBoundaryBody(f.local, selector: badSelector, scopes: "[7]"), .notFound, "Agent not found"),
+                (appAgentBoundaryBody(f.global, selector: "\"agentId\":\"\(f.foreignAgentId)\"", scopes: "[7]"), .notFound, "Agent not found"),
+                (appAgentBoundaryBody(f.global, selector: "\"agentId\":\"\(f.agentId)\"", scopes: "[7]"), .notFound, "OAuth client not found for server"),
+                (appAgentBoundaryBody(f.local, selector: "\"agentId\":\"\(f.agentId)\"", scopes: "[7]"), .badRequest, "invalid_scope"),
+            ]
+            for (body, status, message) in cases {
+                expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: body), status: status, body: "{\"error\":\"\(message)\"}")
+            }
+            // Basic authenticates independently, but this endpoint never parses form fields.
+            let basic = Data("\(f.local.clientId):\(f.local.clientSecret)".utf8).base64EncodedString()
+            let form = "serverSlug=g3-request-boundary&agentName=BoundaryBot&scopes=openid"
+            expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: form, authorization: "Basic \(basic)"),
+                status: .notFound, body: "{\"error\":\"Server not found\"}")
+        }
+    }
+}
+
+@Test func appAgentRequestCredentialsSelectorsAndDisabledAppsKeepTheirAcceptanceSets() async throws {
+    let f = try AppAgentRequestBoundaryFixture()
+    f.accounts.oauth.setClientEnabled(clientRecordId: f.local.id, enabled: false)
+    _ = f.accounts.oauth.installClient(serverId: f.serverId, clientRecordId: f.global.id, installedByUserId: f.ownerId, groups: [])
+    f.accounts.oauth.setClientEnabled(clientRecordId: f.global.id, enabled: false)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let body = appAgentBoundaryBody(f.local, selector: "\"agentName\":\" BoundaryBot \"", serverSlug: " g3-request-boundary ")
+            let basic = Data("\(f.local.clientId):\(f.local.clientSecret)".utf8).base64EncodedString()
+            let wrongBodyCredentials = body.replacingOccurrences(of: f.local.clientId, with: "wrong-app").replacingOccurrences(of: f.local.clientSecret, with: "wrong-secret")
+            for (authorization, payload) in [
+                ("Basic \(basic)", wrongBodyCredentials),
+                ("Basic invalid", body),
+                ("", appAgentBoundaryBody(f.local, selector: "\"agentId\":\"\(f.agentId.uppercased())\",\"agentName\":\"wrong\"")),
+                ("", appAgentBoundaryBody(f.local, selector: "\"agentId\":\"\",\"agentName\":\" BoundaryBot \"")),
+                ("", appAgentBoundaryBody(f.local, selector: "\"agentId\":7,\"agentName\":\"BoundaryBot\"")),
+            ] {
+                let response = try await postAppAgentBoundary(client, body: payload, authorization: authorization.isEmpty ? nil : authorization)
+                #expect(response.status == .ok)
+                #expect(try agentRequestBody(response)["status"] as? String == "approved")
+            }
+            let whitespaceId = appAgentBoundaryBody(f.local, selector: "\"agentId\":\" \(f.agentId) \",\"agentName\":\"BoundaryBot\"")
+            expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: whitespaceId), status: .notFound, body: "{\"error\":\"Agent not found\"}")
+            let emptyBasicSecret = Data("\(f.local.clientId):".utf8).base64EncodedString()
+            expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: body, authorization: "Basic \(emptyBasicSecret)"),
+                status: .unauthorized, body: "{\"error\":\"Invalid client credentials\"}")
+            let emptySnakeId = body.replacingOccurrences(of: "{", with: "{\"client_id\":\"\",")
+            expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: emptySnakeId), status: .unauthorized,
+                body: "{\"error\":\"Client credentials are required\"}")
+            let globalBody = appAgentBoundaryBody(f.global, selector: "\"agentId\":\"\(f.agentId)\"")
+            expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: globalBody), status: .unauthorized,
+                body: "{\"error\":\"Invalid client credentials\"}")
+            f.accounts.oauth.setClientEnabled(clientRecordId: f.global.id, enabled: true)
+            #expect(try await postAppAgentBoundary(client, body: globalBody).status == .ok)
+        }
+    }
+}
+
+@Test func appAgentRequestStrictScopesKeepBytesLegacyExceptionsAndNarrowExistingGrants() async throws {
+    let f = try AppAgentRequestBoundaryFixture()
+    let legacy = try f.accounts.oauth.createClient(
+        serverId: f.serverId, createdByUserId: f.ownerId, name: "Legacy App", clientId: "local-collabdoc-1", allowedScopes: []
+    )
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let selector = "\"agentId\":\"\(f.agentId)\""
+            let invalidScopes: [String?] = [nil, "null", "\"openid\"", "[]", "[\" \",\"\"]", "[\"openid\",7]"]
+            for scopes in invalidScopes {
+                expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: appAgentBoundaryBody(f.local, selector: selector, scopes: scopes)),
+                    status: .badRequest, body: "{\"error\":\"invalid_scope\"}")
+            }
+            let first = try await postAppAgentBoundary(client, body: appAgentBoundaryBody(f.local, selector: selector))
+            #expect(first.status == .ok)
+            let firstRequest = try #require(try agentRequestBody(first)["requestId"] as? String)
+            let repeated = try await postAppAgentBoundary(client, body: appAgentBoundaryBody(f.local, selector: selector, scopes: "[\" profile \",\"openid\",\"profile\",\"\"]"))
+            let nextRequest = try #require(try agentRequestBody(repeated)["requestId"] as? String)
+            #expect(firstRequest != nextRequest)
+            expectAppAgentBoundaryWire(repeated, status: .ok,
+                body: "{\"requestId\":\"\(nextRequest)\",\"status\":\"approved\",\"client\":{\"clientId\":\"g3-local-boundary\",\"appType\":\"server_local\",\"name\":\"请求 / App\",\"description\":null,\"homepageUrl\":null},\"agent\":{\"id\":\"\(f.agentId)\",\"name\":\"BoundaryBot\",\"displayName\":\"显示 / Bot\",\"serverId\":\"\(f.serverId)\",\"serverSlug\":\"g3-request-boundary\"},\"scopes\":[\"openid\",\"profile\"]}")
+            var human = HTTPFields()
+            human[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: f.ownerId))"
+            let grantList = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/grants"), headers: human)
+            #expect(grantList.status == .ok)
+            let grants = try #require(JSONSerialization.jsonObject(with: Data((grantList.body.string ?? "").utf8)) as? [[String: Any]])
+            #expect(grants.count == 1)
+            #expect(grants.first?["scopes"] as? [String] == ["openid"])
+            let legacyRequest = try await postAppAgentBoundary(client, body: appAgentBoundaryBody(legacy, selector: selector, scopes: "[\"owner\",\"creator\"]"))
+            #expect(legacyRequest.status == .ok)
+            #expect(try agentRequestBody(legacyRequest)["scopes"] as? [String] == ["creator", "owner"])
+            expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: appAgentBoundaryBody(f.local, selector: selector, scopes: "[\"owner\"]")),
+                status: .badRequest, body: "{\"error\":\"invalid_scope\"}")
+        }
+    }
+}
+
+@Test(arguments: ["0", "1", "2", "true", "\"true\""])
+func appAgentRequestInitiatedByAgentKeepsBooleanAndNumericCompatibility(value: String) async throws {
+    let f = try AppAgentRequestBoundaryFixture()
+    let loginApp = try f.accounts.oauth.createClient(
+        serverId: f.serverId, createdByUserId: "unrelated-user", name: "Agent Login", clientId: "g3-agent-login"
+    )
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let response = try await postAppAgentBoundary(client, body: appAgentBoundaryBody(
+                loginApp, selector: "\"agentId\":\"\(f.agentId)\"", extra: ",\"initiatedByAgent\":\(value)"
+            ))
+            #expect(response.status == .ok)
+            #expect(try agentRequestBody(response)["status"] as? String == (value == "1" || value == "true" ? "approved" : "pending"))
         }
     }
 }

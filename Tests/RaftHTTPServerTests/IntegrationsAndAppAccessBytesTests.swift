@@ -211,7 +211,7 @@ private func uuidIn(_ body: String, key: String) -> String {
             try await call("revoke-unauth", .post, "/api/integrations/grants/\(grantId)/revoke")
 
             // Access requests.
-            let requested = try accounts.oauth.requestAgentAccess(
+            let requested = try accounts.integrationsAndAppAccess.requestAgentAccess(
                 authorization: nil,
                 body: "{\"clientId\":\"member-app\",\"clientSecret\":\"\(memberApp.clientSecret)\",\"serverSlug\":\"bytes-dst\",\"agentId\":\"\(agent)\",\"scopes\":[\"agent:notification:write\"]}"
             )

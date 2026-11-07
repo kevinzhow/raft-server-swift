@@ -43,7 +43,7 @@ README is the project introduction. `docs/BEHAVIOR.md` is the append-only locked
 
 ## Identifiers
 
-Next new user starts at `11111111-1111-4111-8111-111111111643`; next server starts at `33333333-3333-4333-8333-333333333668`.
+Next new user starts at `11111111-1111-4111-8111-111111111644`; next server starts at `33333333-3333-4333-8333-333333333670`.
 
 ## Source
 

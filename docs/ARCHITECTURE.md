@@ -66,6 +66,8 @@ Moving a route to a helper must not silently change these policies. In particula
 
 A domain returns a named payload or a semantic outcome and throws a `DomainError`. `Respond.swift` projects the error's published body and complete header policy. The success path uses `JSONBodyConvertible` when member order matters, or an Encodable payload when sorted encoding is the contract.
 
+Installation credentials and app-initiated agent requests now follow this boundary through IntegrationsAndAppAccessService. The service owns compatible request parsing, delayed invalid-input markers and transport projection; the OAuth owner accepts typed attempts and returns value facts or semantic decisions. Agent request authorization and grant/request allocation remain one owner transaction with live client policy. The old owner HTTP entry points are removed. Agent event, authorization/grant protocol, principal projection and issuer metadata still require their own use-case cutovers.
+
 Examples of semantic outcomes are public attachment file/redirect results, release-note published/not-modified results, and mobile-email unsubscribe confirmation/invalid-link/unsubscribed/one-click results. These preserve non-JSON responses without replacing `HTTPReply` with another generic status/headers/body container.
 
 Conditional release-note responses retain their ETag and the original 304 header omissions. Public-search HEAD suppresses the body while retaining the corresponding GET representation length, including errors. No adapter may recompute that length from the suppressed body.

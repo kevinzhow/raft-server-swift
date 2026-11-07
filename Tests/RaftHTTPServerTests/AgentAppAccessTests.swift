@@ -9,7 +9,7 @@ import VaporTesting
 
 private func appAccessRequest(_ accounts: EmailLoginDirectory, _ data: Data) -> (Int, [String: Any]) {
     do {
-        let response = try accounts.oauth.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
+        let response = try accounts.integrationsAndAppAccess.requestAgentAccess(authorization: nil, body: String(decoding: data, as: UTF8.self))
         let body = (try? JSONSerialization.jsonObject(with: Data(response.jsonBody.render().utf8))) as? [String: Any] ?? [:]
         return (200, body)
     } catch let error as OAuthLedgerError {
