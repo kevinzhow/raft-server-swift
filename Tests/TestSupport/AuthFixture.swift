@@ -79,6 +79,80 @@ public struct AuthFixture: Sendable {
         }
     }
 
+    public var legalAcceptanceCount: Int { profiles.state.withLock { $0.legalAcceptances.count } }
+    public var retirementReceiptCount: Int { profiles.state.withLock { $0.accountSurface.retirementReceipts.count } }
+
+    public func stagingSelfAccountCapabilityHash(userId: String) -> String? {
+        profiles.account(userId: userId)?.stagingSelfAccountCapabilityHash
+    }
+
+    public func retiredAt(userId: String) -> Date? {
+        profiles.account(userId: userId)?.retiredAt
+    }
+
+    public func sessionCount(for userId: String) -> Int {
+        profiles.accountState.sessions.values.filter { $0.userId == userId }.count
+    }
+
+    public func sessionFamilyRevokedAts(userId: String) -> [Date?] {
+        profiles.accountState.sessionFamilies.values.filter { $0.userId == userId }.map(\.revokedAt)
+    }
+
+    public func hasAccount(email: String) -> Bool {
+        profiles.accountState.accounts[AccountNaming.normalize(email)] != nil
+    }
+
+    public func legalAcceptance(userId: String) -> EmailLegalAcceptance? {
+        profiles.legalAcceptance(userId: userId)
+    }
+
+    public func addSocialCompletion(
+        provider: String, code: String, email: String, mode: String = "login",
+        intendedAction: String = "login", returnTo: String = "/", userId: String? = nil,
+        providerUserId: String? = nil, linkOnConflict: Bool = false
+    ) {
+        profiles.state.withLock { owned in
+            owned.accountSurface.socialCompletions.append(SocialCompletion(
+                provider: provider,
+                code: code,
+                mode: mode,
+                intendedAction: intendedAction,
+                email: AccountNaming.normalize(email),
+                returnTo: returnTo,
+                userId: userId,
+                providerUserId: providerUserId,
+                linkOnConflict: linkOnConflict
+            ))
+        }
+    }
+
+    public func linkedProviderUserIds(userId: String, provider: String) -> [String] {
+        profiles.accountState.linkedIdentities
+            .filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
+    }
+
+    public func refreshRotationReceipts() -> [RefreshRotationReceipt] {
+        profiles.accountState.rotationReceipts.values.map {
+            RefreshRotationReceipt(
+                attemptId: $0.attemptId,
+                installationId: $0.installationId,
+                successorTokenCiphertext: $0.ciphertext
+            )
+        }
+    }
+
+    public func expireRefreshReceipts() {
+        profiles.state.withLock { owned in
+            for key in owned.accountSurface.rotationReceipts.keys {
+                owned.accountSurface.rotationReceipts[key]?.expiresAt = Date(timeIntervalSinceNow: -1)
+            }
+        }
+    }
+
+    public func isEmailVerified(userId: String) -> Bool {
+        profiles.isEmailVerified(userId: userId)
+    }
+
     public func configureOAuthForTesting(_ update: (inout OAuthFlowsService.DeploymentConfiguration) -> Void) {
         profiles.state.withLock { update(&$0.configSurface.oauthDeployment) }
     }

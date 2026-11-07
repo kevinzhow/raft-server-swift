@@ -9,23 +9,30 @@ import VaporTesting
 
 /// A focused app mounts only the actual production AuthFeature and its concrete
 /// scene services. It does not claim the private full-Fallback decoder boundary.
+func registerAuthScene(
+    _ app: Application, scene: AuthScene,
+    publicServerDirectory: PublicServerDirectory? = nil
+) {
+    app.middleware.use(JSONErrorBoundaryMiddleware(), at: .beginning)
+    AuthFeature(
+        core: scene.services.identity.core,
+        identities: scene.services.identity.identities,
+        oauthFlows: scene.services.identity.oauthFlows,
+        verification: scene.services.identity.verification,
+        profile: scene.services.identity.profile,
+        invites: scene.services.channels.invites,
+        managedLifecycle: scene.services.integrations.lifecycle,
+        publicServerDirectory: publicServerDirectory
+    ).register(routes: app)
+}
+
 func withAuthSceneApp(
     _ scene: AuthScene,
     publicServerDirectory: PublicServerDirectory? = nil,
     _ test: @escaping @Sendable (any Client) async throws -> Void
 ) async throws {
     try await withApp { app in
-        app.middleware.use(JSONErrorBoundaryMiddleware(), at: .beginning)
-        AuthFeature(
-            core: scene.services.identity.core,
-            identities: scene.services.identity.identities,
-            oauthFlows: scene.services.identity.oauthFlows,
-            verification: scene.services.identity.verification,
-            profile: scene.services.identity.profile,
-            invites: scene.services.channels.invites,
-            managedLifecycle: scene.services.integrations.lifecycle,
-            publicServerDirectory: publicServerDirectory
-        ).register(routes: app)
+        registerAuthScene(app, scene: scene, publicServerDirectory: publicServerDirectory)
         try await app.testing { client in
             try await test(client)
         }

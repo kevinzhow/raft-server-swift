@@ -4,6 +4,7 @@
 public struct AuthScene: Sendable {
     public let services: ServiceContainer
     public let auth: AuthFixture
+    public let mobile: AuthMobileFixture
     public let invites: AuthInviteFixture
 
     public init() {
@@ -37,6 +38,7 @@ public struct AuthScene: Sendable {
             oauth: oauth
         )
         auth = AuthFixture(profiles: profiles)
+        mobile = AuthMobileFixture(profiles: profiles)
         invites = AuthInviteFixture(channels: channels, oauth: oauth)
     }
 }

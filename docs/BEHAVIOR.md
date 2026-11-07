@@ -2469,3 +2469,9 @@ RFC 074 personal assistant：
 - entries/refreshing由同Mutex State持有，原五个保护域、fresh严格比较/forced/foreground独立/单background claim、weakself先升级再await/store/cleanup原序、transient矩阵与cachedOutcome兼容API保。live store仅在借用外采样原一次clock并构造完整Entry后发布，其他outcome不采样，修同实例publicstore→clock→nonlive.store重入死锁。
 - 新37行回归只用checked弱桥与公开store/read结果：clock先清→outerlive发布；read先copyouter再clock清仍返回outer/fresh；下一read返回unsupported/miss。旧Source实际编译后精确用例started并有界timeout124，新Source实际package原10+新1共11通过，旧149/new37测试字节固定，不借私有cachedOutcome或querycount/observer证明。
 - full/E2E24smoke49Python22arch/parity通过，unchecked7→6/6→5files/server0。旧completion覆盖newpush、前台miss不合并政策不修，不新generation/drainer；未见Swift生产构造，非outerprobeGate/生产接线/所有cache顺序/TSan或benchmark声明。
+
+### 旧 Auth HTTP 三十九函数同 owner 场景
+
+- 39原Auth注册/登录/密码语言profile/avatar、legal/retire、refresh replay精确binding、browser/mobile/PKCE/link/Apple gate与form callback函数走实际AuthFeature七服务/JSONBoundary，同13-owner AuthScene的private AuthFixture与MobileFixture。39原withApp/app.testing生命周期、所有请求字节/headers/错误/顺序/expiry与配置时点、458断言数量保；新增13Auth+10Mobile typed seeds/flatfacts对照原默认/normalization/hash/2Date/UUID/orderedIDs/perkeyexpiry，无Owner/State/map/newexchangehook。
+- 99receiver/实际存写flatfacts与3授权主体例外逐项核：原counter0改nonce拒绝Locationnil、cancel无code、exchangeFailure无code，原HTTPstatus/body/error与pending/failed事实保。它们证明公开拒绝结果，不声称provider从未调用。唯一sharedgetter删后全Tests该名0hits，Sourceprivatecounter/increment0改；无新请求/矩阵/queryspy。
+- Native5与797line后缀含JWT helper/3旧unchecked recorder-barrier整字节保，仍Root，非整44/整file/全部Auth完成。原Apple identity为RS256标签literal.sig+claim解析，请求capability真实HS256 HMAC；没有新增RSA/JWKS验签或相关覆盖声明。actual39/full/E2E24smoke49Python22arch/parity通过，Source/SDK/composer63/IDs0改，不扩大完整Fallback middleware/生产Root切换资格。

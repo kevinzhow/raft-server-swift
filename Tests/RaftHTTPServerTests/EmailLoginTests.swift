@@ -41,15 +41,10 @@ private func postJSON(_ client: any Client, _ path: String, body: String, author
 }
 
 @Test func emailLoginRejectsAMalformedBodyBeforeAnySession() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "11111111-1111-4111-8111-111111111111", email: "malformed-email@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "11111111-1111-4111-8111-111111111111", email: "malformed-email@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let objectEmail = try await postJSON(
                 client,
@@ -73,23 +68,18 @@ private func postJSON(_ client: any Client, _ path: String, body: String, author
             #expect(passwordBody?["code"] as? String == "email_login_body_invalid")
             let passwordIssues = passwordBody?["issues"] as? [[String: Any]] ?? []
             #expect(passwordIssues.contains { $0["path"] as? String == "password" })
-            #expect(accounts.sessionCount == 0)
+            #expect(scene.auth.sessionCount == 0)
         }
     }
 }
 
 @Test func emailLoginUsesOneBodyForAnUnknownUserAndAWrongPassword() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let userId = "22222222-2222-4222-8222-222222222222"
-    accounts.addAccount(id: userId, email: "wrong-password@slock.test", password: "password123")
+    scene.auth.addAccount(id: userId, email: "wrong-password@slock.test", password: "password123")
     let denied = "{\"code\":\"AUTH_INVALID_CREDENTIALS\",\"error\":\"Invalid email or password\"}"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let unknown = try await postJSON(
                 client,
@@ -108,7 +98,7 @@ private func postJSON(_ client: any Client, _ path: String, body: String, author
             #expect(mismatch.status == .unauthorized)
             #expect(bodyText(mismatch) == denied)
             #expect(bodyText(mismatch).contains("not-the-password") == false)
-            #expect(accounts.sessionCount == 0)
+            #expect(scene.auth.sessionCount == 0)
 
             let accepted = try await postJSON(
                 client,
@@ -126,22 +116,17 @@ private func postJSON(_ client: any Client, _ path: String, body: String, author
             let user = body?["user"] as? [String: Any]
             #expect(user?["id"] as? String == userId)
             #expect(user?["email"] as? String == "wrong-password@slock.test")
-            #expect(accounts.sessionCount == 1)
+            #expect(scene.auth.sessionCount == 1)
         }
     }
 }
 
 @Test func currentUserGravatarHashFollowsTheAccessToken() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let userId = "33333333-3333-4333-8333-333333333333"
-    accounts.addAccount(id: userId, email: "  Gravatar-Self@Slock.test  ", password: "password123")
+    scene.auth.addAccount(id: userId, email: "  Gravatar-Self@Slock.test  ", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let missing = try await client.get("/api/auth/me")
             #expect(missing.status == .unauthorized)
@@ -191,15 +176,10 @@ private func displayLanguage(_ body: [String: Any]) -> String? {
 }
 
 @Test func patchCurrentPasswordRejectsAWrongPasswordAndKeepsTheOldOne() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "44444444-4444-4444-8444-444444444444", email: "current-password@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "44444444-4444-4444-8444-444444444444", email: "current-password@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(
                 client,
@@ -254,15 +234,10 @@ private func displayLanguage(_ body: [String: Any]) -> String? {
 }
 
 @Test func patchDisplayLanguageNormalizesPersistsAndRejectsUnrenderable() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "55555555-5555-4555-8555-555555555555", email: "display-language@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "55555555-5555-4555-8555-555555555555", email: "display-language@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(
                 client,
@@ -328,7 +303,7 @@ private func registerJSON(
 }
 
 @Test func registerRejectsAnObjectFieldBeforeAnyAccount() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let terms = AuthLegalPolicy.termsVersion
     let privacy = AuthLegalPolicy.privacyVersion
     let bodies = [
@@ -338,12 +313,7 @@ private func registerJSON(
     ]
     let paths = ["email", "password", "name"]
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             for (body, path) in zip(bodies, paths) {
                 let response = try await registerJSON(client, body: body)
@@ -353,32 +323,27 @@ private func registerJSON(
                 #expect(parsed?["error"] as? String == "Invalid email registration body")
                 let issues = parsed?["issues"] as? [[String: Any]] ?? []
                 #expect(issues.contains { $0["path"] as? String == path })
-                #expect(accounts.userCount == 0)
-                #expect(accounts.legalAcceptanceCount == 0)
-                #expect(accounts.emailVerificationCount == 0)
-                #expect(accounts.sessionCount == 0)
+                #expect(scene.auth.userCount == 0)
+                #expect(scene.auth.legalAcceptanceCount == 0)
+                #expect(scene.auth.emailVerificationCount == 0)
+                #expect(scene.auth.sessionCount == 0)
             }
         }
     }
 }
 
 @Test func stagingSelfAccountRetirementIsOwnerBoundAndIdempotent() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureAuthCoreForTesting { $0.releaseBranch = "staging" }
+    let scene = AuthScene()
+    scene.auth.configureAuthCoreForTesting { $0.releaseBranch = "staging" }
     let otherId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2"
-    accounts.addAccount(id: otherId, email: "retire-other@mail.build", password: "password123")
-    accounts.markEmailVerified(userId: otherId)
+    scene.auth.addAccount(id: otherId, email: "retire-other@mail.build", password: "password123")
+    scene.auth.markEmailVerified(userId: otherId)
     let capability = "retirement-capability-owner-1234567890"
     let terms = AuthLegalPolicy.termsVersion
     let privacy = AuthLegalPolicy.privacyVersion
     let registerBody = "{\"email\":\"retire-owner@mail.build\",\"password\":\"password123\",\"name\":\"retire-owner\",\"acceptTerms\":true,\"termsVersion\":\"\(terms)\",\"privacyVersion\":\"\(privacy)\",\"stagingSelfAccountCapability\":\"\(capability)\"}"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let registration = try await registerJSON(client, body: registerBody)
             #expect(registration.status == .ok)
@@ -387,8 +352,8 @@ private func registerJSON(
             let ownerId = owner?["id"] as? String ?? ""
             let ownerEmail = owner?["email"] as? String ?? ""
             #expect(ownerEmail == "retire-owner@mail.build")
-            #expect(accounts.stagingSelfAccountCapabilityHash(userId: ownerId) == AuthTokenCodec.sha256Hex(capability))
-            accounts.markEmailVerified(userId: ownerId)
+            #expect(scene.auth.stagingSelfAccountCapabilityHash(userId: ownerId) == AuthTokenCodec.sha256Hex(capability))
+            scene.auth.markEmailVerified(userId: ownerId)
 
             let ownerLogin = try await postJSON(
                 client,
@@ -415,7 +380,7 @@ private func registerJSON(
             #expect(crossUser.status == .forbidden)
             let crossBody = try JSONSerialization.jsonObject(with: Data(bodyText(crossUser).utf8)) as? [String: Any]
             #expect(crossBody?["error"] as? String == "User ownership mismatch")
-            #expect(accounts.retirementReceiptCount == 0)
+            #expect(scene.auth.retirementReceiptCount == 0)
 
             let wrongCapability = try await postJSON(
                 client,
@@ -426,7 +391,7 @@ private func registerJSON(
             #expect(wrongCapability.status == .forbidden)
             let wrongBody = try JSONSerialization.jsonObject(with: Data(bodyText(wrongCapability).utf8)) as? [String: Any]
             #expect(wrongBody?["error"] as? String == "Invalid retirement capability")
-            #expect(accounts.retirementReceiptCount == 0)
+            #expect(scene.auth.retirementReceiptCount == 0)
 
             let sharedAccount = try await postJSON(
                 client,
@@ -437,7 +402,7 @@ private func registerJSON(
             #expect(sharedAccount.status == .forbidden)
             let sharedBody = try JSONSerialization.jsonObject(with: Data(bodyText(sharedAccount).utf8)) as? [String: Any]
             #expect(sharedBody?["error"] as? String == "Invalid retirement capability")
-            #expect(accounts.retirementReceiptCount == 0)
+            #expect(scene.auth.retirementReceiptCount == 0)
 
             let first = try await postJSON(
                 client,
@@ -465,12 +430,12 @@ private func registerJSON(
             )
             #expect(second.status == .ok)
             #expect(bodyText(second) == firstText)
-            #expect(accounts.retiredAt(userId: ownerId) != nil)
-            #expect(accounts.sessionCount(for: ownerId) == 0)
-            let revoked = accounts.sessionFamilyRevokedAts(userId: ownerId)
+            #expect(scene.auth.retiredAt(userId: ownerId) != nil)
+            #expect(scene.auth.sessionCount(for: ownerId) == 0)
+            let revoked = scene.auth.sessionFamilyRevokedAts(userId: ownerId)
             #expect(revoked.isEmpty == false)
             #expect(revoked.allSatisfy { $0 != nil })
-            #expect(accounts.retirementReceiptCount == 1)
+            #expect(scene.auth.retirementReceiptCount == 1)
 
             let passwordDenied = try await postJSON(
                 client,
@@ -488,23 +453,18 @@ private func registerJSON(
                 HTTPField.Name("Authorization")!: "Bearer \(ownerToken)",
             ])
             #expect(oldAccess.status == .unauthorized)
-            #expect(accounts.sessionCount(for: ownerId) == 0)
+            #expect(scene.auth.sessionCount(for: ownerId) == 0)
         }
     }
 }
 
 @Test func stagingSelfAccountRegistrationFailsClosedOutsideStaging() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let terms = AuthLegalPolicy.termsVersion
     let privacy = AuthLegalPolicy.privacyVersion
     let email = "production-opt-in@mail.build"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let response = try await registerJSON(
                 client,
@@ -513,23 +473,18 @@ private func registerJSON(
             #expect(response.status == .forbidden)
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]
             #expect(body?["error"] as? String == "Staging self-account registration is unavailable")
-            #expect(accounts.hasAccount(email: email) == false)
-            #expect(accounts.userCount == 0)
-            #expect(accounts.legalAcceptanceCount == 0)
-            #expect(accounts.sessionCount == 0)
+            #expect(scene.auth.hasAccount(email: email) == false)
+            #expect(scene.auth.userCount == 0)
+            #expect(scene.auth.legalAcceptanceCount == 0)
+            #expect(scene.auth.sessionCount == 0)
         }
     }
 }
 
 @Test func registerRequiresCurrentLegalAcceptance() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let missing = try await registerJSON(
                 client,
@@ -541,8 +496,8 @@ private func registerJSON(
             let legal = missingBody?["legal"] as? [String: Any]
             #expect(legal?["termsVersion"] as? String == "2026-05-12")
             #expect(legal?["privacyVersion"] as? String == "2026-05-12")
-            #expect(accounts.hasAccount(email: "legal-missing@slock.test") == false)
-            #expect(accounts.sessionCount == 0)
+            #expect(scene.auth.hasAccount(email: "legal-missing@slock.test") == false)
+            #expect(scene.auth.sessionCount == 0)
 
             let stale = try await registerJSON(
                 client,
@@ -551,7 +506,7 @@ private func registerJSON(
             #expect(stale.status == .conflict)
             let staleBody = try JSONSerialization.jsonObject(with: Data(bodyText(stale).utf8)) as? [String: Any]
             #expect(staleBody?["error"] as? String == "TERMS_CHANGED")
-            #expect(accounts.hasAccount(email: "legal-stale@slock.test") == false)
+            #expect(scene.auth.hasAccount(email: "legal-stale@slock.test") == false)
 
             let accepted = try await registerJSON(
                 client,
@@ -563,7 +518,7 @@ private func registerJSON(
             let acceptedBody = try JSONSerialization.jsonObject(with: Data(bodyText(accepted).utf8)) as? [String: Any]
             let userId = (acceptedBody?["user"] as? [String: Any])?["id"] as? String ?? ""
             #expect(userId.isEmpty == false)
-            let record = accounts.legalAcceptance(userId: userId)
+            let record = scene.auth.legalAcceptance(userId: userId)
             #expect(record == EmailLegalAcceptance(
                 termsVersion: "2026-05-12",
                 privacyVersion: "2026-05-12",
@@ -574,8 +529,8 @@ private func registerJSON(
                 locale: "en-US"
             ))
             #expect(record?.userAgentHash != "legal-test-agent")
-            #expect(accounts.hasAccount(email: "legal-ok@slock.test"))
-            #expect(accounts.sessionCount == 1)
+            #expect(scene.auth.hasAccount(email: "legal-ok@slock.test"))
+            #expect(scene.auth.sessionCount == 1)
 
             let invited = try await registerJSON(
                 client,
@@ -583,23 +538,18 @@ private func registerJSON(
             )
             #expect(invited.status == .ok)
             let invitedId = ((try JSONSerialization.jsonObject(with: Data(bodyText(invited).utf8)) as? [String: Any])?["user"] as? [String: Any])?["id"] as? String ?? ""
-            #expect(accounts.legalAcceptance(userId: invitedId)?.source == "invite")
+            #expect(scene.auth.legalAcceptance(userId: invitedId)?.source == "invite")
         }
     }
 }
 
 @Test func registerRefusesAReservedHandleSuchAsReminders() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let legal = "\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\""
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
-            let before = accounts.sessionCount
+            let before = scene.auth.sessionCount
             let reserved = try await registerJSON(
                 client,
                 body: "{\"email\":\"register-reminders@slock.test\",\"password\":\"password123\",\"name\":\"Reminders\",\(legal)}"
@@ -607,37 +557,32 @@ private func registerJSON(
             #expect(reserved.status == .badRequest)
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(reserved).utf8)) as? [String: Any]
             #expect(body?["error"] as? String == "This username is reserved. Choose another name.")
-            #expect(accounts.hasAccount(email: "register-reminders@slock.test") == false)
-            #expect(accounts.sessionCount == before)
+            #expect(scene.auth.hasAccount(email: "register-reminders@slock.test") == false)
+            #expect(scene.auth.sessionCount == before)
 
             let allowed = try await registerJSON(
                 client,
                 body: "{\"email\":\"register-notes@slock.test\",\"password\":\"password123\",\"name\":\"notes\",\(legal)}"
             )
             #expect(allowed.status == .ok)
-            #expect(accounts.hasAccount(email: "register-notes@slock.test"))
-            #expect(accounts.sessionCount == before + 1)
+            #expect(scene.auth.hasAccount(email: "register-notes@slock.test"))
+            #expect(scene.auth.sessionCount == before + 1)
         }
     }
 }
 
 @Test func registerAcceptsDuplicateFinalHandlesAsPendingAccounts() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let username = "exact-race-ab12cd34"
     let legal = "\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\""
     let before = (
-        accounts.userCount,
-        accounts.legalAcceptanceCount,
-        accounts.emailVerificationCount,
-        accounts.sessionCount
+        scene.auth.userCount,
+        scene.auth.legalAcceptanceCount,
+        scene.auth.emailVerificationCount,
+        scene.auth.sessionCount
     )
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             func register(_ email: String, name: String) async throws -> ClientResponse {
                 try await registerJSON(
@@ -664,25 +609,20 @@ private func registerJSON(
             #expect(secondUser["profileSetupCompletedAt"] is NSNull)
             #expect((firstUser["profileSetupSuggestedHandle"] as? String)?.hasPrefix(username) == true)
             #expect((secondUser["profileSetupSuggestedHandle"] as? String)?.hasPrefix(username) == true)
-            #expect(accounts.userCount == before.0 + 2)
-            #expect(accounts.legalAcceptanceCount == before.1 + 2)
-            #expect(accounts.emailVerificationCount == before.2 + 2)
-            #expect(accounts.sessionCount == before.3 + 2)
+            #expect(scene.auth.userCount == before.0 + 2)
+            #expect(scene.auth.legalAcceptanceCount == before.1 + 2)
+            #expect(scene.auth.emailVerificationCount == before.2 + 2)
+            #expect(scene.auth.sessionCount == before.3 + 2)
         }
     }
 }
 
 @Test func registerPreservesCaseSensitiveUsernameUniqueness() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let suffix = "ab12cd34"
     let legal = "\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\""
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let lower = try await registerJSON(
                 client,
@@ -699,20 +639,15 @@ private func registerJSON(
 }
 
 @Test func socialFirstLoginRequiresLegalAcceptance() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addSocialCompletion(
+    let scene = AuthScene()
+    scene.auth.addSocialCompletion(
         provider: "google",
         code: "google-legal-code",
         email: "google-legal@slock.test",
         returnTo: "/"
     )
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let missing = try await postJSON(
                 client,
@@ -720,9 +655,9 @@ private func registerJSON(
                 body: "{\"code\":\"google-legal-code\"}"
             )
             #expect(missing.status == .unprocessableContent)
-            #expect(accounts.hasAccount(email: "google-legal@slock.test") == false)
-            #expect(accounts.sessionCount == 0)
-            #expect(accounts.legalAcceptanceCount == 0)
+            #expect(scene.auth.hasAccount(email: "google-legal@slock.test") == false)
+            #expect(scene.auth.sessionCount == 0)
+            #expect(scene.auth.legalAcceptanceCount == 0)
 
             let accepted = try await postJSON(
                 client,
@@ -735,20 +670,20 @@ private func registerJSON(
             let refreshToken = body?["refreshToken"] as? String ?? ""
             #expect(accessToken.isEmpty == false)
             #expect(refreshToken.isEmpty == false)
-            #expect(accounts.hasAccount(email: "google-legal@slock.test"))
-            let userId = accounts.userId(forEmail: "google-legal@slock.test") ?? ""
-            #expect(accounts.legalAcceptance(userId: userId)?.source == "oauth")
-            #expect(accounts.legalAcceptance(userId: userId)?.termsVersion == "2026-05-12")
-            #expect(accounts.sessionCount == 1)
+            #expect(scene.auth.hasAccount(email: "google-legal@slock.test"))
+            let userId = scene.auth.userId(forEmail: "google-legal@slock.test") ?? ""
+            #expect(scene.auth.legalAcceptance(userId: userId)?.source == "oauth")
+            #expect(scene.auth.legalAcceptance(userId: userId)?.termsVersion == "2026-05-12")
+            #expect(scene.auth.sessionCount == 1)
         }
     }
 }
 
 @Test func webSocialCompletionStaysWebShapedAndSpendsTheCode() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let userId = "66666666-6666-4666-8666-666666666666"
-    accounts.addAccount(id: userId, email: "web-unified@slock.test", password: "password123")
-    accounts.addSocialCompletion(
+    scene.auth.addAccount(id: userId, email: "web-unified@slock.test", password: "password123")
+    scene.auth.addSocialCompletion(
         provider: "google",
         code: "google-web-unified-code",
         email: "web-unified@slock.test",
@@ -756,12 +691,7 @@ private func registerJSON(
         userId: userId
     )
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let complete = try await postJSON(
                 client,
@@ -808,23 +738,18 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
 }
 
 @Test func webLinkCompletionIsOwnerBoundAndOneTime() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let otherId = "77777777-7777-4777-8777-777777777777"
-    accounts.addAccount(id: otherId, email: "web-link-other@slock.test", password: "password123")
+    scene.auth.addAccount(id: otherId, email: "web-link-other@slock.test", password: "password123")
     let owners = [
         ("google", "88888888-8888-4888-8888-888888888888"),
         ("github", "99999999-9999-4999-8999-999999999999"),
     ]
     for (provider, userId) in owners {
-        accounts.addAccount(id: userId, email: "\(provider)-web-link-race@slock.test", password: "password123")
+        scene.auth.addAccount(id: userId, email: "\(provider)-web-link-race@slock.test", password: "password123")
     }
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let otherLogin = try await postJSON(
                 client,
@@ -835,7 +760,7 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
             for (provider, userId) in owners {
                 let providerUserId = "\(provider)-web-link-race-provider-id"
                 let code = "\(provider)-web-link-code"
-                accounts.addSocialCompletion(
+                scene.auth.addSocialCompletion(
                     provider: provider,
                     code: code,
                     email: "\(provider)-web-link-race-social@slock.test",
@@ -851,7 +776,7 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
                     body: "{\"email\":\"\(provider)-web-link-race@slock.test\",\"password\":\"password123\"}"
                 )
                 let ownerToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(ownerLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
-                let sessionsBefore = accounts.sessionCount
+                let sessionsBefore = scene.auth.sessionCount
                 let path = "/api/auth/\(provider)/complete"
                 let body = "{\"code\":\"\(code)\"}"
 
@@ -859,13 +784,13 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
                 #expect(missing.status == .unauthorized)
                 let missingBody = try JSONSerialization.jsonObject(with: Data(bodyText(missing).utf8)) as? [String: Any]
                 #expect(missingBody?["code"] as? String == "auth_required")
-                #expect(accounts.linkedProviderUserIds(userId: userId, provider: provider).isEmpty)
+                #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: provider).isEmpty)
 
                 let wrong = try await postAuthorized(client, path, token: otherToken, body: body)
                 #expect(wrong.status == .forbidden)
                 let wrongBody = try JSONSerialization.jsonObject(with: Data(bodyText(wrong).utf8)) as? [String: Any]
                 #expect(wrongBody?["code"] as? String == "link_user_mismatch")
-                #expect(accounts.linkedProviderUserIds(userId: userId, provider: provider).isEmpty)
+                #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: provider).isEmpty)
 
                 let first = try await postAuthorized(client, path, token: ownerToken, body: body)
                 let second = try await postAuthorized(client, path, token: ownerToken, body: body)
@@ -875,24 +800,19 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
                 #expect(winnerBody?["mode"] as? String == "link")
                 #expect(winnerBody?["accessToken"] == nil)
                 #expect(winnerBody?["refreshToken"] == nil)
-                #expect(accounts.linkedProviderUserIds(userId: userId, provider: provider) == [providerUserId])
-                #expect(accounts.sessionCount == sessionsBefore)
+                #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: provider) == [providerUserId])
+                #expect(scene.auth.sessionCount == sessionsBefore)
             }
         }
     }
 }
 
 @Test func webLinkCompletionSurvivesAnExpiredAccessTokenAfterOneRefresh() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    accounts.addAccount(id: userId, email: "web-link-refresh@slock.test", password: "password123")
+    scene.auth.addAccount(id: userId, email: "web-link-refresh@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(
                 client,
@@ -905,7 +825,7 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
             #expect(refreshToken.isEmpty == false)
 
             let code = "github-web-link-refresh-code"
-            accounts.addSocialCompletion(
+            scene.auth.addSocialCompletion(
                 provider: "github",
                 code: code,
                 email: "github-web-link-refresh-social@slock.test",
@@ -924,7 +844,7 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
             #expect(expired.status == .unauthorized)
             let expiredBody = try JSONSerialization.jsonObject(with: Data(bodyText(expired).utf8)) as? [String: Any]
             #expect(expiredBody?["code"] as? String == "auth_required")
-            #expect(accounts.linkedProviderUserIds(userId: userId, provider: "github").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: "github").isEmpty)
 
             let refresh = try await postJSON(
                 client,
@@ -944,7 +864,7 @@ private func postAuthorized(_ client: any Client, _ path: String, token: String?
                 body: "{\"code\":\"\(code)\"}"
             )
             #expect(completed.status == .ok)
-            #expect(accounts.linkedProviderUserIds(userId: userId, provider: "github") == ["github-web-link-refresh-provider-id"])
+            #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: "github") == ["github-web-link-refresh-provider-id"])
         }
     }
 }
@@ -969,17 +889,12 @@ private func refreshBound(
 }
 
 @Test func durableRefreshReplayReturnsOneSuccessorForTheExactBinding() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", email: "durable-refresh@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", email: "durable-refresh@slock.test", password: "password123")
     let attempt = "arf_1234567890abcdef"
     let installation = "ari_1234567890abcdef1234567890abcdef"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(
                 client,
@@ -1004,7 +919,7 @@ private func refreshBound(
             let retryToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(retry).utf8)) as? [String: Any])?["refreshToken"] as? String) ?? ""
             #expect(retryToken == firstToken)
 
-            let receipt = accounts.refreshRotationReceipts().first
+            let receipt = scene.auth.refreshRotationReceipts().first
             #expect(receipt?.attemptId == attempt)
             #expect(receipt?.installationId == installation)
             #expect(receipt?.successorTokenCiphertext != firstToken)
@@ -1031,17 +946,12 @@ private func refreshBound(
 }
 
 @Test func durableRefreshReplayRejectsAMalformedBindingWithoutConsumingThePredecessor() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", email: "durable-refresh-expiry@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", email: "durable-refresh-expiry@slock.test", password: "password123")
     let attempt = "arf_0011223344556677"
     let installation = "ari_00112233445566778899aabbccddeeff"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(
                 client,
@@ -1056,7 +966,7 @@ private func refreshBound(
             let first = try await refreshBound(client, token: predecessor, attempt: attempt, installation: installation)
             #expect(first.status == .ok)
 
-            accounts.expireRefreshReceipts()
+            scene.auth.expireRefreshReceipts()
             let expired = try await refreshBound(client, token: predecessor, attempt: attempt, installation: installation)
             #expect(expired.status == .unauthorized)
         }
@@ -1064,16 +974,11 @@ private func refreshBound(
 }
 
 @Test func desktopLoopbackCallbackRejectsAMismatchedNonce() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let returnUri = "http://127.0.0.1:49152/auth/done#state=desktop_nonce_0123456789abcdef"
     let challenge = "5LKOfGgtJZKyKP401NWdx2aQeOjxPA2yKFhKPS3P_jg"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1100,30 +1005,25 @@ private func refreshBound(
             let callback = try await client.get(URI(string: "/api/auth/google/callback?code=provider-code&state=\(encoded)"))
             #expect(callback.status == .badRequest)
             #expect(bodyText(callback) == "Invalid mobile OAuth request")
-            #expect(accounts.providerExchangeCount == 0)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(callback.headers[.location] == nil)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
         }
     }
 }
 
 @Test func desktopLoopbackPreservesStateThroughOneTimePKCEComplete() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let desktopState = "desktop_nonce_0123456789abcdef"
     let returnUri = "http://127.0.0.1:49152/auth/done#state=\(desktopState)"
     let verifier = "mobile-login-verifier-0123456789"
     let challenge = "BMiEvmoBGmnhU8L_jWsCA7aj93_oMgdoPJeSV44gETs"
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-mobile-user",
         email: "mobile-login@slock.test",
         displayName: "Mobile Login"
-    ) }
+    ))
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1134,7 +1034,7 @@ private func refreshBound(
             let startBody = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
             let requestId = startBody?["requestId"] as? String ?? ""
             #expect(startBody?["returnUri"] as? String == returnUri)
-            #expect(accounts.oauthRequestReturnUri(id: requestId) == returnUri)
+            #expect(scene.mobile.oauthRequestReturnUri(id: requestId) == returnUri)
             let authorizationUrl = startBody?["authorizationUrl"] as? String ?? ""
             #expect(URL(string: authorizationUrl)?.host == "accounts.google.com")
             let state = URLComponents(string: authorizationUrl)?.queryItems?.first { $0.name == "state" }?.value ?? ""
@@ -1154,8 +1054,8 @@ private func refreshBound(
 
             let browser = try await postJSON(client, "/api/auth/google/complete", body: "{\"code\":\"\(handoff)\"}")
             #expect(browser.status == .badRequest)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
-            #expect((accounts.oauthRequestCodeHash(id: requestId) ?? "").isEmpty == false)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect((scene.mobile.oauthRequestCodeHash(id: requestId) ?? "").isEmpty == false)
 
             let complete = try await postJSON(
                 client,
@@ -1173,7 +1073,7 @@ private func refreshBound(
             #expect((completeBody?["refreshToken"] as? String)?.isEmpty == false)
             #expect(completeBody?["mode"] as? String == "login")
             #expect(completeBody?["returnUri"] as? String == returnUri)
-            #expect(accounts.userId(forEmail: "mobile-login@slock.test") == user?["id"] as? String)
+            #expect(scene.auth.userId(forEmail: "mobile-login@slock.test") == user?["id"] as? String)
 
             let replay = try await postJSON(
                 client,
@@ -1183,27 +1083,22 @@ private func refreshBound(
             #expect(replay.status == .gone)
             let replayBody = try JSONSerialization.jsonObject(with: Data(bodyText(replay).utf8)) as? [String: Any]
             #expect(replayBody?["code"] as? String == "handoff_code_consumed")
-            #expect(accounts.oauthRequestStatus(id: requestId) == "completed")
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "completed")
         }
     }
 }
 
 @Test func mobileOAuthLegalRetryKeepsTheHandoffUntilAcceptance() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let verifier = "mobile-legal-retry-verifier-123456789"
     let challenge = "viYOYKFe73Jfjd-lIqh-6exlc2DFxMKVZ3DSeezDDvE"
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-mobile-legal-retry-user",
         email: "mobile-legal-retry@slock.test",
         displayName: "Mobile Legal Retry"
-    ) }
+    ))
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1213,9 +1108,9 @@ private func refreshBound(
             #expect(start.status == .created)
             let startBody = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
             let requestId = startBody?["requestId"] as? String ?? ""
-            #expect(accounts.oauthRequestStatus(id: requestId) == "pending_provider")
-            #expect(accounts.oauthRequestCodeHash(id: requestId) == nil)
-            #expect(accounts.oauthRequestCodeChallenge(id: requestId) == challenge)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
+            #expect(scene.mobile.oauthRequestCodeHash(id: requestId) == nil)
+            #expect(scene.mobile.oauthRequestCodeChallenge(id: requestId) == challenge)
 
             let state = URLComponents(string: startBody?["authorizationUrl"] as? String ?? "")?.queryItems?.first { $0.name == "state" }?.value ?? ""
             let encoded = state.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? state
@@ -1232,9 +1127,9 @@ private func refreshBound(
             #expect(missing.status == .unprocessableContent)
             let missingBody = try JSONSerialization.jsonObject(with: Data(bodyText(missing).utf8)) as? [String: Any]
             #expect(missingBody?["error"] as? String == "LEGAL_ACCEPTANCE_REQUIRED")
-            #expect(accounts.hasAccount(email: "mobile-legal-retry@slock.test") == false)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
-            #expect((accounts.oauthRequestCodeHash(id: requestId) ?? "").isEmpty == false)
+            #expect(scene.auth.hasAccount(email: "mobile-legal-retry@slock.test") == false)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect((scene.mobile.oauthRequestCodeHash(id: requestId) ?? "").isEmpty == false)
 
             let accepted = try await postJSON(
                 client,
@@ -1247,7 +1142,7 @@ private func refreshBound(
             #expect(user?["email"] as? String == "mobile-legal-retry@slock.test")
             #expect((acceptedBody?["accessToken"] as? String)?.isEmpty == false)
             #expect((acceptedBody?["refreshToken"] as? String)?.isEmpty == false)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "completed")
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "completed")
 
             let replay = try await postJSON(
                 client,
@@ -1262,21 +1157,16 @@ private func refreshBound(
 }
 
 @Test func mobileGitHubLoginCompletesThroughTheSharedHandoff() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let verifier = "mobile-github-verifier-0123456789"
     let challenge = "KeTxTublYElkrWm49I19Vug4vLodnrsob_5iOTahN1E"
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "98765",
         email: "mobile-github@slock.test",
         displayName: "GitHub Mobile"
-    ) }
+    ))
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1311,8 +1201,8 @@ private func refreshBound(
             let refreshToken = completeBody?["refreshToken"] as? String ?? ""
             #expect(refreshToken.isEmpty == false)
             #expect(completeBody?["mode"] as? String == "login")
-            #expect(accounts.userId(forEmail: "mobile-github@slock.test") == userId)
-            #expect(accounts.linkedProviderUserIds(userId: userId, provider: "github") == ["98765"])
+            #expect(scene.auth.userId(forEmail: "mobile-github@slock.test") == userId)
+            #expect(scene.auth.linkedProviderUserIds(userId: userId, provider: "github") == ["98765"])
 
             let refresh = try await postJSON(client, "/api/auth/refresh", body: "{\"refreshToken\":\"\(refreshToken)\"}")
             #expect(refresh.status == .ok)
@@ -1330,15 +1220,10 @@ private func refreshBound(
 }
 
 @Test func mobileOAuthStartRejectsADisabledReturnTarget() async throws {
-    let accounts = EmailLoginDirectory()
-    let before = accounts.mobileOAuthRequestCount
+    let scene = AuthScene()
+    let before = scene.mobile.mobileOAuthRequestCount
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1349,21 +1234,16 @@ private func refreshBound(
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
             #expect(body?["code"] as? String == "return_uri_not_allowed")
             #expect(body?["error"] as? String == "Mobile OAuth return URI is not allowed")
-            #expect(accounts.mobileOAuthRequestCount == before)
+            #expect(scene.mobile.mobileOAuthRequestCount == before)
         }
     }
 }
 
 @Test func mobileOAuthStartFallsBackToLegacyAllowedReturnURIs() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.mobileOAuthAllowedReturnURIs = "raft-legacy://oauth/callback" }
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.mobileOAuthAllowedReturnURIs = "raft-legacy://oauth/callback" }
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1373,7 +1253,7 @@ private func refreshBound(
             #expect(start.status == .created)
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
             #expect(body?["returnUri"] as? String == "raft-legacy://oauth/callback")
-            #expect(accounts.mobileOAuthRequestCount == 1)
+            #expect(scene.mobile.mobileOAuthRequestCount == 1)
 
             let disabledDefault = try await postJSON(
                 client,
@@ -1383,20 +1263,15 @@ private func refreshBound(
             #expect(disabledDefault.status == .badRequest)
             let refused = try JSONSerialization.jsonObject(with: Data(bodyText(disabledDefault).utf8)) as? [String: Any]
             #expect(refused?["code"] as? String == "return_uri_not_allowed")
-            #expect(accounts.mobileOAuthRequestCount == 1)
+            #expect(scene.mobile.mobileOAuthRequestCount == 1)
         }
     }
 }
 
 @Test func mobileOAuthStartAcceptsAnAllowlistedVariantReturnURI() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1406,7 +1281,7 @@ private func refreshBound(
             #expect(start.status == .created)
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
             #expect(body?["returnUri"] as? String == "raft-beta://oauth/callback")
-            #expect(accounts.mobileOAuthRequestCount == 1)
+            #expect(scene.mobile.mobileOAuthRequestCount == 1)
 
             let missing = try await postJSON(
                 client,
@@ -1416,20 +1291,15 @@ private func refreshBound(
             #expect(missing.status == .badRequest)
             let refused = try JSONSerialization.jsonObject(with: Data(bodyText(missing).utf8)) as? [String: Any]
             #expect(refused?["code"] as? String == "return_uri_not_allowed")
-            #expect(accounts.mobileOAuthRequestCount == 1)
+            #expect(scene.mobile.mobileOAuthRequestCount == 1)
         }
     }
 }
 
 @Test func mobileOAuthProviderCancelReturnsAppErrorAndFailedState() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1447,21 +1317,16 @@ private func refreshBound(
             let location = callback.headers[.location] ?? ""
             let returned = URLComponents(string: location)
             #expect(returned?.queryItems?.first { $0.name == "error" }?.value == "access_denied")
-            #expect(accounts.oauthRequestStatus(id: requestId) == "failed")
-            #expect(accounts.providerExchangeCount == 0)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "failed")
+            #expect(returned?.queryItems?.contains { $0.name == "code" } == false)
         }
     }
 }
 
 @Test func mobileOAuthProviderExchangeFailureReturnsAppErrorWithoutWebFallback() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1482,14 +1347,14 @@ private func refreshBound(
             #expect(returned?.host == "oauth")
             #expect(returned?.path == "/callback")
             #expect(URLComponents(string: location)?.queryItems?.first { $0.name == "error" }?.value == "provider_exchange_failed")
-            #expect(accounts.oauthRequestStatus(id: requestId) == "failed")
-            #expect(accounts.providerExchangeCount == 0)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "failed")
+            #expect(URLComponents(string: location)?.queryItems?.contains { $0.name == "code" } == false)
         }
     }
 }
 
 @Test func mobileOAuthInvalidMobileStateFailsClosedWithoutWebCallbackRedirect() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
         provider: "google",
         mode: "login",
@@ -1499,12 +1364,7 @@ private func refreshBound(
         desktopNonce: nil
     ))
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let encoded = state.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? state
             let callback = try await client.get(URI(string: "/api/auth/google/callback?code=provider-code&state=\(encoded)"))
@@ -1516,21 +1376,16 @@ private func refreshBound(
 }
 
 @Test func mobileOAuthCompleteRejectsAnExpiredHandoffCode() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    let scene = AuthScene()
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-expired-user",
         email: "mobile-expired@slock.test",
         displayName: nil
-    ) }
+    ))
     let verifier = "mobile-expired-verifier-123456789"
     let challenge = "tyoDKplpRXmNygAOoca3G-1C_aiyWZI4zVOsAKtGJYc"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1549,7 +1404,7 @@ private func refreshBound(
             let handoff = URLComponents(string: location)?.queryItems?.first { $0.name == "code" }?.value ?? ""
             #expect(handoff.isEmpty == false)
 
-            accounts.expireMobileOAuthRequest(id: requestId)
+            scene.mobile.expireMobileOAuthRequest(id: requestId)
             let complete = try await postJSON(
                 client,
                 "/api/auth/mobile/oauth/complete",
@@ -1559,27 +1414,22 @@ private func refreshBound(
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(complete).utf8)) as? [String: Any]
             #expect(body?["code"] as? String == "handoff_code_expired")
             #expect(body?["error"] as? String == "Mobile OAuth code has expired")
-            #expect(accounts.userId(forEmail: "mobile-expired@slock.test") == nil)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "expired")
+            #expect(scene.auth.userId(forEmail: "mobile-expired@slock.test") == nil)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "expired")
         }
     }
 }
 
 @Test func mobileOAuthCompleteRejectsAPKCEMismatchWithoutASession() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    let scene = AuthScene()
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-pkce-user",
         email: "mobile-pkce@slock.test",
         displayName: nil
-    ) }
+    ))
     let challenge = "Q1VLNyMseH2O2jx7a8w2tjzHSz7ks8mqmAddCAiCnRs"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let start = try await postJSON(
                 client,
@@ -1606,39 +1456,34 @@ private func refreshBound(
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(complete).utf8)) as? [String: Any]
             #expect(body?["code"] as? String == "pkce_mismatch")
             #expect(body?["error"] as? String == "PKCE verifier did not match the OAuth request")
-            #expect(accounts.userId(forEmail: "mobile-pkce@slock.test") == nil)
-            #expect(accounts.sessionCount == 0)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "failed")
+            #expect(scene.auth.userId(forEmail: "mobile-pkce@slock.test") == nil)
+            #expect(scene.auth.sessionCount == 0)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "failed")
         }
     }
 }
 
 @Test func mobileOAuthLinkRequiresABearerAndLinksTheOwnerWithoutALoginSession() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111111"
     let otherId = "22222222-2222-4222-8222-222222222222"
-    accounts.addAccount(id: ownerId, email: "mobile-link-owner@slock.test", password: "password123")
-    accounts.addAccount(id: otherId, email: "mobile-link-other@slock.test", password: "password123")
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    scene.auth.addAccount(id: ownerId, email: "mobile-link-owner@slock.test", password: "password123")
+    scene.auth.addAccount(id: otherId, email: "mobile-link-other@slock.test", password: "password123")
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-link-user",
         email: "mobile-link-social@slock.test",
         displayName: nil
-    ) }
+    ))
     let verifier = "mobile-link-verifier-123456789"
     let challenge = "iIBndehIqxMFMi6jj42QoGrh1vEHL8KrfaqF14grjKI"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let ownerLogin = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"mobile-link-owner@slock.test\",\"password\":\"password123\"}")
             let otherLogin = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"mobile-link-other@slock.test\",\"password\":\"password123\"}")
             let ownerToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(ownerLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
             let otherToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(otherLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
-            let sessionsBefore = accounts.sessionCount
+            let sessionsBefore = scene.auth.sessionCount
             let startBody = "{\"returnUri\":\"raft-debug://oauth/callback\",\"codeChallenge\":\"\(challenge)\"}"
 
             let unauthenticated = try await postJSON(client, "/api/auth/mobile/oauth/google/link/start", body: startBody)
@@ -1646,7 +1491,7 @@ private func refreshBound(
             let refused = try JSONSerialization.jsonObject(with: Data(bodyText(unauthenticated).utf8)) as? [String: Any]
             #expect(refused?["code"] as? String == "auth_required")
             #expect(refused?["error"] as? String == "Missing or invalid Authorization header")
-            #expect(accounts.mobileOAuthRequestCount == 0)
+            #expect(scene.mobile.mobileOAuthRequestCount == 0)
 
             let start = try await postJSON(
                 client,
@@ -1679,8 +1524,8 @@ private func refreshBound(
             let mismatchBody = try JSONSerialization.jsonObject(with: Data(bodyText(mismatch).utf8)) as? [String: Any]
             #expect(mismatchBody?["code"] as? String == "link_user_mismatch")
             #expect(mismatchBody?["error"] as? String == "Mobile OAuth link request does not match the authenticated user")
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "google").isEmpty)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "google").isEmpty)
 
             let ok = try await postJSON(
                 client,
@@ -1698,32 +1543,27 @@ private func refreshBound(
             #expect(identities?.count == 1)
             #expect(identities?.first?["provider"] as? String == "google")
             #expect(identities?.first?["providerEmail"] as? String == "mobile-link-social@slock.test")
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "google") == ["google-link-user"])
-            #expect(accounts.linkedProviderUserIds(userId: otherId, provider: "google").isEmpty)
-            #expect(accounts.sessionCount == sessionsBefore)
-            #expect(accounts.userId(forEmail: "mobile-link-social@slock.test") == nil)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "google") == ["google-link-user"])
+            #expect(scene.auth.linkedProviderUserIds(userId: otherId, provider: "google").isEmpty)
+            #expect(scene.auth.sessionCount == sessionsBefore)
+            #expect(scene.auth.userId(forEmail: "mobile-link-social@slock.test") == nil)
         }
     }
 }
 
 @Test func mobileOAuthLinkCompleteRejectsALoginHandoff() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let ownerId = "33333333-3333-4333-8333-333333333333"
-    accounts.addAccount(id: ownerId, email: "mobile-link-mode-owner@slock.test", password: "password123")
-    accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+    scene.auth.addAccount(id: ownerId, email: "mobile-link-mode-owner@slock.test", password: "password123")
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
         providerUserId: "google-login-mode-user",
         email: "mobile-link-login-mode@slock.test",
         displayName: nil
-    ) }
+    ))
     let verifier = "mobile-link-mode-verifier-123456789"
     let challenge = "mNM0WD-kylnNMf59CwY1Ws6_5vwBLe4NWm_SVk19CnI"
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let ownerLogin = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"mobile-link-mode-owner@slock.test\",\"password\":\"password123\"}")
             let ownerToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(ownerLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -1752,25 +1592,20 @@ private func refreshBound(
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(linkComplete).utf8)) as? [String: Any]
             #expect(body?["code"] as? String == "mode_mismatch")
             #expect(body?["error"] as? String == "Mobile OAuth code does not match the requested mode")
-            #expect(accounts.userId(forEmail: "mobile-link-login-mode@slock.test") == nil)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "google").isEmpty)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "provider_completed")
+            #expect(scene.auth.userId(forEmail: "mobile-link-login-mode@slock.test") == nil)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "google").isEmpty)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "provider_completed")
         }
     }
 }
 
 @Test func postCurrentUserAvatarStoresAUserWebpPath() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "44444444-4444-4444-8444-444444444444", email: "human-avatar@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "44444444-4444-4444-8444-444444444444", email: "human-avatar@slock.test", password: "password123")
     let gif = Data(base64Encoded: "R0lGODdhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=")!
     let upload = avatarMultipart(filename: "avatar.gif", mime: "image/gif", bytes: gif)
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"human-avatar@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -1791,17 +1626,12 @@ private func refreshBound(
 }
 
 @Test func postCurrentUserAvatarRejectsAnOversizedFile() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.addAccount(id: "55555555-5555-4555-8555-555555555555", email: "human-avatar-large@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.addAccount(id: "55555555-5555-4555-8555-555555555555", email: "human-avatar-large@slock.test", password: "password123")
     let limit = 5 * 1024 * 1024
     let upload = avatarMultipart(filename: "huge.png", mime: "image/png", bytes: Data(count: limit + 1))
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"human-avatar-large@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -1816,18 +1646,13 @@ private func refreshBound(
 }
 
 @Test func patchShareUsageDataRoundTripsAndRotatesTheAnalyticsId() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let userId = "66666666-6666-4666-8666-666666666666"
-    accounts.addAccount(id: userId, email: "share-usage-data@slock.test", password: "password123")
-    let original = accounts.analyticsId(userId: userId)
+    scene.auth.addAccount(id: userId, email: "share-usage-data@slock.test", password: "password123")
+    let original = scene.auth.analyticsId(userId: userId)
     #expect((original ?? "").isEmpty == false)
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"share-usage-data@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -1842,43 +1667,38 @@ private func refreshBound(
             #expect(turnedOn.status == .ok)
             let onBody = try JSONSerialization.jsonObject(with: Data(bodyText(turnedOn).utf8)) as? [String: Any]
             #expect(onBody?["shareUsageData"] as? Bool == true)
-            #expect(accounts.analyticsId(userId: userId) == original)
+            #expect(scene.auth.analyticsId(userId: userId) == original)
 
             let turnedOff = try await patchJSON(client, token: token, body: "{\"shareUsageData\":false}")
             #expect(turnedOff.status == .ok)
             let offBody = try JSONSerialization.jsonObject(with: Data(bodyText(turnedOff).utf8)) as? [String: Any]
             #expect(offBody?["shareUsageData"] as? Bool == false)
-            #expect(accounts.analyticsId(userId: userId) == nil)
+            #expect(scene.auth.analyticsId(userId: userId) == nil)
 
             let cleared = try await patchJSON(client, token: token, body: "{\"shareUsageData\":null}")
             #expect(cleared.status == .ok)
             let clearedBody = try JSONSerialization.jsonObject(with: Data(bodyText(cleared).utf8)) as? [String: Any]
             #expect(clearedBody?["shareUsageData"] is NSNull)
-            #expect(accounts.analyticsId(userId: userId) == nil)
+            #expect(scene.auth.analyticsId(userId: userId) == nil)
 
             let again = try await patchJSON(client, token: token, body: "{\"shareUsageData\":true}")
             #expect(again.status == .ok)
-            let fresh = accounts.analyticsId(userId: userId)
+            let fresh = scene.auth.analyticsId(userId: userId)
             #expect((fresh ?? "").isEmpty == false)
             #expect(fresh != original)
 
             let invalid = try await patchJSON(client, token: token, body: "{\"shareUsageData\":\"yes\"}")
             #expect(invalid.status == .badRequest)
-            #expect(accounts.analyticsId(userId: userId) == fresh)
+            #expect(scene.auth.analyticsId(userId: userId) == fresh)
         }
     }
 }
 
 @Test func authProvidersFollowTheApplePlatformGate() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "github", "apple"] }
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["google", "github", "apple"] }
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             func appleEnabled(_ query: String = "") async throws -> Bool {
                 let response = try await client.get(URI(string: "/api/auth/providers\(query)"))
@@ -1898,12 +1718,12 @@ private func refreshBound(
             #expect(invalidBody?["code"] as? String == "platform_invalid")
             #expect(invalidBody?["error"] as? String == "platform must be web or mobile")
 
-            accounts.allowAppleLogin(on: ["web"])
+            scene.mobile.allowAppleLogin(on: ["web"])
             #expect(try await appleEnabled() == true)
             #expect(try await appleEnabled("?platform=web") == true)
             #expect(try await appleEnabled("?platform=mobile") == false)
 
-            accounts.allowAppleLogin(on: ["mobile"])
+            scene.mobile.allowAppleLogin(on: ["mobile"])
             #expect(try await appleEnabled("?platform=mobile") == true)
 
             let mobile = try await client.get(URI(string: "/api/auth/providers?platform=mobile"))
@@ -1916,18 +1736,13 @@ private func refreshBound(
 }
 
 @Test func appleWebLoginStaysClosedUntilTheWebGateThenStartsFormPost() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
-    accounts.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.example.test" }
-    accounts.addAccount(id: "77777777-7777-4777-8777-777777777777", email: "apple-link-owner@slock.test", password: "password123")
+    let scene = AuthScene()
+    scene.auth.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
+    scene.auth.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.example.test" }
+    scene.auth.addAccount(id: "77777777-7777-4777-8777-777777777777", email: "apple-link-owner@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"apple-link-owner@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -1947,7 +1762,7 @@ private func refreshBound(
             )
             #expect(linkBefore.status == .notFound)
 
-            accounts.allowAppleLogin(on: ["web"])
+            scene.mobile.allowAppleLogin(on: ["web"])
 
             let providersAfter = try await client.get(URI(string: "/api/auth/providers"))
             let afterBody = try JSONSerialization.jsonObject(with: Data(bodyText(providersAfter).utf8)) as? [String: Any]
@@ -2006,26 +1821,21 @@ private func refreshBound(
 }
 
 @Test func appleFormPostLinkCallbackDoesNotChangeTheAccountUntilTheOwnerCompletes() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let ownerId = "88888888-8888-4888-8888-888888888888"
     let otherId = "99999999-9999-4999-8999-999999999999"
-    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
-    accounts.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
-    accounts.allowAppleLogin(on: ["web"])
-    accounts.configureAuthSimulationForTesting { $0.webProviderProfile = MobileProviderProfile(
+    scene.auth.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
+    scene.auth.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
+    scene.mobile.allowAppleLogin(on: ["web"])
+    scene.mobile.setWebProviderProfile(MobileProviderProfile(
         providerUserId: "apple-route-link-sub",
         email: "apple-route-link-social@slock.test",
         displayName: nil
-    ) }
-    accounts.addAccount(id: ownerId, email: "apple-link-owner-binding@slock.test", password: "password123")
-    accounts.addAccount(id: otherId, email: "apple-link-other-binding@slock.test", password: "password123")
+    ))
+    scene.auth.addAccount(id: ownerId, email: "apple-link-owner-binding@slock.test", password: "password123")
+    scene.auth.addAccount(id: otherId, email: "apple-link-other-binding@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let ownerLogin = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"apple-link-owner-binding@slock.test\",\"password\":\"password123\"}")
             let otherLogin = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"apple-link-other-binding@slock.test\",\"password\":\"password123\"}")
@@ -2057,14 +1867,14 @@ private func refreshBound(
             #expect(callbackItems.first { $0.name == "mode" }?.value == "link")
             let completionCode = callbackItems.first { $0.name == "code" }?.value ?? ""
             #expect(completionCode.isEmpty == false)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
-            #expect(accounts.linkedProviderUserIds(userId: otherId, provider: "apple").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: otherId, provider: "apple").isEmpty)
 
             let unauthenticated = try await postJSON(client, "/api/auth/apple/complete", body: "{\"code\":\"\(completionCode)\"}")
             #expect(unauthenticated.status == .unauthorized)
             let unauthenticatedBody = try JSONSerialization.jsonObject(with: Data(bodyText(unauthenticated).utf8)) as? [String: Any]
             #expect(unauthenticatedBody?["code"] as? String == "auth_required")
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
 
             let wrongUser = try await postJSON(
                 client,
@@ -2075,8 +1885,8 @@ private func refreshBound(
             #expect(wrongUser.status == .forbidden)
             let wrongBody = try JSONSerialization.jsonObject(with: Data(bodyText(wrongUser).utf8)) as? [String: Any]
             #expect(wrongBody?["code"] as? String == "link_user_mismatch")
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
-            #expect(accounts.linkedProviderUserIds(userId: otherId, provider: "apple").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: otherId, provider: "apple").isEmpty)
 
             let ownerComplete = try await postJSON(
                 client,
@@ -2089,8 +1899,8 @@ private func refreshBound(
             #expect(ownerBody?["mode"] as? String == "link")
             #expect(ownerBody?["accessToken"] == nil)
             #expect(ownerBody?["refreshToken"] == nil)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple") == ["apple-route-link-sub"])
-            #expect(accounts.linkedProviderUserIds(userId: otherId, provider: "apple").isEmpty)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple") == ["apple-route-link-sub"])
+            #expect(scene.auth.linkedProviderUserIds(userId: otherId, provider: "apple").isEmpty)
 
             let replay = try await postJSON(
                 client,
@@ -2099,26 +1909,21 @@ private func refreshBound(
                 authorization: "Bearer \(ownerToken)"
             )
             #expect(replay.status == .badRequest)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple") == ["apple-route-link-sub"])
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple") == ["apple-route-link-sub"])
         }
     }
 }
 
 @Test func unverifiedAppleEmailCannotPersistThroughWebOrMobileLink() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = AuthScene()
     let ownerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    accounts.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
-    accounts.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
-    accounts.allowAppleLogin(on: ["web", "mobile"])
-    accounts.configureOAuthForTesting { $0.mobileOAuthReturnURI = "raft-debug://oauth/callback" }
-    accounts.addAccount(id: ownerId, email: "apple-unverified-owner@slock.test", password: "password123")
+    scene.auth.configureOAuthForTesting { $0.configuredSocialAuthProviders = ["apple"] }
+    scene.auth.configureOAuthForTesting { $0.appleClientId = "apple-client-id" }
+    scene.mobile.allowAppleLogin(on: ["web", "mobile"])
+    scene.auth.configureOAuthForTesting { $0.mobileOAuthReturnURI = "raft-debug://oauth/callback" }
+    scene.auth.addAccount(id: ownerId, email: "apple-unverified-owner@slock.test", password: "password123")
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        registerAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await postJSON(client, "/api/auth/login", body: "{\"email\":\"apple-unverified-owner@slock.test\",\"password\":\"password123\"}")
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
@@ -2132,12 +1937,12 @@ private func refreshBound(
             #expect(webStart.status == .ok)
             let webURL = ((try JSONSerialization.jsonObject(with: Data(bodyText(webStart).utf8)) as? [String: Any])?["url"] as? String) ?? ""
             let webState = URLComponents(string: webURL)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            accounts.configureAuthSimulationForTesting { $0.webProviderProfile = MobileProviderProfile(
+            scene.mobile.setWebProviderProfile(MobileProviderProfile(
                 providerUserId: "apple-web-unverified-sub",
                 email: "apple-unverified-owner@slock.test",
                 displayName: nil,
                 emailVerified: false
-            ) }
+            ))
             let encodedWebState = webState.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-_."))) ?? webState
             var webHeaders = HTTPFields()
             webHeaders[.contentType] = "application/x-www-form-urlencoded"
@@ -2160,12 +1965,12 @@ private func refreshBound(
             let mobileBody = try JSONSerialization.jsonObject(with: Data(bodyText(mobileStart).utf8)) as? [String: Any]
             let requestId = mobileBody?["requestId"] as? String ?? ""
             let mobileState = URLComponents(string: mobileBody?["authorizationUrl"] as? String ?? "")?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            accounts.configureAuthSimulationForTesting { $0.mobileProviderProfile = MobileProviderProfile(
+            scene.mobile.setMobileProviderProfile(MobileProviderProfile(
                 providerUserId: "apple-mobile-unverified-sub",
                 email: "apple-unverified-owner@slock.test",
                 displayName: nil,
                 emailVerified: false
-            ) }
+            ))
             let encodedMobileState = mobileState.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(.init(charactersIn: "-_."))) ?? mobileState
             var mobileHeaders = HTTPFields()
             mobileHeaders[.contentType] = "application/x-www-form-urlencoded"
@@ -2176,10 +1981,10 @@ private func refreshBound(
             let mobileItems = URLComponents(string: mobileCallback.headers[.location] ?? "")?.queryItems ?? []
             #expect(mobileItems.first { $0.name == "error" }?.value == "provider_exchange_failed")
             #expect(mobileItems.contains { $0.name == "code" } == false)
-            #expect(accounts.oauthRequestStatus(id: requestId) == "failed")
-            #expect(accounts.oauthRequestProviderUserId(id: requestId) == nil)
-            #expect(accounts.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
-            #expect(accounts.isEmailVerified(userId: ownerId) == false)
+            #expect(scene.mobile.oauthRequestStatus(id: requestId) == "failed")
+            #expect(scene.mobile.oauthRequestProviderUserId(id: requestId) == nil)
+            #expect(scene.auth.linkedProviderUserIds(userId: ownerId, provider: "apple").isEmpty)
+            #expect(scene.auth.isEmailVerified(userId: ownerId) == false)
         }
     }
 }
