@@ -6,7 +6,7 @@
 
 继续完成第八至十批架构清理，保持上游 `v1.21.23-source.1` 的 HTTP status、JSON 原文字节/顺序、headers、认证/校验顺序和 socket frames。逐片通过全部门禁后提交并及时 push。最终须完成纯 ServiceContainer、剩余 Feature raw-ledger、领域 fixtures 与旧 Root 删除；不能因 Root 缩行或构造参数清零宣布完成。
 
-用户本次要求保存任务，准备在新会话继续；已停止新实现和构建。原 goal `goal-58b02389-6d57-4e01-b13e-a9cefac72e0a` 当前 **paused/disarmed，revision 4，7/30 轮**。新会话获用户“继续”授权后先检查 goal，再恢复；若新会话没有该 goal，则按本目标新建，不能误标 complete。
+用户本次要求保存任务，准备在新会话继续；已停止新实现和构建。原 goal `goal-58b02389-6d57-4e01-b13e-a9cefac72e0a` 曾暂停为 revision 4、7/30轮；**保存收尾时最新 get_goal 返回 null，当前无绑定 goal，自动续跑已停止**。新会话获用户“继续”授权后先检查 goal；若仍无该 goal，按本目标新建，不能误标 complete。
 
 - canonical checkout：`/mnt/data/raft-server-swift`，branch `main`。
 - **实际未完成代码位于** `/mnt/data/raft-server-swift/.agents/worktrees/nine-http-state`，branch `nine-http-state`。新会话必须进入这个工作树检查，不能仅查看 main 后认为代码丢失。
@@ -201,4 +201,4 @@ make parity
 
 当前file policy danger-full-access、审批关闭；**工具调用不要设置 sandbox_permissions，不请求升级**。本会话Lead及部分reviewer仍错误带了该字段，已披露，未发生审批/升级重试；这是未遵守约束，不能在新会话报告成合规。read/grep/glob优先；现有文件先read再edit，任何move/delete前核绝对路径；所有bash exit非0必须调查。
 
-用户任务是保存交接，不是接受未绿Source。当前没有执行新的修复、guard delta apply、测试或源码提交；仅保存状态、文档和证据。原goal暂停，新会话从实际状态继续。
+用户任务是保存交接，不是接受未绿Source。当前没有执行新的修复、guard delta apply、测试或源码提交；仅保存状态、文档和证据。自动续跑已停止；保存收尾时 get_goal 返回 null，新会话从实际状态与用户继续授权重新建立目标。
