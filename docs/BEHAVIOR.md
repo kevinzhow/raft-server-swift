@@ -2451,3 +2451,9 @@ RFC 074 personal assistant：
 - 8fixture delegates仅现有ledger操作；publish默认true/Global显式false原位转发，两个review Bool原singlecall，count/groups返回flat值。102expect只有4Offline既有receipt receiver例外，其余98与全部请求/headers/body/null/args/lifetimes保，无新hook/observer/matrix/IDs。
 - 新图七定向、full、49Python22arch/parity通过。首E2E第二进程ready前bind EADDRINUSE失败，原log保；原two-server隔离通过后唯一原样fullE2E重试及24smoke通过，未改Source/Tests/env/并发/超时/断言。只确认旧freePort释放后启动的潜在重用窗口，不定位具体port/owner或声称修复，不称首次E2E全绿。
 - HTTP inventory完成20个OAuth前缀+9OIDC+FeatureOAuthRoutes共30文件；不扩大为非HTTP OAuthFlowsServiceTests、全部领域fixtures/Root或完整Fallback/main/transport完成。
+
+### AgentStartCoordinator checked 值状态
+
+- queue/index/starting/activeStarts归同Mutex State，原11单锁method与cancelAll两段共13borrow完整对应。queued先starting、capacity先empty、直接bounds/负age/unused minInterval/ignored claimId、DTO/错误与所有原方法顺序保持，无新复合pump事务。
+- cancelAll仍复制initial items→锁外按序callback→另borrow清CURRENT queue/index→返initial items。callback可读到前一回调改变后的当前状态；late/reentrant enqueue仍可能被清且不在初始receipt中，本片不修该既有政策，不clear-before/只删快照ID/新世代或drainer，不称全局原子取消。
+- 原五例及测试71行字节保，actual原/新Source各五绿，full/E2E24smoke49Python22arch/parity绿；unchecked8→7/7→6files/server0。原NSLock已保护相同域，仅checked ownership，未见生产构造，非新race/所有交错/生产wiring/TSan或benchmark证明。Node live queue/identity迭代、clamp/rate/timer/stale/更全DTO与Swift现子集差异另保，不称完整上游等价。

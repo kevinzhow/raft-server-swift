@@ -1,4 +1,3 @@
-Sources/RaftDaemonClient/AgentStartCoordinator.swift	1
 Sources/RaftDaemonClient/DaemonLog.swift	1
 Sources/RaftDaemonClient/DaemonReconnectLoop.swift	1
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1

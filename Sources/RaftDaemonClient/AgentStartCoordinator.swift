@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The queue/lookup boundary for agent starts: one conformance surface, an
 /// immutable enqueue time per item, the starting-never-queued policy, capacity
@@ -40,14 +41,16 @@ public enum AgentStartCoordinatorError: Error, Equatable, CustomStringConvertibl
     }
 }
 
-public final class AgentStartCoordinator: @unchecked Sendable {
-    private let lock = NSLock()
+public final class AgentStartCoordinator: Sendable {
     private let maxConcurrentStarts: Int
     private let minStartIntervalMs: Int
-    private var queue: [AgentStartQueueItem] = []
-    private var queuedIndex: [String: AgentStartQueueItem] = [:]
-    private var starting: [String] = []
-    private var activeStarts = 0
+    private struct State: Sendable {
+        var queue: [AgentStartQueueItem] = []
+        var queuedIndex: [String: AgentStartQueueItem] = [:]
+        var starting: [String] = []
+        var activeStarts = 0
+    }
+    private let state = Mutex(State())
 
     public init(maxConcurrentStarts: Int, minStartIntervalMs: Int) {
         self.maxConcurrentStarts = maxConcurrentStarts
@@ -67,97 +70,108 @@ public final class AgentStartCoordinator: @unchecked Sendable {
     }
 
     public func snapshot() -> Snapshot {
-        lock.lock(); defer { lock.unlock() }
-        return Snapshot(
-            queuedAgentIds: queue.map(\.agentId),
-            startingAgentIds: starting,
-            queueDepth: queue.count
-        )
+        return state.withLock { state in
+            return Snapshot(
+                queuedAgentIds: state.queue.map(\.agentId),
+                startingAgentIds: state.starting,
+                queueDepth: state.queue.count
+            )
+        }
     }
 
     public func getQueued(_ agentId: String) -> AgentStartQueueItem? {
-        lock.lock(); defer { lock.unlock() }
-        return queuedIndex[agentId]
+        return state.withLock { state in
+            return state.queuedIndex[agentId]
+        }
     }
 
     public func enqueue(_ item: AgentStartQueueItem) throws {
-        lock.lock(); defer { lock.unlock() }
-        if queuedIndex[item.agentId] != nil {
-            throw AgentStartCoordinatorError.alreadyQueued(item.agentId)
+        try state.withLock { state in
+            if state.queuedIndex[item.agentId] != nil {
+                throw AgentStartCoordinatorError.alreadyQueued(item.agentId)
+            }
+            if state.starting.contains(item.agentId) {
+                throw AgentStartCoordinatorError.alreadyStarting(item.agentId)
+            }
+            state.queue.append(item)
+            state.queuedIndex[item.agentId] = item
         }
-        if starting.contains(item.agentId) {
-            throw AgentStartCoordinatorError.alreadyStarting(item.agentId)
-        }
-        queue.append(item)
-        queuedIndex[item.agentId] = item
     }
 
     public func dequeue() -> AgentStartDequeueResult {
-        lock.lock(); defer { lock.unlock() }
-        guard !queue.isEmpty else { return .empty }
-        let item = queue.removeFirst()
-        queuedIndex[item.agentId] = nil
-        return .item(item)
+        return state.withLock { state in
+            guard !state.queue.isEmpty else { return .empty }
+            let item = state.queue.removeFirst()
+            state.queuedIndex[item.agentId] = nil
+            return .item(item)
+        }
     }
 
     public func queueAgeMs(_ agentId: String, nowMs: Int) -> Int {
-        lock.lock(); defer { lock.unlock() }
-        guard let item = queuedIndex[agentId] else { return 0 }
-        return nowMs - item.enqueuedAtMs
+        return state.withLock { state in
+            guard let item = state.queuedIndex[agentId] else { return 0 }
+            return nowMs - item.enqueuedAtMs
+        }
     }
 
     public func markStarting(_ agentId: String) throws {
-        lock.lock(); defer { lock.unlock() }
-        if queuedIndex[agentId] != nil {
-            throw AgentStartCoordinatorError.stillQueued(agentId)
+        try state.withLock { state in
+            if state.queuedIndex[agentId] != nil {
+                throw AgentStartCoordinatorError.stillQueued(agentId)
+            }
+            if !state.starting.contains(agentId) { state.starting.append(agentId) }
         }
-        if !starting.contains(agentId) { starting.append(agentId) }
     }
 
     public func clearStarting(_ agentId: String) {
-        lock.lock(); defer { lock.unlock() }
-        starting.removeAll { $0 == agentId }
+        state.withLock { state in
+            state.starting.removeAll { $0 == agentId }
+        }
     }
 
     public func claimStartSlot(_ agentId: String) {
-        lock.lock(); defer { lock.unlock() }
-        activeStarts += 1
+        state.withLock { state in
+            state.activeStarts += 1
+        }
     }
 
     @discardableResult
     public func releaseStartSlot() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        guard activeStarts > 0 else { return false }
-        activeStarts -= 1
-        return true
+        return state.withLock { state in
+            guard state.activeStarts > 0 else { return false }
+            state.activeStarts -= 1
+            return true
+        }
     }
 
     public func getPumpState() -> AgentStartPumpState {
-        lock.lock(); defer { lock.unlock() }
-        if activeStarts >= maxConcurrentStarts { return .blocked(reason: "capacity_full") }
-        guard let item = queue.first else { return .empty }
-        return .ready(item: item)
+        return state.withLock { state in
+            if state.activeStarts >= maxConcurrentStarts { return .blocked(reason: "capacity_full") }
+            guard let item = state.queue.first else { return .empty }
+            return .ready(item: item)
+        }
     }
 
     public func cancelQueued(_ agentId: String) -> AgentStartQueueItem? {
-        lock.lock(); defer { lock.unlock() }
-        guard let item = queuedIndex[agentId] else { return nil }
-        queue.removeAll { $0.agentId == agentId }
-        queuedIndex[agentId] = nil
-        return item
+        return state.withLock { state in
+            guard let item = state.queuedIndex[agentId] else { return nil }
+            state.queue.removeAll { $0.agentId == agentId }
+            state.queuedIndex[agentId] = nil
+            return item
+        }
     }
 
     /// Cancel every queued item; the callback observes the pre-clear queue state.
     public func cancelAllQueued(_ onPreClear: ((AgentStartQueueItem) -> Void)? = nil) -> [AgentStartQueueItem] {
-        lock.lock()
-        let items = queue
-        lock.unlock()
+        let items = state.withLock { state in
+            return state.queue
+        }
         // Callbacks may inspect the coordinator; never call them while holding the lock.
         for item in items { onPreClear?(item) }
-        lock.lock()
-        queue.removeAll()
-        queuedIndex.removeAll()
-        lock.unlock()
+        state.withLock { state in
+            state.queue.removeAll()
+            state.queuedIndex.removeAll()
+        }
         return items
     }
 }
