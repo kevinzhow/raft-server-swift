@@ -3,22 +3,19 @@ import Foundation
 import RaftShared
 
 extension OAuthLedger {
-    /// `GET /api/oauth/userinfo`. Only principal access tokens resolve; an App
-    /// installation credential is not a principal and stays 401.
-    public func userinfo(authorization: String?, baseURL: String, scopeServerId: String? = nil) throws -> OAuthUserinfoResponse {
-        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
-            throw OAuthLedgerError(.missingBearerToken)
-        }
+    /// Userinfo retains its request/member and same-server agent-role gates.
+    func userinfoFacts(_ attempt: OAuthPrincipalAttempt) throws -> OAuthUserinfoFacts {
+        let raw = attempt.token
         return try self.state.withLock { ledgerState in
             guard let token = principalTokenLocked(raw, state: ledgerState),
                   let client = ledgerState.clients.first(where: { $0.id == token.clientId }),
                   isUserManaged(client),
                   let server = ledgerState.servers[token.serverId], !server.deleted
             else {
-                throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+                throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
             }
-            if let scopeServerId, scopeServerId != token.serverId {
-                throw OAuthLedgerError(.wrongIssuerServer)
+            if let scopeServerId = attempt.scopeServerId, scopeServerId != token.serverId {
+                throw OAuthPrincipalFailure.wrongIssuerServer
             }
             if token.principalType == "agent" {
                 guard let agentId = token.agentId,
@@ -27,10 +24,10 @@ extension OAuthLedger {
                       !agent.deleted,
                       let role = ledgerState.agentRoles["\(server.id)\n\(agentId)"]
                 else {
-                    throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+                    throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
                 }
-                return OAuthUserinfoResponse(
-                    scope: token.scopes.joined(separator: " "),
+                return OAuthUserinfoFacts(
+                    scopes: token.scopes,
                     clientId: client.clientId,
                     clientName: client.name,
                     serverId: server.id,
@@ -41,22 +38,22 @@ extension OAuthLedger {
                     preferredUsername: agent.name,
                     name: agent.displayName,
                     avatarUrl: agent.avatarUrl,
-                    picture: agentPicture(avatar: agent.avatarUrl, baseURL: baseURL),
                     description: agent.description,
-                    email: nil
+                    email: nil,
+                    emailVerified: false
                 )
             }
             guard let request = ledgerState.requests.first(where: { $0.id == token.requestId }),
                   let role = ledgerState.members["\(token.serverId)\n\(token.userId)"]
             else {
-                throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+                throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
             }
-            var email: OAuthUserinfoResponse.Email?
+            var email: String?
             if token.scopes.contains("email"), !request.humanEmail.isEmpty {
-                email = OAuthUserinfoResponse.Email(address: request.humanEmail, verified: request.humanEmailVerified)
+                email = request.humanEmail
             }
-            return OAuthUserinfoResponse(
-                scope: token.scopes.joined(separator: " "),
+            return OAuthUserinfoFacts(
+                scopes: token.scopes,
                 clientId: client.clientId,
                 clientName: client.name,
                 serverId: server.id,
@@ -67,47 +64,26 @@ extension OAuthLedger {
                 preferredUsername: request.humanName,
                 name: request.humanName,
                 avatarUrl: request.humanAvatarUrl,
-                picture: userinfoPicture(avatar: request.humanAvatarUrl, baseURL: baseURL),
                 description: nil,
-                email: email
+                email: email,
+                emailVerified: request.humanEmailVerified
             )
         }
     }
 
-    /// Only a Raft-uploaded user avatar becomes a picture URL.
-    func userinfoPicture(avatar: String?, baseURL: String) -> String? {
-        guard let avatar,
-              avatar.wholeMatch(of: /^(?i)\/(?:api\/)?avatars\/users\/[0-9a-f]+\.webp$/) != nil
-        else { return nil }
-        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        return base + avatar
-    }
-
-    func agentPicture(avatar: String?, baseURL: String) -> String? {
-        guard let avatar else { return nil }
-        if avatar.hasPrefix("pixel:") {
-            let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-            return base + "/api/avatars/pixel/\(Self.pixelAvatarKey(avatar)).svg"
-        }
-        return absolutePicture(avatar, baseURL: baseURL)
-    }
-
-    /// `GET /api/oauth/serverinfo`. The token names the Server; a query cannot
-    /// redirect the read. Fields come from the live Server row.
-    public func serverinfo(authorization: String?, baseURL: String, scopeServerId: String? = nil) throws -> OAuthServerinfoResponse {
-        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
-            throw OAuthLedgerError(.missingBearerToken)
-        }
+    /// Serverinfo deliberately has no agent-role or human-request requirement.
+    func serverinfoFacts(_ attempt: OAuthPrincipalAttempt) throws -> OAuthServerinfoFacts {
+        let raw = attempt.token
         return try self.state.withLock { ledgerState in
             guard let token = principalTokenLocked(raw, state: ledgerState),
                   let client = ledgerState.clients.first(where: { $0.id == token.clientId }),
                   isUserManaged(client),
                   let server = ledgerState.servers[token.serverId], !server.deleted
             else {
-                throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+                throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
             }
-            if let scopeServerId, scopeServerId != token.serverId {
-                throw OAuthLedgerError(.wrongIssuerServer)
+            if let scopeServerId = attempt.scopeServerId, scopeServerId != token.serverId {
+                throw OAuthPrincipalFailure.wrongIssuerServer
             }
             if token.principalType == "agent" {
                 guard let agentId = token.agentId,
@@ -115,32 +91,66 @@ extension OAuthLedger {
                       agent.serverId == server.id,
                       !agent.deleted
                 else {
-                    throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+                    throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
                 }
             } else {
                 guard ledgerState.members["\(token.serverId)\n\(token.userId)"] != nil else {
-                    throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+                    throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
                 }
             }
-            return OAuthServerinfoResponse(
+            return OAuthServerinfoFacts(
                 id: server.id,
                 slug: server.slug,
                 name: server.name,
                 avatarUrl: server.avatarUrl,
-                picture: absolutePicture(server.avatarUrl, baseURL: baseURL),
                 isPaid: server.plan != "free"
             )
         }
     }
 
-    func absolutePicture(_ path: String?, baseURL: String) -> String? {
-        guard let path else { return nil }
-        if path.hasPrefix("http://") || path.hasPrefix("https://") { return path }
-        guard path.hasPrefix("/") else { return nil }
-        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
-        return base + path
+    /// Directory eligibility and its name-only ordering share the original borrow.
+    func directoryFacts(_ attempt: OAuthPrincipalAttempt) throws -> OAuthDirectoryFacts {
+        let raw = attempt.token
+        return try self.state.withLock { ledgerState in
+            guard let token = principalTokenLocked(raw, state: ledgerState),
+                  let client = ledgerState.clients.first(where: { $0.id == token.clientId }),
+                  isUserManaged(client),
+                  let server = ledgerState.servers[token.serverId], !server.deleted
+            else {
+                throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
+            }
+            guard client.enabled, token.scopes.contains("agent:read") else {
+                throw OAuthPrincipalFailure.agentReadRequired
+            }
+            if let scopeServerId = attempt.scopeServerId, scopeServerId != token.serverId {
+                throw OAuthPrincipalFailure.wrongIssuerServer
+            }
+            if token.principalType == "agent" {
+                guard let agentId = token.agentId,
+                      let agent = ledgerState.agents[agentId], !agent.deleted,
+                      ledgerState.agentRoles["\(server.id)\n\(agentId)"] != nil
+                else {
+                    throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
+                }
+            } else {
+                guard ledgerState.members["\(server.id)\n\(token.userId)"] != nil else {
+                    throw OAuthPrincipalFailure.invalidOrExpiredAccessToken
+                }
+            }
+            let entries = ledgerState.agents.values
+                .filter { $0.serverId == server.id && !$0.deleted }
+                .sorted { $0.name < $1.name }
+                .map { agent in
+                    OAuthDirectoryEntryFacts(
+                        id: agent.id,
+                        handle: agent.name,
+                        displayName: agent.displayName,
+                        avatarUrl: agent.avatarUrl
+                    )
+                }
+            return OAuthDirectoryFacts(entries: entries)
+        }
     }
-
     /// Resolves an `/oidc/:server` segment by id or slug.
     public func serverScopeId(_ segment: String) -> String? {
         return self.state.withLock { ledgerState in
@@ -150,52 +160,6 @@ extension OAuthLedger {
         }
     }
 
-    public func agentDirectory(authorization: String?, baseURL: String, scopeServerId: String? = nil) throws -> OAuthAgentDirectoryResponse {
-        let noStore = "no-store"
-        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
-            throw OAuthLedgerError(.missingBearerToken, cacheControl: noStore)
-        }
-        return try self.state.withLock { ledgerState in
-            guard let token = principalTokenLocked(raw, state: ledgerState),
-                  let client = ledgerState.clients.first(where: { $0.id == token.clientId }),
-                  isUserManaged(client),
-                  let server = ledgerState.servers[token.serverId], !server.deleted
-            else {
-                throw OAuthLedgerError(.invalidOrExpiredAccessToken, cacheControl: noStore)
-            }
-            guard client.enabled, token.scopes.contains("agent:read") else {
-                throw OAuthLedgerError(.agentReadRequired, cacheControl: noStore)
-            }
-            if let scopeServerId, scopeServerId != token.serverId {
-                throw OAuthLedgerError(.wrongIssuerServer, cacheControl: noStore)
-            }
-            if token.principalType == "agent" {
-                guard let agentId = token.agentId,
-                      let agent = ledgerState.agents[agentId], !agent.deleted,
-                      ledgerState.agentRoles["\(server.id)\n\(agentId)"] != nil
-                else {
-                    throw OAuthLedgerError(.invalidOrExpiredAccessToken, cacheControl: noStore)
-                }
-            } else {
-                guard ledgerState.members["\(server.id)\n\(token.userId)"] != nil else {
-                    throw OAuthLedgerError(.invalidOrExpiredAccessToken, cacheControl: noStore)
-                }
-            }
-            let entries = ledgerState.agents.values
-                .filter { $0.serverId == server.id && !$0.deleted }
-                .sorted { $0.name < $1.name }
-                .map { agent in
-                    OAuthAgentDirectoryResponse.Entry(
-                        id: agent.id,
-                        handle: agent.name,
-                        displayName: agent.displayName,
-                        avatarUrl: agent.avatarUrl,
-                        picture: agentPicture(avatar: agent.avatarUrl, baseURL: baseURL)
-                    )
-                }
-            return OAuthAgentDirectoryResponse(agents: entries)
-        }
-    }
     /// Reads the caller's borrowed State; installation tokens live in a different table and never match.
     func principalTokenLocked(_ raw: String, state ledgerState: State) -> AccessToken? {
         let hash = sha256(raw)

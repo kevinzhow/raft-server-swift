@@ -31,6 +31,11 @@ extension EmailLoginDirectory {
         OAuthAuthorizationService(profiles: authProfileStore, oauth: oauth)
     }
 
+    /// Principal projection over the same actual profile and OAuth owners.
+    public var oauthPrincipal: OAuthPrincipalService {
+        OAuthPrincipalService(profiles: authProfileStore, oauth: oauth)
+    }
+
     /// One flag's rollout decision for the unmigrated callers that still ask
     /// per key (`FeedbackService`, the integrations gate). The decision lives in
     /// `AgentsRuntimeStore`.

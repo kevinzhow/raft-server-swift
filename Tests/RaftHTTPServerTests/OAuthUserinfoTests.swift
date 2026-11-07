@@ -152,3 +152,83 @@ private func userinfoBody(_ response: ClientResponse) throws -> [String: Any] {
         }
     }
 }
+
+@Test func oauthPrincipalHumanUsesGrantIdentityAndLiveRoleServerAndRawURL() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111647"
+    let serverId = "33333333-3333-4333-8333-333333333673"
+    let email = "principal-user-647@test.invalid"
+    let grantAvatar = "/API/AVATARS/USERS/ABC123.WEBP"
+    accounts.addAccount(id: ownerId, email: email, password: "password123", avatarUrl: grantAvatar)
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.setAccountProfileForTesting(id: ownerId, name: "Grant Identity")
+    accounts.oauth.addOwnedServer(id: serverId, slug: "principal-user-647", name: "Before Mint", ownerId: ownerId)
+    let appClient = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+        name: "Principal User App", clientId: "principal-user-client-647", allowedScopes: ["email"])
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func post(_ path: String, _ body: String, authorization: String? = nil) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                headers[.authorization] = authorization
+                return try await client.send(.post, headers: headers, to: URI(string: path)) { $0.body = .init(string: body) }
+            }
+            let login = try await post("/api/auth/login", "{\"email\":\"\(email)\",\"password\":\"password123\"}")
+            #expect(login.status == .ok)
+            let session = try #require(try userinfoBody(login)["accessToken"] as? String)
+            let issued = try await post("/api/oauth/authorize/human", "{\"clientId\":\"\(appClient.clientId)\",\"serverId\":\"\(serverId)\",\"scopes\":[\"email\"]}", authorization: "Bearer \(session)")
+            #expect(issued.status == .ok)
+            let code = try #require(try userinfoBody(issued)["code"] as? String)
+            let minted = try await post("/api/oauth/token", "{\"clientId\":\"\(appClient.clientId)\",\"clientSecret\":\"\(appClient.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\"}")
+            #expect(minted.status == .ok)
+            let token = try #require(try userinfoBody(minted)["access_token"] as? String)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            let principalHeaders = headers
+            // Existing real profile fixture writes replace the current account;
+            // the already issued grant must retain its earlier identity fields.
+            accounts.addAccount(id: ownerId, email: email, password: "password123", avatarUrl: "/api/avatars/users/def456.webp")
+            accounts.setAccountProfileForTesting(id: ownerId, name: "Current Identity")
+            var sessionHeaders = HTTPFields()
+            sessionHeaders[.authorization] = "Bearer \(session)"
+            let current = try await client.get("/api/auth/me", headers: sessionHeaders)
+            #expect(current.status == .ok)
+            let currentUser = try userinfoBody(current)
+            #expect(currentUser["name"] as? String == "Current Identity")
+            #expect(currentUser["avatarUrl"] as? String == "/api/avatars/users/def456.webp")
+            #expect(currentUser["emailVerified"] as? Bool == false)
+            accounts.oauth.addMember(serverId: serverId, userId: ownerId, role: "admin")
+            accounts.oauth.updateServer(id: serverId, name: "After Mint", avatarUrl: "/server.svg")
+            accounts.oauth.setServerPlan(id: serverId, plan: "partner")
+            accounts.oauth.jwtSecret = ""
+            let bases = [
+                ("https://live.profile.test/deep///", "https://live.profile.test/deep///API/AVATARS/USERS/ABC123.WEBP", "https://live.profile.test/deep///server.svg"),
+                (" invalid origin///", " invalid origin///API/AVATARS/USERS/ABC123.WEBP", " invalid origin///server.svg"),
+            ]
+            for (base, humanPicture, serverPicture) in bases {
+                accounts.oauthFlows.configureDeployment(.init(serverURL: base))
+                for mount in ["", "/oidc/principal-user-647"] {
+                    let user = try await client.get(URI(string: "\(mount)/api/oauth/userinfo"), headers: principalHeaders)
+                    #expect(user.status == .ok)
+                    #expect(user.headers[HTTPField.Name("Cache-Control")!] == nil)
+                    #expect(user.body.string == "{\"scope\":\"email\",\"client_id\":\"\(appClient.clientId)\",\"client_name\":\"Principal User App\",\"server_id\":\"\(serverId)\",\"server_slug\":\"principal-user-647\",\"sub\":\"\(ownerId)\",\"type\":\"human\",\"server_role\":\"admin\",\"preferred_username\":\"Grant Identity\",\"name\":\"Grant Identity\",\"avatar_url\":\"\(grantAvatar)\",\"picture\":\"\(humanPicture)\",\"description\":null,\"email\":\"\(email)\",\"email_verified\":true}")
+                    let server = try await client.get(URI(string: "\(mount)/api/oauth/serverinfo"), headers: principalHeaders)
+                    #expect(server.status == .ok)
+                    #expect(server.headers[HTTPField.Name("Cache-Control")!] == nil)
+                    #expect(server.body.string == "{\"id\":\"\(serverId)\",\"slug\":\"principal-user-647\",\"name\":\"After Mint\",\"avatar_url\":\"/server.svg\",\"picture\":\"\(serverPicture)\",\"is_paid\":true,\"plan_tier\":\"paid\"}")
+                }
+            }
+            accounts.oauth.removeAuthorizationCodeForTesting(id: code)
+            for mount in ["", "/oidc/principal-user-647"] {
+                let user = try await client.get(URI(string: "\(mount)/api/oauth/userinfo"), headers: principalHeaders)
+                #expect(user.status == .unauthorized)
+                #expect(user.body.string == "{\"error\":\"Invalid or expired access token\"}")
+                #expect(user.headers[HTTPField.Name("Cache-Control")!] == nil)
+                let server = try await client.get(URI(string: "\(mount)/api/oauth/serverinfo"), headers: principalHeaders)
+                #expect(server.status == .ok)
+                #expect(server.headers[HTTPField.Name("Cache-Control")!] == nil)
+            }
+        }
+    }
+}

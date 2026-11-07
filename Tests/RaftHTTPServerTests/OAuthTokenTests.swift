@@ -215,6 +215,8 @@ private func bodyText(_ response: ClientResponse) -> String {
             headers[.authorization] = "Bearer \(accessToken)"
             let userinfo = try await client.send(.get, headers: headers, to: "/api/oauth/userinfo")
             #expect(userinfo.status == .unauthorized)
+            let serverinfo = try await client.send(.get, headers: headers, to: "/api/oauth/serverinfo")
+            #expect(serverinfo.status == .unauthorized)
 
             let agents = try await client.send(.get, headers: headers, to: "/api/oauth/agents")
             #expect(agents.status == .unauthorized)

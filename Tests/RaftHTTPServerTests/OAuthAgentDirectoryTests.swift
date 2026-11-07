@@ -274,3 +274,56 @@ private func directoryObject(_ response: ClientResponse) throws -> [String: Any]
         }
     }
 }
+
+@Test func oauthPrincipalDirectorySortsNamesAndKeepsLiveRolelessAndExternalEntries() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111647"
+    let serverId = "33333333-3333-4333-8333-333333333673"
+    let otherServerId = "33333333-3333-4333-8333-333333333674"
+    accounts.addAccount(id: ownerId, email: "principal-directory-647@test.invalid", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "principal-directory-647", name: "Principal Directory", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: otherServerId, slug: "principal-foreign-647", name: "Foreign Directory", ownerId: ownerId)
+    let lower = accounts.oauth.createAgent(serverId: serverId, name: "alpha", displayName: "Middle display", avatarUrl: "/lower.svg")
+    let zulu = accounts.oauth.createAgent(serverId: serverId, name: "Zulu", displayName: "A display", avatarUrl: "https://cdn.test/z.svg")
+    let alpha = accounts.oauth.createAgent(serverId: serverId, name: "Alpha", displayName: "Z display", avatarUrl: "HTTPS://cdn.test/a.svg", runtime: "external")
+    accounts.oauth.removeAgentMember(serverId: serverId, agentId: alpha)
+    _ = accounts.oauth.createAgent(serverId: otherServerId, name: "Foreign")
+    let deleted = accounts.oauth.createAgent(serverId: serverId, name: "Deleted")
+    accounts.oauth.deleteAgent(id: deleted)
+    let appClient = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId,
+        name: "Principal Directory App", clientId: "principal-directory-client-647", allowedScopes: ["agent:read"])
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func post(_ path: String, _ body: String, authorization: String? = nil) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                headers[.authorization] = authorization
+                return try await client.send(.post, headers: headers, to: URI(string: path)) { $0.body = .init(string: body) }
+            }
+            let login = try await post("/api/auth/login", "{\"email\":\"principal-directory-647@test.invalid\",\"password\":\"password123\"}")
+            #expect(login.status == .ok)
+            let session = try #require(try directoryObject(login)["accessToken"] as? String)
+            let issued = try await post("/api/oauth/authorize/human", "{\"clientId\":\"\(appClient.clientId)\",\"serverId\":\"\(serverId)\",\"scopes\":[\"agent:read\"]}", authorization: "Bearer \(session)")
+            #expect(issued.status == .ok)
+            let code = try #require(try directoryObject(issued)["code"] as? String)
+            let minted = try await post("/api/oauth/token", "{\"clientId\":\"\(appClient.clientId)\",\"clientSecret\":\"\(appClient.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\"}")
+            #expect(minted.status == .ok)
+            let token = try #require(try directoryObject(minted)["access_token"] as? String)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(token)"
+            accounts.oauthFlows.configureDeployment(.init(serverURL: " raw directory///"))
+            accounts.oauth.jwtSecret = ""
+            for mount in ["", "/oidc/principal-directory-647"] {
+                let response = try await client.get(URI(string: "\(mount)/api/oauth/agents?server_id=\(otherServerId)&agentId=foreign"), headers: headers)
+                #expect(response.status == .ok)
+                #expect(response.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+                let rows = try #require(try directoryObject(response)["agents"] as? [[String: Any]])
+                #expect(rows.map { $0["id"] as? String } == [alpha, zulu, lower])
+                #expect(rows.map { $0["handle"] as? String } == ["Alpha", "Zulu", "alpha"])
+                #expect(response.body.string == "{\"agents\":[{\"id\":\"\(alpha)\",\"handle\":\"Alpha\",\"display_name\":\"Z display\",\"avatar_url\":\"HTTPS://cdn.test/a.svg\",\"picture\":null},{\"id\":\"\(zulu)\",\"handle\":\"Zulu\",\"display_name\":\"A display\",\"avatar_url\":\"https://cdn.test/z.svg\",\"picture\":\"https://cdn.test/z.svg\"},{\"id\":\"\(lower)\",\"handle\":\"alpha\",\"display_name\":\"Middle display\",\"avatar_url\":\"/lower.svg\",\"picture\":\" raw directory///lower.svg\"}]}")
+            }
+        }
+    }
+}

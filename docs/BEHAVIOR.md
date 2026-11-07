@@ -2379,3 +2379,11 @@ RFC 074 personal assistant：
 
 - KimiRefreshLockHandle sole optional String改checked Mutex，nil判断/first写入同borrow，空String仍为compromised；两个publicgetter仍各自独立读取，init/mark可见性保持。原NSLock本已保护该状态，非旧race修复。
 - 原三真实process/fs/monitor在before/after均绿；Options/FS/mtime/retry/monitor/withLockFn/defercleanup/callback从enum至EOF完整107行逐byte相同。此片不声称完整takeover协议/首nil竞争选举/成对getter事务/TSan证明；原128行Tests保持，不加低影响镜像getter例。unchecked14→13。
+
+### G6 OAuth principal projections 的 typed 边界
+
+- OAuthPrincipalService只持actual profiles/oauth；每个public查询先读raw live serverURL再原exactBearer/nonempty/notrim解析。G7 scoped resolver仍先于URL/auth，metadata origin/key/503与AuthCore/G5session门槛不套principal。图片大小写/regex/pixel/只drop一尾slash及rawbadbase拼接保持。
+- U/S/A各保一个完整owner事务：last-hash/Date过期/revoked、exactagent revokedGrantClients、user-managedclient/liveServer后再各自gate。U agent要求sameServer/role-key（空字符串可）；human要求原grant request+member，identity为grant快照。S agent不需role、human不需request。A enabled+agent:read 403优先wrongmount401，calleragent不新加sameServer、需role-key；list仅server/!deleted/name<，无role/runtime/visibility新增过滤或secondary tie规则。Unknown principalType仍人路。
+- 三query只回flatimmutablefacts，Owner不回whole token/client/server/request/HTTPDTO/JSON。Service投影原orderedDTO/email省略/null/cache：A成功与Owner错误no-store，U/S nil，G7scope错误保原。旧Owner三HTTP入口删，G4 principalTokenLocked与G7serverScopeId原helper保留。
+- 旧Source v2四函数真绿，v3在同human后仅加existing request删除：root/scoped U401 exact/nilcache而S200/nilcache，补充human单例绿+另3未动v2绿；不谎称v3重四例。v1新case误把flat auth/me当login user包装，修单行保三个实际profile断言，是测试构造P1，非Source行为红。
+- 新identity.principal为当前第63字段，仅approvedtype/positiveguard增加；13actual local owners mandatorycomposer，经同图G5mint/真实profile名后改及live URL/key/role/server/partner/list/client/request变化，公有U/S/A结果证明同owner，含request消失S/A仍通。四v3HTTP字节冻结、0receiverdelta，无新TestSupport/SDK hook；新Source102定向、full/E2E/smoke/guard/parity绿。病理crossservercaller/unknownkind/duphash与ties仍Source等价限度，非HTTP或全63field/fullFallback证明。

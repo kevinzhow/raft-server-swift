@@ -29,6 +29,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         let oauthFlows = services.emailAccounts.oauthFlows
         let issuerMetadata = services.emailAccounts.oauthIssuerMetadata
         let authorization = services.emailAccounts.oauthAuthorization
+        let principal = services.emailAccounts.oauthPrincipal
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
@@ -60,25 +61,22 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         oauth.get("userinfo") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.oauth.userinfo(
-                    authorization: request.headers[.authorization],
-                    baseURL: oauthFlows.deploymentConfiguration.serverURL
+                try principal.userinfo(
+                    authorization: request.headers[.authorization]
                 )
             }
         }
         oauth.get("agents") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
-                try services.emailAccounts.oauth.agentDirectory(
-                    authorization: request.headers[.authorization],
-                    baseURL: oauthFlows.deploymentConfiguration.serverURL
+                try principal.agentDirectory(
+                    authorization: request.headers[.authorization]
                 )
             }
         }
         oauth.get("serverinfo") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.oauth.serverinfo(
-                    authorization: request.headers[.authorization],
-                    baseURL: oauthFlows.deploymentConfiguration.serverURL
+                try principal.serverinfo(
+                    authorization: request.headers[.authorization]
                 )
             }
         }
@@ -170,9 +168,8 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
                 return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
-                    try services.emailAccounts.oauth.agentDirectory(
+                    try principal.agentDirectory(
                         authorization: request.headers[.authorization],
-                        baseURL: oauthFlows.deploymentConfiguration.serverURL,
                         scopeServerId: scope.serverId
                     )
                 }
@@ -194,9 +191,8 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
                 return try await respond {
-                    try services.emailAccounts.oauth.userinfo(
+                    try principal.userinfo(
                         authorization: request.headers[.authorization],
-                        baseURL: oauthFlows.deploymentConfiguration.serverURL,
                         scopeServerId: scope.serverId
                     )
                 }
@@ -208,9 +204,8 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
                 return try await respond {
-                    try services.emailAccounts.oauth.serverinfo(
+                    try principal.serverinfo(
                         authorization: request.headers[.authorization],
-                        baseURL: oauthFlows.deploymentConfiguration.serverURL,
                         scopeServerId: scope.serverId
                     )
                 }
