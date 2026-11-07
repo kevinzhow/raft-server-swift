@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -12,22 +13,22 @@ private func lookupObject(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func installationLookupFindsOnlyTheAuthenticatedAppsActiveInstall() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111201"
     let publisherServerId = "33333333-3333-4333-8333-333333333393"
     let targetServerId = "33333333-3333-4333-8333-333333333394"
-    accounts.addAccount(id: userId, email: "oauth-lookup-201@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-lookup-publisher-201", name: "OAuth Lookup Publisher", ownerId: userId)
-    accounts.oauth.addOwnedServer(id: targetServerId, slug: "oauth-lookup-target-201", name: "OAuth Lookup Target", ownerId: userId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-lookup-201@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-lookup-publisher-201", name: "OAuth Lookup Publisher", ownerId: userId)
+    scene.oauth.addOwnedServer(id: targetServerId, slug: "oauth-lookup-target-201", name: "OAuth Lookup Target", ownerId: userId)
+    let created = try scene.oauth.createClient(
         serverId: publisherServerId,
         createdByUserId: userId,
         name: "OAuth Installation Discovery Client",
         clientId: "oauth-discovery-201",
         appType: "third_party_global"
     )
-    let installationId = accounts.oauth.installClient(
+    let installationId = scene.oauth.installClient(
         serverId: targetServerId,
         clientRecordId: created.id,
         installedByUserId: userId,
@@ -35,12 +36,7 @@ private func lookupObject(_ response: ClientResponse) throws -> [String: Any] {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let pair = Data("\(created.clientId):\(created.clientSecret)".utf8).base64EncodedString()
             var headers = HTTPFields()
@@ -70,44 +66,44 @@ private func lookupObject(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func installationLookupHidesOtherClientsAndInactiveInstalls() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111202"
     let publisherServerId = "33333333-3333-4333-8333-333333333395"
     let targetServerId = "33333333-3333-4333-8333-333333333396"
     let otherServerId = "33333333-3333-4333-8333-333333333397"
-    accounts.addAccount(id: userId, email: "oauth-lookup-202@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-lookup-publisher-202", name: "OAuth Lookup Publisher", ownerId: userId)
-    accounts.oauth.addOwnedServer(id: targetServerId, slug: "oauth-lookup-target-202", name: "OAuth Lookup Target", ownerId: userId)
-    accounts.oauth.addOwnedServer(id: otherServerId, slug: "oauth-lookup-other-202", name: "OAuth Lookup Other", ownerId: userId)
-    let primary = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-lookup-202@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-lookup-publisher-202", name: "OAuth Lookup Publisher", ownerId: userId)
+    scene.oauth.addOwnedServer(id: targetServerId, slug: "oauth-lookup-target-202", name: "OAuth Lookup Target", ownerId: userId)
+    scene.oauth.addOwnedServer(id: otherServerId, slug: "oauth-lookup-other-202", name: "OAuth Lookup Other", ownerId: userId)
+    let primary = try scene.oauth.createClient(
         serverId: publisherServerId,
         createdByUserId: userId,
         name: "OAuth Lookup Primary",
         clientId: "oauth-lookup-primary-202",
         appType: "third_party_global"
     )
-    let other = try accounts.oauth.createClient(
+    let other = try scene.oauth.createClient(
         serverId: publisherServerId,
         createdByUserId: userId,
         name: "OAuth Lookup Other",
         clientId: "oauth-lookup-other-202",
         appType: "third_party_global"
     )
-    let serverLocal = try accounts.oauth.createClient(
+    let serverLocal = try scene.oauth.createClient(
         serverId: targetServerId,
         createdByUserId: userId,
         name: "OAuth Lookup Server Local",
         clientId: "oauth-lookup-local-202",
         appType: "server_local"
     )
-    let installationId = accounts.oauth.installClient(
+    let installationId = scene.oauth.installClient(
         serverId: targetServerId,
         clientRecordId: primary.id,
         installedByUserId: userId,
         groups: ["server"]
     )
-    _ = accounts.oauth.installClient(
+    _ = scene.oauth.installClient(
         serverId: targetServerId,
         clientRecordId: serverLocal.id,
         installedByUserId: userId,
@@ -115,12 +111,7 @@ private func lookupObject(_ response: ClientResponse) throws -> [String: Any] {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             func lookup(
                 _ clientId: String,
@@ -150,18 +141,18 @@ private func lookupObject(_ response: ClientResponse) throws -> [String: Any] {
             #expect(crossClient.status == .notFound)
             #expect(try lookupObject(crossClient)["error"] as? String == "Active installation not found")
 
-            accounts.oauth.setInstallationStatus(id: installationId, status: "suspended")
+            scene.oauth.setInstallationStatus(id: installationId, status: "suspended")
             let suspended = try await lookup(primary.clientId, primary.clientSecret, serverId: targetServerId)
             #expect(suspended.status == .notFound)
             #expect(try lookupObject(suspended)["error"] as? String == "Active installation not found")
 
-            accounts.oauth.setInstallationStatus(id: installationId, status: "active")
-            accounts.oauth.setClientEnabled(clientRecordId: primary.id, enabled: false)
+            scene.oauth.setInstallationStatus(id: installationId, status: "active")
+            scene.oauth.setClientEnabled(clientRecordId: primary.id, enabled: false)
             let disabledApp = try await lookup(primary.clientId, primary.clientSecret, serverId: targetServerId)
             #expect(disabledApp.status == .unauthorized)
 
-            accounts.oauth.setClientEnabled(clientRecordId: primary.id, enabled: true)
-            accounts.oauth.setClientEnabled(clientRecordId: serverLocal.id, enabled: false)
+            scene.oauth.setClientEnabled(clientRecordId: primary.id, enabled: true)
+            scene.oauth.setClientEnabled(clientRecordId: serverLocal.id, enabled: false)
             let disabledServerLocal = try await lookup(serverLocal.clientId, serverLocal.clientSecret, serverId: targetServerId)
             #expect(disabledServerLocal.status == .notFound)
             #expect(try lookupObject(disabledServerLocal)["error"] as? String == "Active installation not found")

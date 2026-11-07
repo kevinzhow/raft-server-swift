@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -12,18 +13,18 @@ private func globalBody(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func globalMarketplaceAppAuthorizesOnlyAfterInstallation() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111219"
     let outsiderId = "11111111-1111-4111-8111-111111111220"
     let publisherServerId = "33333333-3333-4333-8333-333333333413"
     let contextServerId = "33333333-3333-4333-8333-333333333414"
-    accounts.addAccount(id: ownerId, email: "oauth-global-owner-219@slock.test", password: "password123")
-    accounts.addAccount(id: outsiderId, email: "oauth-global-outsider-220@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.markEmailVerified(userId: outsiderId)
-    accounts.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-global-publisher-219", name: "Marketplace Publisher", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: contextServerId, slug: "oauth-global-context-219", name: "Customer Workspace", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-global-owner-219@slock.test", password: "password123")
+    scene.auth.addAccount(id: outsiderId, email: "oauth-global-outsider-220@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.auth.markEmailVerified(userId: outsiderId)
+    scene.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-global-publisher-219", name: "Marketplace Publisher", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: contextServerId, slug: "oauth-global-context-219", name: "Customer Workspace", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: publisherServerId,
         createdByUserId: ownerId,
         name: "Marketplace Notes",
@@ -33,8 +34,8 @@ private func globalBody(_ response: ClientResponse) throws -> [String: Any] {
         homepageUrl: "https://marketplace-notes.example.test",
         returnUrl: "https://marketplace-notes.example.test/login/slock/callback"
     )
-    accounts.oauth.publishClient(clientRecordId: created.id, humanMarketplaceVisible: false)
-    _ = accounts.oauth.installClient(
+    scene.oauth.publishClient(clientRecordId: created.id, humanMarketplaceVisible: false)
+    _ = scene.oauth.installClient(
         serverId: contextServerId,
         clientRecordId: created.id,
         installedByUserId: ownerId,
@@ -42,12 +43,7 @@ private func globalBody(_ response: ClientResponse) throws -> [String: Any] {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             func login(_ email: String) async throws -> String {
                 var headers = HTTPFields()

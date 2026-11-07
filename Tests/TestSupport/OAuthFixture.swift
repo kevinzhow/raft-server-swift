@@ -116,6 +116,41 @@ public struct OAuthFixture: Sendable {
         oauth.accessTokenCount(requestId: requestId)
     }
 
+    public func setClientPublishStatusForTesting(clientRecordId: String, status: String) {
+        oauth.setClientPublishStatusForTesting(clientRecordId: clientRecordId, status: status)
+    }
+
+    public func seedRevokedOAuthAccessTokenForTesting(
+        serverId: String, clientRecordId: String, userId: String, rawToken: String
+    ) {
+        oauth.seedRevokedOAuthAccessTokenForTesting(serverId: serverId,
+            clientRecordId: clientRecordId, userId: userId, rawToken: rawToken)
+    }
+
+    public func revokedOAuthTokenCountForTesting(clientRecordId: String) -> Int {
+        oauth.revokedOAuthTokenCountForTesting(clientRecordId: clientRecordId)
+    }
+
+    public func reviewClientPublish(clientRecordId: String, status: String) -> Bool {
+        oauth.reviewClientPublish(clientRecordId: clientRecordId, status: status)
+    }
+
+    public func publishClient(clientRecordId: String, humanMarketplaceVisible: Bool = true) {
+        oauth.publishClient(clientRecordId: clientRecordId, humanMarketplaceVisible: humanMarketplaceVisible)
+    }
+
+    public func removeInstallationsForTesting(clientRecordId: String) {
+        oauth.removeInstallationsForTesting(clientRecordId: clientRecordId)
+    }
+
+    public func installationGroupsForTesting(clientRecordId: String, serverId: String) -> [String]? {
+        oauth.installationGroupsForTesting(clientRecordId: clientRecordId, serverId: serverId)
+    }
+
+    public func setInstallationStatus(id: String, status: String) {
+        oauth.setInstallationStatus(id: id, status: status)
+    }
+
     public func installClient(
         serverId: String, clientRecordId: String, installedByUserId: String, groups: [String]
     ) -> String {

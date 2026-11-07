@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -12,13 +13,13 @@ private func retiredBody(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func retiredBuiltInClientFailsClosedOnEveryOAuthSurface() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111216"
     let serverId = "33333333-3333-4333-8333-333333333410"
-    accounts.addAccount(id: ownerId, email: "oauth-builtin-216@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-builtin-216", name: "Slock Builtin Apps", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-builtin-216@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-builtin-216", name: "Slock Builtin Apps", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Slock Survey",
@@ -29,12 +30,7 @@ private func retiredBody(_ response: ClientResponse) throws -> [String: Any] {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var loginHeaders = HTTPFields()
             loginHeaders[.contentType] = "application/json"
@@ -61,7 +57,7 @@ private func retiredBody(_ response: ClientResponse) throws -> [String: Any] {
             #expect(exchanged.status == .ok)
             let accessToken = try retiredBody(exchanged)["access_token"] as? String ?? ""
 
-            accounts.oauth.setClientAppType(clientRecordId: created.id, appType: "slock_builtin")
+            scene.oauth.setClientAppType(clientRecordId: created.id, appType: "slock_builtin")
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(sessionToken)"

@@ -8,15 +8,15 @@ import Vapor
 import VaporTesting
 
 @Test func republishingRestoresOfflineHumanLoginWithoutRevivingRevokedCredentials() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-000001042001"
     let sourceId = "33333333-3333-4333-8333-000001042001"
     let externalId = "33333333-3333-4333-8333-000001042002"
-    accounts.addAccount(id: ownerId, email: "offline-source@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: sourceId, slug: "offline-source", name: "Offline Source", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: externalId, slug: "offline-external", name: "Offline External", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "offline-source@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: sourceId, slug: "offline-source", name: "Offline Source", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: externalId, slug: "offline-external", name: "Offline External", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: sourceId,
         createdByUserId: ownerId,
         name: "Synthetic Mail",
@@ -28,22 +28,17 @@ import VaporTesting
     )
     // Historical approved-offline state: private App still listed in Settings,
     // no source installation, revoked credentials that must stay revoked.
-    accounts.oauth.setClientPublishStatusForTesting(clientRecordId: created.id, status: "private")
-    accounts.oauth.seedRevokedOAuthAccessTokenForTesting(
+    scene.oauth.setClientPublishStatusForTesting(clientRecordId: created.id, status: "private")
+    scene.oauth.seedRevokedOAuthAccessTokenForTesting(
         serverId: sourceId,
         clientRecordId: created.id,
         userId: ownerId,
         rawToken: "revoked-synthetic-token"
     )
-    let bearer = accounts.mintAccessTokenForTesting(userId: ownerId)
+    let bearer = scene.auth.mintAccessTokenForTesting(userId: ownerId)
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(bearer)"
@@ -64,9 +59,9 @@ import VaporTesting
             let rows = (try JSONSerialization.jsonObject(with: Data((listed.body.string ?? "").utf8))) as? [[String: Any]] ?? []
             #expect(rows.contains { $0["id"] as? String == created.id })
 
-            accounts.oauth.setClientPublishStatusForTesting(clientRecordId: created.id, status: "publish_requested")
+            scene.oauth.setClientPublishStatusForTesting(clientRecordId: created.id, status: "publish_requested")
             #expect(try await lookup(sourceId).status == .notFound, "requesting republish alone does not restore access")
-            #expect(accounts.oauth.reviewClientPublish(clientRecordId: created.id, status: "published"))
+            #expect(scene.oauth.reviewClientPublish(clientRecordId: created.id, status: "published"))
             #expect(try await lookup(sourceId).status == .ok)
 
             let authorized = try await client.send(.post, headers: headers, to: "/api/oauth/authorize/human") { request in
@@ -90,16 +85,16 @@ import VaporTesting
             revokedHeaders[.authorization] = "Bearer revoked-synthetic-token"
             let revokedIdentity = try await client.get(URI(string: "/api/oauth/userinfo"), headers: revokedHeaders)
             #expect(revokedIdentity.status == .unauthorized)
-            #expect(accounts.oauth.revokedOAuthTokenCountForTesting(clientRecordId: created.id) == 1)
+            #expect(scene.oauth.revokedOAuthTokenCountForTesting(clientRecordId: created.id) == 1)
 
             // Even when the published source was manually uninstalled, returning
             // it to private restores basic source access without installation grants.
-            accounts.oauth.removeInstallationsForTesting(clientRecordId: created.id)
-            accounts.oauth.setClientPublishStatusForTesting(clientRecordId: created.id, status: "unpublish_requested")
-            #expect(accounts.oauth.reviewClientPublish(clientRecordId: created.id, status: "private"))
+            scene.oauth.removeInstallationsForTesting(clientRecordId: created.id)
+            scene.oauth.setClientPublishStatusForTesting(clientRecordId: created.id, status: "unpublish_requested")
+            #expect(scene.oauth.reviewClientPublish(clientRecordId: created.id, status: "private"))
             #expect(try await lookup(sourceId).status == .ok)
             #expect(try await lookup(externalId).status == .notFound)
-            #expect(accounts.oauth.installationGroupsForTesting(clientRecordId: created.id, serverId: sourceId)?.isEmpty == true)
+            #expect(scene.oauth.installationGroupsForTesting(clientRecordId: created.id, serverId: sourceId)?.isEmpty == true)
         }
     }
 }

@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -12,19 +13,19 @@ private func marketplaceBody(_ response: ClientResponse) throws -> [String: Any]
 }
 
 @Test func marketplaceLookupFindsAPublishedAppButNotAPrivateOne() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111217"
     let memberId = "11111111-1111-4111-8111-111111111218"
     let publisherServerId = "33333333-3333-4333-8333-333333333411"
     let contextServerId = "33333333-3333-4333-8333-333333333412"
-    accounts.addAccount(id: ownerId, email: "oauth-market-217@slock.test", password: "password123")
-    accounts.addAccount(id: memberId, email: "oauth-market-member-218@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.markEmailVerified(userId: memberId)
-    accounts.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-market-publisher-217", name: "Marketplace Publisher", ownerId: ownerId)
-    accounts.oauth.addOwnedServer(id: contextServerId, slug: "oauth-market-context-217", name: "Customer Workspace", ownerId: ownerId)
-    accounts.oauth.addMember(serverId: contextServerId, userId: memberId, role: "member")
-    let published = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-market-217@slock.test", password: "password123")
+    scene.auth.addAccount(id: memberId, email: "oauth-market-member-218@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.auth.markEmailVerified(userId: memberId)
+    scene.oauth.addOwnedServer(id: publisherServerId, slug: "oauth-market-publisher-217", name: "Marketplace Publisher", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: contextServerId, slug: "oauth-market-context-217", name: "Customer Workspace", ownerId: ownerId)
+    scene.oauth.addMember(serverId: contextServerId, userId: memberId, role: "member")
+    let published = try scene.oauth.createClient(
         serverId: publisherServerId,
         createdByUserId: ownerId,
         name: "Marketplace Install Guide",
@@ -33,8 +34,8 @@ private func marketplaceBody(_ response: ClientResponse) throws -> [String: Any]
         description: "Published but not installed",
         returnUrl: "https://marketplace-install.example.test/callback"
     )
-    accounts.oauth.publishClient(clientRecordId: published.id)
-    _ = try accounts.oauth.createClient(
+    scene.oauth.publishClient(clientRecordId: published.id)
+    _ = try scene.oauth.createClient(
         serverId: publisherServerId,
         createdByUserId: ownerId,
         name: "Private Install Guide",
@@ -44,12 +45,7 @@ private func marketplaceBody(_ response: ClientResponse) throws -> [String: Any]
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             func login(_ email: String) async throws -> String {
                 var headers = HTTPFields()
@@ -103,7 +99,7 @@ private func marketplaceBody(_ response: ClientResponse) throws -> [String: Any]
                 #expect(try marketplaceBody(hidden)["error"] as? String == "OAuth client not found for server")
             }
 
-            _ = accounts.oauth.installClient(
+            _ = scene.oauth.installClient(
                 serverId: contextServerId,
                 clientRecordId: published.id,
                 installedByUserId: ownerId,

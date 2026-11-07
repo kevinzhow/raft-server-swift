@@ -2444,3 +2444,10 @@ RFC 074 personal assistant：
 - private handler不宣Sendable，在channelInitializer所属loop检查后，以non-escaping makeCompletedFuture同步构造/安装；保原NIO on-loop addHandlerSync位置、安装失败future及Happy Eyeballs每次新parser/共享Once。read/inactive/error三入口先校验context loop再原逻辑，无跨loop handler捕获、额外Mutex/storedloop或装饰NIOLoopBound。
 - timeoutTask仅checkedOnce，parser/header/status/frame/error优先、done/Once顺序、inactive/error重复current读取、close/shutdown与其他Source窗外字节保；原九例在前后均绿（五真实upgrade与四request/frame/parser），原Test219行完全不变，无新测试/IDs。
 - 实际package编译/九定向/full/E2E24smoke49Python22arch/parity绿，unchecked9→8/8→7files/server0。证据为实际安装与loop confinement，不作旧race修复/全NIO协议/所有交错/TSan或性能声明。
+
+### OAuth 应用 HTTP 场景收尾
+
+- OfflineSource/InstallationLookup/RetiredClient/ScopeGrandfather/MarketplaceLookup/GlobalMarketplace六既有文件七函数走既存private同owner Scene/registrar，无Source/Auth/Scene/注册器/图字段改。保离线发布→申请→审核副作用、已撤销credential不复活、source installation清理、按id的suspended/active及client enabled切换、retired全surface拒绝、精确legacy scope tuples、publisher/context边界及安装后才授权。
+- 8fixture delegates仅现有ledger操作；publish默认true/Global显式false原位转发，两个review Bool原singlecall，count/groups返回flat值。102expect只有4Offline既有receipt receiver例外，其余98与全部请求/headers/body/null/args/lifetimes保，无新hook/observer/matrix/IDs。
+- 新图七定向、full、49Python22arch/parity通过。首E2E第二进程ready前bind EADDRINUSE失败，原log保；原two-server隔离通过后唯一原样fullE2E重试及24smoke通过，未改Source/Tests/env/并发/超时/断言。只确认旧freePort释放后启动的潜在重用窗口，不定位具体port/owner或声称修复，不称首次E2E全绿。
+- HTTP inventory完成20个OAuth前缀+9OIDC+FeatureOAuthRoutes共30文件；不扩大为非HTTP OAuthFlowsServiceTests、全部领域fixtures/Root或完整Fallback/main/transport完成。
