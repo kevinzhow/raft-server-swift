@@ -62,32 +62,35 @@ public final class DispatchDeadlineScheduler: OarDeadlineScheduler, @unchecked S
 
 /// One running listing per lister: a request after our deadline joins the
 /// listing still running instead of starting a second one.
-public final class ModelLister: @unchecked Sendable {
+public final class ModelLister: Sendable {
     public typealias Run = @Sendable (OarInstallation, Int?) async throws -> ListModelsResult
     let run: Run
-    private let lock = NSLock()
-    private var running: Task<ListModelsResult, Error>?
-    private var generation = 0
+    private struct State: Sendable {
+        var running: Task<ListModelsResult, Error>? = nil
+        var generation = 0
+    }
+    private let state = Mutex(State())
     public init(_ run: @escaping Run) {
         self.run = run
     }
 
     func joinOrStart(installation: OarInstallation, timeoutMs: Int) -> Task<ListModelsResult, Error> {
-        lock.lock(); defer { lock.unlock() }
-        if let running { return running }
-        let run = self.run
-        generation += 1
-        let currentGeneration = generation
-        let task = Task { try await run(installation, timeoutMs) }
-        running = task
-        Task { [weak self] in
-            _ = try? await task.value
-            guard let self else { return }
-            self.lock.withLock {
-                if self.generation == currentGeneration { self.running = nil }
+        return state.withLock { state in
+            if let running = state.running { return running }
+            let run = self.run
+            state.generation += 1
+            let currentGeneration = state.generation
+            let task = Task { try await run(installation, timeoutMs) }
+            state.running = task
+            Task { [weak self] in
+                _ = try? await task.value
+                guard let self else { return }
+                self.state.withLock { state in
+                    if state.generation == currentGeneration { state.running = nil }
+                }
             }
+            return task
         }
-        return task
     }
 }
 

@@ -2419,3 +2419,9 @@ RFC 074 personal assistant：
 - 八既有HTTP文件11处挂载迁到原13actual-owner Scene，120expect/14require断言行不变；原scope错误先于origin/secret/auth/body、JWKS独立origin、实际P256公钥与token签名、optional email/role/expiry/legacyclient secret接受集保留。
 - 六密钥写入保原first→second→empty→单SP→first与scoped empty原字面/注册前后时点，经已有flows raw setter写同OAuth；typedprofile config逐field原mutation，不新增trim/合并配置。默认discovery在原挂载点建freshScene；OAuthFixture只复用现setClientSecretForTesting真实hash写delegate，无新hook/Spy/矩阵/IDs或Source/registrar/composer改变。
 - 新图11定向与完整门禁已通过；证据仅第三批范围，不称所有OAuth fixtures、完整Fallback/transport或全部63fields方法均已迁移。
+
+### ModelLister checked Task 所有权
+
+- running Task/generation归同private Mutex，join lookup→generation→Task创建→publication→weak cleanup Task注册→return仍原完整事务；Run在子Task运行，cleanup await后才升级weak self再单borrow按generation清槽，未提前inline Run或持借用await。
+- 原Task身份/取消后late join/完成后新listing/同installation对象/timeout传递与one-lister语义保，不加installation key、completed/cancelled检查或对象快照；DispatchDeadlineScheduler/Once/detect/projection/DTO窗外字节保，原Tests165/200yields无改。
+- 原十个public outcome/deadline/join测试在原/新Source均绿，full/E2E24smoke49Python22arch/parity绿。仅checkedhelper ownership、非旧race修复/新red/所有交错/生产wiring/benchmark/TSan证明；unchecked11→10，Oar文件因剩Scheduler仍在清单。
