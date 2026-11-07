@@ -325,7 +325,7 @@ private func registerJSON(
                 #expect(issues.contains { $0["path"] as? String == path })
                 #expect(scene.auth.userCount == 0)
                 #expect(scene.auth.legalAcceptanceCount == 0)
-                #expect(scene.auth.emailVerificationCount == 0)
+                #expect(scene.auth.totalEmailVerificationRecordCount == 0)
                 #expect(scene.auth.sessionCount == 0)
             }
         }
@@ -578,7 +578,6 @@ private func registerJSON(
     let before = (
         scene.auth.userCount,
         scene.auth.legalAcceptanceCount,
-        scene.auth.emailVerificationCount,
         scene.auth.sessionCount
     )
     try await withApp { app in
@@ -611,8 +610,9 @@ private func registerJSON(
             #expect((secondUser["profileSetupSuggestedHandle"] as? String)?.hasPrefix(username) == true)
             #expect(scene.auth.userCount == before.0 + 2)
             #expect(scene.auth.legalAcceptanceCount == before.1 + 2)
-            #expect(scene.auth.emailVerificationCount == before.2 + 2)
-            #expect(scene.auth.sessionCount == before.3 + 2)
+            #expect(scene.auth.emailVerificationTokenHashes(userId: firstId).count == 1
+                && scene.auth.emailVerificationTokenHashes(userId: secondId).count == 1)
+            #expect(scene.auth.sessionCount == before.2 + 2)
         }
     }
 }

@@ -70,14 +70,15 @@ import VaporTesting
         #expect(try authSceneJSON(before)["emailVerified"] as? Bool == false)
         let resend = try await authScenePost(client, "/api/auth/resend-verification", token: token, body: "{}")
         #expect(resend.status == .ok)
-        #expect(scene.auth.emailVerificationCount == 1)
+        let issuedTokenHashes = scene.auth.emailVerificationTokenHashes(userId: userId)
+        #expect(issuedTokenHashes.count == 1)
         scene.auth.markEmailVerified(userId: userId)
         let after = try await client.get("/api/auth/me", headers: authSceneHeaders(token: token))
         #expect(try authSceneJSON(after)["emailVerified"] as? Bool == true)
         let verified = try await authScenePost(client, "/api/auth/resend-verification", token: token, body: "{}")
         #expect(verified.status == .badRequest)
         #expect(verified.body.string == #"{"error":"Email is already verified"}"#)
-        #expect(scene.auth.emailVerificationCount == 1)
+        #expect(scene.auth.emailVerificationTokenHashes(userId: userId) == issuedTokenHashes)
 
         func enabled(_ provider: String) async throws -> Bool? {
             let response = try await client.get("/api/auth/providers?platform=web")

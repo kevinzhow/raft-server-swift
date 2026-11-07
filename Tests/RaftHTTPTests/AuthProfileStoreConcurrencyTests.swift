@@ -87,7 +87,7 @@ private func raceAuthStore<T: Sendable>(
     }
     #expect(resent.filter { $0 == .issued }.count == 1)
     #expect(resent.filter { $0 == .tooManyRequests }.count == 47)
-    #expect(store.emailVerifications == 1)
+    #expect(store.state.withLock { $0.emailVerificationTokens[isolationUser]?.count ?? 0 } == 1)
 }
 
 @Test func authStoreConcurrentPasswordLoginConsumesPendingLinkWithItsSession() async {

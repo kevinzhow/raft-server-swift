@@ -42,7 +42,13 @@ public struct AuthFixture: Sendable {
 
     public var sessionCount: Int { profiles.state.withLock { $0.accountSurface.sessions.count } }
     public var userCount: Int { profiles.state.withLock { $0.accountSurface.accounts.count } }
-    public var emailVerificationCount: Int { profiles.state.withLock { $0.accountSurface.emailVerifications } }
+    public var totalEmailVerificationRecordCount: Int {
+        profiles.state.withLock { $0.emailVerificationTokens.values.reduce(0) { $0 + $1.count } }
+    }
+
+    public func emailVerificationTokenHashes(userId: String) -> [String] {
+        profiles.state.withLock { $0.emailVerificationTokens[userId]?.map(\.tokenHash) ?? [] }
+    }
 
     public func userId(forEmail email: String) -> String? {
         profiles.accountState.accounts[AccountNaming.normalize(email)]?.id

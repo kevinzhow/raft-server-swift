@@ -219,7 +219,6 @@ final class AuthProfileStore: Sendable {
                 expiresAt: now.addingTimeInterval(ttl)
             )]
             state.emailVerificationIssueDates[userId, default: []].append(now)
-            state.accountSurface.emailVerifications += 1
             return .issued
         }
     }
@@ -372,7 +371,6 @@ final class AuthProfileStore: Sendable {
         var retirementReceipts: [String: RetirementReceipt] = [:]
         var accessTokens: [String: String] = [:]
         var accessTokenFamilies: [String: String] = [:]
-        var emailVerifications: Int = 0
         var appLoginRequests: [String: AppLoginRequest] = [:]
         var socialCompletions: [SocialCompletion] = []
         var pendingSocialLinks: [String: PendingSocialLink] = [:]
@@ -500,11 +498,6 @@ final class AuthProfileStore: Sendable {
     var accessTokenFamilies: [String: String] {
         get { state.withLock { $0.accountSurface.accessTokenFamilies } }
         set { state.withLock { $0.accountSurface.accessTokenFamilies = newValue } }
-    }
-
-    var emailVerifications: Int {
-        get { state.withLock { $0.accountSurface.emailVerifications } }
-        set { state.withLock { $0.accountSurface.emailVerifications = newValue } }
     }
 
     var socialCompletions: [SocialCompletion] {

@@ -314,7 +314,6 @@ extension AuthProfileStore {
                 state.accountSurface.accounts[normalized]?.emailVerified = true
             }
             let tokens = Self.openSessionLocked(state: &state, userId: id)
-            state.accountSurface.emailVerifications += 1
             return .created(RegisteredAccount(
                 id: id,
                 email: normalized,
