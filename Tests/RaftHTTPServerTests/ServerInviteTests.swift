@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import TestSupport
 import Testing
 import Vapor
 import VaporTesting
@@ -64,6 +65,72 @@ import VaporTesting
                 request.body = .init(string: "{\"email\":\"another@slock.test\"}")
             }
             #expect(forbidden.status == .forbidden)
+
+            // Reuse the existing member identity to exercise email acceptance;
+            // no extra account/server fixture or synthetic membership query.
+            let emailInvite = try await client.send(.post, headers: headers(ownerToken), to: "/api/servers/\(serverId)/invites") { request in
+                request.body = .init(string: "{\"email\":\"invite-member@slock.test\"}")
+            }
+            #expect(emailInvite.status == .ok)
+            let emailBody = try JSONSerialization.jsonObject(with: Data((emailInvite.body.string ?? "").utf8)) as? [String: Any]
+            let emailRow = try #require(emailBody?["invite"] as? [String: Any])
+            let inviteId = try #require(emailRow["id"] as? String)
+            let inviteToken = "email-token-\(inviteId)"
+            accounts.setServerInviteTokenForTesting(inviteId: inviteId, token: inviteToken)
+            accounts.setServerSeats(serverId: serverId, seats: 2)
+            let firstAgreement = accounts.oauth.putServerAgreement(serverId: serverId, title: "Invite Rules v1", bodyMarkdown: "Read first")
+
+            func accept(_ userToken: String, agreementId: String? = nil) async throws -> ClientResponse {
+                let agreementField = agreementId.map { ",\"agreementId\":\"\($0)\"" } ?? ""
+                let payload = "{\"token\":\"\(inviteToken)\"\(agreementField)}"
+                return try await client.send(.post, headers: headers(userToken), to: "/api/auth/accept-invite") { request in
+                    request.body = .init(string: payload)
+                }
+            }
+
+            let wrongEmail = try await accept(ownerToken)
+            #expect(wrongEmail.status == .badRequest)
+            #expect(wrongEmail.body.string == "{\"error\":\"Invalid invite\"}")
+            let full = try await accept(memberToken)
+            #expect(full.status == .badRequest)
+            #expect(full.body.string == "{\"error\":\"Seat limit reached (2/2 on Pro plan)\"}")
+            accounts.setServerSeats(serverId: serverId, seats: 3)
+            let required = try await accept(memberToken)
+            #expect(required.status == .conflict)
+            let requiredBody = try JSONSerialization.jsonObject(with: Data((required.body.string ?? "").utf8)) as? [String: Any]
+            #expect(requiredBody?["error"] as? String == "agreement_required")
+            #expect((requiredBody?["agreement"] as? [String: Any])?["id"] as? String == firstAgreement.id)
+            let currentAgreement = accounts.oauth.putServerAgreement(serverId: serverId, title: "Invite Rules v2", bodyMarkdown: "Read current")
+            let changed = try await accept(memberToken, agreementId: firstAgreement.id)
+            #expect(changed.status == .conflict)
+            let changedBody = try JSONSerialization.jsonObject(with: Data((changed.body.string ?? "").utf8)) as? [String: Any]
+            #expect(changedBody?["error"] as? String == "agreement_changed")
+            #expect((changedBody?["agreement"] as? [String: Any])?["id"] as? String == currentAgreement.id)
+            #expect(accounts.membershipAgreementAuditsForTesting(serverId: serverId, subjectId: memberId).isEmpty)
+
+            let pending = try await client.send(.get, headers: headers(ownerToken), to: "/api/servers/\(serverId)/invites")
+            #expect(pending.status == .ok)
+            let pendingRows = try JSONSerialization.jsonObject(with: Data((pending.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            #expect(pendingRows.contains { $0["id"] as? String == inviteId }, "refusals leave the actual invite row pending")
+
+            let joined = try await accept(memberToken, agreementId: currentAgreement.id)
+            #expect(joined.status == .ok)
+            #expect(joined.body.string == "{\"ok\":true,\"serverId\":\"\(serverId)\"}")
+            #expect(accounts.oauth.memberRole(serverId: serverId, userId: memberId) == "member")
+            let audits = accounts.membershipAgreementAuditsForTesting(serverId: serverId, subjectId: memberId)
+            #expect(audits.count == 1)
+            #expect(audits.first?.agreementId == currentAgreement.id)
+            #expect(audits.first?.agreementVersion == 2)
+            #expect(audits.first?.actorUserId == memberId)
+            #expect(audits.first?.source == "invite")
+            let remaining = try await client.send(.get, headers: headers(ownerToken), to: "/api/servers/\(serverId)/invites")
+            #expect(remaining.status == .ok)
+            let remainingRows = try JSONSerialization.jsonObject(with: Data((remaining.body.string ?? "").utf8)) as? [[String: Any]] ?? []
+            #expect(!remainingRows.contains { $0["id"] as? String == inviteId })
+            let consumed = try await accept(memberToken, agreementId: currentAgreement.id)
+            #expect(consumed.status == .badRequest)
+            #expect(consumed.body.string == "{\"error\":\"Invalid invite\"}")
+            #expect(accounts.membershipAgreementAuditsForTesting(serverId: serverId, subjectId: memberId).count == 1)
         }
     }
 }

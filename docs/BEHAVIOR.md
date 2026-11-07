@@ -2310,3 +2310,10 @@ RFC 074 personal assistant：
 - owner 同锁保原 principal→agent→resource→kind→kind-scope→target→summary→payload→hash→now→firstIndex/claim/append。camel string 优先 snake，错类型可 fallback、空 string 可压住 fallback；target 含默认值均 lowercase 不 trim，summary trim 后按 Swift String.count 的 500 上限，external 只 trim，nil/空区别保留。不加 live client/agent/server/member gate。
 - 非空 external 去重仍按 server/agent/internal client/external/未过期 first match，不能增 kind/status 条件。queued 只改旧 status 为 delivering；返回旧 id/hash/expiry，HTTP200 queued+deduped；其他旧状态返回duplicate。新记录才 UUID+append，createdAt 与 24h expiry 共用原 now，HTTP202 queued+not-deduped。
 - owner 只 typed attempt/outcome/Date receipt，Service 以原 ISO8601DateFormatter 默认整秒投影同 DTO/错误；Feature 保原 httpStatus/standard headers，旧 owner HTTP API 无 wrapper。四个旧Source characterization 和十三个新实现定向均通过，含真实32次queued竞争单claim与原内容/队列消费。精确旧时间未覆盖部分依据原赋值核对；本片仍完整旧Fallback验收，不冒称新全图已切换。
+
+### Channels admission 的固定 OAuth 活读能力
+
+- acceptJoinLink、seatLimitMessage、acceptServerInvite 和私有 seat helper 只接具体 ServerAdmissionQuery；构造仅留实际 OAuth 引用，无闭包/facts/cache。无 cap 不读人数，guest 只按精确角色排除，零/负 cap 原比较不改；seat 与 active agreement 仍先后两次 OAuth 锁，不合并 cohort。
+- 原 token/expiry/maxUses 或 email 匹配先于 seat，再到 agreement required/changed；只有接受后 append audit，再 spend use/remove first matched invite。无 active agreement 时，传旧 ID 仍不阻塞、不 audit。Store 不写 membership，Service 返回后才 addMember/发事件；不新增 acceptance guest 免检或全局 seat reservation。
+- 真实 OAuth seeds 保八抢一、32抢五与五条 distinct audit/实际 version3；同 cap 构造后 guest/member 及协议v1→v2变化原位活读。HTTP 保 invalid/email→seat→required/changed，拒绝不消耗；email accepted exact body、单 audit、裸 array 主 invite 移除、retry invalid。该 email 样本复用既有 member，不冒称首次 membership 插入证明。
+- 两个 server-order 与三 admission callback API 已移除，当前仅余两个 thread factory。Container 字段/owner数未增，无 callback 兼容重载；真实 unit 与 HTTP 数据是接受证据，不是 query spy。

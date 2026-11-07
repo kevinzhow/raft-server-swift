@@ -120,6 +120,22 @@ private struct AgreementFixture {
             var joinHeaders = HTTPFields()
             joinHeaders[.authorization] = "Bearer \(fixture.accounts.mintAccessTokenForTesting(userId: fixture.joinerId))"
             joinHeaders[.contentType] = "application/json"
+            fixture.accounts.setServerSeats(serverId: fixture.serverId, seats: 3)
+            let invalid = try await client.send(.post, headers: joinHeaders, to: URI(string: "/api/auth/accept-invite")) { request in
+                request.body = .init(string: "{\"token\":\"unknown-\(token)\"}")
+            }
+            #expect(invalid.status == .badRequest)
+            #expect(invalid.body.string == "{\"error\":\"Invalid invite\"}")
+            let full = try await client.send(.post, headers: joinHeaders, to: URI(string: "/api/auth/accept-invite")) { request in
+                request.body = .init(string: "{\"token\":\"\(token)\"}")
+            }
+            #expect(full.status == .badRequest)
+            #expect(full.body.string == "{\"error\":\"Seat limit reached (3/3 on Pro plan)\"}")
+            #expect(fixture.accounts.joinLinkUseCountForTesting(token: token) == 0)
+            #expect(fixture.accounts.membershipAgreementAuditsForTesting(serverId: fixture.serverId, subjectId: fixture.joinerId).isEmpty)
+            #expect(fixture.accounts.oauth.memberRole(serverId: fixture.serverId, userId: fixture.joinerId) == nil)
+
+            fixture.accounts.setServerSeats(serverId: fixture.serverId, seats: 4)
             let missing = try await client.send(.post, headers: joinHeaders, to: URI(string: "/api/auth/accept-invite")) { request in
                 request.body = .init(string: "{\"token\":\"\(token)\"}")
             }

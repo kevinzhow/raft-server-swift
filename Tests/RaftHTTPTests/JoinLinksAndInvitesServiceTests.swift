@@ -24,8 +24,7 @@ import TestSupport
         useCount: 0,
         revokedAt: nil
     ))
-    let usedSeats: @Sendable (String) -> Int = { _ in 1 }
-    let noAgreement: @Sendable (String) -> ServerAgreementDTO? = { _ in nil }
+    let admission = ServerAdmissionQuery(oauth: directory.oauth)
 
     let acceptances = await withTaskGroup(of: ServersAndChannelsStore.JoinLinkAcceptance.self) { group in
         for index in 0..<8 {
@@ -35,8 +34,7 @@ import TestSupport
                     userId: "\(ownerId)-\(index)",
                     requestedAgreementId: nil,
                     now: now,
-                    usedSeats: usedSeats,
-                    activeAgreement: noAgreement
+                    admission: admission
                 )
             }
         }
@@ -73,19 +71,17 @@ import TestSupport
         useCount: 0,
         revokedAt: nil
     ))
-    let usedSeats: @Sendable (String) -> Int = { serverId in
-        oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
-    }
-    let noAgreement: @Sendable (String) -> ServerAgreementDTO? = { _ in nil }
+    let admission = ServerAdmissionQuery(oauth: oauth)
+    let inviteeId = "11111111-1111-4111-8111-000001130099"
+    oauth.addMember(serverId: serverId, userId: inviteeId, role: "guest")
 
     store.setSeats(serverId: serverId, seats: 1)
     let refused = store.acceptJoinLink(
         token: "seat-token",
-        userId: "11111111-1111-4111-8111-000001130099",
+        userId: inviteeId,
         requestedAgreementId: nil,
         now: now,
-        usedSeats: usedSeats,
-        activeAgreement: noAgreement
+        admission: admission
     )
     #expect(refused == .seatLimit("Seat limit reached (1/1 on Pro plan)"))
     // The refusal happens before the use-count write, exactly like the
@@ -95,14 +91,52 @@ import TestSupport
     store.setSeats(serverId: serverId, seats: 2)
     let accepted = store.acceptJoinLink(
         token: "seat-token",
-        userId: "11111111-1111-4111-8111-000001130099",
+        userId: inviteeId,
         requestedAgreementId: nil,
         now: now,
-        usedSeats: usedSeats,
-        activeAgreement: noAgreement
+        admission: admission
     )
     #expect(accepted == .accepted(serverId: serverId, role: "member"))
     #expect(store.joinLink(token: "seat-token")?.useCount == 1)
+
+    oauth.addMember(serverId: serverId, userId: inviteeId, role: "member")
+    let newlyFull = store.acceptJoinLink(
+        token: "seat-token", userId: inviteeId, requestedAgreementId: nil,
+        now: now, admission: admission
+    )
+    #expect(newlyFull == .seatLimit("Seat limit reached (2/2 on Pro plan)"))
+    #expect(store.joinLink(token: "seat-token")?.useCount == 1)
+    oauth.addMember(serverId: serverId, userId: inviteeId, role: "guest")
+
+    let firstAgreement = oauth.putServerAgreement(serverId: serverId, title: "Rules v1", bodyMarkdown: "Read first")
+    let required = store.acceptJoinLink(
+        token: "seat-token", userId: inviteeId, requestedAgreementId: nil,
+        now: now, admission: admission
+    )
+    #expect(required == .agreementRequired(ServerAgreementDTO(firstAgreement)))
+    let currentAgreement = oauth.putServerAgreement(serverId: serverId, title: "Rules v2", bodyMarkdown: "Read current")
+    let changed = store.acceptJoinLink(
+        token: "seat-token", userId: inviteeId, requestedAgreementId: firstAgreement.id,
+        now: now, admission: admission
+    )
+    #expect(changed == .agreementChanged(ServerAgreementDTO(currentAgreement)))
+    #expect(store.joinLink(token: "seat-token")?.useCount == 1)
+    #expect(store.state.membershipAgreementAudits.isEmpty)
+
+    let acceptedCurrent = store.acceptJoinLink(
+        token: "seat-token", userId: inviteeId, requestedAgreementId: currentAgreement.id,
+        now: now, admission: admission
+    )
+    #expect(acceptedCurrent == .accepted(serverId: serverId, role: "member"))
+    #expect(store.joinLink(token: "seat-token")?.useCount == 2)
+    let audits = store.state.membershipAgreementAudits
+    #expect(audits.count == 1)
+    #expect(audits.first?.agreementId == currentAgreement.id)
+    #expect(audits.first?.agreementVersion == 2)
+    #expect(audits.first?.subjectId == inviteeId)
+    #expect(audits.first?.actorUserId == inviteeId)
+    #expect(audits.first?.source == "invite")
+    #expect(oauth.memberRole(serverId: serverId, userId: inviteeId) == "guest", "Store acceptance leaves the later membership write to its service caller")
 }
 
 @Test func joinLinkInviteInfoKeepsTheUpstreamMemberOrder() throws {

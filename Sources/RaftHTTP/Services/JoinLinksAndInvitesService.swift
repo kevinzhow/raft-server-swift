@@ -371,8 +371,7 @@ public struct JoinLinksAndInvitesService: Sendable {
                 userId: userId,
                 requestedAgreementId: body.agreementId,
                 now: now(),
-                usedSeats: usedSeats,
-                activeAgreement: activeAgreement
+                admission: admission
             ) {
             case .invalid:
                 throw JoinLinksAndInvitesError.invalidInvite
@@ -402,8 +401,7 @@ public struct JoinLinksAndInvitesService: Sendable {
             userEmail: email,
             userId: userId,
             requestedAgreementId: body.agreementId,
-            usedSeats: usedSeats,
-            activeAgreement: activeAgreement
+            admission: admission
         ) {
         case .invalid:
             throw JoinLinksAndInvitesError.invalidInvite
@@ -754,25 +752,12 @@ public struct JoinLinksAndInvitesService: Sendable {
         )
     }
 
-    /// Seat-holder count for one server: every member whose role is not
-    /// `guest`, read from the OAuth ledger.
-    private var usedSeats: @Sendable (String) -> Int {
-        let oauth = self.oauth
-        return { serverId in
-            oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
-        }
-    }
-
-    /// The active agreement, projected to the published DTO.
-    private var activeAgreement: @Sendable (String) -> ServerAgreementDTO? {
-        let oauth = self.oauth
-        return { serverId in
-            oauth.activeServerAgreement(serverId: serverId).map(ServerAgreementDTO.init)
-        }
+    private var admission: ServerAdmissionQuery {
+        ServerAdmissionQuery(oauth: oauth)
     }
 
     private func seatLimitMessage(serverId: String) -> String? {
-        store.seatLimitMessage(serverId: serverId, usedSeats: usedSeats)
+        store.seatLimitMessage(serverId: serverId, admission: admission)
     }
 
     private static func joinedProvenance(role: String) -> String {

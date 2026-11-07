@@ -69,9 +69,7 @@ public struct ServerMembersAndSidebarService: Sendable {
             // The seat cap and the holder count are one store critical section.
             let message = dependencies.channels.seatLimitMessage(
                 serverId: serverId,
-                usedSeats: { [oauth = dependencies.oauth] serverId in
-                    oauth.memberIdsWithRoles(serverId: serverId).filter { $0.role != "guest" }.count
-                }
+                admission: ServerAdmissionQuery(oauth: dependencies.oauth)
             )
             if let message {
                 throw ServerMembersAndSidebarError.seatLimit(message)

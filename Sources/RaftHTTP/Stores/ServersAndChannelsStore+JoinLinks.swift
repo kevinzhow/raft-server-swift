@@ -73,17 +73,15 @@ extension ServersAndChannelsStore {
         }
     }
 
-    /// Decides and spends one join-link use under a single lock. The two
-    /// closures read the OAuth ledger (seat holders and the active agreement)
-    /// while this store lock is held, which is the same order the retired
-    /// directory lock used: directory -> OAuth ledger.
+    /// Decides and spends one join-link use under a single lock. The fixed
+    /// OAuth leaves read seat holders only for a configured cap, then read the
+    /// active agreement separately, preserving the Channels -> OAuth lock order.
     func acceptJoinLink(
         token: String,
         userId: String,
         requestedAgreementId: String?,
         now: Date,
-        usedSeats: @Sendable (String) -> Int,
-        activeAgreement: @Sendable (String) -> ServerAgreementDTO?
+        admission: ServerAdmissionQuery
     ) -> JoinLinkAcceptance {
         mutex.withLock { storage in
             guard let link = storage.joinLinks[token.lowercased()],
@@ -91,10 +89,10 @@ extension ServersAndChannelsStore {
                   !Self.joinLinkExpired(link, now: now),
                   !Self.joinLinkExhausted(link)
             else { return .invalid }
-            if let message = Self.seatLimitMessageLocked(state: &storage, serverId: link.serverId, usedSeats: usedSeats) {
+            if let message = Self.seatLimitMessageLocked(state: &storage, serverId: link.serverId, admission: admission) {
                 return .seatLimit(message)
             }
-            if let agreement = activeAgreement(link.serverId) {
+            if let agreement = admission.activeAgreement(serverId: link.serverId) {
                 guard let requested = requestedAgreementId else {
                     return .agreementRequired(agreement)
                 }
@@ -120,20 +118,20 @@ extension ServersAndChannelsStore {
     /// holder count.
     func seatLimitMessage(
         serverId: String,
-        usedSeats: @Sendable (String) -> Int
+        admission: ServerAdmissionQuery
     ) -> String? {
         mutex.withLock { storage in
-            return Self.seatLimitMessageLocked(state: &storage, serverId: serverId, usedSeats: usedSeats)
+            return Self.seatLimitMessageLocked(state: &storage, serverId: serverId, admission: admission)
         }
     }
 
     private static func seatLimitMessageLocked(
         state: inout State,
         serverId: String,
-        usedSeats: @Sendable (String) -> Int
+        admission: ServerAdmissionQuery
     ) -> String? {
         guard let seats = state.proSeats[serverId] else { return nil }
-        let used = usedSeats(serverId)
+        let used = admission.usedSeats(serverId: serverId)
         guard used >= seats else { return nil }
         return "Seat limit reached (\(used)/\(seats) on Pro plan)"
     }
@@ -188,18 +186,17 @@ extension ServersAndChannelsStore {
         userEmail: String,
         userId: String,
         requestedAgreementId: String?,
-        usedSeats: @Sendable (String) -> Int,
-        activeAgreement: @Sendable (String) -> ServerAgreementDTO?
+        admission: ServerAdmissionQuery
     ) -> ServerInviteAcceptance {
         mutex.withLock { storage in
             guard let index = storage.serverInvites.firstIndex(where: { $0.tokenHash == tokenHash })
             else { return .invalid }
             let invite = storage.serverInvites[index]
             guard userEmail == invite.email.lowercased() else { return .invalid }
-            if let message = Self.seatLimitMessageLocked(state: &storage, serverId: invite.serverId, usedSeats: usedSeats) {
+            if let message = Self.seatLimitMessageLocked(state: &storage, serverId: invite.serverId, admission: admission) {
                 return .seatLimit(message)
             }
-            if let agreement = activeAgreement(invite.serverId) {
+            if let agreement = admission.activeAgreement(serverId: invite.serverId) {
                 guard let requested = requestedAgreementId else {
                     return .agreementRequired(agreement)
                 }

@@ -79,12 +79,18 @@ struct ChannelTaskStoreIsolationTests {
     @Test func concurrentJoinLimitSpendsAndAuditsOnlyAcceptedUses() async {
         let store = ServersAndChannelsStore()
         let now = Date()
-        let agreement = ServerAgreementDTO(id: "agreement", version: 3, title: "Terms", bodyMarkdown: "Agree", enabled: true)
+        let oauth = OAuthLedger()
+        oauth.addOwnedServer(id: "s", slug: "join-limit", name: "Join Limit", ownerId: "user-0")
+        let admission = ServerAdmissionQuery(oauth: oauth)
+        for version in 1...2 {
+            _ = oauth.putServerAgreement(serverId: "s", title: "Terms \(version)", bodyMarkdown: "Agree")
+        }
+        let agreement = oauth.putServerAgreement(serverId: "s", title: "Terms", bodyMarkdown: "Agree")
         store.insertJoinLink(JoinLinkRecord(id: "link", token: "token", serverId: "s", role: "member", createdAt: now, expiresAt: nil, maxUses: 5, useCount: 0, revokedAt: nil))
         let winners = await withTaskGroup(of: Bool.self) { group in
             for writer in 0..<32 {
                 group.addTask {
-                    let result = store.acceptJoinLink(token: "TOKEN", userId: "user-\(writer)", requestedAgreementId: agreement.id, now: now, usedSeats: { _ in 0 }, activeAgreement: { _ in agreement })
+                    let result = store.acceptJoinLink(token: "TOKEN", userId: "user-\(writer)", requestedAgreementId: agreement.id, now: now, admission: admission)
                     if case .accepted = result { return true }
                     #expect(result == .invalid)
                     return false
