@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Live reconnect policy for the `RaftDaemon` process.
 ///
@@ -29,11 +30,10 @@ public enum DaemonReconnectStop: Equatable, Sendable {
     case migratedKey
 }
 
-public final class DaemonReconnectLoop: @unchecked Sendable {
+public final class DaemonReconnectLoop: Sendable {
     public typealias Connect = @Sendable () async throws -> DaemonHandshake
     public typealias Sleep = @Sendable (Int) async throws -> Void
 
-    private let lock = NSLock()
     private let policy: DaemonReconnectPolicy
     private let connect: Connect
     private let sleep: Sleep
@@ -41,10 +41,13 @@ public final class DaemonReconnectLoop: @unchecked Sendable {
     private let onScheduled: @Sendable (Int, Int) -> Void
     private let onStopped: @Sendable (DaemonReconnectStop, Error?) -> Void
 
-    private var stopped = false
-    private var attempt = 0
-    private var delayMs: Int
-    private var stopReason: DaemonReconnectStop?
+    private struct State: Sendable {
+        var stopped = false
+        var attempt = 0
+        var delayMs: Int
+        var stopReason: DaemonReconnectStop?
+    }
+    private let state: Mutex<State>
 
     public init(
         policy: DaemonReconnectPolicy = DaemonReconnectPolicy(),
@@ -62,33 +65,33 @@ public final class DaemonReconnectLoop: @unchecked Sendable {
         self.onConnected = onConnected
         self.onScheduled = onScheduled
         self.onStopped = onStopped
-        self.delayMs = policy.minDelayMs
+        self.state = Mutex(State(delayMs: policy.minDelayMs))
     }
 
     public var reconnectAttempt: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return attempt
+        return state.withLock { state in
+            return state.attempt
+        }
     }
 
     public var lastStop: DaemonReconnectStop? {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopReason
+        return state.withLock { state in
+            return state.stopReason
+        }
     }
 
     public func stop() {
-        lock.lock()
-        stopped = true
-        stopReason = .requested
-        lock.unlock()
+        state.withLock { state in
+            state.stopped = true
+            state.stopReason = .requested
+        }
     }
 
     private func recordStop(_ reason: DaemonReconnectStop) {
-        lock.lock()
-        stopReason = reason
-        stopped = true
-        lock.unlock()
+        state.withLock { state in
+            state.stopReason = reason
+            state.stopped = true
+        }
     }
 
     /// Runs until stopped, the migrated key is refused, or `maxConnects`
@@ -126,14 +129,19 @@ public final class DaemonReconnectLoop: @unchecked Sendable {
     }
 
     private func recordFailure() -> (delay: Int, attempt: Int, stopped: Bool) {
-        lock.lock()
-        attempt += 1
-        let backoff = delayMs
-        let delay = policy.delayFor(backoff)
-        delayMs = min(max(policy.minDelayMs, backoff * 2), policy.maxDelayMs)
-        let result = (delay, attempt, stopped)
-        lock.unlock()
-        return result
+        let reserved = state.withLock { state in
+            state.attempt += 1
+            let backoff = state.delayMs
+            let doubled = backoff.multipliedReportingOverflow(by: 2)
+            if !doubled.overflow {
+                state.delayMs = min(max(policy.minDelayMs, doubled.partialValue), policy.maxDelayMs)
+            }
+            return (backoff: backoff, attempt: state.attempt)
+        }
+        let delay = policy.delayFor(reserved.backoff)
+        _ = min(max(policy.minDelayMs, reserved.backoff * 2), policy.maxDelayMs)
+        let stopped = state.withLock { $0.stopped }
+        return (delay, reserved.attempt, stopped)
     }
 
     private func scheduleFailure() async -> Bool {
@@ -149,24 +157,22 @@ public final class DaemonReconnectLoop: @unchecked Sendable {
     }
 
     private func resetAfterSuccess() -> Int {
-        lock.lock()
-        attempt = 0
-        delayMs = policy.minDelayMs
-        let current = attempt
-        lock.unlock()
-        return current
+        return state.withLock { state in
+            state.attempt = 0
+            state.delayMs = policy.minDelayMs
+            let current = state.attempt
+            return current
+        }
     }
 
     private func nextDelayAfterSessionEnd() -> Int {
-        lock.lock()
-        let backoff = delayMs
-        lock.unlock()
+        let backoff = state.withLock { $0.delayMs }
         return policy.delayFor(backoff)
     }
 
     private func isStopped() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return stopped
+        return state.withLock { state in
+            return state.stopped
+        }
     }
 }

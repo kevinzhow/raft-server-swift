@@ -2487,3 +2487,9 @@ RFC 074 personal assistant：
 - 五Native函数迁同13-owner AuthScene/实际AuthFeature：原法律retry/handoff、HS256请求capability错误算法/跨request binding、row过期而requesttoken仍valid、owner-bound link/verifiedstoredemail复用、五tuple mismatch与replay的全部103条公开HTTP/row事实保。新增3scalarfacts+唯一同步provider response inputsetter；四metadata与code匹配才返token，公开200依赖该输入契约，不记录/消费/统计调用，不新Sourcehook或Owner/State逃逸。
 - 删除三旧unchecked exchange recorders/barrier及13私有观察，五处换公开拒绝无handoff、八处删除；Native116→108/全file574→566。并发准确改名OneHandoffAndOneConsumedReply：保原两同body实际HTTPasynclet及gonecode/成功handoff/hash/status/sub事实，只证明本次公开结果，不privatebeforeexchange/zero或exactcalls。七producer仅常量或appleIdentityToken叶，四case seedDate原位、并发仍provider回调内Date+300；旧barrier调度删除不是绝对时间等价。
 - 前1991line accepted39与3JWT helper39line字节保，本Auth测试file已无Root/Fallback/旧observer/unchecked；不代表所有领域或生产Root切换完成。Apple identity.literal.sig仍只parse/claims，真实HS256请求能力保，无新增RSA/JWKS验签。actual新5/full/E2E24smoke49Python22arch/parity通过；Source/SDK/Scene7caps/composer63/IDs0改，原公开输入/签名HMAC字节保，整体checked声明5/4files/server0不变。
+
+### DaemonReconnectLoop 策略重入与 checked 状态
+
+- stopped/attempt/delayMs/stopReason归同Mutex State，旧8域改9借用；failure先完整保原checked attempt递增，预留本次backoff/attempt，只有nonoverflow才以原nested min/max发布下一delay。随后借用外policy，再无条件原checked完整乘法表达式，最后只读freshstopped并返reservedattempt，不回写覆盖其它reservation或successreset。保单次policy后overflowtrap，无新clamp/validation/precondition/stop早跳过。
+- 非overflow提前reservation、foreigncall可交错、postcall stop采样是明确顺序例外，不冒整个旧failure原子区/全部多run或fatal并发等价。其余7域与完整run/policy/interfaces/defaults、success/terminal/callback/sleep顺序保；stop仍不cancel/drain在途connect/sleep，无Task/start/gate/gen/coalesce/drainer。Main确有原单awaitrun生产入口，未改接线；不扩大到完整Node WebSocket/timer模型。
+- 新37行checkedweakbridge取strong解锁后publicstop，普通connect失败，run(max1)后断实际lastStoprequested/attempt1，无计数spy/内部timeout/线程逃逸。旧Source actualbuild后唯一case started→timeout124，新Source原5+新1实际6通过，原119/新37字节保，full/E2E24smoke49Python22arch/parity通过。unchecked5→4/4→3files/server0，原uncheckedRecorder不宣修复或全多run顺序证明。
