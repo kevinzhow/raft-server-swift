@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Reads a runtime's usable-now model list through OAR's `listModels` and
 /// projects it onto the closed runtime-model outcome the server understands.
@@ -149,14 +150,14 @@ public struct OarModelSourceInput: Sendable {
 }
 
 public enum OarListModels {
-    final class Once: @unchecked Sendable {
-        private let lock = NSLock()
-        private var done = false
+    final class Once: Sendable {
+        private let done = Mutex(false)
         func take() -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            if done { return false }
-            done = true
-            return true
+            done.withLock { done in
+                if done { return false }
+                done = true
+                return true
+            }
         }
     }
 

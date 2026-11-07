@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -54,14 +55,14 @@ public enum ChatBridgeRequest {
     }
 
     static func race(_ task: Task<(status: Int, body: Data), Error>, timeoutMs: Int) async -> Outcome {
-        final class Once: @unchecked Sendable {
-            private let lock = NSLock()
-            private var done = false
+        final class Once: Sendable {
+            private let done = Mutex(false)
             func take() -> Bool {
-                lock.lock(); defer { lock.unlock() }
-                if done { return false }
-                done = true
-                return true
+                done.withLock { done in
+                    if done { return false }
+                    done = true
+                    return true
+                }
             }
         }
         let once = Once()
