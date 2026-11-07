@@ -2413,3 +2413,9 @@ RFC 074 personal assistant：
 - shared/isolated/direct三cache归soleprivate Mutex，原五个lookup→immutableDispatcher构造→insert或key remove完整事务保同borrow。proxy/key/timeout计算仍在外且cachehit也原点算；sync transport/async execute均借用后运行，perform/fetch/keys/helpers尾字节不改。
 - 同proxy identity、isolated lane/route/timeout keys、direct首个timeout缓存、HTTP404/500不evict、transport错误key-onlyevict与direct guardfalse原样保；旧失败可能清后来replacement的ordering策略未擅改成identityguard，不声称整fetch事务/旧race修复。
 - 两测试文件字节不改，原六helper与九真实网络定义(十展开wire)在原/新Source均绿，保timeout/peer-close一次完成、慢body/EOF/chunks bytes与lane隔离；full/E2E24smoke49Python22arch/parity绿。仅checkedownership、无新增镜像测试/SDK/hook/benchmark/TSan声称，unchecked12→11。
+
+### OAuthScene metadata/identity 第三批
+
+- 八既有HTTP文件11处挂载迁到原13actual-owner Scene，120expect/14require断言行不变；原scope错误先于origin/secret/auth/body、JWKS独立origin、实际P256公钥与token签名、optional email/role/expiry/legacyclient secret接受集保留。
+- 六密钥写入保原first→second→empty→单SP→first与scoped empty原字面/注册前后时点，经已有flows raw setter写同OAuth；typedprofile config逐field原mutation，不新增trim/合并配置。默认discovery在原挂载点建freshScene；OAuthFixture只复用现setClientSecretForTesting真实hash写delegate，无新hook/Spy/矩阵/IDs或Source/registrar/composer改变。
+- 新图11定向与完整门禁已通过；证据仅第三批范围，不称所有OAuth fixtures、完整Fallback/transport或全部63fields方法均已迁移。

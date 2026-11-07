@@ -2,6 +2,7 @@ import Foundation
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -11,11 +12,8 @@ private func bodyText(_ response: ClientResponse) -> String {
 
 @Test func oauthDiscoveryExposesPublicRaftScopesAndHidesReservedOnes() async throws {
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {}
-        ))
+        let scene = OAuthScene()
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let response = try await client.get("/api/oauth/.well-known/openid-configuration")
             #expect(response.status == .ok)

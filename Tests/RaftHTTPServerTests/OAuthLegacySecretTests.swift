@@ -8,13 +8,13 @@ import Vapor
 import VaporTesting
 
 @Test func oauthClientAuthenticationAcceptsLegacySlockSecretThroughTheTokenEndpoint() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let userId = "11111111-1111-4111-8111-111111111647"
     let serverId = "33333333-3333-4333-8333-333333333687"
-    accounts.addAccount(id: userId, email: "oauth-legacy-secret@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: userId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-legacy-secret", name: "OAuth Legacy Secret", ownerId: userId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: userId, email: "oauth-legacy-secret@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-legacy-secret", name: "OAuth Legacy Secret", ownerId: userId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: userId,
         name: "OAuth Legacy Secret Client",
@@ -22,10 +22,10 @@ import VaporTesting
     )
     #expect(created.clientSecret.wholeMatch(of: /^raft_secret_[0-9a-f]{48}$/) != nil)
     let legacySecret = "slock_secret_" + String(repeating: "a", count: 48)
-    accounts.oauth.setClientSecretForTesting(clientRecordId: created.id, secret: legacySecret)
+    scene.oauth.setClientSecretForTesting(clientRecordId: created.id, secret: legacySecret)
 
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let login = try await client.send(.post, headers: [.contentType: "application/json"], to: "/api/auth/login") { request in
                 request.body = .init(string: "{\"email\":\"oauth-legacy-secret@slock.test\",\"password\":\"password123\"}")

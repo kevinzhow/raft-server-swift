@@ -22,17 +22,17 @@ private func boundaryJWT(_ token: String) -> [String: Any] {
 }
 
 @Test func oidcWithoutEmailOmitsEmailAndKeepsMembershipBound() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
-    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let ownerId = "11111111-1111-4111-8111-111111111239"
     let serverId = "33333333-3333-4333-8333-333333333435"
     let email = "oidc-owner-239@raft.test"
     let redirectURI = "https://open-webui.example.test/oauth/oidc/callback"
-    accounts.addAccount(id: ownerId, email: email, password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oidc-239", name: "OIDC Boundary", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: email, password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oidc-239", name: "OIDC Boundary", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Open WebUI",
@@ -42,12 +42,7 @@ private func boundaryJWT(_ token: String) -> [String: Any] {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var loginHeaders = HTTPFields()
             loginHeaders[.contentType] = "application/json"
@@ -92,18 +87,18 @@ private func boundaryJWT(_ token: String) -> [String: Any] {
             #expect(try boundaryObject(userinfo)["email"] == nil)
 
             let expiredCode = try await authorize(scopes: "\"openid\",\"profile\"")
-            accounts.oauth.expireAuthorizationCode(id: expiredCode)
+            scene.oauth.expireAuthorizationCode(id: expiredCode)
             let expired = try await exchange(expiredCode)
             #expect(expired.status == .badRequest)
             #expect(try boundaryObject(expired)["error"] as? String == "invalid_grant")
             #expect(try boundaryObject(expired)["next_action"] == nil)
 
             let boundCode = try await authorize(scopes: "\"openid\",\"profile\"")
-            accounts.oauth.removeMember(serverId: serverId, userId: ownerId)
+            scene.oauth.removeMember(serverId: serverId, userId: ownerId)
             let removed = try await exchange(boundCode)
             #expect(removed.status == .badRequest)
             #expect(try boundaryObject(removed)["error"] as? String == "invalid_grant")
-            accounts.oauth.addMember(serverId: serverId, userId: ownerId, role: "owner")
+            scene.oauth.addMember(serverId: serverId, userId: ownerId, role: "owner")
             let restored = try await exchange(boundCode)
             #expect(restored.status == .ok)
         }

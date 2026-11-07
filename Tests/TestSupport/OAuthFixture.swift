@@ -31,6 +31,10 @@ public struct OAuthFixture: Sendable {
             homepageUrl: homepageUrl, returnUrl: returnUrl, allowedScopes: allowedScopes)
     }
 
+    public func setClientSecretForTesting(clientRecordId: String, secret: String) {
+        oauth.setClientSecretForTesting(clientRecordId: clientRecordId, secret: secret)
+    }
+
     public func setClientReturnUrl(clientRecordId: String, returnUrl: String?) {
         oauth.setClientReturnUrl(clientRecordId: clientRecordId, returnUrl: returnUrl)
     }

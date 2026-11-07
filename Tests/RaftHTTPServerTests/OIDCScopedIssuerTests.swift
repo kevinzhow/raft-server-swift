@@ -13,21 +13,16 @@ private func issuerObject(_ response: ClientResponse) throws -> [String: Any] {
 }
 
 @Test func scopedIssuerReplacesTheServerQueryParameter() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
-    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let ownerId = "11111111-1111-4111-8111-111111111238"
     let serverId = "33333333-3333-4333-8333-333333333434"
     let slug = "scoped-oidc-238"
-    accounts.oauth.addOwnedServer(id: serverId, slug: slug, name: "Scoped OIDC Server", ownerId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: slug, name: "Scoped OIDC Server", ownerId: ownerId)
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let scoped = try await client.send(.get, headers: HTTPFields(), to: "/oidc/\(slug)/.well-known/openid-configuration")
             #expect(scoped.status == .ok)
@@ -100,15 +95,15 @@ private func expectIssuerScopeFailure(_ response: ClientResponse, status: HTTPRe
 }
 
 @Test func scopedIssuerFailuresPrecedeConfigAuthenticationBodyAndSuccessCachePolicy() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
-    accounts.oauth.jwtSecret = ""
-    accounts.oauth.addOwnedServer(
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "invalid origin" }
+    scene.services.identity.oauthFlows.configureSigningSecret("")
+    scene.oauth.addOwnedServer(
         id: "33333333-3333-4333-8333-333333333671", slug: "issuer-live-645", name: "Issuer Scope",
         ownerId: "11111111-1111-4111-8111-111111111645"
     )
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let routes: [(HTTPRequest.Method, String)] = [
                 (.get, ".well-known/openid-configuration"),
@@ -151,20 +146,20 @@ private func expectIssuerScopeFailure(_ response: ClientResponse, status: HTTPRe
 }
 
 @Test func scopedIssuerReadsLiveRowsAndKeepsRouteSegmentsSeparateFromPrincipalServerIds() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111645"
     let serverId = "33333333-3333-4333-8333-333333333671"
     let originalSlug = "issuer-live-645"
     let renamedSlug = "issuer-renamed-645"
-    accounts.configureOAuthForTesting { $0.serverURL = "https://scope-live.raft.test/base/" }
-    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
-    accounts.addAccount(id: ownerId, email: "issuer-live-645@test.invalid", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: originalSlug, name: "Live Issuer", ownerId: ownerId)
-    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "MetadataBot", creatorUserId: ownerId)
-    let created = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "Metadata Client", clientId: "issuer-live-645")
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://scope-live.raft.test/base/" }
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    scene.auth.addAccount(id: ownerId, email: "issuer-live-645@test.invalid", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: originalSlug, name: "Live Issuer", ownerId: ownerId)
+    let agentId = scene.oauth.createAgent(serverId: serverId, name: "MetadataBot", creatorUserId: ownerId)
+    let created = try scene.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: "Metadata Client", clientId: "issuer-live-645")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -185,12 +180,12 @@ private func expectIssuerScopeFailure(_ response: ClientResponse, status: HTTPRe
             // This existing seed replaces the whole server row, refreshes owner
             // membership and appends an all-channel. Only scope/principal
             // metadata is observed here; this is not a pure rename operation.
-            accounts.oauth.addOwnedServer(id: serverId, slug: renamedSlug, name: "Renamed Issuer", ownerId: ownerId)
+            scene.oauth.addOwnedServer(id: serverId, slug: renamedSlug, name: "Renamed Issuer", ownerId: ownerId)
             let oldDiscovery = try await client.get(URI(string: "/oidc/\(originalSlug)/.well-known/openid-configuration"))
             expectIssuerScopeFailure(oldDiscovery, status: .notFound, message: "Not found")
             let oldPrincipal = try await client.get(URI(string: "/oidc/\(originalSlug)/api/oauth/userinfo"), headers: bearer)
             expectIssuerScopeFailure(oldPrincipal, status: .notFound, message: "Not found")
-            accounts.configureOAuthForTesting { $0.appURL = "https://moved-app.raft.test/base" }
+            scene.auth.configureOAuthForTesting { $0.appURL = "https://moved-app.raft.test/base" }
             for segment in [renamedSlug, serverId] {
                 let discovery = try await client.get(URI(string: "/oidc/\(segment)/.well-known/openid-configuration"))
                 #expect(discovery.status == .ok)
@@ -209,7 +204,7 @@ private func expectIssuerScopeFailure(_ response: ClientResponse, status: HTTPRe
                 let params = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
                 #expect(params["server"] == segment)
             }
-            accounts.oauth.deleteServer(id: serverId)
+            scene.oauth.deleteServer(id: serverId)
             for path in ["/oidc/\(serverId)/.well-known/openid-configuration", "/oidc/\(renamedSlug)/api/oauth/jwks"] {
                 expectIssuerScopeFailure(try await client.get(URI(string: path)), status: .notFound, message: "Not found")
             }

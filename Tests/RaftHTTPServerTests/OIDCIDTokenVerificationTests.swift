@@ -20,19 +20,19 @@ private func decodeBase64URL(_ value: String) -> Data? {
 }
 
 @Test func idTokenSignatureVerifiesWithThePublishedJWKS() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
-    accounts.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    scene.auth.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
     let ownerId = "11111111-1111-4111-8111-111111111240"
     let serverId = "33333333-3333-4333-8333-333333333436"
     let email = "oidc-owner-240@raft.test"
     let redirectURI = "https://open-webui.example.test/oauth/oidc/callback"
     let verifier = "oidc-standard-verifier-abcdefghijklmnopqrstuvwxyz-0123456789"
     let challenge = "4lHxhn3RWN1r50LRPOPTsUXp-dh5hd_mKVHMGvXAufY"
-    accounts.addAccount(id: ownerId, email: email, password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oidc-240", name: "OIDC Verification", ownerId: ownerId)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: email, password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oidc-240", name: "OIDC Verification", ownerId: ownerId)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "Open WebUI",
@@ -42,12 +42,7 @@ private func decodeBase64URL(_ value: String) -> Data? {
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var loginHeaders = HTTPFields()
             loginHeaders[.contentType] = "application/json"

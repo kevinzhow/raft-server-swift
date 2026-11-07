@@ -8,15 +8,10 @@ import Vapor
 import VaporTesting
 
 @Test func jwksPublishesOneES256VerificationKeyWithoutThePrivateScalar() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let response = try await client.send(.get, headers: HTTPFields(), to: "/api/oauth/jwks")
             #expect(response.status == .ok)
@@ -36,14 +31,14 @@ import VaporTesting
 }
 
 @Test func jwksReadsLiveSecretAfterRegistrationIndependentlyOfDiscoveryOrigin() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111645"
     let serverId = "33333333-3333-4333-8333-333333333671"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "jwks-live-645", name: "Live JWKS", ownerId: ownerId)
-    accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
-    accounts.oauth.jwtSecret = "issuer-metadata-first-key"
+    scene.oauth.addOwnedServer(id: serverId, slug: "jwks-live-645", name: "Live JWKS", ownerId: ownerId)
+    scene.auth.configureOAuthForTesting { $0.serverURL = "invalid origin" }
+    scene.services.identity.oauthFlows.configureSigningSecret("issuer-metadata-first-key")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             let initial = try await client.get("/api/oauth/jwks")
             #expect(initial.status == .ok)
@@ -52,7 +47,7 @@ import VaporTesting
             let initialKid = try #require(initialKey["kid"] as? String)
             let discovery = try await client.get("/.well-known/openid-configuration")
             #expect(discovery.status == .serviceUnavailable)
-            accounts.oauth.jwtSecret = "issuer-metadata-second-key"
+            scene.services.identity.oauthFlows.configureSigningSecret("issuer-metadata-second-key")
             let rotated = try await client.get("/api/oauth/jwks")
             #expect(rotated.status == .ok)
             let rotatedObject = try #require(JSONSerialization.jsonObject(with: Data((rotated.body.string ?? "").utf8)) as? [String: Any])
@@ -65,18 +60,18 @@ import VaporTesting
                 #expect(scoped.body.string == rotated.body.string)
                 #expect(scoped.headers[HTTPField.Name("Cache-Control")!] == "public, max-age=300")
             }
-            accounts.oauth.jwtSecret = ""
+            scene.services.identity.oauthFlows.configureSigningSecret("")
             for path in ["/api/oauth/jwks", "/oidc/jwks-live-645/api/oauth/jwks"] {
                 let empty = try await client.get(URI(string: path))
                 #expect(empty.status == .serviceUnavailable)
                 #expect(empty.body.string == "{\"error\":\"oidc_not_configured\"}")
                 #expect(empty.headers[HTTPField.Name("Cache-Control")!] == nil)
             }
-            accounts.oauth.jwtSecret = " "
+            scene.services.identity.oauthFlows.configureSigningSecret(" ")
             let whitespaceKey = try await client.get("/api/oauth/jwks")
             #expect(whitespaceKey.status == .ok)
             #expect(whitespaceKey.headers[HTTPField.Name("Cache-Control")!] == "public, max-age=300")
-            accounts.oauth.jwtSecret = "issuer-metadata-first-key"
+            scene.services.identity.oauthFlows.configureSigningSecret("issuer-metadata-first-key")
             let restored = try await client.get(URI(string: "/oidc/\(serverId)/api/oauth/jwks"))
             #expect(restored.status == .ok)
             #expect(restored.body.string == initial.body.string)
