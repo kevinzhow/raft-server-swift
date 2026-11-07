@@ -2276,3 +2276,10 @@ RFC 074 personal assistant：
 - 三个 installation credential handler 提取到只持具体 integration Service 的 InstallationCredentialRoutes；OAuth/Integrations Features 在原位置委托，原方法/路径、bodyText、respond、headers 和 server→channels 注册顺序保持。focused app 挂同 registrar、真实七服务 AuthFeature 和生产 JSON error boundary，未复制 handler。
 - 五个原 published-path 函数迁移到该 scene，保留完整字节/header helper、输入拒绝和五种 live invalidation 的原请求/断言。HTTP mint 后同 fixture 实际 token count 为 1；另一同 ID 独立 scene 为 0，原 token 在其两个 GET 均 401，证明 owner 隔离。
 - 另保独立旧 Root 的完整 Fallback 三路径成功/原文字节/cache 接线回归，不将 scene fixtures 混接旧 configure。focused 验收不替代完整 Fallback middleware 或所有六十字段的运行证明。
+
+### Janitor 的 stop、registration 与 pass 生命周期
+
+- JanitorSchedule 使用 checked Mutex 管理唯一 timer generation、已准入 pass、stop 与 effect 队列；注册和取消由同一 drainer 在锁外执行。注册同步触发或 stop 先退休预约时，返回 token 只可归原 generation，否则补取消，不复活已停止 schedule。
+- 同一旧 timer 重复或迟到交付不能启动重叠 pass，也不能擦掉新 timer 的 token。stop 原子关闭未来准入/rearm 后才调用外部 timer；cancel 重入 stop 或交付旧 callback 不重新开 pass。stop 不 join 已准入 pass 或在途注册。
+- 已准入 Task 沿用原 strong self 跨 await 保活，pending callback 仍 weak；永久阻塞的注入 timer 操作可占用 drainer，迟到 token 的取消需等待注册返回。原 initial/interval、WalkBudget、磁盘扫描和删除规则不变。
+- 默认并发 suite 中十四例实际执行：原六例与两个兼容 guard 在旧实现通过，六个新核心回归以十四条断言失败；新实现十四例全部通过。证据限公开 Timers seam 的确定性交错和原 orderly fake timer，不声称真实 timer/磁盘 pass 联合、daemon 接线或 TSan 证明。

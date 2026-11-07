@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Raft Computer's own disk use under the Raft home: migration transfer copies,
 /// archived workspaces and per-launch CLI transport. Agent workspaces are never
@@ -237,10 +238,39 @@ public enum RaftDisk {
         }
     }
 
-    public final class JanitorSchedule: @unchecked Sendable {
-        private let lock = NSLock()
-        private var timer: Int?
-        private var stopped = false
+    public final class JanitorSchedule: Sendable {
+        private struct Timer: Sendable {
+            let generation: UUID
+            var token: Int?
+        }
+
+        private enum Effect: Sendable {
+            case schedule(generation: UUID, delayMs: Int)
+            case cancel(Int)
+        }
+
+        private struct State: Sendable {
+            var timer: Timer?
+            var runningPass: UUID?
+            var stopped = false
+            var effects: [Effect] = []
+            var draining = false
+
+            mutating func reserveTimer(_ delayMs: Int) {
+                guard !stopped, timer == nil, runningPass == nil else { return }
+                let generation = UUID()
+                timer = Timer(generation: generation)
+                effects.append(.schedule(generation: generation, delayMs: delayMs))
+            }
+
+            mutating func stop() {
+                stopped = true
+                if let token = timer?.token { effects.append(.cancel(token)) }
+                timer = nil
+            }
+        }
+
+        private let state = Mutex(State())
         private let pass: @Sendable () async -> Void
         private let timers: Timers
         private let intervalMs: Int
@@ -249,31 +279,84 @@ public enum RaftDisk {
             self.pass = pass
             self.timers = timers
             self.intervalMs = intervalMs
-            arm(initialDelayMs)
+            state.withLock { $0.reserveTimer(initialDelayMs) }
+            drainEffects()
         }
 
-        private func arm(_ delayMs: Int) {
-            let timers = self.timers
-            let token = timers.setTimeout({ [weak self] in
-                guard let self else { return }
-                self.lock.withLock { self.timer = nil }
-                Task {
-                    await self.pass()
-                    let shouldArm = self.lock.withLock { !self.stopped }
-                    // Re-arm outside the lock: arm() takes it again.
-                    if shouldArm { self.arm(self.intervalMs) }
-                }
-            }, delayMs)
-            lock.withLock { timer = token }
+        private func timerFired(_ generation: UUID) {
+            let admitted = state.withLock { state in
+                guard !state.stopped, state.timer?.generation == generation,
+                      state.runningPass == nil else { return false }
+                state.timer = nil
+                state.runningPass = generation
+                return true
+            }
+            guard admitted else { return }
+            // Preserve the existing ownership of an admitted pass across await.
+            // The timer body itself holds only a weak reference to this owner.
+            Task { [self] in
+                await pass()
+                passFinished(generation)
+            }
         }
 
+        private func passFinished(_ generation: UUID) {
+            state.withLock { state in
+                guard state.runningPass == generation else { return }
+                state.runningPass = nil
+                state.reserveTimer(intervalMs)
+            }
+            drainEffects()
+        }
+
+        /// Invalidates future callback admissions and registrations. A pass
+        /// already admitted before stop remains in flight and is not joined.
+        /// An in-flight registration is cancelled when its token returns.
         public func stop() {
-            lock.lock()
-            stopped = true
-            let timer = self.timer
-            self.timer = nil
-            lock.unlock()
-            if let timer { timers.clearTimeout(timer) }
+            state.withLock { $0.stop() }
+            drainEffects()
+        }
+
+        // One drainer keeps injected timer operations outside the mutex. If a
+        // synchronous callback finishes its pass before setTimeout returns, its
+        // next registration stays queued until the current registration returns.
+        // Reentrant stop invalidates queued schedules and unpublished tokens.
+        private func drainEffects() {
+            let start = state.withLock { state in
+                guard !state.draining, !state.effects.isEmpty else { return false }
+                state.draining = true
+                return true
+            }
+            guard start else { return }
+            while let effect = state.withLock({ state -> Effect? in
+                guard !state.effects.isEmpty else {
+                    state.draining = false
+                    return nil
+                }
+                return state.effects.removeFirst()
+            }) {
+                switch effect {
+                case .cancel(let token):
+                    timers.clearTimeout(token)
+                case .schedule(let generation, let delayMs):
+                    let current = state.withLock {
+                        !$0.stopped && $0.timer?.generation == generation
+                    }
+                    guard current else { continue }
+                    let token = timers.setTimeout({ [weak self] in
+                        self?.timerFired(generation)
+                    }, delayMs)
+                    state.withLock { state in
+                        if !state.stopped, state.timer?.generation == generation {
+                            state.timer?.token = token
+                        } else {
+                            // The reservation fired or stopped before its token
+                            // returned. Cancel that token outside the mutex.
+                            state.effects.append(.cancel(token))
+                        }
+                    }
+                }
+            }
         }
     }
 

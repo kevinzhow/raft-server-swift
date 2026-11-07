@@ -12,7 +12,7 @@ Sources/RaftDaemonClient/ManagedMcpTools.swift	1
 Sources/RaftDaemonClient/OarListModels.swift	3
 Sources/RaftDaemonClient/ProbeGate.swift	1
 Sources/RaftDaemonClient/ProcessMemory.swift	1
-Sources/RaftDaemonClient/RaftDiskJanitor.swift	2
+Sources/RaftDaemonClient/RaftDiskJanitor.swift	1
 Sources/RaftDaemonClient/RecentDeliveryIds.swift	1
 Sources/RaftDaemonClient/ReminderInboxDefinition.swift	1
 Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1

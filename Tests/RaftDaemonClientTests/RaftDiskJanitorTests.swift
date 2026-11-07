@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 import RaftDaemonClient
 
@@ -40,6 +41,187 @@ private func entries(_ dir: String) -> [String] {
     (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
 }
 
+// Deadlines bound a missing event; the timer hooks and pass continuations
+// establish every interleaving. No delay is used to make callbacks overlap.
+private func waitForJanitorEvent(
+    _ signal: DispatchSemaphore, until condition: () -> Bool
+) -> Bool {
+    let deadline = DispatchTime.now() + .seconds(2)
+    while !condition() {
+        if signal.wait(timeout: deadline) == .timedOut { return condition() }
+    }
+    return true
+}
+
+private final class JanitorTimers: Sendable {
+    struct Entry: Sendable {
+        let id: Int
+        let body: @Sendable () -> Void
+        let delayMs: Int
+    }
+
+    private struct State: Sendable {
+        var entries: [Entry] = []
+        var pending: Set<Int> = []
+        var returning: Set<Int> = []
+        var cancelled: [Int] = []
+        var nextId = 1
+        var beforeReturn: (@Sendable (Entry) -> Void)?
+        var onCancel: (@Sendable (Int) -> Void)?
+    }
+
+    private let state = Mutex(State())
+    private let registrationChanged = DispatchSemaphore(value: 0)
+    private let cancellationChanged = DispatchSemaphore(value: 0)
+
+    var entries: [Entry] { state.withLock { $0.entries } }
+    var pending: Set<Int> { state.withLock { $0.pending } }
+    var cancelled: [Int] { state.withLock { $0.cancelled } }
+
+    var timers: RaftDisk.Timers {
+        RaftDisk.Timers(
+            setTimeout: { [self] body, delayMs in register(body, delayMs: delayMs) },
+            clearTimeout: { [self] token in cancel(token) }
+        )
+    }
+
+    func beforeNextReturn(_ action: @escaping @Sendable (Entry) -> Void) {
+        let retired = state.withLock { state in
+            let retired = state.beforeReturn
+            state.beforeReturn = action
+            return retired
+        }
+        withExtendedLifetime(retired) {}
+    }
+
+    func onNextCancel(_ action: @escaping @Sendable (Int) -> Void) {
+        let retired = state.withLock { state in
+            let retired = state.onCancel
+            state.onCancel = action
+            return retired
+        }
+        withExtendedLifetime(retired) {}
+    }
+
+    private func register(_ body: @escaping @Sendable () -> Void, delayMs: Int) -> Int {
+        let (entry, beforeReturn) = state.withLock { state in
+            let entry = Entry(id: state.nextId, body: body, delayMs: delayMs)
+            state.nextId += 1
+            state.entries.append(entry)
+            state.pending.insert(entry.id)
+            let beforeReturn = state.beforeReturn
+            state.beforeReturn = nil
+            return (entry, beforeReturn)
+        }
+        beforeReturn?(entry)
+        _ = state.withLock { $0.returning.insert(entry.id) }
+        registrationChanged.signal()
+        return entry.id
+    }
+
+    private func cancel(_ token: Int) {
+        let onCancel = state.withLock { state in
+            state.pending.remove(token)
+            state.cancelled.append(token)
+            let onCancel = state.onCancel
+            state.onCancel = nil
+            return onCancel
+        }
+        onCancel?(token)
+        cancellationChanged.signal()
+    }
+
+    // Deliberately retain cancelled and fired bodies: a callback already queued
+    // by a timer implementation can arrive late or arrive more than once.
+    func fire(_ token: Int) {
+        let body = state.withLock { state in
+            state.pending.remove(token)
+            return state.entries.first { $0.id == token }?.body
+        }
+        body?()
+    }
+
+    func waitForRegistration(_ token: Int) -> Bool {
+        waitForJanitorEvent(registrationChanged) {
+            state.withLock { $0.returning.contains(token) }
+        }
+    }
+
+    func waitForCancellation(_ token: Int) -> Bool {
+        waitForJanitorEvent(cancellationChanged) {
+            state.withLock { $0.cancelled.contains(token) }
+        }
+    }
+}
+
+private final class JanitorPasses: Sendable {
+    private struct State: Sendable {
+        var started = 0
+        var active = 0
+        var maximumActive = 0
+        var returned = 0
+        var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
+        var released: Set<Int> = []
+        var releasedAll = false
+    }
+
+    private let state = Mutex(State())
+    private let startChanged = DispatchSemaphore(value: 0)
+    private let returnChanged = DispatchSemaphore(value: 0)
+
+    var started: Int { state.withLock { $0.started } }
+    var active: Int { state.withLock { $0.active } }
+    var maximumActive: Int { state.withLock { $0.maximumActive } }
+
+    func run() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let suspended = state.withLock { state in
+                state.started += 1
+                state.active += 1
+                state.maximumActive = max(state.maximumActive, state.active)
+                if state.releasedAll || state.released.contains(state.started) { return false }
+                state.waiting[state.started] = continuation
+                return true
+            }
+            startChanged.signal()
+            if !suspended { continuation.resume() }
+        }
+        state.withLock {
+            $0.active -= 1
+            $0.returned += 1
+        }
+        returnChanged.signal()
+    }
+
+    func release(_ pass: Int) {
+        let continuation = state.withLock { state in
+            state.released.insert(pass)
+            return state.waiting.removeValue(forKey: pass)
+        }
+        continuation?.resume()
+    }
+
+    func releaseAll() {
+        let continuations = state.withLock { state in
+            state.releasedAll = true
+            let continuations = Array(state.waiting.values)
+            state.waiting.removeAll()
+            return continuations
+        }
+        for continuation in continuations { continuation.resume() }
+    }
+
+    func waitForStarts(_ count: Int) -> Bool {
+        waitForJanitorEvent(startChanged) { started >= count }
+    }
+
+    func waitForReturns(_ count: Int) -> Bool {
+        waitForJanitorEvent(returnChanged) { state.withLock { $0.returned >= count } }
+    }
+}
+
+@Suite
+struct RaftDiskJanitorTests {
 @Test func measureSumsRegularFilesNeverFollowsSymlinksAndReportsTruncation() throws {
     try withHome { home in
         try writeBytes(home + "/a/one", 100)
@@ -165,4 +347,193 @@ private func entries(_ dir: String) -> [String] {
     #expect(pending.timers.map(\.ms) == [86_400])
     schedule.stop()
     #expect(pending.timers.isEmpty)
+}
+
+@Test func stoppingDuringRearmRegistrationCancelsTheLateToken() throws {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+    // init has already returned its first token. Stop during the next arm,
+    // after the old implementation's shouldArm check but before token return.
+    timers.beforeNextReturn { entry in
+        #expect(entry.delayMs == 29)
+        schedule.stop()
+    }
+
+    timers.fire(1)
+    let started = passes.waitForStarts(1)
+    try #require(started)
+    passes.release(1)
+    let registered = timers.waitForRegistration(2)
+    try #require(registered)
+    let lateTokenCancelled = timers.waitForCancellation(2)
+
+    #expect(lateTokenCancelled, "stop must also cancel a registration whose token was not available yet")
+    #expect(timers.pending.isEmpty)
+    #expect(timers.entries.map(\.delayMs) == [13, 29])
+    #expect(passes.started == 1)
+}
+
+@Test func aSynchronousRearmCallbackCannotLeaveItsReturnedTokenActive() throws {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+    // Only the second registration fires inline, so there is no recursive
+    // construction or unbounded fake-timer loop.
+    timers.beforeNextReturn { entry in timers.fire(entry.id) }
+
+    timers.fire(1)
+    let firstStarted = passes.waitForStarts(1)
+    try #require(firstStarted)
+    passes.release(1)
+    let secondStarted = passes.waitForStarts(2)
+    try #require(secondStarted)
+    let returned = timers.waitForRegistration(2)
+    try #require(returned)
+    let consumedTokenCancelled = timers.waitForCancellation(2)
+
+    #expect(consumedTokenCancelled, "a callback that ran before token return must not republish its consumed token")
+    #expect(passes.active == 1)
+    #expect(passes.maximumActive == 1)
+    #expect(timers.entries.map(\.delayMs) == [13, 29])
+}
+
+@Test func duplicateTimerCallbacksCannotOverlapJanitorPasses() throws {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+
+    timers.fire(1)
+    let firstStarted = passes.waitForStarts(1)
+    try #require(firstStarted)
+    timers.fire(1)
+    let duplicateStarted = passes.waitForStarts(2)
+
+    #expect(!duplicateStarted, "the first pass is held open while its timer body is delivered twice")
+    #expect(passes.started == 1)
+    #expect(passes.active == 1)
+    #expect(passes.maximumActive == 1)
+    #expect(timers.entries.map(\.delayMs) == [13], "no interval begins before the admitted pass finishes")
+}
+
+@Test func anOldTimerCallbackCannotReplaceTheNextJanitorTimer() throws {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+
+    timers.fire(1)
+    let firstStarted = passes.waitForStarts(1)
+    try #require(firstStarted)
+    passes.release(1)
+    let nextRegistered = timers.waitForRegistration(2)
+    try #require(nextRegistered)
+    timers.fire(1)
+    let stalePassStarted = passes.waitForStarts(2)
+
+    #expect(!stalePassStarted)
+    #expect(passes.started == 1)
+    #expect(timers.pending == [2])
+    #expect(timers.entries.map(\.delayMs) == [13, 29])
+    schedule.stop()
+    let nextCancelled = timers.waitForCancellation(2)
+    #expect(nextCancelled, "the stale callback must not erase the newer timer's cancellation token")
+}
+
+@Test func callbacksAfterStopCannotStartAJanitorPass() {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+
+    schedule.stop()
+    #expect(timers.cancelled == [1])
+    timers.fire(1)
+    let unexpectedPassStarted = passes.waitForStarts(1)
+
+    #expect(!unexpectedPassStarted)
+    #expect(passes.started == 0)
+    #expect(timers.entries.map(\.delayMs) == [13])
+}
+
+@Test func stopDoesNotJoinAnAdmittedJanitorPassOrRearmIt() throws {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+
+    timers.fire(1)
+    let started = passes.waitForStarts(1)
+    try #require(started)
+    schedule.stop()
+
+    #expect(passes.active == 1, "stop returns while the already admitted pass remains suspended")
+    passes.release(1)
+    let returned = passes.waitForReturns(1)
+    try #require(returned)
+    #expect(passes.active == 0)
+    #expect(timers.entries.map(\.delayMs) == [13])
+    #expect(timers.pending.isEmpty)
+}
+
+@Test func timerCancellationCanReenterStopAndDeliverAnOldCallback() {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    let schedule = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    defer { schedule.stop(); passes.releaseAll() }
+    timers.onNextCancel { token in
+        schedule.stop()
+        timers.fire(token)
+    }
+
+    schedule.stop()
+    let unexpectedPassStarted = passes.waitForStarts(1)
+
+    #expect(timers.cancelled == [1], "reentrant stop observes the completed reset")
+    #expect(!unexpectedPassStarted)
+    #expect(passes.started == 0)
+    #expect(timers.pending.isEmpty)
+}
+
+@Test func aPendingJanitorTimerKeepsOnlyAWeakScheduleReference() {
+    let timers = JanitorTimers()
+    let passes = JanitorPasses()
+    var schedule: RaftDisk.JanitorSchedule? = RaftDisk.scheduleJanitor(
+        pass: { await passes.run() }, timers: timers.timers,
+        initialDelayMs: 13, intervalMs: 29
+    )
+    weak var weakSchedule = schedule
+    #expect(timers.entries.map(\.delayMs) == [13])
+    schedule = nil
+
+    #expect(weakSchedule == nil, "the pending timer body must not retain the schedule owner")
+    timers.fire(1)
+    weakSchedule?.stop()
+    passes.releaseAll()
+    #expect(passes.started == 0)
+}
 }
