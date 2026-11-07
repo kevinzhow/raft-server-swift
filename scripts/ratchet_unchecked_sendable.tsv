@@ -16,7 +16,6 @@ Sources/RaftDaemonClient/RaftDiskJanitor.swift	2
 Sources/RaftDaemonClient/RecentDeliveryIds.swift	1
 Sources/RaftDaemonClient/ReminderInboxDefinition.swift	1
 Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1
-Sources/RaftDaemonClient/RuntimeNotificationState.swift	2
 Sources/RaftDaemonClient/RuntimeProgressState.swift	1
 Sources/RaftDaemonClient/RuntimeTurnTokens.swift	1
 Sources/RaftDaemonClient/ScopedAppStorage.swift	2

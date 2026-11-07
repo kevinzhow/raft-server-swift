@@ -2262,3 +2262,10 @@ RFC 074 personal assistant：
 - mint 的 Basic/body/form/JSON 接受集、重复键 last-wins、snake 优先及拒绝顺序保持。客户端 live 资格、owning active installation、含原顺序与重复项的 effective groups、grant revision、随机 token 与到期时间和 append 仍在一次 owner 事务内。
 - GET 先解析 exact Bearer 并在一次 owner borrow 验证当前 credential，释放后判 server/channel group；server 另一次 borrow 读取 live server，channels 不增加 server 存活 gate。删除 server 后，server GET 返回原 404，而有 channel 权限的 credential 仍返回 `{"installation_id":…,"channels":[]}`。
 - 真实 HTTP 锁住三个成功响应的完整原文字节、UTF-8 Content-Length、Content-Type、robots/cache headers。mint 的拒绝带 `private, no-store`；GET 的缺/坏/过期或 stale credential 401 不带 cache，group 403 与 server 404 保留原 cache。revision、groups、expiry、audience、enabled 的请求后变化立即使原 token 无效，未缓存旧 facts。
+
+### Runtime notification timer 的完整生命周期
+
+- schedule 在调用公开 scheduler 前原子预约唯一 generation；注册期间的第二次 schedule 拒绝，不生成第二个 timer。同步 callback、clear 或 takePending 先退休预约时，返回的旧 token 在锁外补取消，不能覆盖后来预约的 token。
+- clear 在同一事务里清 pending、timer、notice/failed-encode memo 和贡献 identity，之后才锁外调用 cancel；取消重入产生的新状态不会被旧 clear 再次擦掉。takePending 只清 pending/timer，保留原 notice 与贡献 memo。
+- callback 仅在当前 generation 一次准入后锁外执行；取消后尚未准入的旧 callback 不能发通知或修改新状态，已准入的 callback 可完成，cancel 不等于 join。触发后的 timer 仍保原显式 clear 生命周期。
+- 默认 Dispatch scheduler 以 checked Mutex 管理 callback 和 ID，claim/remove 后在锁外调用或释放闭包。旧实现十五个既有用例通过、八个确定性交错回归失败；修后全部二十三用例通过，包含一次真实默认 timer。此证据限公开 helper/scheduler 边界，不声称 stdin/socket、TSan 或完整 daemon 集成覆盖。

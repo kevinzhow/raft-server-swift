@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Derived dedup-key for a busy stdin inbox notice: the sorted set of
 /// seq-preferred identities of the messages projected into the notice — NOT a
@@ -36,24 +37,38 @@ public protocol RuntimeNotificationScheduler: Sendable {
     func cancel(_ timer: Int)
 }
 
-public final class DispatchNotificationScheduler: RuntimeNotificationScheduler, @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [Int: DispatchWorkItem] = [:]
-    private var nextId = 1
+public final class DispatchNotificationScheduler: RuntimeNotificationScheduler {
+    private struct State: Sendable {
+        var callbacks: [Int: @Sendable () -> Void] = [:]
+        var nextId = 1
+    }
+
+    private let state = Mutex(State())
+
     public init() {}
+
     public func schedule(_ body: @escaping @Sendable () -> Void, afterMs: Int) -> Int {
-        lock.lock()
-        let id = nextId
-        nextId += 1
-        lock.unlock()
-        let item = DispatchWorkItem(block: body)
-        lock.withLock { items[id] = item }
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(max(0, afterMs)), execute: item)
+        let id = state.withLock { state in
+            let id = state.nextId
+            state.nextId += 1
+            state.callbacks[id] = body
+            return id
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(max(0, afterMs))) { [self] in
+            // Claim once, then call and release captured values outside the
+            // mutex. Cancellation cannot join a callback already claimed here.
+            let callback = state.withLock { $0.callbacks.removeValue(forKey: id) }
+            callback?()
+            withExtendedLifetime(callback) {}
+        }
         return id
     }
+
     public func cancel(_ timer: Int) {
-        let item = lock.withLock { items.removeValue(forKey: timer) }
-        item?.cancel()
+        let retired = state.withLock { $0.callbacks.removeValue(forKey: timer) }
+        // Releasing an external closure can run a captured object's deinit,
+        // which may reenter this scheduler.
+        withExtendedLifetime(retired) {}
     }
 }
 
@@ -61,138 +76,30 @@ public final class DispatchNotificationScheduler: RuntimeNotificationScheduler, 
 /// since the last attempt (separate from inbox length), at most one timer, the
 /// last successfully written notice fingerprint (session-scoped dedup memo) and
 /// the failed-encode memo. Ported from the upstream daemon state.
-public final class RuntimeNotificationState: @unchecked Sendable {
-    private let lock = NSLock()
-    private let scheduler: RuntimeNotificationScheduler
-    private var timerValue: Int?
-    private var pendingCountValue = 0
-    private var lastNoticeFingerprint: String?
-    private var lastNoticeSessionId: String?
-    private var lastEncodeFailedFingerprint: String?
-    private var lastEncodeFailedSessionId: String?
-    private var contributedSessionId: String?
-    private var contributedIdentities: Set<String> = []
-
-    public init(scheduler: RuntimeNotificationScheduler = DispatchNotificationScheduler()) {
-        self.scheduler = scheduler
+public final class RuntimeNotificationState: Sendable {
+    private struct Timer: Sendable {
+        let generation: UUID
+        var token: Int?
+        var callbackAdmitted = false
     }
 
-    public var pendingCount: Int { lock.withLock { pendingCountValue } }
-    public var timer: Int? { lock.withLock { timerValue } }
-    public var hasTimer: Bool { lock.withLock { timerValue != nil } }
+    private struct State: Sendable {
+        var timer: Timer?
+        var pendingCount = 0
+        var lastNoticeFingerprint: String?
+        var lastNoticeSessionId: String?
+        var lastEncodeFailedFingerprint: String?
+        var lastEncodeFailedSessionId: String?
+        var contributedSessionId: String?
+        var contributedIdentities: Set<String> = []
 
-    @discardableResult
-    public func add(_ count: Int = 1) -> Int {
-        lock.withLock {
-            pendingCountValue += count
-            return pendingCountValue
+        mutating func invalidateTimer() -> Int? {
+            let token = timer?.token
+            timer = nil
+            return token
         }
-    }
 
-    public func clearPending() {
-        lock.withLock { pendingCountValue = 0 }
-    }
-
-    @discardableResult
-    public func remove(_ count: Int) -> Int {
-        lock.withLock {
-            guard count > 0 else { return pendingCountValue }
-            pendingCountValue = max(0, pendingCountValue - count)
-            return pendingCountValue
-        }
-    }
-
-    public func clearTimer() {
-        let timer = lock.withLock { () -> Int? in
-            let value = timerValue
-            timerValue = nil
-            return value
-        }
-        if let timer { scheduler.cancel(timer) }
-    }
-
-    public func clear() {
-        clearPending()
-        clearTimer()
-        clearNoticeFingerprint()
-    }
-
-    /// True iff this exact unread-set was already written in THIS session; an
-    /// empty fingerprint is never a duplicate.
-    public func isDuplicateNotice(_ fingerprint: String, sessionId: String?) -> Bool {
-        guard !fingerprint.isEmpty else { return false }
-        return lock.withLock {
-            lastNoticeFingerprint == fingerprint && lastNoticeSessionId == sessionId
-        }
-    }
-
-    /// Register a fingerprint as written — call only after a successful write.
-    public func recordNoticeWritten(
-        _ fingerprint: String, sessionId: String?, messages: [InboxNoticeIdentityMessage] = []
-    ) {
-        lock.withLock {
-            lastNoticeFingerprint = fingerprint
-            lastNoticeSessionId = sessionId
-            lastEncodeFailedFingerprint = nil
-            lastEncodeFailedSessionId = nil
-            ensureContributionSessionLocked(sessionId)
-            for message in messages {
-                let identity = inboxNoticeMessageIdentity(message)
-                if !identity.isEmpty { contributedIdentities.insert(identity) }
-            }
-        }
-    }
-
-    public func hasContributedMessage(_ message: InboxNoticeIdentityMessage, sessionId: String?) -> Bool {
-        lock.withLock {
-            guard contributedSessionId == sessionId else { return false }
-            let identity = inboxNoticeMessageIdentity(message)
-            return !identity.isEmpty && contributedIdentities.contains(identity)
-        }
-    }
-
-    public func filterUncontributedMessages(
-        _ messages: [InboxNoticeIdentityMessage], sessionId: String?
-    ) -> [InboxNoticeIdentityMessage] {
-        lock.withLock {
-            guard contributedSessionId == sessionId, !contributedIdentities.isEmpty else { return messages }
-            return messages.filter { message in
-                let identity = inboxNoticeMessageIdentity(message)
-                return identity.isEmpty || !contributedIdentities.contains(identity)
-            }
-        }
-    }
-
-    public func pruneContributedToPending(_ messages: [InboxNoticeIdentityMessage], sessionId: String?) {
-        lock.withLock {
-            ensureContributionSessionLocked(sessionId)
-            guard !contributedIdentities.isEmpty else { return }
-            var pending: Set<String> = []
-            for message in messages {
-                let identity = inboxNoticeMessageIdentity(message)
-                if !identity.isEmpty { pending.insert(identity) }
-            }
-            contributedIdentities = contributedIdentities.filter { pending.contains($0) }
-        }
-    }
-
-    public func isDuplicateEncodeFailedNotice(_ fingerprint: String, sessionId: String?) -> Bool {
-        guard !fingerprint.isEmpty else { return false }
-        return lock.withLock {
-            lastEncodeFailedFingerprint == fingerprint && lastEncodeFailedSessionId == sessionId
-        }
-    }
-
-    public func recordNoticeEncodeFailed(_ fingerprint: String, sessionId: String?) {
-        guard !fingerprint.isEmpty else { return }
-        lock.withLock {
-            lastEncodeFailedFingerprint = fingerprint
-            lastEncodeFailedSessionId = sessionId
-        }
-    }
-
-    public func clearNoticeFingerprint() {
-        lock.withLock {
+        mutating func clearNoticeFingerprint() {
             lastNoticeFingerprint = nil
             lastNoticeSessionId = nil
             lastEncodeFailedFingerprint = nil
@@ -200,33 +107,185 @@ public final class RuntimeNotificationState: @unchecked Sendable {
             contributedSessionId = nil
             contributedIdentities.removeAll()
         }
+
+        mutating func ensureContributionSession(_ sessionId: String?) {
+            if contributedSessionId == sessionId { return }
+            contributedSessionId = sessionId
+            contributedIdentities.removeAll()
+        }
+    }
+
+    private let state = Mutex(State())
+    private let scheduler: RuntimeNotificationScheduler
+
+    public init(scheduler: RuntimeNotificationScheduler = DispatchNotificationScheduler()) {
+        self.scheduler = scheduler
+    }
+
+    public var pendingCount: Int { state.withLock { $0.pendingCount } }
+    /// The scheduler token is available only after registration returns.
+    public var timer: Int? { state.withLock { $0.timer?.token } }
+    /// A registration in progress already occupies the one timer slot.
+    public var hasTimer: Bool { state.withLock { $0.timer != nil } }
+
+    @discardableResult
+    public func add(_ count: Int = 1) -> Int {
+        state.withLock { state in
+            state.pendingCount += count
+            return state.pendingCount
+        }
+    }
+
+    public func clearPending() {
+        state.withLock { $0.pendingCount = 0 }
+    }
+
+    @discardableResult
+    public func remove(_ count: Int) -> Int {
+        state.withLock { state in
+            guard count > 0 else { return state.pendingCount }
+            state.pendingCount = max(0, state.pendingCount - count)
+            return state.pendingCount
+        }
+    }
+
+    public func clearTimer() {
+        let token = state.withLock { $0.invalidateTimer() }
+        if let token { scheduler.cancel(token) }
+    }
+
+    public func clear() {
+        let token = state.withLock { state in
+            state.pendingCount = 0
+            let token = state.invalidateTimer()
+            state.clearNoticeFingerprint()
+            return token
+        }
+        if let token { scheduler.cancel(token) }
+    }
+
+    /// True iff this exact unread-set was already written in THIS session; an
+    /// empty fingerprint is never a duplicate.
+    public func isDuplicateNotice(_ fingerprint: String, sessionId: String?) -> Bool {
+        guard !fingerprint.isEmpty else { return false }
+        return state.withLock {
+            $0.lastNoticeFingerprint == fingerprint && $0.lastNoticeSessionId == sessionId
+        }
+    }
+
+    /// Register a fingerprint as written — call only after a successful write.
+    public func recordNoticeWritten(
+        _ fingerprint: String, sessionId: String?, messages: [InboxNoticeIdentityMessage] = []
+    ) {
+        state.withLock { state in
+            state.lastNoticeFingerprint = fingerprint
+            state.lastNoticeSessionId = sessionId
+            state.lastEncodeFailedFingerprint = nil
+            state.lastEncodeFailedSessionId = nil
+            state.ensureContributionSession(sessionId)
+            for message in messages {
+                let identity = inboxNoticeMessageIdentity(message)
+                if !identity.isEmpty { state.contributedIdentities.insert(identity) }
+            }
+        }
+    }
+
+    public func hasContributedMessage(_ message: InboxNoticeIdentityMessage, sessionId: String?) -> Bool {
+        state.withLock { state in
+            guard state.contributedSessionId == sessionId else { return false }
+            let identity = inboxNoticeMessageIdentity(message)
+            return !identity.isEmpty && state.contributedIdentities.contains(identity)
+        }
+    }
+
+    public func filterUncontributedMessages(
+        _ messages: [InboxNoticeIdentityMessage], sessionId: String?
+    ) -> [InboxNoticeIdentityMessage] {
+        state.withLock { state in
+            guard state.contributedSessionId == sessionId, !state.contributedIdentities.isEmpty else { return messages }
+            return messages.filter { message in
+                let identity = inboxNoticeMessageIdentity(message)
+                return identity.isEmpty || !state.contributedIdentities.contains(identity)
+            }
+        }
+    }
+
+    public func pruneContributedToPending(_ messages: [InboxNoticeIdentityMessage], sessionId: String?) {
+        state.withLock { state in
+            state.ensureContributionSession(sessionId)
+            guard !state.contributedIdentities.isEmpty else { return }
+            var pending: Set<String> = []
+            for message in messages {
+                let identity = inboxNoticeMessageIdentity(message)
+                if !identity.isEmpty { pending.insert(identity) }
+            }
+            state.contributedIdentities = state.contributedIdentities.filter { pending.contains($0) }
+        }
+    }
+
+    public func isDuplicateEncodeFailedNotice(_ fingerprint: String, sessionId: String?) -> Bool {
+        guard !fingerprint.isEmpty else { return false }
+        return state.withLock {
+            $0.lastEncodeFailedFingerprint == fingerprint && $0.lastEncodeFailedSessionId == sessionId
+        }
+    }
+
+    public func recordNoticeEncodeFailed(_ fingerprint: String, sessionId: String?) {
+        guard !fingerprint.isEmpty else { return }
+        state.withLock {
+            $0.lastEncodeFailedFingerprint = fingerprint
+            $0.lastEncodeFailedSessionId = sessionId
+        }
+    }
+
+    public func clearNoticeFingerprint() {
+        state.withLock { $0.clearNoticeFingerprint() }
     }
 
     @discardableResult
     public func schedule(_ callback: @escaping @Sendable () -> Void, delayMs: Int) -> Bool {
-        lock.lock()
-        if timerValue != nil { lock.unlock(); return false }
-        let scheduler = self.scheduler
-        lock.unlock()
-        let token = scheduler.schedule(callback, afterMs: delayMs)
-        lock.withLock { timerValue = token }
+        let generation = UUID()
+        let reserved = state.withLock { state in
+            guard state.timer == nil else { return false }
+            state.timer = Timer(generation: generation)
+            return true
+        }
+        guard reserved else { return false }
+
+        let token = scheduler.schedule({ [self] in
+            guard admitCallback(generation) else { return }
+            callback()
+        }, afterMs: delayMs)
+        let published = state.withLock { state in
+            guard state.timer?.generation == generation else { return false }
+            state.timer?.token = token
+            return true
+        }
+        // clear, takePending, or a synchronous callback may retire the
+        // reservation before its scheduler token becomes available.
+        if !published { scheduler.cancel(token) }
         return true
     }
 
     public func takePendingAndClearTimer() -> Int {
-        lock.lock()
-        let count = pendingCountValue
-        pendingCountValue = 0
-        let timer = timerValue
-        timerValue = nil
-        lock.unlock()
-        if let timer { scheduler.cancel(timer) }
+        let (count, token) = state.withLock { state in
+            let count = state.pendingCount
+            state.pendingCount = 0
+            return (count, state.invalidateTimer())
+        }
+        if let token { scheduler.cancel(token) }
         return count
     }
 
-    private func ensureContributionSessionLocked(_ sessionId: String?) {
-        if contributedSessionId == sessionId { return }
-        contributedSessionId = sessionId
-        contributedIdentities.removeAll()
+    private func admitCallback(_ generation: UUID) -> Bool {
+        state.withLock { state in
+            guard state.timer?.generation == generation,
+                  state.timer?.callbackAdmitted == false else { return false }
+            // Keep the timer occupied until explicitly cleared, as in the
+            // serialized path. Clear invalidates future admissions; it does not
+            // join a callback already admitted before the reset.
+            state.timer?.callbackAdmitted = true
+            return true
+        }
     }
 }
