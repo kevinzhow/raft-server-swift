@@ -2374,3 +2374,8 @@ RFC 074 personal assistant：
 - 两token路径按grant_type分流；authorization_code继续接受已有agent-backed UUID，不按agentId加强资格。Human保原secret/type/PKCE/scope/消费/10min/server/member规则，agent保原managed/global-enabled/agent/resource规则且不加human年龄/member/liveServer/install门槛，RNG/Date/append/consume时点不改。
 - Openid key读取/签名仅兑换已提交之后：空key首次500精确Failed to issue access token且无cache，再重放legacy409/OIDC400证明已消费；不预查key/回滚/由500推断没appendtoken。profile-only human和agent无id_token分支仍成功，success才no-store。
 - 新第62字段为identity.authorization，guard仅concrete type/positive fixture增加；13actual locals mandatory composer驱动实际profile早快照、live URL/context、role/key变化，JWT claims/P256对同图metadata验签及重放，旧root桥未冒充新图。旧Owner四HTTP入口与旧AuthIdentities.oauthSession API删除，仅两个既有seed receiver机械迁移，冻结v2 HTTP正文不变；原Source六函数与新98定向均绿，不称全部62field/fullFallback runtime证明。
+
+### Kimi refresh handle checked 状态
+
+- KimiRefreshLockHandle sole optional String改checked Mutex，nil判断/first写入同borrow，空String仍为compromised；两个publicgetter仍各自独立读取，init/mark可见性保持。原NSLock本已保护该状态，非旧race修复。
+- 原三真实process/fs/monitor在before/after均绿；Options/FS/mtime/retry/monitor/withLockFn/defercleanup/callback从enum至EOF完整107行逐byte相同。此片不声称完整takeover协议/首nil竞争选举/成对getter事务/TSan证明；原128行Tests保持，不加低影响镜像getter例。unchecked14→13。

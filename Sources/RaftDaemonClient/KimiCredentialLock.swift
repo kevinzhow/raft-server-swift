@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The Kimi Code client's own refresh lock: a directory sentinel
 /// `<target>.lock`, stale after 5 s, taken with a bounded retry schedule. A
@@ -11,23 +12,21 @@ public enum KimiRefreshLockResult<T: Sendable>: Sendable {
     case unavailable(reason: String)
 }
 
-public final class KimiRefreshLockHandle: @unchecked Sendable {
-    private let lock = NSLock()
-    private var compromisedError: String?
+public final class KimiRefreshLockHandle: Sendable {
+    private let compromisedError = Mutex<String?>(nil)
 
     public var isCompromised: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return compromisedError != nil
+        compromisedError.withLock { $0 != nil }
     }
 
     public var compromisedBy: String? {
-        lock.lock(); defer { lock.unlock() }
-        return compromisedError
+        compromisedError.withLock { $0 }
     }
 
     func markCompromised(_ reason: String) {
-        lock.lock(); defer { lock.unlock() }
-        if compromisedError == nil { compromisedError = reason }
+        compromisedError.withLock { stored in
+            if stored == nil { stored = reason }
+        }
     }
 }
 
