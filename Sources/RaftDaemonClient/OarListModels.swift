@@ -39,23 +39,40 @@ public protocol OarDeadlineScheduler: Sendable {
     func cancel(_ timer: Int)
 }
 
-public final class DispatchDeadlineScheduler: OarDeadlineScheduler, @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [Int: DispatchWorkItem] = [:]
-    private var nextId = 1
+public final class DispatchDeadlineScheduler: OarDeadlineScheduler, Sendable {
+    private final class NativeWorkItem: Sendable {
+        private let item: Mutex<DispatchWorkItem>
+        init(_ body: @escaping @Sendable () -> Void) {
+            item = Mutex(DispatchWorkItem(block: body))
+        }
+        func enqueue(on queue: DispatchQueue, deadline: DispatchTime) {
+            item.withLock { queue.asyncAfter(deadline: deadline, execute: $0) }
+        }
+        func cancel() {
+            item.withLock { $0.cancel() }
+        }
+    }
+    private struct State: Sendable {
+        var items: [Int: NativeWorkItem] = [:]
+        var nextId = 1
+    }
+    private let state = Mutex(State())
     public init() {}
     public func schedule(afterMs: Int, _ body: @escaping @Sendable () -> Void) -> Int {
-        lock.lock()
-        let id = nextId
-        nextId += 1
-        lock.unlock()
-        let item = DispatchWorkItem(block: body)
-        lock.withLock { items[id] = item }
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(max(0, afterMs)), execute: item)
+        let id = state.withLock { state in
+            let id = state.nextId
+            state.nextId += 1
+            return id
+        }
+        let item = NativeWorkItem(body)
+        state.withLock { $0.items[id] = item }
+        let queue = DispatchQueue.global()
+        let deadline = DispatchTime.now() + .milliseconds(max(0, afterMs))
+        item.enqueue(on: queue, deadline: deadline)
         return id
     }
     public func cancel(_ timer: Int) {
-        let item = lock.withLock { items.removeValue(forKey: timer) }
+        let item = state.withLock { $0.items.removeValue(forKey: timer) }
         item?.cancel()
     }
 }

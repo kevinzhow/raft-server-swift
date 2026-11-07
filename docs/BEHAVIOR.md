@@ -2432,3 +2432,9 @@ RFC 074 personal assistant：
 - Pixel原GET handler/helper完整移入production PixelAvatarRoutes，Notifications原点委托，原prefix/解码/UTF8 body长度/robots/cache/content-type/错误status和JSON不变。HTTPReply inventory仅原Notifications1→新Pixel1位置移动、总量不变，不放宽guard预算。
 - 四个既有事件/并发/route测试接private同图fixture，16focused与7bareOAuth/1bareIntegrations保原挂载子集；175expect/41require仅六既有OAuth数据read/mutate断言receiver变化，原32/256并发、UInt64/Unicode/legacyarray hash、claim/idempotency、G5family撤销语义保。仅新增六所需既有fixture ops，单Date采样/token映射/flat receipt保，无新spy/hook/矩阵/IDs。
 - focused实际Integrations→Pixel→OAuth→Auth/JSONboundary同owner；24定向、full/E2E24smoke49Python22arch/parity绿。单EOF额外换行整理不变handler/helper；不声称全部OAuth/领域fixture或完整Fallback/main/transport/Root切换已完。
+
+### DispatchDeadlineScheduler native WorkItem 所有权
+
+- ID/map归checked Mutex，private checked NativeWorkItem另以Mutex隔离实际non-Sendable SDK对象。保reserveID→锁外构造→mapinsert→原queue/deadline求值→enqueue，ownerMap锁不跨SDK；deadline在per-item借用前采样，cancel先remove到强local再原生cancel。
+- per-item借用仅原SDK enqueue/cancel，不inline调用client、不join已开始回调；queue可能立即另线程执行。真实SDK对象、fired项保到cancel/deinit、取消资源可能保到下一attempt/当前完成、scheduler释放后queue仍保body均保持；不手写flags/清body/自动删fired项/deinit取消/queue捕获owner。
+- 原十model用例与三新native公开输出用例在原/最终Source均13绿，包含0/负延时、重入、pending取消、admitted取消在释放clientwork前返回及weak owner已nil仍回调。两Test及窗外Source字节不变；最终package编译/full/E2E24smoke49Python22arch/parity绿，unchecked10→9/9→8files/server0。原NSLock已保护map操作，证据不作新race红、所有交错、精确capture退场/整队列join、生产wiring或TSan证明。
