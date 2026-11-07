@@ -45,15 +45,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
                 try services.emailAccounts.oauth.issueHumanAuthorization(session: session, body: body)
             }
         }
-        oauth.post("installation-token") { request async throws -> Response in
-            let body = try await request.bodyText()
-            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try services.emailAccounts.integrationsAndAppAccess.issueInstallationCredential(
-                    authorization: request.headers[.authorization],
-                    body: body
-                )
-            }
-        }
+        InstallationCredentialRoutes(apps: services.emailAccounts.integrationsAndAppAccess).registerMint(routes: oauth)
         oauth.post("token") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {

@@ -1,6 +1,6 @@
 # Architecture: target Swift layering
 
-**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. A 17-line immutable `ServiceContainer` holds nine groups of 60 concrete Service/Support values, built by one explicit-owner composer. The first AuthScene shares that graph with private domain fixtures and the actual AuthFeature. The legacy 28-line `EmailLoginDirectory` and six factory/helper extensions still serve the complete Fallback and unmigrated fixtures. Remaining Feature/raw-ledger and fixture cutovers, followed by deletion of the old root, are required for completion. The remaining milestones live in `docs/PLAN.md`.
+**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. A 17-line immutable `ServiceContainer` holds nine groups of 60 concrete Service/Support values, built by one explicit-owner composer. AuthScene and InstallationScene share that graph with private domain fixtures and the actual production HTTP registrations. The legacy 28-line `EmailLoginDirectory` and six factory/helper extensions still serve the complete Fallback and unmigrated fixtures. Remaining Feature/raw-ledger and fixture cutovers, followed by deletion of the old root, are required for completion. The remaining milestones live in `docs/PLAN.md`.
 
 **Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
 
@@ -13,7 +13,7 @@ The upstream server separates route modules, services, database schema, middlewa
 | Path | Current role |
 | --- | --- |
 | `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
-| `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 19 Swift files |
+| `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 20 Swift files |
 | `Sources/RaftHTTP/Composition/` | Four Swift files: 17-line ServiceContainer, nine immutable groups, shared 13-owner composer and explicit publisher variants; largest 551 lines |
 | `Sources/RaftHTTP/EmailLogin.swift` | Legacy 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
 | `Sources/RaftHTTP/Services/` | 121 Swift files of domain services and remaining directory accessors; no Vapor imports |
@@ -52,7 +52,7 @@ This is the target boundary. Directory factory captures, broad Feature initializ
 
 The new composition path allocates thirteen actual owners once or requires all thirteen as explicit parameters, with no partial defaults. It binds named domain capabilities and returns only the nine immutable groups; it has no legacy-root argument, Store bag, locator, flat compatibility alias, configuration snapshot or transport installation. Published Threads/Assignments values use the base general publisher; internal domain composers require an explicit publisher for silent/custom scenes. Existing consumers retain their old variants until individually migrated.
 
-AuthScene supplies those same owner references to the shared composer and its private Auth/Invite fixtures. A focused app mounts the actual seven-service AuthFeature. HTTP seed/readback, login/me, profile completion, verification/provider updates after registration, and the three public-directory invite branches verify this scene's ownership. This is runtime evidence for those seven capabilities, not all sixty fields or the complete Fallback. Full Fallback/main and old fixtures still use the legacy graph; their cutover must preserve one graph per scene and transport scope.
+AuthScene supplies those same owner references to the shared composer and its private Auth/Invite fixtures. A focused app mounts the actual seven-service AuthFeature. HTTP seed/readback, login/me, profile completion, verification/provider updates after registration, and the three public-directory invite branches verify this scene's ownership. InstallationScene uses the same thirteen-owner composer with private Auth/Installation fixtures. Its focused app mounts AuthFeature and the three handlers from InstallationCredentialRoutes, which the complete production Features delegate to at their original registration positions. Installation HTTP results and primary token counts prove fixture/service ownership and cross-scene credential isolation; the byte/header and live-invalidation regressions remain intact. A separate legacy graph retains a complete-Fallback three-route wiring regression. These scenes are bounded runtime evidence, not proof of every method in all sixty fields or the complete new Fallback. Full Fallback/main and other old fixtures still use the legacy graph; their cutover must preserve one graph per scene and transport scope.
 
 ### 2.1 Features and request decoding
 

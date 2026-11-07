@@ -2269,3 +2269,10 @@ RFC 074 personal assistant：
 - clear 在同一事务里清 pending、timer、notice/failed-encode memo 和贡献 identity，之后才锁外调用 cancel；取消重入产生的新状态不会被旧 clear 再次擦掉。takePending 只清 pending/timer，保留原 notice 与贡献 memo。
 - callback 仅在当前 generation 一次准入后锁外执行；取消后尚未准入的旧 callback 不能发通知或修改新状态，已准入的 callback 可完成，cancel 不等于 join。触发后的 timer 仍保原显式 clear 生命周期。
 - 默认 Dispatch scheduler 以 checked Mutex 管理 callback 和 ID，claim/remove 后在锁外调用或释放闭包。旧实现十五个既有用例通过、八个确定性交错回归失败；修后全部二十三用例通过，包含一次真实默认 timer。此证据限公开 helper/scheduler 边界，不声称 stdin/socket、TSan 或完整 daemon 集成覆盖。
+
+### InstallationScene 的实际生产 HTTP 接线
+
+- InstallationScene 每个 actual owner 只创建一次，十三全参调用同 production composer；同 profiles/OAuth owner 分别交私有 Auth/InstallationFixture。fixture 只开放具名 seed、live mutation 和 primary token count，不公开 Root、State、owner 或通用 mutation closure。
+- 三个 installation credential handler 提取到只持具体 integration Service 的 InstallationCredentialRoutes；OAuth/Integrations Features 在原位置委托，原方法/路径、bodyText、respond、headers 和 server→channels 注册顺序保持。focused app 挂同 registrar、真实七服务 AuthFeature 和生产 JSON error boundary，未复制 handler。
+- 五个原 published-path 函数迁移到该 scene，保留完整字节/header helper、输入拒绝和五种 live invalidation 的原请求/断言。HTTP mint 后同 fixture 实际 token count 为 1；另一同 ID 独立 scene 为 0，原 token 在其两个 GET 均 401，证明 owner 隔离。
+- 另保独立旧 Root 的完整 Fallback 三路径成功/原文字节/cache 接线回归，不将 scene fixtures 混接旧 configure。focused 验收不替代完整 Fallback middleware 或所有六十字段的运行证明。
