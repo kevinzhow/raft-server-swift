@@ -3,7 +3,6 @@ Sources/RaftDaemonClient/DaemonClient.swift	1
 Sources/RaftDaemonClient/DaemonLog.swift	1
 Sources/RaftDaemonClient/DaemonReconnectLoop.swift	1
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1
-Sources/RaftDaemonClient/FetchPool.swift	1
 Sources/RaftDaemonClient/OarListModels.swift	2
 Sources/RaftDaemonClient/ProcessMemory.swift	1
 Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1

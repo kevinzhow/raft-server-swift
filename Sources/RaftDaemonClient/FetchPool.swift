@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Connection pools from `buildFetchDispatcher` and `daemonFetch` in
 /// `packages/daemon/src/proxy.ts` and `daemonFetch.ts`.
@@ -36,28 +37,31 @@ public struct DaemonFetchResponse: Equatable, Sendable {
     }
 }
 
-public final class DaemonFetchPool: @unchecked Sendable {
-    private let lock = NSLock()
-    private var shared: [String: DaemonDispatcher] = [:]
-    private var isolated: [String: DaemonDispatcher] = [:]
-    private var direct: DaemonDispatcher?
+public final class DaemonFetchPool: Sendable {
+    private struct State: Sendable {
+        var shared: [String: DaemonDispatcher] = [:]
+        var isolated: [String: DaemonDispatcher] = [:]
+        var direct: DaemonDispatcher? = nil
+    }
+
+    private let state = Mutex(State())
 
     public init() {}
 
     public func buildFetchDispatcher(_ targetURL: String, environment: [String: String]) -> DaemonDispatcher? {
         guard let proxyURL = DaemonProxy.fetchProxyURL(targetURL, environment: environment) else { return nil }
         let timeout = preResponseTimeoutMs(environment)
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached = shared[proxyURL] { return cached }
-        let created = DaemonDispatcher(
-            proxyURL: proxyURL,
-            connectTimeoutMs: timeout,
-            headersTimeoutMs: timeout,
-            bodyTimeoutMs: nil
-        )
-        shared[proxyURL] = created
-        return created
+        return state.withLock { state in
+            if let cached = state.shared[proxyURL] { return cached }
+            let created = DaemonDispatcher(
+                proxyURL: proxyURL,
+                connectTimeoutMs: timeout,
+                headersTimeoutMs: timeout,
+                bodyTimeoutMs: nil
+            )
+            state.shared[proxyURL] = created
+            return created
+        }
     }
 
     public func buildIsolatedFetchDispatcher(
@@ -74,40 +78,40 @@ public final class DaemonFetchPool: @unchecked Sendable {
             headersTimeoutMs: headersTimeoutMs,
             bodyTimeoutMs: bodyTimeoutMs
         )
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached = isolated[key.cacheKey] { return cached }
-        let created = DaemonDispatcher(
-            proxyURL: key.proxyURL,
-            connectTimeoutMs: key.connectTimeoutMs,
-            headersTimeoutMs: key.headersTimeoutMs,
-            bodyTimeoutMs: key.bodyTimeoutMs
-        )
-        isolated[key.cacheKey] = created
-        return created
+        return state.withLock { state in
+            if let cached = state.isolated[key.cacheKey] { return cached }
+            let created = DaemonDispatcher(
+                proxyURL: key.proxyURL,
+                connectTimeoutMs: key.connectTimeoutMs,
+                headersTimeoutMs: key.headersTimeoutMs,
+                bodyTimeoutMs: key.bodyTimeoutMs
+            )
+            state.isolated[key.cacheKey] = created
+            return created
+        }
     }
 
     private func directDispatcher(_ environment: [String: String]) -> DaemonDispatcher {
         let timeout = preResponseTimeoutMs(environment)
-        lock.lock()
-        defer { lock.unlock() }
-        if let direct { return direct }
-        let created = DaemonDispatcher(
-            proxyURL: nil,
-            connectTimeoutMs: timeout,
-            headersTimeoutMs: timeout,
-            bodyTimeoutMs: nil
-        )
-        direct = created
-        return created
+        return state.withLock { state in
+            if let direct = state.direct { return direct }
+            let created = DaemonDispatcher(
+                proxyURL: nil,
+                connectTimeoutMs: timeout,
+                headersTimeoutMs: timeout,
+                bodyTimeoutMs: nil
+            )
+            state.direct = created
+            return created
+        }
     }
 
     @discardableResult
     public func evictFetchDispatcher(_ targetURL: String, environment: [String: String]) -> Bool {
         guard let proxyURL = DaemonProxy.fetchProxyURL(targetURL, environment: environment) else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-        return shared.removeValue(forKey: proxyURL) != nil
+        return state.withLock { state in
+            return state.shared.removeValue(forKey: proxyURL) != nil
+        }
     }
 
     @discardableResult
@@ -125,9 +129,9 @@ public final class DaemonFetchPool: @unchecked Sendable {
             headersTimeoutMs: headersTimeoutMs,
             bodyTimeoutMs: bodyTimeoutMs
         )
-        lock.lock()
-        defer { lock.unlock() }
-        return isolated.removeValue(forKey: key.cacheKey) != nil
+        return state.withLock { state in
+            return state.isolated.removeValue(forKey: key.cacheKey) != nil
+        }
     }
 
     /// Opens the real socket. A transport timeout evicts the pool that served it.

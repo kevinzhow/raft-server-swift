@@ -2407,3 +2407,9 @@ RFC 074 personal assistant：
 - 八个既有HTTP文件复用相同private13owner OAuthScene与实际OAuth/Auth/JSON registrar；12处mount、11处初始化和两localfixture struct改接新图，197expect与14require断言行逐字保，原helper/参数/时序/PKCE/nonce/P256验签/optional claims/无code错误/unsafe URL拒绝不改。
 - OAuthFixture只补createClient既有description/homepageUrl/returnUrl nullable参数并保原nil默认；unsafe setClientReturnUrl seed和throwing updateClientReturnUrl guard分开，未把legacy invalid seed校验掉。现AuthFixture配置操作原样复用，无Source/registrar/composer/首批测试/IDs改变。
 - 新图13定向与正常full/E2E24smoke49Python22architecture/parity绿，无Source/Test修复。此批275必要changedlines，不为行数加format或matrix，不声称全部OAuth/完整Fallback迁完。
+
+### FetchPool checked 缓存所有权
+
+- shared/isolated/direct三cache归soleprivate Mutex，原五个lookup→immutableDispatcher构造→insert或key remove完整事务保同borrow。proxy/key/timeout计算仍在外且cachehit也原点算；sync transport/async execute均借用后运行，perform/fetch/keys/helpers尾字节不改。
+- 同proxy identity、isolated lane/route/timeout keys、direct首个timeout缓存、HTTP404/500不evict、transport错误key-onlyevict与direct guardfalse原样保；旧失败可能清后来replacement的ordering策略未擅改成identityguard，不声称整fetch事务/旧race修复。
+- 两测试文件字节不改，原六helper与九真实网络定义(十展开wire)在原/新Source均绿，保timeout/peer-close一次完成、慢body/EOF/chunks bytes与lane隔离；full/E2E24smoke49Python22arch/parity绿。仅checkedownership、无新增镜像测试/SDK/hook/benchmark/TSan声称，unchecked12→11。
