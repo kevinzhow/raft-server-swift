@@ -10,18 +10,18 @@ import TestSupport
 
 private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
 
-private func makeDirectory(_ suffix: String, passwordEstablished: Bool = true) -> (directory: EmailLoginDirectory, userId: String, bearer: String) {
-    let directory = EmailLoginDirectory()
-    directory.configureOAuthForTesting { $0.appURL = "https://app.raft.test" }
+private func makeFixture(_ suffix: String, passwordEstablished: Bool = true) -> (scene: AuthServicesUnitFixture, userId: String, bearer: String) {
+    let scene = AuthServicesUnitFixture()
+    scene.setAppURL("https://app.raft.test")
     let userId = "11111111-1111-4111-8111-0000020\(suffix)"
-    directory.addAccount(
+    scene.addAccount(
         id: userId,
         email: "Identity-\(suffix)@slock.test",
         password: "password123",
         passwordCredentialEstablished: passwordEstablished
     )
-    directory.markEmailVerified(userId: userId)
-    return (directory, userId, directory.mintAccessTokenForTesting(userId: userId))
+    scene.markEmailVerified(userId: userId)
+    return (scene, userId, scene.mintAccessTokenForTesting(userId: userId))
 }
 
 private func pkcePair() -> (verifier: String, challenge: String) {
@@ -41,9 +41,9 @@ private func render(_ error: AuthIdentitiesError) -> String {
 // MARK: - Bodies
 
 @Test func authIdentitiesPublishTheLegacyBytesAndTheFinalIdentityGuard() throws {
-    let (directory, userId, bearer) = makeDirectory("01", passwordEstablished: false)
-    let service = directory.authIdentities
-    directory.addAuthIdentityForTesting(userId: userId, provider: "github", providerEmail: "a/b@example.com")
+    let (scene, userId, bearer) = makeFixture("01", passwordEstablished: false)
+    let service = scene.identities
+    scene.addAuthIdentityForTesting(userId: userId, provider: "github", providerEmail: "a/b@example.com")
 
     #expect(try service.identities(authorization: "Bearer \(bearer)").jsonBody.render()
         == #"{"identities":[{"provider":"github","providerEmail":"a/b@example.com"}],"passwordConfigured":false}"#)
@@ -58,7 +58,7 @@ private func render(_ error: AuthIdentitiesError) -> String {
     #expect(try service.unlink(authorization: "Bearer \(bearer)", provider: "apple").jsonBody.render()
         == #"{"unlinked":false,"identities":[{"provider":"github","providerEmail":"a/b@example.com"}],"passwordConfigured":false}"#)
 
-    directory.markPasswordCredentialEstablished(userId: userId)
+    scene.markPasswordCredentialEstablished(userId: userId)
     #expect(try service.unlink(authorization: "Bearer \(bearer)", provider: "github").jsonBody.render()
         == #"{"unlinked":true,"identities":[],"passwordConfigured":true}"#)
 }
@@ -86,8 +86,8 @@ private func render(_ error: AuthIdentitiesError) -> String {
 }
 
 @Test func authIdentitiesLoginDecodesEveryLegacyIssueShape() throws {
-    let (directory, userId, _) = makeDirectory("02")
-    let service = directory.authIdentities
+    let (scene, userId, _) = makeFixture("02")
+    let service = scene.identities
     let decoder = JSONDecoder()
     func decode(_ json: String) -> LoginRequest? {
         try? decoder.decode(LoginRequest.self, from: Data(json.utf8))
@@ -117,39 +117,25 @@ private func render(_ error: AuthIdentitiesError) -> String {
     let body = response.jsonBody.render()
     #expect(body.hasPrefix(#"{"user":{"id":"\#(userId)","email":"identity-02@slock.test"},"accessToken":""#))
     #expect(body.hasSuffix(#","linkedProvider":null}"#))
-    #expect(directory.sessionUserId(authorization: "Bearer \(response.accessToken)") == userId)
+    #expect(scene.sessionUserId(authorization: "Bearer \(response.accessToken)") == userId)
 }
 
 @Test func authIdentitiesMeRendersTheUserObjectInOrderWithTheObservedTimezone() throws {
-    let (directory, userId, bearer) = makeDirectory("03")
-    let service = directory.authIdentities
-    directory.authProfileStore.state.withLock { state in
-        state.accountSurface.accounts["identity-03@slock.test"] = Account(
-            id: userId,
-            email: "identity-03@slock.test",
-            passwordHash: AuthTokenCodec.sha256("password123"),
-            displayLanguage: "en",
-            name: "identity-03",
-            profileSetupSuggestedHandle: "ident",
-            profileSetupProvider: "google",
-            profileSetupCompletedAt: fixedDate,
-            avatarUrl: "/api/avatars/users/x.webp",
-            shareUsageData: true,
-            emailVerified: true
-        )
-    }
+    let (scene, userId, bearer) = makeFixture("03")
+    let service = scene.identities
+    scene.seedMeAccount(
+        userId: userId, email: "identity-03@slock.test", password: "password123", completedAt: fixedDate
+    )
     let gravatar = AuthTokenCodec.sha256("identity-03@slock.test")
     let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","name":"identity-03","emailVerified":true,"displayName":"identity-03","gravatarHash":"\#(gravatar)","displayLanguage":"en","profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","profileSetupProvider":"google","avatarUrl":"/api/avatars/users/x.webp","shareUsageData":true,"preferredLanguage":null,"preferredTimezone":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null"#
 
     #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render() == user + "}")
     // The standalone user payload other domains embed renders the same bytes.
-    #expect(AuthUserDTO(account: directory.authProfileStore.account(userId: userId)!).jsonBody.render() == user + "}")
+    #expect(scene.userDTO(userId: userId)!.jsonBody.render() == user + "}")
 
-    directory.authProfileStore.state.withLock { state in
-        state.profile.timezoneObservations[userId] = TimezoneObservation(
-            firstTimezone: "Asia/Tokyo", firstAt: fixedDate, lastTimezone: "UTC", lastAt: fixedDate
-        )
-    }
+    scene.seedTimezoneObservation(
+        userId: userId, firstTimezone: "Asia/Tokyo", firstAt: fixedDate, lastTimezone: "UTC", lastAt: fixedDate
+    )
     #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render()
         == user + #","firstObservedTimezone":"Asia/Tokyo","firstObservedTimezoneAt":"2023-11-14T22:13:20.000Z","lastObservedTimezone":"UTC","lastObservedTimezoneAt":"2023-11-14T22:13:20.000Z"}"#)
 
@@ -160,8 +146,8 @@ private func render(_ error: AuthIdentitiesError) -> String {
 // MARK: - Profile patch
 
 @Test func authIdentitiesPatchKeepsTheLegacyValidationOrderAndLeniency() throws {
-    let (directory, userId, bearer) = makeDirectory("04")
-    let service = directory.authIdentities
+    let (scene, userId, bearer) = makeFixture("04")
+    let service = scene.identities
     let auth = "Bearer \(bearer)"
     func patch(_ json: String) throws -> AuthProfileUserResponse {
         let request = try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(json.utf8))
@@ -203,21 +189,21 @@ private func render(_ error: AuthIdentitiesError) -> String {
     #expect(try patch(#"{"referralSourceSkipped":true}"#).user.referralSourceSkippedAt != nil)
 
     // The usage opt-in mints an analytics id once; opting out removes it.
-    let before = directory.authProfileStore.analyticsIds[userId]
+    let before = scene.analyticsId(userId: userId)
     #expect(before != nil)
     _ = try patch(#"{"shareUsageData":true}"#)
-    #expect(directory.authProfileStore.analyticsIds[userId] == before)
+    #expect(scene.analyticsId(userId: userId) == before)
     _ = try patch(#"{"shareUsageData":false}"#)
-    #expect(directory.authProfileStore.analyticsIds[userId] == nil)
+    #expect(scene.analyticsId(userId: userId) == nil)
     _ = try patch(#"{"shareUsageData":null}"#)
-    #expect(directory.authProfileStore.analyticsIds[userId] == nil)
+    #expect(scene.analyticsId(userId: userId) == nil)
     _ = try patch(#"{"shareUsageData":true}"#)
-    #expect(directory.authProfileStore.analyticsIds[userId] != nil && directory.authProfileStore.analyticsIds[userId] != before)
+    #expect(scene.analyticsId(userId: userId) != nil && scene.analyticsId(userId: userId) != before)
 }
 
 @Test func authIdentitiesPatchWritesThePasswordBeforeLaterFieldsAreValidated() throws {
-    let (directory, _, bearer) = makeDirectory("05")
-    let service = directory.authIdentities
+    let (scene, _, bearer) = makeFixture("05")
+    let service = scene.identities
     let auth = "Bearer \(bearer)"
     func patch(_ json: String) throws {
         _ = try service.updateProfile(
@@ -253,8 +239,8 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
 }
 
 @Test func appLoginCompleteSpendsTheCodeOnceAndAWrongVerifierBurnsNothing() throws {
-    let (directory, userId, bearer) = makeDirectory("06")
-    let service = directory.authIdentities
+    let (scene, userId, bearer) = makeFixture("06")
+    let service = scene.identities
     let pair = pkcePair()
     let requestId = try startedRequest(service, challenge: pair.challenge)
     let auth = "Bearer \(bearer)"
@@ -287,17 +273,17 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
     let completed = try service.appLoginComplete(AppLoginCompleteRequest(code: code, codeVerifier: pair.verifier))
     #expect(completed.user.id == userId)
     #expect(completed.jsonBody.render().hasPrefix(#"{"user":{"id":"\#(userId)""#))
-    #expect(directory.sessionUserId(authorization: "Bearer \(completed.accessToken)") == userId)
+    #expect(scene.sessionUserId(authorization: "Bearer \(completed.accessToken)") == userId)
     #expect(throws: AuthIdentitiesError.codeConsumed) {
         try service.appLoginComplete(AppLoginCompleteRequest(code: code, codeVerifier: pair.verifier))
     }
 }
 
 @Test func appLoginExpiredRequestAnswersTheRedirectAndNothingElseChanges() throws {
-    let (directory, _, bearer) = makeDirectory("07")
-    let service = directory.authIdentities
+    let (scene, _, bearer) = makeFixture("07")
+    let service = scene.identities
     let requestId = try startedRequest(service, challenge: pkcePair().challenge)
-    directory.expireAppLoginRequestForTesting(requestId: requestId)
+    scene.expireAppLoginRequestForTesting(requestId: requestId)
     #expect(throws: AuthIdentitiesError.requestExpired(
         redirectUrl: "raft://login/callback?requestId=\(requestId)&error=expired"
     )) { try service.appLoginDeny(authorization: "Bearer \(bearer)", requestId: requestId) }
@@ -305,8 +291,8 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
 }
 
 @Test func appLoginStartValidatesInTheLegacyOrder() {
-    let (directory, _, _) = makeDirectory("08")
-    let service = directory.authIdentities
+    let (scene, _, _) = makeFixture("08")
+    let service = scene.identities
     let challenge = pkcePair().challenge
     #expect(throws: AuthIdentitiesError.invalidAppLoginRequest) {
         try service.appLoginStart(AppLoginStartRequest(returnUri: "", codeChallenge: challenge))
@@ -325,8 +311,8 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
 }
 
 @Test func appLoginApproveAndDenyRaceDecidesOneRequestOnce() async throws {
-    let (directory, _, bearer) = makeDirectory("09")
-    let service = directory.authIdentities
+    let (scene, _, bearer) = makeFixture("09")
+    let service = scene.identities
     let auth = "Bearer \(bearer)"
     for round in 0..<30 {
         let requestId = try startedRequest(service, challenge: pkcePair().challenge)
@@ -348,13 +334,13 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
 }
 
 @Test func appLoginCompleteRaceOpensOneSession() async throws {
-    let (directory, userId, bearer) = makeDirectory("10")
-    let service = directory.authIdentities
+    let (scene, userId, bearer) = makeFixture("10")
+    let service = scene.identities
     let pair = pkcePair()
     let requestId = try startedRequest(service, challenge: pair.challenge)
     let redirect = try service.appLoginApprove(authorization: "Bearer \(bearer)", requestId: requestId).redirectUrl
     let code = String(redirect.split(separator: "=").last ?? "")
-    let sessionsBefore = directory.sessionCount(for: userId)
+    let sessionsBefore = scene.sessionCount(for: userId)
     let wins = await withTaskGroup(of: Bool.self) { group in
         for _ in 0..<8 {
             group.addTask {
@@ -366,16 +352,16 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
         return wins
     }
     #expect(wins == 1)
-    #expect(directory.sessionCount(for: userId) == sessionsBefore + 1)
+    #expect(scene.sessionCount(for: userId) == sessionsBefore + 1)
 }
 
 // MARK: - Identity and login races
 
 @Test func concurrentUnlinksOfTheLastTwoIdentitiesLeaveOne() async throws {
-    let (directory, userId, bearer) = makeDirectory("11", passwordEstablished: false)
-    directory.addAuthIdentityForTesting(userId: userId, provider: "google", providerEmail: "g@example.com")
-    directory.addAuthIdentityForTesting(userId: userId, provider: "github", providerEmail: "h@example.com")
-    let service = directory.authIdentities
+    let (scene, userId, bearer) = makeFixture("11", passwordEstablished: false)
+    scene.addAuthIdentityForTesting(userId: userId, provider: "google", providerEmail: "g@example.com")
+    scene.addAuthIdentityForTesting(userId: userId, provider: "github", providerEmail: "h@example.com")
+    let service = scene.identities
     let unlinked = await withTaskGroup(of: Bool.self) { group in
         for provider in ["google", "github"] {
             group.addTask {
@@ -387,21 +373,18 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
         return count
     }
     #expect(unlinked == 1)
-    #expect(directory.authIdentityCount(userId: userId) == 1)
+    #expect(scene.authIdentityCount(userId: userId) == 1)
 }
 
 @Test func pendingLinkIsSpentOnceByConcurrentLoginsAndLinksTheIdentity() async throws {
-    let (directory, userId, _) = makeDirectory("12")
-    var state = directory.authProfileStore.accountState
-    state.pendingSocialLinks["pending-token"] = PendingSocialLink(
+    let (scene, userId, _) = makeFixture("12")
+    scene.seedPendingSocialLink(
         token: "pending-token",
         provider: "github",
         providerUserId: "gh-1",
-        email: "identity-12@slock.test",
-        expiresAt: Date().addingTimeInterval(600)
+        email: "identity-12@slock.test"
     )
-    directory.authProfileStore.accountState = state
-    let service = directory.authIdentities
+    let service = scene.identities
 
     #expect(throws: AuthIdentitiesError.pendingLinkAccountMismatch) {
         try service.login(LoginRequest(email: "other@slock.test", password: "x", pendingLinkToken: "pending-token"))
@@ -422,14 +405,14 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
         return providers.count == 1 ? providers[0] : "wins=\(providers.count)"
     }
     #expect(linked == "github")
-    #expect(directory.linkedProviderUserIds(userId: userId, provider: "github") == ["gh-1"])
+    #expect(scene.linkedProviderUserIds(userId: userId, provider: "github") == ["gh-1"])
 }
 
 @Test func integrationSettingsClientsRequiresASessionAndServerMembership() throws {
-    let (directory, userId, bearer) = makeDirectory("13")
-    let service = directory.authIdentities
+    let (scene, userId, bearer) = makeFixture("13")
+    let service = scene.identities
     let serverId = "33333333-3333-4333-8333-333333339013"
-    directory.oauth.addOwnedServer(id: serverId, slug: "identity-13", name: "Identity", ownerId: userId)
+    scene.addOwnedServer(id: serverId, slug: "identity-13", name: "Identity", ownerId: userId)
     #expect(throws: AuthIdentitiesError.unauthorized) {
         try service.integrationSettingsClients(authorization: nil, serverId: serverId)
     }
@@ -445,14 +428,14 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
 }
 
 @Test func oauthSessionIgnoresRevokedFamiliesLikeTheRetiredLookup() {
-    let (directory, userId, bearer) = makeDirectory("14")
-    let service = directory.oauthAuthorization
+    let (scene, userId, bearer) = makeFixture("14")
+    let service = scene.authorization
     guard case .missing = service.beginSession(authorization: nil) else { Issue.record("expected missing"); return }
     guard case .invalid = service.beginSession(authorization: "Bearer nope") else { Issue.record("expected invalid"); return }
     guard case .invalid = service.beginSession(authorization: "Bearer ") else { Issue.record("raw empty tail must be invalid"); return }
     guard case .invalid = service.beginSession(authorization: "Bearer \(bearer) ") else { Issue.record("raw trailing SP must not trim"); return }
     guard case .invalid = service.beginSession(authorization: "Bearer  \(bearer)") else { Issue.record("raw leading token SP must not trim"); return }
-    directory.revokeSessionFamilies(userId: userId)
+    scene.revokeSessionFamilies(userId: userId)
     guard case .user(let human) = service.beginSession(authorization: "Bearer \(bearer)") else {
         Issue.record("expected user")
         return

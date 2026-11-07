@@ -8,12 +8,11 @@ import TestSupport
 /// routes now depend on.
 
 @Test func authProfileForgotPasswordRejectsMissingEmailButAcceptsEveryAddress() throws {
-    let directory = EmailLoginDirectory()
+    let scene = AuthServicesUnitFixture()
     let userId = "11111111-1111-4111-8111-111111111401"
-    directory.addAccount(id: userId, email: "Profile@Example.Test", password: "password123")
+    scene.addAccount(id: userId, email: "Profile@Example.Test", password: "password123")
     let now = Date(timeIntervalSince1970: 1_700_000_000)
-    let service = AuthProfileService(
-        store: directory.authProfileStore,
+    let service = scene.makeProfileService(
         now: { now },
         makeToken: { "profile-reset-token" }
     )
@@ -29,7 +28,7 @@ import TestSupport
     // still finds the row.
     let known = try service.forgotPassword(ForgotPasswordRequest(email: "  PROFILE@example.test "))
     #expect(known.ok)
-    let stored = directory.authProfileStore.resetToken(
+    let stored = scene.resetToken(
         hash: AuthTokenCodec.sha256("profile-reset-token")
     )
     #expect(stored?.userId == userId)
@@ -38,20 +37,20 @@ import TestSupport
     // An unknown address answers the same acceptance and grows no token.
     let unknown = try service.forgotPassword(ForgotPasswordRequest(email: "missing@example.test"))
     #expect(unknown.ok)
-    #expect(directory.authProfileStore.resetToken(hash: AuthTokenCodec.sha256("profile-reset-token"))?.userId == userId)
+    #expect(scene.resetToken(hash: AuthTokenCodec.sha256("profile-reset-token"))?.userId == userId)
 }
 
 @Test func authProfileResetPasswordConsumesTheTokenOnceAndWritesTheCredential() throws {
-    let directory = EmailLoginDirectory()
+    let scene = AuthServicesUnitFixture()
     let userId = "11111111-1111-4111-8111-111111111402"
-    directory.addAccount(id: userId, email: "reset@profile.test", password: "password123")
+    scene.addAccount(id: userId, email: "reset@profile.test", password: "password123")
     let now = Date(timeIntervalSince1970: 1_700_000_000)
-    directory.addPasswordResetTokenForTesting(
+    scene.addPasswordResetTokenForTesting(
         userId: userId,
         token: "profile-reset-token",
         expiresAt: now.addingTimeInterval(600)
     )
-    let service = AuthProfileService(store: directory.authProfileStore, now: { now })
+    let service = scene.makeProfileService(now: { now })
 
     #expect(throws: AuthProfileError.missingResetCredentials) {
         try service.resetPassword(ResetPasswordRequest(token: nil, password: "new-password-123"))
@@ -64,7 +63,7 @@ import TestSupport
         ResetPasswordRequest(token: "profile-reset-token", password: "new-password-123")
     )
     #expect(ok.ok)
-    let account = directory.authProfileStore.accounts[AccountNaming.normalize("reset@profile.test")]
+    let account = scene.passwordCredentialFacts(email: "reset@profile.test")
     #expect(account?.passwordHash == AuthTokenCodec.sha256("new-password-123"))
     #expect(account?.passwordCredentialEstablishedAt == now)
 
@@ -86,35 +85,35 @@ import TestSupport
 }
 
 @Test func authProfileCancelPendingLinkMarksTheTokenCancelled() {
-    let directory = EmailLoginDirectory()
+    let scene = AuthServicesUnitFixture()
     let userId = "11111111-1111-4111-8111-111111111403"
-    directory.addAccount(id: userId, email: "cancel@profile.test", password: "password123")
-    let token = directory.issuePendingSocialLinkForTesting(
+    scene.addAccount(id: userId, email: "cancel@profile.test", password: "password123")
+    let token = scene.issuePendingSocialLinkForTesting(
         provider: "google",
         providerUserId: "profile-cancel",
         email: "cancel@profile.test"
     )
-    let service = AuthProfileService(store: directory.authProfileStore)
+    let service = scene.makeProfileService()
 
     _ = service.cancelPendingLink(CancelPendingLinkRequest(pendingLinkToken: token))
-    #expect(directory.authProfileStore.accountState.pendingSocialLinks[token]?.cancelled == true)
+    #expect(scene.pendingSocialLinkCancelled(token: token) == true)
 
     // A repeat cancel and an unknown token are the same no-op.
     _ = service.cancelPendingLink(CancelPendingLinkRequest(pendingLinkToken: token))
     _ = service.cancelPendingLink(CancelPendingLinkRequest(pendingLinkToken: "unknown-token"))
     _ = service.cancelPendingLink(CancelPendingLinkRequest())
-    #expect(directory.authProfileStore.accountState.pendingSocialLinks[token]?.cancelled == true)
+    #expect(scene.pendingSocialLinkCancelled(token: token) == true)
 }
 
 @Test func authProfileTimezoneObservationKeepsTheFirstPairAndValidatesTheShape() throws {
-    let directory = EmailLoginDirectory()
+    let scene = AuthServicesUnitFixture()
     let userId = "11111111-1111-4111-8111-111111111404"
-    directory.addAccount(id: userId, email: "timezone@profile.test", password: "password123")
-    let token = directory.mintAccessTokenForTesting(userId: userId)
+    scene.addAccount(id: userId, email: "timezone@profile.test", password: "password123")
+    let token = scene.mintAccessTokenForTesting(userId: userId)
     let firstNow = Date(timeIntervalSince1970: 1_700_000_000)
     let secondNow = firstNow.addingTimeInterval(60)
-    let first = AuthProfileService(store: directory.authProfileStore, now: { firstNow })
-    let second = AuthProfileService(store: directory.authProfileStore, now: { secondNow })
+    let first = scene.makeProfileService(now: { firstNow })
+    let second = scene.makeProfileService(now: { secondNow })
     let authorization = "Bearer \(token)"
 
     #expect(throws: AuthProfileError.unauthenticated) {

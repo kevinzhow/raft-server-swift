@@ -9,11 +9,11 @@ import TestSupport
 
 private let userId = "11111111-1111-4111-8111-000003100001"
 
-private func fixture() -> (directory: EmailLoginDirectory, service: AuthCoreService) {
-    let directory = EmailLoginDirectory()
-    directory.configureOAuthForTesting { $0.appURL = "https://app.raft.test/" }
-    directory.addAccount(id: userId, email: "core@slock.test", password: "password123")
-    return (directory, directory.authCore)
+private func fixture() -> (scene: AuthServicesUnitFixture, service: AuthCoreService) {
+    let scene = AuthServicesUnitFixture()
+    scene.setAppURL("https://app.raft.test/")
+    scene.addAccount(id: userId, email: "core@slock.test", password: "password123")
+    return (scene, scene.core)
 }
 
 private func body(_ error: any DomainError) -> String { error.publishedErrorBody.render() }
@@ -38,8 +38,8 @@ private func successes<T: Sendable>(
 // MARK: - Bytes
 
 @Test func authCoreDeviceFlowRendersTheLegacyBytes() throws {
-    let (directory, service) = fixture()
-    let bearer = directory.mintAccessTokenForTesting(userId: userId)
+    let (scene, service) = fixture()
+    let bearer = scene.mintAccessTokenForTesting(userId: userId)
 
     let issued = try service.authorizeDevice(DeviceAuthorizeRequest(clientName: .string("cli")))
     let rendered = issued.jsonBody.render()
@@ -92,21 +92,21 @@ private func successes<T: Sendable>(
 }
 
 @Test func authCoreDeviceAuthorizeStoresTheGrantBeforeTheUrlCheck() {
-    let (directory, service) = fixture()
-    directory.configureOAuthForTesting { $0.appURL = "  " }
+    let (scene, service) = fixture()
+    scene.setAppURL("  ")
     #expect(thrown { try service.authorizeDevice(DeviceAuthorizeRequest()) } == .deviceLoginURLUnavailable)
-    #expect(directory.authProfileStore.accountState.deviceGrants.count == 1)
+    #expect(scene.deviceGrantCount == 1)
     #expect(body(AuthCoreError.deviceLoginURLUnavailable)
         == #"{"error":"Device login URL is not configured","code":"DEVICE_LOGIN_URL_UNAVAILABLE"}"#)
-    directory.configureAuthCoreForTesting { $0.deviceLoginGate = "off" }
+    scene.setDeviceLoginGate("off")
     #expect(thrown { try service.authorizeDevice(DeviceAuthorizeRequest()) } == .deviceLoginDisabled)
     #expect(body(AuthCoreError.deviceLoginDisabled)
         == #"{"error":"Device login is not enabled","code":"device_login_disabled"}"#)
 }
 
 @Test func authCoreRefreshAndLogoutRenderTheLegacyBytes() throws {
-    let (directory, service) = fixture()
-    let session = directory.authProfileStore.openSession(userId: userId)
+    let (scene, service) = fixture()
+    let session = scene.openSession(userId: userId)
 
     #expect(thrown { try service.refresh(RefreshTokenRequest(), attemptHeader: nil, installationHeader: nil) }
         == .refreshTokenRequired)
@@ -149,8 +149,8 @@ private func successes<T: Sendable>(
 }
 
 @Test func authCoreDurableRefreshReplaysTheSameSuccessorForOneBinding() throws {
-    let (directory, service) = fixture()
-    let session = directory.authProfileStore.openSession(userId: userId)
+    let (scene, service) = fixture()
+    let session = scene.openSession(userId: userId)
     let attempt = "arf_0123456789abcdef"
     let installation = "ari_0123456789abcdef0123456789abcdef"
     let first = try service.refresh(
@@ -175,7 +175,7 @@ private func successes<T: Sendable>(
 }
 
 @Test func authCoreRegisterRendersTheLegacyBytes() throws {
-    let (directory, service) = fixture()
+    let (scene, service) = fixture()
     #expect(thrown { try service.register(nil, userAgent: nil, acceptLanguage: nil) }
         == .registerBodyInvalid([AuthRequestIssue(path: "", message: "Expected object, received string")]))
     #expect(body(AuthCoreError.registerBodyInvalid([
@@ -197,7 +197,7 @@ private func successes<T: Sendable>(
         == .legalAcceptanceRequired)
     #expect(thrown { try service.register(request(terms: "old"), userAgent: nil, acceptLanguage: nil) }
         == .termsChanged)
-    #expect(!directory.hasAccount(email: "new@slock.test"))
+    #expect(!scene.hasAccount(email: "new@slock.test"))
     let legal = "{\"termsVersion\":\"\(AuthLegalPolicy.termsVersion)\",\"privacyVersion\":\"\(AuthLegalPolicy.privacyVersion)\",\"termsUrl\":\"\(AuthLegalPolicy.termsURL)\",\"privacyUrl\":\"\(AuthLegalPolicy.privacyURL)\"}"
     #expect(body(AuthCoreError.legalAcceptanceRequired) == "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legal)}")
     #expect(body(AuthCoreError.termsChanged) == "{\"error\":\"TERMS_CHANGED\",\"legal\":\(legal)}")
@@ -206,16 +206,16 @@ private func successes<T: Sendable>(
     let rendered = created.jsonBody.render()
     #expect(rendered.hasPrefix("{\"user\":{\"id\":\"\(created.id)\",\"email\":\"new@slock.test\",\"name\":\"pending_"))
     #expect(rendered.contains("\"emailVerified\":false,\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\"newbie\",\"profileSetupProvider\":null},\"accessToken\":\""))
-    #expect(directory.legalAcceptance(userId: created.id)?.source == "signup")
-    #expect(directory.emailVerificationCount == 1)
+    #expect(scene.legalAcceptance(userId: created.id)?.source == "signup")
+    #expect(scene.emailVerificationRecordCount(userId: created.id) == 1)
     #expect(thrown { try service.register(request(), userAgent: nil, acceptLanguage: nil) }
         == .emailAlreadyRegistered)
     #expect(body(AuthCoreError.emailAlreadyRegistered) == #"{"error":"Email already registered"}"#)
 }
 
 @Test func authCoreSocialCompletionRendersTheLegacyBytes() throws {
-    let (directory, service) = fixture()
-    directory.addSocialCompletion(provider: "google", code: "c1", email: "social@slock.test", returnTo: "/x")
+    let (scene, service) = fixture()
+    scene.addSocialCompletion(provider: "google", code: "c1", email: "social@slock.test", returnTo: "/x")
     let request = SocialCompleteRequest(
         code: "c1",
         acceptTerms: true,
@@ -269,8 +269,8 @@ private func successes<T: Sendable>(
 // MARK: - One critical section per write
 
 @Test func authCoreConcurrentDeviceDecisionsResolveTheGrantOnce() async throws {
-    let (directory, service) = fixture()
-    let bearer = directory.mintAccessTokenForTesting(userId: userId)
+    let (scene, service) = fixture()
+    let bearer = scene.mintAccessTokenForTesting(userId: userId)
     let issued = try service.authorizeDevice(DeviceAuthorizeRequest())
     let decided = await successes(24) { index in
         try? service.approveDevice(
@@ -282,21 +282,21 @@ private func successes<T: Sendable>(
 }
 
 @Test func authCoreConcurrentDevicePollsIssueExactlyOneSession() async throws {
-    let (directory, service) = fixture()
-    let bearer = directory.mintAccessTokenForTesting(userId: userId)
+    let (scene, service) = fixture()
+    let bearer = scene.mintAccessTokenForTesting(userId: userId)
     let issued = try service.authorizeDevice(DeviceAuthorizeRequest())
     _ = try service.approveDevice(DeviceApproveRequest(userCode: issued.userCode), authorization: "Bearer \(bearer)")
-    let sessionsBefore = directory.sessionCount(for: userId)
+    let sessionsBefore = scene.sessionCount(for: userId)
     let tokens = await successes(24) { _ in
         try? service.pollDeviceToken(DeviceTokenRequest(deviceCode: issued.deviceCode))
     }
     #expect(tokens.count == 1)
-    #expect(directory.sessionCount(for: userId) == sessionsBefore + 1)
+    #expect(scene.sessionCount(for: userId) == sessionsBefore + 1)
 }
 
 @Test func authCoreConcurrentRefreshRotatesATokenOnce() async throws {
-    let (directory, service) = fixture()
-    let session = directory.authProfileStore.openSession(userId: userId)
+    let (scene, service) = fixture()
+    let session = scene.openSession(userId: userId)
     let rotated = await successes(24) { _ in
         try? service.refresh(
             RefreshTokenRequest(refreshToken: session.refreshToken),
@@ -305,11 +305,11 @@ private func successes<T: Sendable>(
         )
     }
     #expect(rotated.count == 1)
-    #expect(directory.sessionCount(for: userId) == 1)
+    #expect(scene.sessionCount(for: userId) == 1)
 }
 
 @Test func authCoreConcurrentRegistrationsCreateOneAccount() async throws {
-    let (directory, service) = fixture()
+    let (scene, service) = fixture()
     let request = RegisterRequest(
         email: .string("race@slock.test"),
         password: .string("password123"),
@@ -321,13 +321,13 @@ private func successes<T: Sendable>(
         try? service.register(request, userAgent: nil, acceptLanguage: nil)
     }
     #expect(created.count == 1)
-    #expect(directory.emailVerificationCount == 1)
-    #expect(directory.legalAcceptanceCount == 1)
+    #expect(created.first.map { scene.emailVerificationRecordCount(userId: $0.id) } == 1)
+    #expect(scene.legalAcceptanceCount == 1)
 }
 
 @Test func authCoreConcurrentSocialCompletionsSpendACodeOnce() async throws {
-    let (directory, service) = fixture()
-    directory.addSocialCompletion(provider: "google", code: "race", email: "race-social@slock.test")
+    let (scene, service) = fixture()
+    scene.addSocialCompletion(provider: "google", code: "race", email: "race-social@slock.test")
     let request = SocialCompleteRequest(
         code: "race",
         acceptTerms: true,
@@ -340,25 +340,21 @@ private func successes<T: Sendable>(
         )
     }
     #expect(done.count == 1)
-    #expect(directory.legalAcceptanceCount == 1)
+    #expect(scene.legalAcceptanceCount == 1)
 }
 
 @Test func authCoreConcurrentRetirementsWriteOneReceipt() async throws {
-    let (directory, _) = fixture()
-    directory.configureAuthCoreForTesting { $0.releaseBranch = "staging" }
+    let (scene, _) = fixture()
+    scene.setReleaseBranch("staging")
     let capability = String(repeating: "c", count: 40)
-    var state = directory.authProfileStore.accountState
-    let key = AccountNaming.normalize("core@slock.test")
-    state.accounts[key]?.emailVerified = true
-    state.accounts[key]?.email = "core@mail.build"
-    state.accounts["core@mail.build"] = state.accounts.removeValue(forKey: key)
-    state.accounts["core@mail.build"]?.stagingSelfAccountCapabilityHash = AuthTokenCodec.sha256(capability)
-    directory.authProfileStore.accountState = state
-    _ = directory.authProfileStore.openSession(userId: userId)
+    scene.prepareStagingRetirementAccount(
+        currentEmail: "core@slock.test", retirementEmail: "core@mail.build", capability: capability
+    )
+    _ = scene.openSession(userId: userId)
     let outcomes = await withTaskGroup(of: Bool.self) { group in
         for _ in 0..<24 {
             group.addTask {
-                if case .retired = directory.authProfileStore.retireStagingAccount(
+                if case .retired = scene.retireStagingAccount(
                     userId: userId,
                     actorUserId: userId,
                     capabilityHash: AuthTokenCodec.sha256(capability),
@@ -372,5 +368,5 @@ private func successes<T: Sendable>(
         return retired
     }
     #expect(outcomes == 1)
-    #expect(directory.retirementReceiptCount == 1)
+    #expect(scene.retirementReceiptCount == 1)
 }
