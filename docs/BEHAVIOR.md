@@ -2339,3 +2339,10 @@ RFC 074 personal assistant：
 - scoped token保scope→live origin??空→body时点，unscoped token保body→URL，未套discovery503。协议与principal其余逻辑留各后续use case，不塞metadata；标准HTTP bytes/cache/UTF8 length和JWT↔JWKS验签互操作回归保持。
 - 九组字段由历史60增为当前61，guard只新增真实concrete type与正例field，无limits/tokenizer/negative规则放松。十三actual owner locals各一次→全必填composer真实消费新identity.issuerMetadata与同图oauthFlows，构造后URL/secret/实际OAuth row seed/delete证明新field活绑定；历史60记录不改，不冒称所有61field完整Fallback runtime证明。
 - 六旧Source HTTP基线与十一新实现定向（新field1+HTTP10）通过。旧图HTTP与独立新field图证据分别成立；没有所有配置/key/row并发交错或TSan声称。
+
+### StandingPrompt clock 的锁外重入修复
+
+- 同一实例write先在第一IO临界段mkdir，完全释放owned锁后唯一采clock，再第二IO段构record→sorted JSON→Data.atomic write。mkdir失败不调用clock，后续错误照原样抛出/释放锁。路径、默认clock、四字段/version/read缺省及plan不改，无新owner/缓存/回调seam。
+- 公开clock可以等另一native writer完成；真实文件witness确认inner(s2/h2/6000)先完成，然后outer(s1/h1/5000)最后atomic commit。每record保持其采样值，重叠clock可重叠，最终实际commit胜；没有全局clock串行/timestamp单调/最后发起调用胜的承诺。
+- 原实现保四既有例绿，但新例因锁内clock等不到inner而2秒后返回，三个真实JSON/read断言红，writer仍被收回；最终v2同五例全绿。fixture once/弱桥/结果状态checked、无spy，先收回writer再cleanup；若drain失败会保留目录并报失败，不声称pthread join。
+- read仍无write锁，plan只read/返回不写，不新增跨实例read-plan-write事务；helper实际线程/文件证据不冒称daemon resume接线或TSan。三immutable fields得checked conformance，unchecked19→18。

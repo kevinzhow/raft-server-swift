@@ -93,7 +93,7 @@ public enum StandingPromptRefresh {
 
 /// One record per agent, in its workspace's hidden `.raft/`: ids, a hash and a
 /// time only.
-public final class StandingPromptLedger: @unchecked Sendable {
+public final class StandingPromptLedger: Sendable {
     private let agentsDir: String
     private let now: @Sendable () -> Int
     private let lock = NSLock()
@@ -121,20 +121,28 @@ public final class StandingPromptLedger: @unchecked Sendable {
     }
 
     public func write(agentId: String, sessionId: String, promptHash: String) throws {
-        lock.lock(); defer { lock.unlock() }
         let file = file(agentId)
-        try FileManager.default.createDirectory(
-            atPath: (file as NSString).deletingLastPathComponent,
-            withIntermediateDirectories: true
-        )
-        let record = StandingPromptRefresh.LedgerRecord(
-            sessionId: sessionId, promptHash: promptHash, recordedAtMs: now()
-        )
-        let object: [String: Any] = [
-            "version": 1, "sessionId": record.sessionId,
-            "promptHash": record.promptHash, "recordedAtMs": record.recordedAtMs,
-        ]
-        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        try data.write(to: URL(fileURLWithPath: file), options: .atomic)
+        try lock.withLock {
+            try FileManager.default.createDirectory(
+                atPath: (file as NSString).deletingLastPathComponent,
+                withIntermediateDirectories: true
+            )
+        }
+        // Sample after mkdir succeeds, without holding the I/O lock: the clock
+        // may synchronously wait for another write on this same ledger.
+        let recordedAtMs = now()
+        // Each record keeps its sampled time. Overlapping clocks need not run in
+        // commit order; the final actual atomic write wins, even for an older time.
+        try lock.withLock {
+            let record = StandingPromptRefresh.LedgerRecord(
+                sessionId: sessionId, promptHash: promptHash, recordedAtMs: recordedAtMs
+            )
+            let object: [String: Any] = [
+                "version": 1, "sessionId": record.sessionId,
+                "promptHash": record.promptHash, "recordedAtMs": record.recordedAtMs,
+            ]
+            let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            try data.write(to: URL(fileURLWithPath: file), options: .atomic)
+        }
     }
 }

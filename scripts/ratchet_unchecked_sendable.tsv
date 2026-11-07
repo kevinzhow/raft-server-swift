@@ -13,4 +13,3 @@ Sources/RaftDaemonClient/RaftDiskJanitor.swift	1
 Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1
 Sources/RaftDaemonClient/RuntimeTurnTokens.swift	1
 Sources/RaftDaemonClient/ScopedAppStorage.swift	2
-Sources/RaftDaemonClient/StandingPromptRefresh.swift	1
