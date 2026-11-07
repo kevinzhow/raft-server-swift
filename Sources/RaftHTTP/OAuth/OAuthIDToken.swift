@@ -100,14 +100,14 @@ enum OAuthIDToken {
         return "\(signingInput).\(base64url(signature.rawRepresentation))"
     }
 
-    static func jwks(secret: String) -> OAuthJWKSResponse? {
+    static func verificationKey(secret: String) -> OAuthVerificationKeyFacts? {
         guard !secret.isEmpty, let key = signingKey(secret: secret) else { return nil }
         let publicBytes = key.publicKey.x963Representation
         guard publicBytes.count == 65, publicBytes.first == 0x04 else { return nil }
         let x = base64url(Data(publicBytes[1..<33]))
         let y = base64url(Data(publicBytes[33..<65]))
         let kid = base64url(Data(SHA256.hash(data: publicBytes).prefix(16)))
-        return OAuthJWKSResponse(kid: kid, x: x, y: y)
+        return OAuthVerificationKeyFacts(kid: kid, x: x, y: y)
     }
 
     private static func signingKey(secret: String) -> P256.Signing.PrivateKey? {

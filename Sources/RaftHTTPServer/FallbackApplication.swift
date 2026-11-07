@@ -502,25 +502,6 @@ private struct FallbackMiddleware: Middleware {
     }
 }
 
-private enum OIDCScopeResolution {
-    case resolved(String)
-    case failure(Response)
-}
-
-private func resolveOIDCScope(_ segment: String, oauth: OAuthLedger) -> OIDCScopeResolution {
-    guard segment.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,63}$/) != nil else {
-        return .failure(pixelAvatarError(400, "invalid_server_scope"))
-    }
-    guard let scope = oauth.serverScopeId(segment) else {
-        return .failure(pixelAvatarError(404, "Not found"))
-    }
-    return .resolved(scope)
-}
-
-private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
-    respond(status: UInt(status), rawJSON: OrderedJSON.object([OrderedJSONField("error", error)]).render())
-}
-
 private func publicMessageWindow(_ query: String?) -> (limit: Int, before: String?)? {
     let limit: Int
     if let raw = desktopQuery(query, "limit"), let value = Int(raw), value > 0 {

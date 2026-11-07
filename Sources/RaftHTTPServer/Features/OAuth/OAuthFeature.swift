@@ -27,6 +27,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         let oidc = app.grouped("oidc", ":server")
         let oidcOAuth = oidc.grouped("api", "oauth")
         let oauthFlows = services.emailAccounts.oauthFlows
+        let issuerMetadata = services.emailAccounts.oauthIssuerMetadata
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
@@ -120,12 +121,12 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         app.get(".well-known", "openid-configuration") { _ async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                try OAuthDiscovery.openIDConfiguration(serverURL: oauthFlows.deploymentConfiguration.serverURL)
+                try issuerMetadata.discovery()
             }
         }
         oauth.get("jwks") { _ async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                try services.emailAccounts.oauth.jwks()
+                try issuerMetadata.jwks()
             }
         }
         oauth.get("authorize") { request async throws -> Response in
@@ -138,39 +139,33 @@ public struct OAuthFeature: RouteCollection, Sendable {
         }
         oauth.get(".well-known", "openid-configuration") { _ async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                try OAuthDiscovery.openIDConfiguration(serverURL: oauthFlows.deploymentConfiguration.serverURL)
+                try issuerMetadata.discovery()
             }
         }
         oidc.get(".well-known", "openid-configuration") { request async throws -> Response in
             let segment = request.parameters.get("server") ?? ""
-            switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(segment) {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
-            case .resolved:
+            case .resolved(let scope):
                 return try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                    try OAuthDiscovery.openIDConfiguration(
-                        serverURL: oauthFlows.deploymentConfiguration.serverURL,
-                        serverScope: segment
-                    )
+                    try issuerMetadata.discovery(scope: scope)
                 }
             }
         }
         oidcOAuth.get(".well-known", "openid-configuration") { request async throws -> Response in
             let segment = request.parameters.get("server") ?? ""
-            switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(segment) {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
-            case .resolved:
+            case .resolved(let scope):
                 return try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                    try OAuthDiscovery.openIDConfiguration(
-                        serverURL: oauthFlows.deploymentConfiguration.serverURL,
-                        serverScope: segment
-                    )
+                    try issuerMetadata.discovery(scope: scope)
                 }
             }
         }
         oidcOAuth.get("agents") { request async throws -> Response in
-            switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(request.parameters.get("server") ?? "") {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
@@ -178,23 +173,23 @@ public struct OAuthFeature: RouteCollection, Sendable {
                     try services.emailAccounts.oauth.agentDirectory(
                         authorization: request.headers[.authorization],
                         baseURL: oauthFlows.deploymentConfiguration.serverURL,
-                        scopeServerId: scope
+                        scopeServerId: scope.serverId
                     )
                 }
             }
         }
         oidcOAuth.get("jwks") { request async throws -> Response in
-            switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(request.parameters.get("server") ?? "") {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved:
                 return try await respond(headers: .standard(extra: ["Cache-Control": "public, max-age=300"])) {
-                    try services.emailAccounts.oauth.jwks()
+                    try issuerMetadata.jwks()
                 }
             }
         }
         oidcOAuth.get("userinfo") { request async throws -> Response in
-            switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(request.parameters.get("server") ?? "") {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
@@ -202,13 +197,13 @@ public struct OAuthFeature: RouteCollection, Sendable {
                     try services.emailAccounts.oauth.userinfo(
                         authorization: request.headers[.authorization],
                         baseURL: oauthFlows.deploymentConfiguration.serverURL,
-                        scopeServerId: scope
+                        scopeServerId: scope.serverId
                     )
                 }
             }
         }
         oidcOAuth.get("serverinfo") { request async throws -> Response in
-            switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(request.parameters.get("server") ?? "") {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
@@ -216,28 +211,28 @@ public struct OAuthFeature: RouteCollection, Sendable {
                     try services.emailAccounts.oauth.serverinfo(
                         authorization: request.headers[.authorization],
                         baseURL: oauthFlows.deploymentConfiguration.serverURL,
-                        scopeServerId: scope
+                        scopeServerId: scope.serverId
                     )
                 }
             }
         }
         oidcOAuth.get("authorize") { request async throws -> Response in
-            switch resolveOIDCScope(request.parameters.get("server") ?? "", oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(request.parameters.get("server") ?? "") {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
-            case .resolved:
+            case .resolved(let scope):
                 return try await respond(status: { $0.status }, headers: { $0.headers }) {
                     try services.emailAccounts.oauth.browserAuthorize(
                         query: request.url.query ?? "",
                         appURL: oauthFlows.deploymentConfiguration.appURL,
-                        serverScope: request.parameters.get("server")
+                        serverScope: scope.segment
                     )
                 }
             }
         }
         oidcOAuth.post("token") { request async throws -> Response in
             let segment = request.parameters.get("server") ?? ""
-            switch resolveOIDCScope(segment, oauth: services.emailAccounts.oauth) {
+            switch issuerMetadata.resolveServerScope(segment) {
             case .failure(let error):
                 return try await respond { () throws -> NoContentResponse in throw error }
             case .resolved(let scope):
@@ -248,31 +243,10 @@ public struct OAuthFeature: RouteCollection, Sendable {
                         authorization: request.headers[.authorization],
                         body: body,
                         issuer: "\(origin)/oidc/\(segment)",
-                        scopeServerId: scope
+                        scopeServerId: scope.serverId
                     )
                 }
             }
         }
     }
-}
-
-/// Scope validation happens before authentication and carries no cache policy.
-private enum OIDCScopeResolution {
-    case resolved(String)
-    case failure(OIDCScopeError)
-}
-
-private struct OIDCScopeError: DomainError {
-    var status: UInt
-    var errorMessage: String
-}
-
-private func resolveOIDCScope(_ segment: String, oauth: OAuthLedger) -> OIDCScopeResolution {
-    guard segment.wholeMatch(of: /^[a-z0-9][a-z0-9-]{0,63}$/) != nil else {
-        return .failure(OIDCScopeError(status: 400, errorMessage: "invalid_server_scope"))
-    }
-    guard let scope = oauth.serverScopeId(segment) else {
-        return .failure(OIDCScopeError(status: 404, errorMessage: "Not found"))
-    }
-    return .resolved(scope)
 }

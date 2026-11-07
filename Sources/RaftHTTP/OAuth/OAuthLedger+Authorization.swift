@@ -58,12 +58,11 @@ extension OAuthLedger {
         return OAuthAuthorizeRedirect(location: location)
     }
 
-    /// `GET /api/oauth/jwks`. Public ES256 verification key for the ID tokens.
-    public func jwks() throws -> OAuthJWKSResponse {
-        guard let body = OAuthIDToken.jwks(secret: jwtSecret) else {
-            throw OAuthLedgerError(.oidcNotConfigured)
-        }
-        return body
+    /// Copies the independently locked signing secret before the original key
+    /// derivation runs. No record-table lock or HTTP response crosses this query.
+    func issuerVerificationKey() -> OAuthVerificationKeyFacts? {
+        let secret = jwtSecret
+        return OAuthIDToken.verificationKey(secret: secret)
     }
 
     /// `POST /api/oauth/authorize/human`. A member receives a one-time human code.

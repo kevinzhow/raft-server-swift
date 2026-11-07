@@ -20,6 +20,12 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Transitional factory over this directory's actual deployment and OAuth
+    /// owners. The explicit composer constructs the same narrow capability.
+    public var oauthIssuerMetadata: OAuthIssuerMetadataService {
+        OAuthIssuerMetadataService(profiles: authProfileStore, oauth: oauth)
+    }
+
     /// One flag's rollout decision for the unmigrated callers that still ask
     /// per key (`FeedbackService`, the integrations gate). The decision lives in
     /// `AgentsRuntimeStore`.

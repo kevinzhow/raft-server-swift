@@ -2331,3 +2331,11 @@ RFC 074 personal assistant：
 - normal保server+kind+parent+deletedAt过滤，创建后append threadOrder。action-card故意保无server/deleted过滤、既有canonical不refreshmembers、无order append；缺carrier本地fallback仍non-nil，OAuth primary继续取父row server或空串，不强行统一两层server。
 - joint依原for-in数组快照逐个处理，新增projection/link不重访，成员合并/append位置保持；不是拓扑递归遍历。真实三父/三primary/三local/两新link及无nested/order/replay增量验证，原minted/LockedCounter factories删除。
 - 原32并发thread返回ID/只建一次/ordering、action32/replay、normal softdeleted/wrongserver与两fallback，及HTTP summary/回复/frame的对应primary kind/server/parent均保留。joint并发/重复self/inactive矩阵未新增，静态保持旧逻辑；不冒称TSan或所有锁图。原七个generic Channels API至此全部以具体能力替代。
+
+### Issuer metadata 与共享 server scope 的 typed 边界
+
+- OAuthIssuerMetadataService 显式实际profiles/oauth，六metadata与八scoped分支保原regex→live first(id OR slug)&&!deleted，不trim/lower/cache/新资格gate。原segment构issuer/redirect，resolvedID绑principal/token；400/404先于config/auth/body，错误无成功public300/Location/no-store策略污染。
+- discovery只活读deployment URL，纯unscoped不查OAuth/key；JWKS独立复制secret后锁外原HKDF/P256/scalar/kid/x/y算法，typed keyfacts由Service投原DTO。URL坏不挡key、key空不挡discovery；空串503、空白secret仍接受、A→B→A整body恢复。旧owner HTTP jwks及死scopehelper删除，无wrapper。
+- scoped token保scope→live origin??空→body时点，unscoped token保body→URL，未套discovery503。协议与principal其余逻辑留各后续use case，不塞metadata；标准HTTP bytes/cache/UTF8 length和JWT↔JWKS验签互操作回归保持。
+- 九组字段由历史60增为当前61，guard只新增真实concrete type与正例field，无limits/tokenizer/negative规则放松。十三actual owner locals各一次→全必填composer真实消费新identity.issuerMetadata与同图oauthFlows，构造后URL/secret/实际OAuth row seed/delete证明新field活绑定；历史60记录不改，不冒称所有61field完整Fallback runtime证明。
+- 六旧Source HTTP基线与十一新实现定向（新field1+HTTP10）通过。旧图HTTP与独立新field图证据分别成立；没有所有配置/key/row并发交错或TSan声称。

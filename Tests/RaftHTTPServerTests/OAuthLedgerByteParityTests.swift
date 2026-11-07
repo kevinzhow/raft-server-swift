@@ -66,14 +66,36 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
                 #expect(missing.status == .notFound)
                 expectOAuthBytes(missing, "{\"error\":\"Not found\"}")
             }
+            accounts.configureOAuthForTesting { $0.serverURL = "https://live.raft.test:8443/new/base/" }
+            let liveRoot = try await client.get("/.well-known/openid-configuration")
+            #expect(liveRoot.status == .ok)
+            expectOAuthBytes(liveRoot, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443"), cache: "public, max-age=300")
+            let liveScoped = try await client.get("/oidc/oauth-bytes/api/oauth/.well-known/openid-configuration")
+            #expect(liveScoped.status == .ok)
+            expectOAuthBytes(liveScoped, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443/oidc/oauth-bytes"), cache: "public, max-age=300")
             accounts.oauth.jwtSecret = ""
             let unavailable = try await client.get("/api/oauth/jwks")
             #expect(unavailable.status == .serviceUnavailable)
             expectOAuthBytes(unavailable, "{\"error\":\"oidc_not_configured\"}")
+            let independentDiscovery = try await client.get("/oidc/oauth-bytes/.well-known/openid-configuration")
+            #expect(independentDiscovery.status == .ok)
+            expectOAuthBytes(independentDiscovery, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443/oidc/oauth-bytes"), cache: "public, max-age=300")
+            for path in ["/.well-known/openid-configuration", "/api/oauth/.well-known/openid-configuration"] {
+                let independentUnscoped = try await client.get(URI(string: path))
+                #expect(independentUnscoped.status == .ok)
+                expectOAuthBytes(independentUnscoped, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443"), cache: "public, max-age=300")
+            }
             accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
             let discoveryUnavailable = try await client.get("/.well-known/openid-configuration")
             #expect(discoveryUnavailable.status == .serviceUnavailable)
             expectOAuthBytes(discoveryUnavailable, "{\"error\":\"oidc_not_configured\"}")
+            let scopedUnavailable = try await client.get("/oidc/oauth-bytes/api/oauth/.well-known/openid-configuration")
+            #expect(scopedUnavailable.status == .serviceUnavailable)
+            expectOAuthBytes(scopedUnavailable, "{\"error\":\"oidc_not_configured\"}")
+            accounts.configureOAuthForTesting { $0.serverURL = "https://recovered.raft.test/prefix/" }
+            let recovered = try await client.get("/api/oauth/.well-known/openid-configuration")
+            #expect(recovered.status == .ok)
+            expectOAuthBytes(recovered, oauthDiscoveryBytes(issuer: "https://recovered.raft.test"), cache: "public, max-age=300")
         }
     }
 }
