@@ -29,31 +29,23 @@ extension OAuthLedger {
         }
         return id
     }
-    /// `POST /api/oauth/installation-token`. Client credentials mint a token for one active installation.
-    public func mintInstallationToken(authorization: String?, body: String) throws -> OAuthInstallationTokenResponse {
-        let noStore = "private, no-store"
-        let fields = OAuthRequestParsing.tokenFields(body)
-        guard let credentials = OAuthRequestParsing.clientCredentials(authorization: authorization, fields: fields) else {
-            throw OAuthLedgerError(.clientCredentialsRequired, cacheControl: noStore)
-        }
-        let installationId = fields["installation_id"] ?? fields["installationId"] ?? ""
-        guard !installationId.isEmpty else {
-            throw OAuthLedgerError(.installationIdRequired, cacheControl: noStore)
-        }
-        return try self.state.withLock { ledgerState in
+    /// Checks live App and installation eligibility, captures the effective
+    /// groups/revision, and appends exactly one token in the same transaction.
+    func mintInstallationCredential(_ attempt: InstallationMintAttempt) -> InstallationMintOutcome {
+        return self.state.withLock { ledgerState in
             guard let client = ledgerState.clients.first(where: {
-                $0.clientId == credentials.clientId && isUserManaged($0) && $0.enabled && $0.secretHash == sha256(credentials.clientSecret)
+                $0.clientId == attempt.clientId && isUserManaged($0) && $0.enabled && $0.secretHash == sha256(attempt.clientSecret)
             }) else {
-                throw OAuthLedgerError(.invalidClientCredentials, cacheControl: noStore)
+                return .invalidClient
             }
             guard let installation = ledgerState.installations.first(where: {
-                $0.id == installationId && $0.clientId == client.id && $0.status == "active"
+                $0.id == attempt.installationId && $0.clientId == client.id && $0.status == "active"
             }) else {
-                throw OAuthLedgerError(.activeInstallationNotFound, cacheControl: noStore)
+                return .installationUnavailable
             }
             let groups = client.outboundGroups.filter { installation.approvedGroups.contains($0) }
             guard !groups.isEmpty else {
-                throw OAuthLedgerError(.noEffectiveReadGroups, cacheControl: noStore)
+                return .noEffectiveGroups
             }
             var raw = Data(count: 32)
             for index in raw.indices { raw[index] = UInt8.random(in: 0...255) }
@@ -68,43 +60,23 @@ extension OAuthLedger {
                 audience: "raft:app-installation-api",
                 expiresAt: Date().addingTimeInterval(10 * 60)
             ))
-            return OAuthInstallationTokenResponse(
+            return .issued(InstallationMintReceipt(
                 accessToken: accessToken,
                 installationId: installation.id,
                 serverId: installation.serverId,
                 grantRevision: installation.grantRevision,
                 groups: groups
-            )
-        }
-    }
-    /// `GET /api/app-installation/server`. A user session is not an App
-    /// credential; only an active installation token resolves here.
-    public func appInstallationServer(authorization: String?) throws -> OAuthAppInstallationServerResponse {
-        let credential = try installationCredential(authorization)
-        guard credential.groups.contains("server") else {
-            throw OAuthLedgerError(.lacksServerReadAuthority, cacheControl: "private, no-store")
-        }
-        return try self.state.withLock { ledgerState in
-            guard let server = ledgerState.servers[credential.serverId], !server.deleted else {
-                throw OAuthLedgerError(.serverNotFound, cacheControl: "private, no-store")
-            }
-            return OAuthAppInstallationServerResponse(
-                installationId: credential.installationId,
-                serverId: server.id,
-                name: server.name,
-                slug: server.slug
-            )
+            ))
         }
     }
 
-    /// `GET /api/app-installation/channels`. The `channel` group is separate
-    /// from the `server` group an installation may have approved.
-    public func appInstallationChannels(authorization: String?) throws -> OAuthAppInstallationChannelsResponse {
-        let credential = try installationCredential(authorization)
-        guard credential.groups.contains("channel") else {
-            throw OAuthLedgerError(.lacksChannelReadAuthority, cacheControl: "private, no-store")
+    /// Intentionally a separate read after credential verification and the
+    /// service's group check, retaining the original two-lock server projection.
+    func liveInstallationServer(id: String) -> InstallationServerFacts? {
+        self.state.withLock { ledgerState in
+            guard let server = ledgerState.servers[id], !server.deleted else { return nil }
+            return InstallationServerFacts(id: server.id, name: server.name, slug: server.slug)
         }
-        return OAuthAppInstallationChannelsResponse(installationId: credential.installationId)
     }
 
     /// What `POST /api/oauth/installations/lookup` decided. The refusals keep
@@ -159,21 +131,15 @@ extension OAuthLedger {
             return .found(installationId: installation.id, serverId: installation.serverId)
         }
     }
-    func installationCredential(_ authorization: String?) throws -> VerifiedInstallationCredential {
-        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
-            throw OAuthLedgerError(.installationBearerRequired)
-        }
-        return try self.state.withLock { ledgerState in
-            guard let credential = installationCredentialLocked(raw, state: ledgerState) else {
-                throw OAuthLedgerError(.invalidInstallationCredential)
-            }
-            return credential
+    func verifiedInstallationCredential(rawToken: String) -> InstallationCredentialFacts? {
+        self.state.withLock { ledgerState in
+            installationCredentialLocked(rawToken, state: ledgerState)
         }
     }
 
     /// Reads the caller's borrowed State. Rechecks the live App class, installation status,
     /// grant revision, and that the token's groups are still granted.
-    func installationCredentialLocked(_ raw: String, state ledgerState: State) -> VerifiedInstallationCredential? {
+    func installationCredentialLocked(_ raw: String, state ledgerState: State) -> InstallationCredentialFacts? {
         guard raw.hasPrefix("raft_installation_") else { return nil }
         guard let record = ledgerState.installationTokens.last(where: { $0.tokenHash == sha256(raw) }),
               record.expiresAt > Date(),
@@ -197,18 +163,11 @@ extension OAuthLedger {
         }
         let currentGroups = client.outboundGroups.filter { installation.approvedGroups.contains($0) }
         guard record.groups.allSatisfy({ currentGroups.contains($0) }) else { return nil }
-        return VerifiedInstallationCredential(
+        return InstallationCredentialFacts(
             installationId: installation.id,
             clientId: client.id,
             serverId: installation.serverId,
             groups: record.groups
         )
-    }
-
-    struct VerifiedInstallationCredential: Sendable {
-        var installationId: String
-        var clientId: String
-        var serverId: String
-        var groups: [String]
     }
 }

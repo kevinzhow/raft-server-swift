@@ -125,14 +125,14 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
     }
 }
 
-/// App setup declarations, Marketplace installs, agent grants and the agent app
-/// event feed.
+/// App setup declarations, Marketplace installs, installation credentials,
+/// agent grants and the agent app event feed.
 ///
 /// All state lives in the OAuth ledger (its own lock; each call below is one
 /// ledger critical section or a read). The one cross-domain dependency is the
 /// human session lookup, which belongs to the not-yet-migrated auth domain and
-/// enters at `init`. Every operation returns a published DTO or throws an
-/// `IntegrationsAndAppAccessError`; no HTTP reply is built here.
+/// enters at `init`. Every operation returns a published DTO or throws its
+/// surface's typed domain error; no HTTP reply is built here.
 public struct IntegrationsAndAppAccessService: Sendable {
     private let oauth: OAuthLedger
     private let sessionUserId: @Sendable (String?) -> String?
@@ -150,6 +150,76 @@ public struct IntegrationsAndAppAccessService: Sendable {
             throw IntegrationsAndAppAccessError.unauthorized
         }
         return userId
+    }
+
+    // MARK: - Installation credentials
+
+    /// `POST /api/oauth/installation-token`. The compatibility parser owns
+    /// Basic/body precedence and form/JSON spelling; the owner makes the live
+    /// eligibility decision and issues the token in one transaction.
+    public func issueInstallationCredential(
+        authorization: String?, body: String
+    ) throws -> OAuthInstallationTokenResponse {
+        let noStore = "private, no-store"
+        let fields = OAuthRequestParsing.tokenFields(body)
+        guard let credentials = OAuthRequestParsing.clientCredentials(authorization: authorization, fields: fields) else {
+            throw OAuthLedgerError(.clientCredentialsRequired, cacheControl: noStore)
+        }
+        let installationId = fields["installation_id"] ?? fields["installationId"] ?? ""
+        guard !installationId.isEmpty else {
+            throw OAuthLedgerError(.installationIdRequired, cacheControl: noStore)
+        }
+        let attempt = InstallationMintAttempt(
+            clientId: credentials.clientId, clientSecret: credentials.clientSecret, installationId: installationId
+        )
+        switch oauth.mintInstallationCredential(attempt) {
+        case .invalidClient:
+            throw OAuthLedgerError(.invalidClientCredentials, cacheControl: noStore)
+        case .installationUnavailable:
+            throw OAuthLedgerError(.activeInstallationNotFound, cacheControl: noStore)
+        case .noEffectiveGroups:
+            throw OAuthLedgerError(.noEffectiveReadGroups, cacheControl: noStore)
+        case .issued(let receipt):
+            return OAuthInstallationTokenResponse(
+                accessToken: receipt.accessToken, installationId: receipt.installationId,
+                serverId: receipt.serverId, grantRevision: receipt.grantRevision, groups: receipt.groups
+            )
+        }
+    }
+
+    /// `GET /api/app-installation/server`. Credential validation releases its
+    /// lock before the group gate and the second, live server projection read.
+    public func installationServer(authorization: String?) throws -> OAuthAppInstallationServerResponse {
+        let credential = try requireInstallationCredential(authorization)
+        guard credential.groups.contains("server") else {
+            throw OAuthLedgerError(.lacksServerReadAuthority, cacheControl: "private, no-store")
+        }
+        guard let server = oauth.liveInstallationServer(id: credential.serverId) else {
+            throw OAuthLedgerError(.serverNotFound, cacheControl: "private, no-store")
+        }
+        return OAuthAppInstallationServerResponse(
+            installationId: credential.installationId, serverId: server.id, name: server.name, slug: server.slug
+        )
+    }
+
+    /// `GET /api/app-installation/channels`. The channel authority is separate;
+    /// this surface publishes an empty list and does not require a live server.
+    public func installationChannels(authorization: String?) throws -> OAuthAppInstallationChannelsResponse {
+        let credential = try requireInstallationCredential(authorization)
+        guard credential.groups.contains("channel") else {
+            throw OAuthLedgerError(.lacksChannelReadAuthority, cacheControl: "private, no-store")
+        }
+        return OAuthAppInstallationChannelsResponse(installationId: credential.installationId)
+    }
+
+    private func requireInstallationCredential(_ authorization: String?) throws -> InstallationCredentialFacts {
+        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
+            throw OAuthLedgerError(.installationBearerRequired)
+        }
+        guard let credential = oauth.verifiedInstallationCredential(rawToken: raw) else {
+            throw OAuthLedgerError(.invalidInstallationCredential)
+        }
+        return credential
     }
 
     // MARK: - Setup declaration

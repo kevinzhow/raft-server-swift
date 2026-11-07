@@ -48,7 +48,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         oauth.post("installation-token") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try services.emailAccounts.oauth.mintInstallationToken(
+                try services.emailAccounts.integrationsAndAppAccess.issueInstallationCredential(
                     authorization: request.headers[.authorization],
                     body: body
                 )

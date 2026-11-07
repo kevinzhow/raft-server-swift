@@ -1,6 +1,6 @@
 # Phase 6 服务端架构清理：新会话交接
 
-更新时间：2026-11-07 09:05 上海时间（UTC+08）。本文件是交接入口，优先于更早的会话摘要。**共享 composer + AuthScene + guard v2 切片已通过本轮全部门禁，随本文件所在切片提交接受；完整 Fallback/main 与其余 Feature/fixtures 尚未切换。**
+更新时间：2026-11-07（G2 接受后，上海时区 UTC+08）。本文件是交接入口，优先于更早的会话摘要。**共享 composer + AuthScene + guard v2 已以 `93f1df4` 接受并 push；G2 installation credential 三路由迁移已通过全部门禁，随本文件所在切片接受。完整 Fallback/main 与其余 Feature/fixtures 尚未切换。**
 
 ## 1. 当前目标与恢复入口
 
@@ -13,9 +13,11 @@
 - 本轮已接受的目标：十三 actual owner 的共享 composer、九组六十具体值、同 owner 私有 Auth/Invite fixtures 与真实 AuthFeature HTTP 场景。运行证据限该 Auth 场景，不代表其余五十三字段或完整新图已运行。
 - guard 两个 P2 已独立闭合：反引号 protected ID 与 protected typealias LHS；Lead 的 49 Python methods、architecture 22 checks、parity-check 全通过。独立 reviewer 另通过 20 methods 与 265 个隔离 CLI fixtures。检查仍是有限词法规则，不是 AST/owner identity/DAG 证明。
 - 正常 Swift 6.4.1、共享 canonical scratch、`-j 4`：九项定向、原样 `make test`、双 Server/Daemon E2E、24 项 single-process smoke 全通过。allocator signal6 本轮未重现，未查明根因，未修改 Source/timeout/concurrency 或 skip 用例来消除它。
-- 本轮日志：`/tmp/raft-resume-guard-{python,architecture,parity}.log`，`/tmp/raft-resume-composer-{targeted,full-test,e2e,smoke}.log`。历史失败与补丁仍在下述 Git checkpoint 归档，不得当作本轮结果。
-- 下一片先做 **G2 installation credential issue/read**：将三个真实路由移到 IntegrationsAndAppAccessService 的实际策略，OAuth owner 提供 typed atomic mint/facts。保持 mint 同锁的资格/groups/revision/token append，GET 原两次锁边界及 route-specific cache/error 顺序。channels 成功 DTO 是 `{"installation_id":…,"channels":[]}`，旧审计“只 ID”描述不完整。不得复制 ledger facade。
-- 随后按 PLAN 继续 G3/G4、共享 scope resolver 与 G5–G7、领域 fixtures 和全部 transport 依赖，最后同步切换完整 Fallback/main 并删旧 Root/六扩展/兼容入口；daemon 余项见 CONCURRENCY。OAuthFeature 写操作串行，所有 Swift 构建串行使用共享 scratch。
+- 共享切片日志：`/tmp/raft-resume-guard-{python,architecture,parity}.log`，`/tmp/raft-resume-composer-{targeted,full-test,e2e,smoke}.log`；已持久保存于 `.git/agent-checkpoints/20261107-0905-shared-composer-accepted/verification.json` 及同目录日志。历史失败与补丁仍在下述旧 Git checkpoint 归档，不得当作本轮结果。
+- **G2 已接受**：三个真实路由已归 IntegrationsAndAppAccessService，OAuth owner 只返回 typed atomic mint outcome / credential / server facts；旧 HTTP 方法与兼容 wrapper 均无残留。mint 同锁的资格/groups/revision/token append、GET 原两次锁边界、输入兼容与 route-specific cache/error 顺序保持。channels DTO 为 `{"installation_id":…,"channels":[]}`。原实现 characterization 三函数先绿，迁移后十四项定向、正常完整 `make test`、E2E、24 smoke、49 Python、architecture/parity-check 全绿；独立 review No findings。日志 `/tmp/g2-installation-{baseline,after,full-test,e2e,smoke,python,architecture,parity}.log`。该验收仍经完整旧 Fallback，不代表新 InstallationScene 已运行。
+- **下一片：notification timer 生命周期**。隔离工作树 `/mnt/data/raft-server-swift/.agents/worktrees/notification-lifecycle`（base93f1df4），只改 RuntimeNotificationState.swift 与其 Tests；冻结 patch `/tmp/raft-notification-lifecycle.patch`，尚未集成或绿测，不可当作接受。Lead 实测旧生产 + 新 tests：build173.20s成功，23 tests 中原15绿/新8红，25 issues，exit1；证据 `/tmp/raft-notification-lifecycle-behavior-red.log` / `.exit`。更早中断和宏编译失败日志不算行为红。新 Source 独立 review No findings，但无绿编译；集成后必须完整验收，并更新 CONCURRENCY/unchecked ratchet。Source SHA `2f4b46915de0dbddcdefdd30c7621bd697c01b5e7eb0f97ef26637a2d30bebc6`，Tests SHA `70f28b2657ba5ab18aa2acde92f1bb3b5aa76f45be2349e018ab0cbf68b03783`。取消不 join 已准入 callback；不声称真实 stdin/socket 或 TSan 验收。
+- 接着建私有 InstallationFixture + 同 owner InstallationScene，并提取三路由实际生产 registrar 供原 Features 与 focused app 共用，迁移对应旧 fixtures；不复制测试 handler，不混新 scene 与旧 configure。然后按 PLAN 继续 G3/G4、共享 scope resolver 与 G5–G7、其余 fixtures/transport，最后完整切换并删旧 Root/六扩展/兼容入口。共享 task-4/5/6 保存后续顺序和 typed 方案，但源码/文档证据优先。
+- 所有 Swift 构建现在由 Lead 从同一实际验收树集中启动/collect，串行使用共享 scratch，避免子会话 background job handle 丢失与跨树反复重编译。Teammates 可以在独立树准备代码，不自行编译。OAuthFeature 写操作串行。
 - 用户授权：持续推进、独立 subagents、验证后提交/ff/push；不需要重复询问这些授权。
 
 **下方第 2–8 节保留 08:10 保存时的历史证据和归档路径。其“当前未提交”“v2 未应用”“最新失败”“优先恢复步骤”均是历史状态，由本节明确取代，不得再 apply 已整合补丁或把已闭合发现当作现存阻塞。**

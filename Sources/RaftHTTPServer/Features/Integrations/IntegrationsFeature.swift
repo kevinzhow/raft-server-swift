@@ -424,13 +424,13 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
 
         appInstallation.get("server") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try services.emailAccounts.oauth.appInstallationServer(authorization: request.headers[.authorization])
+                try services.emailAccounts.integrationsAndAppAccess.installationServer(authorization: request.headers[.authorization])
             }
         }
 
         appInstallation.get("channels") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
-                try services.emailAccounts.oauth.appInstallationChannels(authorization: request.headers[.authorization])
+                try services.emailAccounts.integrationsAndAppAccess.installationChannels(authorization: request.headers[.authorization])
             }
         }
     }
