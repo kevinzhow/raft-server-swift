@@ -2352,3 +2352,10 @@ RFC 074 personal assistant：
 - ChatBridgeRequest与OarListModels两个Once只将Bool纳入checked Mutex；原一个take返回true，其余false，false→true同一次borrow，Mutex内无外部操作。原response/catch/deadline的cancel/resume顺序与Oar listing先cancel timer再take均不改。
 - 16个原公开helper结果/HTTP status/timeout/model projection/join用例前后通过；没有新增私有gate测试或seam。首原Source集合两Oar scheduler等待断言失败，隔离2绿、原16 unchanged retry绿；保留日志，不把fixture失败归为本次修复的race红。无超时/并发/断言弱化。
 - Oar DispatchDeadlineScheduler与ModelLister未改，仍各独立待收口；本片不证明SDK dispatch取消join/TSan/生产接线，unchecked18→16。
+
+### Turn-token 完整状态事务
+
+- TurnTokenAccumulator 的added/sessionBase/sessionLatest同属一个checked Mutex；三个公开get/set仍保原初值和独立替换，note整个source fold与counts整组读取/delta/fallback各一次borrow，不拼多次getter锁或暴露generic callback。锁内仅typed值运算，无IO/foreigncallback。
+- Claude/pi/kimi源别名、nil未报告/zero/负值/finite→Int与原trap范围保持。Codex仅首次base缺失才读last，缺last不写latest；后续latest完整覆写不是max，任一共享字段倒退回整份added，非逐字段clip。trace取一次counts后仅投已报告字段。
+- 原4例全绿，新两个256同步join公开结果在旧Source分别红3issues（真实丢累加233/464/630/804）与红1mixed-Codex-cohort；新实现同6例全绿，精确累计256/512/768/1024、全部快照完整，冻结Tests不降并发。Codex预置base0，末尾0仅验证较小latest可接受，不冒称first-base并发选举或跨publicsetter事务。
+- helper actual public结果证据不冒称daemon接线/TSan；unchecked16→15。
