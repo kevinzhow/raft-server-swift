@@ -18,7 +18,7 @@ public struct ManagedMcpToolContent: Sendable, Equatable {
     }
 }
 
-public final class ManagedMcpTool: @unchecked Sendable {
+public final class ManagedMcpTool: Sendable {
     public let name: String
     public let label: String
     public let promptSnippet: String

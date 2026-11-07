@@ -7,12 +7,9 @@ Sources/RaftDaemonClient/DaemonTurnSummary.swift	1
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1
 Sources/RaftDaemonClient/FetchPool.swift	1
 Sources/RaftDaemonClient/KimiCredentialLock.swift	1
-Sources/RaftDaemonClient/ManagedMcpTools.swift	1
 Sources/RaftDaemonClient/OarListModels.swift	3
 Sources/RaftDaemonClient/ProcessMemory.swift	1
 Sources/RaftDaemonClient/RaftDiskJanitor.swift	1
-Sources/RaftDaemonClient/RecentDeliveryIds.swift	1
-Sources/RaftDaemonClient/ReminderInboxDefinition.swift	1
 Sources/RaftDaemonClient/RuntimeModelSourceCache.swift	1
 Sources/RaftDaemonClient/RuntimeTurnTokens.swift	1
 Sources/RaftDaemonClient/ScopedAppStorage.swift	2

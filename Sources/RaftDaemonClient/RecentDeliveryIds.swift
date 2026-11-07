@@ -1,12 +1,15 @@
 import Foundation
+import Synchronization
 
 /// Bounded set of recently delivered ids; entries expire by age and the oldest
 /// ones are dropped when the cap is reached. Behaviour matches the upstream
 /// daemon helper (task #1295).
-public final class RecentDeliveryIds: @unchecked Sendable {
-    private let lock = NSLock()
-    private var order: [String] = []
-    private var seenAt: [String: Int] = [:]
+public final class RecentDeliveryIds: Sendable {
+    private struct State: Sendable {
+        var order: [String] = []
+        var seenAt: [String: Int] = [:]
+    }
+    private let state = Mutex(State())
     private let maxEntries: Int
     private let maxAgeMs: Int
 
@@ -16,32 +19,30 @@ public final class RecentDeliveryIds: @unchecked Sendable {
     }
 
     public func remember(_ id: String, now: Int) {
-        lock.lock()
-        order.removeAll { $0 == id }
-        order.append(id)
-        seenAt[id] = now
-        while order.count > maxEntries, let oldest = order.first {
-            order.removeFirst()
-            seenAt[oldest] = nil
+        state.withLock {
+            $0.order.removeAll { $0 == id }
+            $0.order.append(id)
+            $0.seenAt[id] = now
+            while $0.order.count > maxEntries, let oldest = $0.order.first {
+                $0.order.removeFirst()
+                $0.seenAt[oldest] = nil
+            }
         }
-        lock.unlock()
     }
 
     public func has(_ id: String, now: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let seen = seenAt[id] else { return false }
-        if now - seen >= maxAgeMs {
-            order.removeAll { $0 == id }
-            seenAt[id] = nil
-            return false
+        state.withLock {
+            guard let seen = $0.seenAt[id] else { return false }
+            if now - seen >= maxAgeMs {
+                $0.order.removeAll { $0 == id }
+                $0.seenAt[id] = nil
+                return false
+            }
+            return true
         }
-        return true
     }
 
     public var size: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return seenAt.count
+        state.withLock { $0.seenAt.count }
     }
 }

@@ -2317,3 +2317,10 @@ RFC 074 personal assistant：
 - 原 token/expiry/maxUses 或 email 匹配先于 seat，再到 agreement required/changed；只有接受后 append audit，再 spend use/remove first matched invite。无 active agreement 时，传旧 ID 仍不阻塞、不 audit。Store 不写 membership，Service 返回后才 addMember/发事件；不新增 acceptance guest 免检或全局 seat reservation。
 - 真实 OAuth seeds 保八抢一、32抢五与五条 distinct audit/实际 version3；同 cap 构造后 guest/member 及协议v1→v2变化原位活读。HTTP 保 invalid/email→seat→required/changed，拒绝不消耗；email accepted exact body、单 audit、裸 array 主 invite 移除、retry invalid。该 email 样本复用既有 member，不冒称首次 membership 插入证明。
 - 两个 server-order 与三 admission callback API 已移除，当前仅余两个 thread factory。Container 字段/owner数未增，无 callback 兼容重载；真实 unit 与 HTTP 数据是接受证据，不是 query spy。
+
+### Managed tool 与 reminder/delivery 关联状态的 checked 隔离
+
+- ManagedMcpTool 十个 immutable Sendable 字段直接构成 checked conformance；transport、version fences、错误/截断、提示词 flatten 和 call-local Any 参数保持原方法体，不增加串行化或新 payload wrapper。
+- ReminderInboxStore 只将 Sendable items/order 同置一个 Mutex。纯校验/转换仍锁外，首次 ID 才 append、重复只覆盖、不改插入位置，list 同一借用读取两集合。128次并发替换/读取保两条真实 primary item 与既定顺序；旧身份/action/title断言不改。
+- RecentDeliveryIds 的 remember 去重→append→timestamp→cap淘汰，以及 has 的被查 ID 懒删，都保持单一事务。不全局prune、不refresh has recency、不新增 bounds/clock clamp。原TTL临界、零/负cap/TTL、回拨及旧timestamp覆盖接受集保持，size可含未查询过期项；64次并发真实记忆/容量与后续全替换结果验证关联集合一致。
+- 十四个原Source/新Source helper case均绿；这是公开结果与compiler的局部证明，不冒称daemon接线/TSan或所有交错。StandingPrompt锁内clock不混入本片，仍待单独重入/文件结果修复。

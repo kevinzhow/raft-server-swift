@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The system.reminder app inbox definition: OS-minted identity/action for
 /// "due" notifications, strict source-ref validation, and a visibly bounded
@@ -153,10 +154,12 @@ public enum ReminderInboxDefinition {
 }
 
 /// The app-inbox store for the reminder registry: mints items and lists them.
-public final class ReminderInboxStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var items: [String: ReminderInboxDefinition.MintItem] = [:]
-    private var order: [String] = []
+public final class ReminderInboxStore: Sendable {
+    private struct State: Sendable {
+        var items: [String: ReminderInboxDefinition.MintItem] = [:]
+        var order: [String] = []
+    }
+    private let state = Mutex(State())
 
     public init() {}
 
@@ -172,16 +175,17 @@ public final class ReminderInboxStore: @unchecked Sendable {
             sourceRef: sourceRef, title: title, requestedPrimaryAction: requestedPrimaryAction
         )
         if case .ok(let item) = result {
-            lock.lock()
-            if items[item.itemId] == nil { order.append(item.itemId) }
-            items[item.itemId] = item
-            lock.unlock()
+            state.withLock {
+                if $0.items[item.itemId] == nil { $0.order.append(item.itemId) }
+                $0.items[item.itemId] = item
+            }
         }
         return result
     }
 
     public func list() -> [ReminderInboxDefinition.MintItem] {
-        lock.lock(); defer { lock.unlock() }
-        return order.compactMap { items[$0] }
+        state.withLock { snapshot in
+            snapshot.order.compactMap { snapshot.items[$0] }
+        }
     }
 }

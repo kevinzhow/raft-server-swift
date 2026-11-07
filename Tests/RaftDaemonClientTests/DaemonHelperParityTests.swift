@@ -52,6 +52,48 @@ import Testing
     #expect(!reordered.has("b", now: 3))
 }
 
+@Test func recentDeliveryIdsKeepLazyExpiryBoundsAndConcurrentCapacity() async {
+    for cap in [0, -1] {
+        let ids = RecentDeliveryIds(maxEntries: cap, maxAgeMs: 10)
+        ids.remember("a", now: 10)
+        #expect(ids.size == 0)
+        #expect(!ids.has("a", now: 10))
+    }
+    for age in [0, -1] {
+        let ids = RecentDeliveryIds(maxEntries: 2, maxAgeMs: age)
+        ids.remember("a", now: 10)
+        #expect(!ids.has("a", now: 10))
+        #expect(ids.size == 0)
+    }
+    let lazy = RecentDeliveryIds(maxEntries: 4, maxAgeMs: 10)
+    lazy.remember("a", now: 0)
+    lazy.remember("b", now: 5)
+    #expect(lazy.has("b", now: 11))
+    #expect(lazy.size == 2, "has only expires the queried identity")
+    #expect(!lazy.has("a", now: 11))
+    #expect(lazy.size == 1)
+    lazy.remember("b", now: 0)
+    #expect(lazy.has("b", now: -1), "a backwards clock is not clamped")
+    #expect(lazy.has("b", now: 9))
+    #expect(!lazy.has("b", now: 10))
+
+    let shared = RecentDeliveryIds(maxEntries: 4, maxAgeMs: 1_000)
+    await withTaskGroup(of: Void.self) { group in
+        for _ in 0..<64 { group.addTask { shared.remember("same", now: 0) } }
+    }
+    #expect(shared.size == 1)
+    #expect(shared.has("same", now: 1))
+    await withTaskGroup(of: Void.self) { group in
+        for index in 0..<64 { group.addTask { shared.remember("id-\(index)", now: 0) } }
+    }
+    #expect(shared.size == 4)
+    #expect((0..<64).filter { shared.has("id-\($0)", now: 1) }.count == 4)
+    for index in 0..<4 { shared.remember("new-\(index)", now: 1) }
+    #expect(shared.size == 4)
+    #expect((0..<4).allSatisfy { shared.has("new-\($0)", now: 1) })
+    #expect((0..<64).allSatisfy { !shared.has("id-\($0)", now: 1) })
+}
+
 @Test func daemonLogSubscribersReceiveStructuredEventsAndCanUnsubscribe() {
     let log = DaemonLog()
     final class Sink: @unchecked Sendable {

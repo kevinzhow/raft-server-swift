@@ -88,3 +88,31 @@ private let reminderId = "12345678-1234-4123-8123-123456789abc"
     }
     #expect(store.list().count == 2, "both legal Reminder titles mint exactly one item")
 }
+
+@Test func reminderInboxReplacementKeepsFirstOrderAcrossConcurrentMintAndList() async throws {
+    let store = ReminderInboxStore()
+    for (revision, title) in [("7", "first"), ("8", "second"), ("7", "replacement")] {
+        guard case .ok = store.mint(sourceRef: ["kind": "reminder", "id": reminderId, "revision": revision], title: title) else {
+            Issue.record("expected a valid reminder item")
+            return
+        }
+    }
+    let expected = ["reminder:\(reminderId):7", "reminder:\(reminderId):8"]
+    #expect(store.list().map(\.itemId) == expected)
+    #expect(store.list().map(\.title) == ["replacement", "second"])
+    let snapshots = await withTaskGroup(of: [String].self, returning: [[String]].self) { group in
+        for index in 0..<128 {
+            group.addTask {
+                let revision = index.isMultiple(of: 2) ? "7" : "8"
+                _ = store.mint(sourceRef: ["kind": "reminder", "id": reminderId, "revision": revision], title: "update \(index)")
+                return store.list().map(\.itemId)
+            }
+        }
+        var snapshots: [[String]] = []
+        for await snapshot in group { snapshots.append(snapshot) }
+        return snapshots
+    }
+    #expect(snapshots.count == 128)
+    #expect(snapshots.allSatisfy { $0 == expected })
+    #expect(store.list().map(\.itemId) == expected)
+}
