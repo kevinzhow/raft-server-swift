@@ -2359,3 +2359,9 @@ RFC 074 personal assistant：
 - Claude/pi/kimi源别名、nil未报告/zero/负值/finite→Int与原trap范围保持。Codex仅首次base缺失才读last，缺last不写latest；后续latest完整覆写不是max，任一共享字段倒退回整份added，非逐字段clip。trace取一次counts后仅投已报告字段。
 - 原4例全绿，新两个256同步join公开结果在旧Source分别红3issues（真实丢累加233/464/630/804）与红1mixed-Codex-cohort；新实现同6例全绿，精确累计256/512/768/1024、全部快照完整，冻结Tests不降并发。Codex预置base0，末尾0仅验证较小latest可接受，不冒称first-base并发选举或跨publicsetter事务。
 - helper actual public结果证据不冒称daemon接线/TSan；unchecked16→15。
+
+### Turn-summary checked 归属
+
+- private Sendable value accumulator仅存在tracker Mutex map；begin旧finish+replace、observe整filtered batch、send状态改写及finish remove+投影均各完整borrow。v2借用内removeValue→纯fold→写回避免map保留旧嵌套值，不把引用/值挪借用外；filter保持原锁外、分类原锁内。
+- action首次顺序、explicit call/FIFO匿名匹配、okfalse优先、unknown observe建turn而unknown note不建、所有非sent算held、nil sent保last、problemLimit20-v-total、trigger空省略和maxend不改。原完整锁本已保护这些操作，本片不虚构修旧race。
+- 原5与最终v2同5公开结果均绿；新例256同步update后256同步finish竞争，唯一实际summary各action257/toolCalls771/messages257/lastr1、problem总1028但存20、end10成立。无begin或observe-finish混跑/TSan/daemon wiring/benchmark声称；unchecked15→14。

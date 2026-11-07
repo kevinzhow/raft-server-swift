@@ -2,7 +2,6 @@ Sources/RaftDaemonClient/AgentStartCoordinator.swift	1
 Sources/RaftDaemonClient/DaemonClient.swift	1
 Sources/RaftDaemonClient/DaemonLog.swift	1
 Sources/RaftDaemonClient/DaemonReconnectLoop.swift	1
-Sources/RaftDaemonClient/DaemonTurnSummary.swift	1
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1
 Sources/RaftDaemonClient/FetchPool.swift	1
 Sources/RaftDaemonClient/KimiCredentialLock.swift	1

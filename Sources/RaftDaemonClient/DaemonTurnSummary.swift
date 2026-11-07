@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Per-turn activity summary (RFC 069 §6). One record per agent turn: when it
 /// ran, how it ended, who woke the agent, the kinds of work it did, its
@@ -158,7 +159,7 @@ public enum DaemonTurnSummaryEntry: Sendable, Equatable {
     case turnSummary(DaemonTurnSummary)
 }
 
-final class DaemonTurnAccumulator {
+private struct DaemonTurnAccumulator: Sendable {
     private let startedAt: Int
     private let trigger: DaemonTurnTrigger?
     private var order: [String] = []
@@ -176,7 +177,7 @@ final class DaemonTurnAccumulator {
         self.trigger = trigger
     }
 
-    func add(_ entry: DaemonTrajectoryEntry, at: Int) {
+    mutating func add(_ entry: DaemonTrajectoryEntry, at: Int) {
         switch entry.kind {
         case .toolStart:
             let kind = DaemonTurnSummaryRules.classifyToolCall(toolName: entry.toolName, toolInput: entry.toolInput)
@@ -202,12 +203,12 @@ final class DaemonTurnAccumulator {
         }
     }
 
-    func noteMessageSent(_ messageId: String?) {
+    mutating func noteMessageSent(_ messageId: String?) {
         messagesSent += 1
         if let messageId { lastReplyMessageId = messageId }
     }
 
-    func noteSendHeld(at: Int) {
+    mutating func noteSendHeld(at: Int) {
         addProblem(DaemonTurnProblem(kind: "send_message", reason: "send_held", at: at))
     }
 
@@ -227,53 +228,51 @@ final class DaemonTurnAccumulator {
         )
     }
 
-    private func addProblem(_ problem: DaemonTurnProblem) {
+    private mutating func addProblem(_ problem: DaemonTurnProblem) {
         problemCount += 1
         if problems.count < DaemonTurnSummaryRules.problemLimit { problems.append(problem) }
     }
 }
 
-public final class DaemonTurnSummaryTracker: @unchecked Sendable {
-    private let lock = NSLock()
-    private var open: [String: DaemonTurnAccumulator] = [:]
+public final class DaemonTurnSummaryTracker: Sendable {
+    private let open = Mutex<[String: DaemonTurnAccumulator]>([:])
 
     public init() {}
 
     public func begin(agentId: String, now: Int, trigger: DaemonTurnTrigger?, previousOutcome: String = "unknown") -> [DaemonTurnSummaryEntry] {
-        lock.lock()
-        let previous = finishLocked(agentId: agentId, outcome: previousOutcome, now: now)
-        open[agentId] = DaemonTurnAccumulator(startedAt: now, trigger: trigger)
-        lock.unlock()
-        return previous
+        open.withLock { open in
+            let previous = finishLocked(&open, agentId: agentId, outcome: previousOutcome, now: now)
+            open[agentId] = DaemonTurnAccumulator(startedAt: now, trigger: trigger)
+            return previous
+        }
     }
 
     public func observe(agentId: String, entries: [DaemonTrajectoryEntry], now: Int) {
         let relevant = entries.filter { $0.kind == .toolStart || $0.kind == .toolEnd }
         guard !relevant.isEmpty else { return }
-        lock.lock()
-        let acc = open[agentId] ?? DaemonTurnAccumulator(startedAt: now, trigger: nil)
-        open[agentId] = acc
-        for entry in relevant { acc.add(entry, at: now) }
-        lock.unlock()
+        open.withLock { open in
+            var acc = open.removeValue(forKey: agentId) ?? DaemonTurnAccumulator(startedAt: now, trigger: nil)
+            for entry in relevant { acc.add(entry, at: now) }
+            open[agentId] = acc
+        }
     }
 
     public func noteSendOutcome(agentId: String, state: String, messageId: String?, now: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let acc = open[agentId] else { return }
-        if state == "sent" { acc.noteMessageSent(messageId) } else { acc.noteSendHeld(at: now) }
+        open.withLock { open in
+            guard var acc = open.removeValue(forKey: agentId) else { return }
+            if state == "sent" { acc.noteMessageSent(messageId) } else { acc.noteSendHeld(at: now) }
+            open[agentId] = acc
+        }
     }
 
     public func finish(agentId: String, outcome: String, now: Int) -> [DaemonTurnSummaryEntry] {
-        lock.lock()
-        let result = finishLocked(agentId: agentId, outcome: outcome, now: now)
-        lock.unlock()
-        return result
+        open.withLock { open in
+            finishLocked(&open, agentId: agentId, outcome: outcome, now: now)
+        }
     }
 
-    private func finishLocked(agentId: String, outcome: String, now: Int) -> [DaemonTurnSummaryEntry] {
-        guard let acc = open[agentId] else { return [] }
-        open[agentId] = nil
+    private func finishLocked(_ open: inout [String: DaemonTurnAccumulator], agentId: String, outcome: String, now: Int) -> [DaemonTurnSummaryEntry] {
+        guard let acc = open.removeValue(forKey: agentId) else { return [] }
         return [.turnSummary(acc.finish(outcome: outcome, endedAt: now))]
     }
 }
