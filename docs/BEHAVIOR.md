@@ -2425,3 +2425,10 @@ RFC 074 personal assistant：
 - running Task/generation归同private Mutex，join lookup→generation→Task创建→publication→weak cleanup Task注册→return仍原完整事务；Run在子Task运行，cleanup await后才升级weak self再单borrow按generation清槽，未提前inline Run或持借用await。
 - 原Task身份/取消后late join/完成后新listing/同installation对象/timeout传递与one-lister语义保，不加installation key、completed/cancelled检查或对象快照；DispatchDeadlineScheduler/Once/detect/projection/DTO窗外字节保，原Tests165/200yields无改。
 - 原十个public outcome/deadline/join测试在原/新Source均绿，full/E2E24smoke49Python22arch/parity绿。仅checkedhelper ownership、非旧race修复/新red/所有交错/生产wiring/benchmark/TSan证明；unchecked11→10，Oar文件因剩Scheduler仍在清单。
+
+### Integrations 显式服务与 OAuth 事件场景
+
+- IntegrationsFeature唯一构造器收七private immutable具体服务，37处仅同服务receiver重接；Fallback原注册点供原Root同owner七值，额外bare Feature caller同图供值，不加Root兼容构造器。七factory/ctor保持owner/callback retain，URL/env/session/ownership与relay实际使用时活读，Cards policy/custom/idempotency不提前求值。
+- Pixel原GET handler/helper完整移入production PixelAvatarRoutes，Notifications原点委托，原prefix/解码/UTF8 body长度/robots/cache/content-type/错误status和JSON不变。HTTPReply inventory仅原Notifications1→新Pixel1位置移动、总量不变，不放宽guard预算。
+- 四个既有事件/并发/route测试接private同图fixture，16focused与7bareOAuth/1bareIntegrations保原挂载子集；175expect/41require仅六既有OAuth数据read/mutate断言receiver变化，原32/256并发、UInt64/Unicode/legacyarray hash、claim/idempotency、G5family撤销语义保。仅新增六所需既有fixture ops，单Date采样/token映射/flat receipt保，无新spy/hook/矩阵/IDs。
+- focused实际Integrations→Pixel→OAuth→Auth/JSONboundary同owner；24定向、full/E2E24smoke49Python22arch/parity绿。单EOF额外换行整理不变handler/helper；不声称全部OAuth/领域fixture或完整Fallback/main/transport/Root切换已完。

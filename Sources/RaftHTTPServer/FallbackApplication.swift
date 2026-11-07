@@ -241,7 +241,15 @@ public func configure(_ app: Application, services: FallbackServices) {
     let internalSurface = InternalSurfaceBox()
     InternalAgentApiFeature(services: services).register(routes: app)
     InternalAdminFeature(services: services, internalSurface: internalSurface).register(routes: app)
-    IntegrationsFeature(services: services).register(routes: app)
+    IntegrationsFeature(
+        controlPlane: services.emailAccounts.managedMCPControlPlane,
+        identities: services.emailAccounts.authIdentities,
+        apps: services.emailAccounts.integrationsAndAppAccess,
+        cardPrepare: services.emailAccounts.actionCardPrepare,
+        agentsLifecycle: services.emailAccounts.agentsLifecycle,
+        providerConnections: services.emailAccounts.managedMCPProviderConnections,
+        actionCards: services.emailAccounts.actionCards
+    ).register(routes: app)
     AgentsFeature(services: services).register(routes: app)
     ComputersFeature(services: services).register(routes: app)
     RemindersFeature(services: services).register(routes: app)

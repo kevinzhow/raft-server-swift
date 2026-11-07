@@ -31,16 +31,16 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 }
 
 @Test func oauthLedgerDiscoveryAndJWKSPreserveBytesAndFailureCachePolicies() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test/base/" }
-    accounts.oauth.addOwnedServer(id: UUID().uuidString.lowercased(), slug: "oauth-bytes", name: "Bytes", ownerId: "owner")
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test/base/" }
+    scene.oauth.addOwnedServer(id: UUID().uuidString.lowercased(), slug: "oauth-bytes", name: "Bytes", ownerId: "owner")
     try await withApp { app in
         try await app.register(collection: OAuthFeature(
-            oauthFlows: accounts.oauthFlows,
-            issuerMetadata: accounts.oauthIssuerMetadata,
-            authorization: accounts.oauthAuthorization,
-            principal: accounts.oauthPrincipal,
-            apps: accounts.integrationsAndAppAccess
+            oauthFlows: scene.services.identity.oauthFlows,
+            issuerMetadata: scene.services.identity.issuerMetadata,
+            authorization: scene.services.identity.authorization,
+            principal: scene.services.identity.principal,
+            apps: scene.services.integrations.apps
         ))
         try await app.testing { client in
             for path in ["/.well-known/openid-configuration", "/api/oauth/.well-known/openid-configuration"] {
@@ -70,14 +70,14 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
                 #expect(missing.status == .notFound)
                 expectOAuthBytes(missing, "{\"error\":\"Not found\"}")
             }
-            accounts.configureOAuthForTesting { $0.serverURL = "https://live.raft.test:8443/new/base/" }
+            scene.auth.configureOAuthForTesting { $0.serverURL = "https://live.raft.test:8443/new/base/" }
             let liveRoot = try await client.get("/.well-known/openid-configuration")
             #expect(liveRoot.status == .ok)
             expectOAuthBytes(liveRoot, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443"), cache: "public, max-age=300")
             let liveScoped = try await client.get("/oidc/oauth-bytes/api/oauth/.well-known/openid-configuration")
             #expect(liveScoped.status == .ok)
             expectOAuthBytes(liveScoped, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443/oidc/oauth-bytes"), cache: "public, max-age=300")
-            accounts.oauth.jwtSecret = ""
+            scene.services.identity.oauthFlows.configureSigningSecret("")
             let unavailable = try await client.get("/api/oauth/jwks")
             #expect(unavailable.status == .serviceUnavailable)
             expectOAuthBytes(unavailable, "{\"error\":\"oidc_not_configured\"}")
@@ -89,14 +89,14 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
                 #expect(independentUnscoped.status == .ok)
                 expectOAuthBytes(independentUnscoped, oauthDiscoveryBytes(issuer: "https://live.raft.test:8443"), cache: "public, max-age=300")
             }
-            accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
+            scene.auth.configureOAuthForTesting { $0.serverURL = "invalid origin" }
             let discoveryUnavailable = try await client.get("/.well-known/openid-configuration")
             #expect(discoveryUnavailable.status == .serviceUnavailable)
             expectOAuthBytes(discoveryUnavailable, "{\"error\":\"oidc_not_configured\"}")
             let scopedUnavailable = try await client.get("/oidc/oauth-bytes/api/oauth/.well-known/openid-configuration")
             #expect(scopedUnavailable.status == .serviceUnavailable)
             expectOAuthBytes(scopedUnavailable, "{\"error\":\"oidc_not_configured\"}")
-            accounts.configureOAuthForTesting { $0.serverURL = "https://recovered.raft.test/prefix/" }
+            scene.auth.configureOAuthForTesting { $0.serverURL = "https://recovered.raft.test/prefix/" }
             let recovered = try await client.get("/api/oauth/.well-known/openid-configuration")
             #expect(recovered.status == .ok)
             expectOAuthBytes(recovered, oauthDiscoveryBytes(issuer: "https://recovered.raft.test"), cache: "public, max-age=300")
@@ -105,27 +105,27 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 }
 
 @Test func oauthLedgerTokenAndIdentityBodiesKeepOrderNullsAndEscaping() async throws {
-    let accounts = EmailLoginDirectory()
-    accounts.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
+    let scene = OAuthScene()
+    scene.auth.configureOAuthForTesting { $0.serverURL = "https://api.raft.test" }
     let serverId = UUID().uuidString.lowercased()
     let ownerId = UUID().uuidString.lowercased()
     let name = "用户/\n\"name"
     let clientName = "App/\t\"客户端"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-identity-bytes", name: name, ownerId: ownerId)
-    let created = try accounts.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: clientName,
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-identity-bytes", name: name, ownerId: ownerId)
+    let created = try scene.oauth.createClient(serverId: serverId, createdByUserId: ownerId, name: clientName,
         clientId: "oauth-identity-bytes", allowedScopes: ["openid", "profile", "email"])
-    let authorization = try accounts.oauthAuthorization.issueHumanAuthorization(
+    let authorization = try scene.services.identity.authorization.issueHumanAuthorization(
         session: .user(OAuthHuman(id: ownerId, email: "bytes@raft.test", name: name)),
         body: "{\"clientId\":\"oauth-identity-bytes\",\"serverId\":\(jsonString(serverId)),\"scopes\":[\"email\",\"profile\",\"openid\"]}"
     )
     #expect(authorization.jsonBody.render() == "{\"code\":\(jsonString(authorization.code)),\"client\":{\"clientId\":\"oauth-identity-bytes\",\"appType\":\"server_local\",\"name\":\(jsonString(clientName)),\"description\":null,\"homepageUrl\":null},\"server\":{\"id\":\(jsonString(serverId)),\"slug\":\"oauth-identity-bytes\",\"role\":\"owner\"},\"scopes\":[\"email\",\"openid\",\"profile\"],\"returnUrl\":null}")
     try await withApp { app in
         try await app.register(collection: OAuthFeature(
-            oauthFlows: accounts.oauthFlows,
-            issuerMetadata: accounts.oauthIssuerMetadata,
-            authorization: accounts.oauthAuthorization,
-            principal: accounts.oauthPrincipal,
-            apps: accounts.integrationsAndAppAccess
+            oauthFlows: scene.services.identity.oauthFlows,
+            issuerMetadata: scene.services.identity.issuerMetadata,
+            authorization: scene.services.identity.authorization,
+            principal: scene.services.identity.principal,
+            apps: scene.services.integrations.apps
         ))
         try await app.testing { client in
             var headers = HTTPFields()
@@ -165,16 +165,24 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 }
 
 @Test func oauthLedgerRefusalsKeepTheirDistinctCacheHeaders() async throws {
-    let services = FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {})
+    let scene = OAuthScene()
     try await withApp { app in
         try await app.register(collection: OAuthFeature(
-            oauthFlows: services.emailAccounts.oauthFlows,
-            issuerMetadata: services.emailAccounts.oauthIssuerMetadata,
-            authorization: services.emailAccounts.oauthAuthorization,
-            principal: services.emailAccounts.oauthPrincipal,
-            apps: services.emailAccounts.integrationsAndAppAccess
+            oauthFlows: scene.services.identity.oauthFlows,
+            issuerMetadata: scene.services.identity.issuerMetadata,
+            authorization: scene.services.identity.authorization,
+            principal: scene.services.identity.principal,
+            apps: scene.services.integrations.apps
         ))
-        try await app.register(collection: IntegrationsFeature(services: services))
+        try await app.register(collection: IntegrationsFeature(
+            controlPlane: scene.services.integrations.control,
+            identities: scene.services.identity.identities,
+            apps: scene.services.integrations.apps,
+            cardPrepare: scene.services.integrations.prepare,
+            agentsLifecycle: scene.services.agents.lifecycle,
+            providerConnections: scene.services.integrations.providers,
+            actionCards: scene.services.integrations.cards
+        ))
         try await app.testing { client in
             let cases: [(HTTPRequest.Method, String, String, String?)] = [
                 (.get, "/api/oauth/userinfo", "{\"error\":\"Missing bearer token\"}", nil),
@@ -196,19 +204,19 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 }
 
 @Test func oauthLedgerAgentEventArrayPayloadKeepsLegacyHashAndDeduplicationBytes() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let serverId = UUID().uuidString.lowercased()
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-event-bytes", name: "Events", ownerId: "owner")
-    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "Bot", creatorUserId: "owner")
-    let created = try accounts.oauth.createClient(serverId: serverId, createdByUserId: "unrelated", name: "Event App",
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-event-bytes", name: "Events", ownerId: "owner")
+    let agentId = scene.oauth.createAgent(serverId: serverId, name: "Bot", creatorUserId: "owner")
+    let created = try scene.oauth.createClient(serverId: serverId, createdByUserId: "unrelated", name: "Event App",
         clientId: "oauth-event-bytes", allowedScopes: ["agent:event:write"])
     try await withApp { app in
         try await app.register(collection: OAuthFeature(
-            oauthFlows: accounts.oauthFlows,
-            issuerMetadata: accounts.oauthIssuerMetadata,
-            authorization: accounts.oauthAuthorization,
-            principal: accounts.oauthPrincipal,
-            apps: accounts.integrationsAndAppAccess
+            oauthFlows: scene.services.identity.oauthFlows,
+            issuerMetadata: scene.services.identity.issuerMetadata,
+            authorization: scene.services.identity.authorization,
+            principal: scene.services.identity.principal,
+            apps: scene.services.integrations.apps
         ))
         try await app.testing { client in
             var headers = HTTPFields()
@@ -250,25 +258,25 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
 }
 
 private struct AgentEventIngressFixture: Sendable {
-    let accounts: EmailLoginDirectory
+    let scene: OAuthScene
     let ownerId: String
     let serverId: String
     let agentId: String
     let app: CreatedOAuthClient
 
     init() throws {
-        let accounts = EmailLoginDirectory()
+        let scene = OAuthScene()
         let ownerId = "11111111-1111-4111-8111-111111111644"
         let serverId = "33333333-3333-4333-8333-333333333670"
-        accounts.addAccount(id: ownerId, email: "g4-ingress-644@test.invalid", password: "password123")
-        accounts.markEmailVerified(userId: ownerId)
-        accounts.oauth.addOwnedServer(id: serverId, slug: "g4-event-ingress", name: "G4 Events", ownerId: ownerId)
-        let agentId = accounts.oauth.createAgent(serverId: serverId, name: "IngressBot", creatorUserId: ownerId)
-        let app = try accounts.oauth.createClient(
+        scene.auth.addAccount(id: ownerId, email: "g4-ingress-644@test.invalid", password: "password123")
+        scene.auth.markEmailVerified(userId: ownerId)
+        scene.oauth.addOwnedServer(id: serverId, slug: "g4-event-ingress", name: "G4 Events", ownerId: ownerId)
+        let agentId = scene.oauth.createAgent(serverId: serverId, name: "IngressBot", creatorUserId: ownerId)
+        let app = try scene.oauth.createClient(
             serverId: serverId, createdByUserId: ownerId, name: "Ingress App", clientId: "g4-event-ingress",
             allowedScopes: ["openid", "profile", "agent:event:write", "agent:notification:write"]
         )
-        self.accounts = accounts
+        self.scene = scene
         self.ownerId = ownerId
         self.serverId = serverId
         self.agentId = agentId
@@ -290,7 +298,7 @@ private struct AgentEventIngressFixture: Sendable {
     }
 
     func humanToken(_ client: any Client) async throws -> String {
-        let session = accounts.mintAccessTokenForTesting(userId: ownerId)
+        let session = scene.auth.mintAccessTokenForTesting(userId: ownerId)
         let authorized = try await agentEventIngressPost(client,
             body: "{\"clientId\":\"\(app.clientId)\",\"serverId\":\"\(serverId)\",\"scopes\":[\"openid\"]}",
             token: session, path: "/api/oauth/authorize/human")
@@ -316,7 +324,7 @@ private func agentEventIngressPost(
 @Test func agentEventIngressRefusalsKeepPrincipalResourceKindScopeTargetSummaryPayloadOrder() async throws {
     let f = try AgentEventIngressFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let bound = try await f.agentToken(client, scopes: ["agent:event:write"])
             let unbound = try await f.agentToken(client, scopes: ["openid"], bound: false)
@@ -349,10 +357,10 @@ private struct AgentEventIngressReply: Sendable {
 @Test func agentEventIngressQueuedRetriesClaimOnceAndKeepTheOriginalEventBody() async throws {
     let f = try AgentEventIngressFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let token = try await f.agentToken(client, scopes: ["agent:event:write", "agent:notification:write"])
-            let eventId = f.accounts.oauth.seedQueuedAgentEvent(
+            let eventId = f.scene.oauth.seedQueuedAgentEvent(
                 serverId: f.serverId, agentId: f.agentId, clientRecordId: f.app.id, externalEventId: "g4-queued-claim"
             )
             let replies = try await withThrowingTaskGroup(of: AgentEventIngressReply.self) { group in
@@ -378,7 +386,7 @@ private struct AgentEventIngressReply: Sendable {
             let expiries = try objects.map { try #require($0["expiresAt"] as? String) }
             #expect(Set(expiries).count == 1)
             var human = HTTPFields()
-            human[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: f.ownerId))"
+            human[.authorization] = "Bearer \(f.scene.auth.mintAccessTokenForTesting(userId: f.ownerId))"
             let detail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(eventId)"), headers: human)
             #expect(detail.status == .ok)
             let stored = try oauthBytesObject(detail)
@@ -396,7 +404,7 @@ private struct AgentEventIngressReply: Sendable {
 @Test func agentEventIngressKeepsFieldPrecedenceUnicodeLimitsAndItsExistingLiveGates() async throws {
     let f = try AgentEventIngressFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let token = try await f.agentToken(client, scopes: ["agent:event:write"])
             let family = "👨‍👩‍👧‍👦"
@@ -431,7 +439,7 @@ private struct AgentEventIngressReply: Sendable {
             let snakeId = try #require(try oauthBytesObject(snakeOne)["id"] as? String)
             #expect(try oauthBytesObject(snakeTwo)["id"] as? String == snakeId)
             var human = HTTPFields()
-            human[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: f.ownerId))"
+            human[.authorization] = "Bearer \(f.scene.auth.mintAccessTokenForTesting(userId: f.ownerId))"
             let emptyDetail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(emptyId)"), headers: human)
             let missingDetail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(missingId)"), headers: human)
             #expect(try oauthBytesObject(emptyDetail)["externalEventId"] as? String == "")
@@ -440,10 +448,10 @@ private struct AgentEventIngressReply: Sendable {
             #expect(try oauthBytesObject(snakeDetail)["externalEventId"] as? String == "Case-Key")
             // These current-state changes do not invalidate this token surface.
             let mutations: [@Sendable () -> Void] = [
-                { f.accounts.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: false) },
-                { f.accounts.oauth.removeAgentMember(serverId: f.serverId, agentId: f.agentId) },
-                { f.accounts.oauth.deleteAgent(id: f.agentId) },
-                { f.accounts.oauth.deleteServer(id: f.serverId) },
+                { f.scene.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: false) },
+                { f.scene.oauth.removeAgentMember(serverId: f.serverId, agentId: f.agentId) },
+                { f.scene.oauth.deleteAgent(id: f.agentId) },
+                { f.scene.oauth.deleteServer(id: f.serverId) },
             ]
             for mutate in mutations {
                 mutate()
@@ -465,21 +473,21 @@ private func authorizationProtocolPost(
 }
 
 private struct AuthorizationProtocolFixture: Sendable {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111646"
     let serverId = "33333333-3333-4333-8333-333333333672"
     let app: CreatedOAuthClient
     let session: String
 
     init(allowedScopes: [String]? = nil) throws {
-        accounts.addAccount(id: ownerId, email: "protocol-646@test.invalid", password: "password123")
-        accounts.configureOAuthForTesting { $0.serverURL = "https://protocol.raft.test" }
-        accounts.oauth.addOwnedServer(id: serverId, slug: "protocol-646", name: "Protocol 646", ownerId: ownerId)
-        app = try accounts.oauth.createClient(
+        scene.auth.addAccount(id: ownerId, email: "protocol-646@test.invalid", password: "password123")
+        scene.auth.configureOAuthForTesting { $0.serverURL = "https://protocol.raft.test" }
+        scene.oauth.addOwnedServer(id: serverId, slug: "protocol-646", name: "Protocol 646", ownerId: ownerId)
+        app = try scene.oauth.createClient(
             serverId: serverId, createdByUserId: ownerId, name: "Protocol App", clientId: "protocol-client-646",
             returnUrl: "https://rp.test/callback", allowedScopes: allowedScopes
         )
-        session = accounts.mintAccessTokenForTesting(userId: ownerId)
+        session = scene.auth.mintAccessTokenForTesting(userId: ownerId)
     }
 
     func humanBody(_ fields: String) -> String {
@@ -502,7 +510,7 @@ private struct AuthorizationProtocolFixture: Sendable {
 @Test func oauthProtocolSpecializedSessionsKeepUnverifiedRevokedAndEmptyBearerSemantics() async throws {
     let f = try AuthorizationProtocolFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let lookup = URI(string: "/api/oauth/clients/lookup?client_id=\(f.app.clientId)&server_id=\(f.serverId)")
             // HTTPFields strips edge SP/HTAB before the Feature sees the
@@ -527,7 +535,7 @@ private struct AuthorizationProtocolFixture: Sendable {
             // The account is deliberately unverified. Revocation marks the
             // existing real family without removing its access-token mapping.
             for revoked in [false, true] {
-                if revoked { f.accounts.revokeSessionFamilies(userId: f.ownerId) }
+                if revoked { f.scene.auth.revokeSessionFamilies(userId: f.ownerId) }
                 for authorization in ["Bearer \(f.session)", "Bearer \(f.session) "] {
                     var headers = HTTPFields()
                     headers[.authorization] = authorization
@@ -548,7 +556,7 @@ private struct AuthorizationProtocolFixture: Sendable {
 @Test func oauthProtocolHumanDefaultsAndRefusalsKeepTheirOriginalOrder() async throws {
     let f = try AuthorizationProtocolFixture(allowedScopes: ["email"])
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             func human(_ fields: String) async throws -> ClientResponse {
                 try await authorizationProtocolPost(client, path: "/api/oauth/authorize/human", body: f.humanBody(fields), authorization: "Bearer \(f.session)")
@@ -573,7 +581,7 @@ private struct AuthorizationProtocolFixture: Sendable {
             let boundary = try await human(",\"oidc\":1,\"nonce\":\(jsonString(String(repeating: "é", count: 256))),\"scopes\":[\"email\"]")
             #expect(boundary.status == .ok)
             #expect((try oauthBytesObject(boundary)["code"] as? String)?.hasPrefix("raft_oidc_") == true)
-            f.accounts.oauth.removeMember(serverId: f.serverId, userId: f.ownerId)
+            f.scene.oauth.removeMember(serverId: f.serverId, userId: f.ownerId)
             let ordered: [(String, HTTPResponse.Status, String)] = [
                 (",\"scopes\":[\"unsupported\"],\"returnUrl\":\"https://wrong.test/callback\"", .badRequest,
                  "{\"error\":\"invalid_scope\",\"errorCode\":\"OAUTH_SCOPE_UNSUPPORTED\",\"error_description\":\"Raft does not support the requested OAuth scope: unsupported. Update the requested scopes and try again.\",\"disallowedScopes\":[\"unsupported\"]}"),
@@ -592,9 +600,9 @@ private struct AuthorizationProtocolFixture: Sendable {
 @Test func oauthProtocolSigningFailureConsumesCodesAndInvalidOriginStillIssuesTokens() async throws {
     let f = try AuthorizationProtocolFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
-            f.accounts.oauth.jwtSecret = ""
+            f.scene.services.identity.oauthFlows.configureSigningSecret("")
             for oidc in [false, true] {
                 let code = try await f.issue(client, fields: ",\"scopes\":[\"openid\"],\"oidc\":\(oidc)")
                 let failure = try await f.exchange(client, code: code)
@@ -611,7 +619,7 @@ private struct AuthorizationProtocolFixture: Sendable {
             #expect(profile.status == .ok)
             let profileToken = try #require(try oauthBytesObject(profile)["access_token"] as? String)
             expectOAuthBytes(profile, "{\"access_token\":\(jsonString(profileToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"profile\"}", cache: "no-store")
-            let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "ProtocolBot", creatorUserId: f.ownerId)
+            let agentId = f.scene.oauth.createAgent(serverId: f.serverId, name: "ProtocolBot", creatorUserId: f.ownerId)
             let requested = try await authorizationProtocolPost(client, path: "/api/oauth/requests/agent",
                 body: "{\"clientId\":\"\(f.app.clientId)\",\"clientSecret\":\"\(f.app.clientSecret)\",\"serverSlug\":\"protocol-646\",\"agentId\":\"\(agentId)\",\"scopes\":[\"openid\"]}")
             #expect(requested.status == .ok)
@@ -622,8 +630,8 @@ private struct AuthorizationProtocolFixture: Sendable {
             #expect(agent.status == .ok)
             let agentToken = try #require(try oauthBytesObject(agent)["access_token"] as? String)
             expectOAuthBytes(agent, "{\"access_token\":\(jsonString(agentToken)),\"token_type\":\"Bearer\",\"expires_in\":3600,\"scope\":\"openid\"}", cache: "no-store")
-            f.accounts.oauth.jwtSecret = "protocol-restored-key"
-            f.accounts.configureOAuthForTesting { $0.serverURL = "invalid origin" }
+            f.scene.services.identity.oauthFlows.configureSigningSecret("protocol-restored-key")
+            f.scene.auth.configureOAuthForTesting { $0.serverURL = "invalid origin" }
             for (path, issuer) in [("/api/oauth/token", ""), ("/oidc/protocol-646/api/oauth/token", "/oidc/protocol-646")] {
                 let code = try await f.issue(client, fields: ",\"scopes\":[\"openid\"]")
                 let response = try await f.exchange(client, code: code, path: path)

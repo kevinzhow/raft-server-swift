@@ -2,6 +2,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -41,19 +42,15 @@ struct FeatureOAuthRoutesTests {
     ]
 
     @Test func featureOAuthRoutesAreRegisteredOnABareApplication() async throws {
-        let services = FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {}
-        )
+        let scene = OAuthScene()
 
         try await withApp { app in
             try await app.register(collection: OAuthFeature(
-            oauthFlows: services.emailAccounts.oauthFlows,
-            issuerMetadata: services.emailAccounts.oauthIssuerMetadata,
-            authorization: services.emailAccounts.oauthAuthorization,
-            principal: services.emailAccounts.oauthPrincipal,
-            apps: services.emailAccounts.integrationsAndAppAccess
+            oauthFlows: scene.services.identity.oauthFlows,
+            issuerMetadata: scene.services.identity.issuerMetadata,
+            authorization: scene.services.identity.authorization,
+            principal: scene.services.identity.principal,
+            apps: scene.services.integrations.apps
         ))
 
             let registered = Set(app.routes.all.map { "\($0.method.rawValue) \($0.path.string)" })

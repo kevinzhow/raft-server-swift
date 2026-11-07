@@ -67,6 +67,18 @@ public struct AuthFixture: Sendable {
         }
     }
 
+    public func revokeSessionFamilies(userId: String) {
+        profiles.state.withLock { owned in
+            let now = Date()
+            for key in owned.accountSurface.sessionFamilies.keys where owned.accountSurface.sessionFamilies[key]?.userId == userId {
+                if owned.accountSurface.sessionFamilies[key]?.revokedAt == nil {
+                    owned.accountSurface.sessionFamilies[key]?.revokedAt = now
+                }
+                owned.accountSurface.revokedFamilies.insert(key)
+            }
+        }
+    }
+
     public func configureOAuthForTesting(_ update: (inout OAuthFlowsService.DeploymentConfiguration) -> Void) {
         profiles.state.withLock { update(&$0.configSurface.oauthDeployment) }
     }

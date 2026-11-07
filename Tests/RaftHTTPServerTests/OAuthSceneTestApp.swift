@@ -7,6 +7,16 @@ import Vapor
 /// production JSON boundary. Tests retain their existing app/client lifetimes.
 func configureOAuthScene(_ app: Application, scene: OAuthScene) {
     app.middleware.use(JSONErrorBoundaryMiddleware(), at: .beginning)
+    IntegrationsFeature(
+        controlPlane: scene.services.integrations.control,
+        identities: scene.services.identity.identities,
+        apps: scene.services.integrations.apps,
+        cardPrepare: scene.services.integrations.prepare,
+        agentsLifecycle: scene.services.agents.lifecycle,
+        providerConnections: scene.services.integrations.providers,
+        actionCards: scene.services.integrations.cards
+    ).register(routes: app)
+    PixelAvatarRoutes().register(routes: app)
     OAuthFeature(
         oauthFlows: scene.services.identity.oauthFlows,
         issuerMetadata: scene.services.identity.issuerMetadata,

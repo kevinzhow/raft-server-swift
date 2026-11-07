@@ -16,6 +16,6 @@ Sources/RaftHTTPServer/Features/Channels/ChannelsFeature.swift	1
 Sources/RaftHTTPServer/Features/InternalAgentApi/InternalAgentApiFeature.swift	1
 Sources/RaftHTTPServer/Features/Knowledge/KnowledgeFeature.swift	3
 Sources/RaftHTTPServer/Features/Messaging/MessagingFeature.swift	1
-Sources/RaftHTTPServer/Features/Notifications/NotificationsFeature.swift	1
+Sources/RaftHTTPServer/Features/Notifications/PixelAvatarRoutes.swift	1
 Sources/RaftHTTPServer/Features/Respond.swift	7
 Sources/RaftShared/JSONValue.swift	1

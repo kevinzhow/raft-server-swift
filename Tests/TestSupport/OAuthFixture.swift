@@ -63,6 +63,31 @@ public struct OAuthFixture: Sendable {
         oauth.setAgentRole(serverId: serverId, agentId: agentId, role: role)
     }
 
+    public func setClientAppType(clientRecordId: String, appType: String) {
+        oauth.setClientAppType(clientRecordId: clientRecordId, appType: appType)
+    }
+
+    public func seedQueuedAgentEvent(
+        serverId: String, agentId: String, clientRecordId: String, externalEventId: String
+    ) -> String {
+        oauth.seedQueuedAgentEvent(serverId: serverId, agentId: agentId,
+            clientRecordId: clientRecordId, externalEventId: externalEventId)
+    }
+
+    public func agentGrantListVisible(userId: String, agentId: String) -> [OAuthLedger.AgentGrantRow]? {
+        oauth.agentGrantListVisible(userId: userId, agentId: agentId)
+    }
+
+    public func revokeAgentGrant(userId: String, grantId: String) -> OAuthLedger.AgentAccessMutationOutcome? {
+        oauth.revokeAgentGrant(userId: userId, grantId: grantId)
+    }
+
+    public func createAgentGrant(
+        userId: String, agentId: String, clientRecordId: String, scopes: [String]
+    ) -> OAuthLedger.AgentGrantCreateResult? {
+        oauth.createAgentGrant(userId: userId, agentId: agentId, clientRecordId: clientRecordId, scopes: scopes)
+    }
+
     public func setClientEnabled(clientRecordId: String, enabled: Bool) {
         oauth.setClientEnabled(clientRecordId: clientRecordId, enabled: enabled)
     }

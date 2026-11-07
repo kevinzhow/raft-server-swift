@@ -27,7 +27,6 @@ public struct NotificationsFeature: RouteCollection, Sendable {
     public func register(routes: any RoutesBuilder) {
         let app = routes
         let announcements = app.grouped("api", "announcements")
-        let avatars = app.grouped("api", "avatars")
         let desktopDownload = app.grouped("api", "desktop-download")
         let email = app.grouped("api", "email")
         let externalAvatars = app.grouped("api", "external-avatars")
@@ -68,28 +67,7 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 )
             }
         }
-        avatars.get("pixel", ":file") { request -> Response in
-            let file = request.parameters.get("file") ?? ""
-            guard file.hasSuffix(".svg") else {
-                return pixelAvatarError(400, "Invalid pixel avatar key")
-            }
-            guard let key = PixelAvatars.decode(String(file.dropLast(4))) else {
-                return pixelAvatarError(400, "Invalid pixel avatar key")
-            }
-            guard let svg = PixelAvatars.render(key: key) else {
-                return pixelAvatarError(404, "Pixel avatar not found")
-            }
-            return routeResponse(HTTPReply(
-                status: 200,
-                headers: [
-                    "X-Robots-Tag": AppFallback.robotsTag,
-                    "Content-Type": "image/svg+xml; charset=utf-8",
-                    "Cache-Control": "public, max-age=31536000, immutable",
-                    "Content-Length": String(Data(svg.utf8).count),
-                ],
-                body: svg
-            ))
-        }
+        PixelAvatarRoutes().register(routes: app)
         desktopDownload.get { request async in
             routeResponse(await DesktopDownload.downloadReply(
                 target: desktopQuery(request.url.query, "target"),
@@ -539,10 +517,6 @@ private func publishFamilyRevoke(capability: String?, services: FallbackServices
           let target = services.emailAccounts.familyRevokeTarget(capability: capability)
     else { return }
     hub.revokeFamily(userId: target.userId, familyId: target.familyId)
-}
-
-private func pixelAvatarError(_ status: Int, _ error: String) -> Response {
-    respond(status: UInt(status), rawJSON: OrderedJSON.object([OrderedJSONField("error", error)]).render())
 }
 
 /// HTML and one-click text outcomes keep their original non-JSON headers.

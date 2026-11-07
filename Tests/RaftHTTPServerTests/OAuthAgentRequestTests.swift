@@ -13,15 +13,15 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func agentRequestGrantsImmediatelyAndTracksTheLiveRole() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111221"
     let serverId = "33333333-3333-4333-8333-333333333415"
     let avatarUrl = "pixel:random:oauth-agent-bot"
-    accounts.addAccount(id: ownerId, email: "oauth-agent-221@slock.test", password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-login-221", name: "OAuth Agent Login", ownerId: ownerId)
-    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "OauthAgentBot", avatarUrl: avatarUrl)
-    let created = try accounts.oauth.createClient(
+    scene.auth.addAccount(id: ownerId, email: "oauth-agent-221@slock.test", password: "password123")
+    scene.auth.markEmailVerified(userId: ownerId)
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-login-221", name: "OAuth Agent Login", ownerId: ownerId)
+    let agentId = scene.oauth.createAgent(serverId: serverId, name: "OauthAgentBot", avatarUrl: avatarUrl)
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Agent Client",
@@ -29,12 +29,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -94,24 +89,24 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
             )
             #expect(named.status == .ok)
 
-            accounts.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "admin")
+            scene.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "admin")
             #expect(try agentRequestBody(try await client.send(.get, headers: userinfoHeaders, to: "/api/oauth/userinfo"))["server_role"] as? String == "admin")
-            accounts.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "member")
+            scene.oauth.setAgentRole(serverId: serverId, agentId: agentId, role: "member")
             #expect(try agentRequestBody(try await client.send(.get, headers: userinfoHeaders, to: "/api/oauth/userinfo"))["server_role"] as? String == "member")
 
-            accounts.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
+            scene.oauth.removeAgentMember(serverId: serverId, agentId: agentId)
             #expect(try await client.send(.get, headers: userinfoHeaders, to: "/api/oauth/userinfo").status == .unauthorized)
         }
     }
 }
 
 @Test func agentRequestRejectsUnknownScopesAndRetiredClients() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111222"
     let serverId = "33333333-3333-4333-8333-333333333416"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-scope-222", name: "OAuth Agent Scope Contract", ownerId: ownerId)
-    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthAgentScopeBot")
-    let created = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-agent-scope-222", name: "OAuth Agent Scope Contract", ownerId: ownerId)
+    _ = scene.oauth.createAgent(serverId: serverId, name: "OauthAgentScopeBot")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Agent Scope Client",
@@ -119,12 +114,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -134,7 +124,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
             #expect(rejected.status == .badRequest)
             #expect(try agentRequestBody(rejected)["error"] as? String == "invalid_scope")
 
-            accounts.oauth.setClientAppType(clientRecordId: created.id, appType: "slock_builtin")
+            scene.oauth.setClientAppType(clientRecordId: created.id, appType: "slock_builtin")
             let retired = try await client.send(.post, headers: headers, to: "/api/oauth/requests/agent") { request in
                 request.body = .init(string: "{\"clientId\":\"\(created.clientId)\",\"clientSecret\":\"\(created.clientSecret)\",\"serverSlug\":\"oauth-agent-scope-222\",\"agentName\":\"OauthAgentScopeBot\",\"scopes\":[\"openid\",\"profile\",\"identity\"]}")
             }
@@ -144,12 +134,12 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func agentInboundScopeNeedsAnExplicitClientDeclaration() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111223"
     let serverId = "33333333-3333-4333-8333-333333333417"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-inbound-223", name: "OAuth Inbound Scope", ownerId: ownerId)
-    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthInboundScopeBot")
-    let created = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-inbound-223", name: "OAuth Inbound Scope", ownerId: ownerId)
+    _ = scene.oauth.createAgent(serverId: serverId, name: "OauthInboundScopeBot")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Inbound Client",
@@ -157,12 +147,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -176,7 +161,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
             #expect(rejected.status == .badRequest)
             #expect(try agentRequestBody(rejected)["error"] as? String == "invalid_scope")
 
-            accounts.oauth.setClientAllowedScopes(
+            scene.oauth.setClientAllowedScopes(
                 clientRecordId: created.id,
                 scopes: ["openid", "profile", "identity", "agent:event:write"]
             )
@@ -188,12 +173,12 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func inboundAgentTokenRequiresTheServerResource() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111224"
     let serverId = "33333333-3333-4333-8333-333333333418"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-resource-224", name: "OAuth Resource Binding", ownerId: ownerId)
-    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthResourceBot")
-    let created = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-resource-224", name: "OAuth Resource Binding", ownerId: ownerId)
+    _ = scene.oauth.createAgent(serverId: serverId, name: "OauthResourceBot")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Resource Client",
@@ -202,12 +187,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -246,12 +226,12 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func agentEventPostQueuesOncePerExternalId() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111225"
     let serverId = "33333333-3333-4333-8333-333333333419"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-events-225", name: "OAuth Agent Events", ownerId: ownerId)
-    _ = accounts.oauth.createAgent(serverId: serverId, name: "OauthEventBot")
-    let created = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-events-225", name: "OAuth Agent Events", ownerId: ownerId)
+    _ = scene.oauth.createAgent(serverId: serverId, name: "OauthEventBot")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Event Client",
@@ -260,12 +240,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var jsonHeaders = HTTPFields()
             jsonHeaders[.contentType] = "application/json"
@@ -315,12 +290,12 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
 }
 
 @Test func queuedAgentEventRetryIsReclaimedAndKeepsItsId() async throws {
-    let accounts = EmailLoginDirectory()
+    let scene = OAuthScene()
     let ownerId = "11111111-1111-4111-8111-111111111226"
     let serverId = "33333333-3333-4333-8333-333333333420"
-    accounts.oauth.addOwnedServer(id: serverId, slug: "oauth-retry-226", name: "OAuth Event Retry", ownerId: ownerId)
-    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "OauthRetryBot")
-    let created = try accounts.oauth.createClient(
+    scene.oauth.addOwnedServer(id: serverId, slug: "oauth-retry-226", name: "OAuth Event Retry", ownerId: ownerId)
+    let agentId = scene.oauth.createAgent(serverId: serverId, name: "OauthRetryBot")
+    let created = try scene.oauth.createClient(
         serverId: serverId,
         createdByUserId: ownerId,
         name: "OAuth Retry Client",
@@ -329,12 +304,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
     )
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configureOAuthScene(app, scene: scene)
         try await app.testing { client in
             var jsonHeaders = HTTPFields()
             jsonHeaders[.contentType] = "application/json"
@@ -355,7 +325,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
             }
             let accessToken = try agentRequestBody(exchanged)["access_token"] as? String ?? ""
 
-            let eventId = accounts.oauth.seedQueuedAgentEvent(
+            let eventId = scene.oauth.seedQueuedAgentEvent(
                 serverId: serverId,
                 agentId: agentId,
                 clientRecordId: created.id,
@@ -378,7 +348,7 @@ private func agentRequestBody(_ response: ClientResponse) throws -> [String: Any
 }
 
 private struct AppAgentRequestBoundaryFixture: Sendable {
-    let accounts: EmailLoginDirectory
+    let scene: OAuthScene
     let ownerId: String
     let serverId: String
     let foreignServerId: String
@@ -388,23 +358,23 @@ private struct AppAgentRequestBoundaryFixture: Sendable {
     let global: CreatedOAuthClient
 
     init() throws {
-        let accounts = EmailLoginDirectory()
+        let scene = OAuthScene()
         let ownerId = "11111111-1111-4111-8111-111111111643"
         let serverId = "33333333-3333-4333-8333-333333333668"
         let foreignServerId = "33333333-3333-4333-8333-333333333669"
-        accounts.addAccount(id: ownerId, email: "g3-boundary-643@test.invalid", password: "password123")
-        accounts.markEmailVerified(userId: ownerId)
-        accounts.oauth.addOwnedServer(id: serverId, slug: "g3-request-boundary", name: "G3 Boundary", ownerId: ownerId)
-        accounts.oauth.addOwnedServer(id: foreignServerId, slug: "g3-request-foreign", name: "G3 Foreign", ownerId: ownerId)
-        let agentId = accounts.oauth.createAgent(serverId: serverId, name: "BoundaryBot", displayName: "显示 / Bot", creatorUserId: ownerId)
-        let foreignAgentId = accounts.oauth.createAgent(serverId: foreignServerId, name: "ForeignBot", creatorUserId: ownerId)
-        let local = try accounts.oauth.createClient(
+        scene.auth.addAccount(id: ownerId, email: "g3-boundary-643@test.invalid", password: "password123")
+        scene.auth.markEmailVerified(userId: ownerId)
+        scene.oauth.addOwnedServer(id: serverId, slug: "g3-request-boundary", name: "G3 Boundary", ownerId: ownerId)
+        scene.oauth.addOwnedServer(id: foreignServerId, slug: "g3-request-foreign", name: "G3 Foreign", ownerId: ownerId)
+        let agentId = scene.oauth.createAgent(serverId: serverId, name: "BoundaryBot", displayName: "显示 / Bot", creatorUserId: ownerId)
+        let foreignAgentId = scene.oauth.createAgent(serverId: foreignServerId, name: "ForeignBot", creatorUserId: ownerId)
+        let local = try scene.oauth.createClient(
             serverId: serverId, createdByUserId: ownerId, name: "请求 / App", clientId: "g3-local-boundary"
         )
-        let global = try accounts.oauth.createClient(
+        let global = try scene.oauth.createClient(
             serverId: foreignServerId, createdByUserId: ownerId, name: "Global App", clientId: "g3-global-boundary", appType: "third_party_global"
         )
-        self.accounts = accounts
+        self.scene = scene
         self.ownerId = ownerId
         self.serverId = serverId
         self.foreignServerId = foreignServerId
@@ -446,7 +416,7 @@ private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTP
 @Test func appAgentRequestRefusalsKeepClientServerAgentInstallationScopeOrder() async throws {
     let f = try AppAgentRequestBoundaryFixture()
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let badSelector = "\"agentId\":\"invalid\",\"agentName\":\"BoundaryBot\""
             let cases: [(String, HTTPResponse.Status, String)] = [
@@ -472,11 +442,11 @@ private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTP
 
 @Test func appAgentRequestCredentialsSelectorsAndDisabledAppsKeepTheirAcceptanceSets() async throws {
     let f = try AppAgentRequestBoundaryFixture()
-    f.accounts.oauth.setClientEnabled(clientRecordId: f.local.id, enabled: false)
-    _ = f.accounts.oauth.installClient(serverId: f.serverId, clientRecordId: f.global.id, installedByUserId: f.ownerId, groups: [])
-    f.accounts.oauth.setClientEnabled(clientRecordId: f.global.id, enabled: false)
+    f.scene.oauth.setClientEnabled(clientRecordId: f.local.id, enabled: false)
+    _ = f.scene.oauth.installClient(serverId: f.serverId, clientRecordId: f.global.id, installedByUserId: f.ownerId, groups: [])
+    f.scene.oauth.setClientEnabled(clientRecordId: f.global.id, enabled: false)
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let body = appAgentBoundaryBody(f.local, selector: "\"agentName\":\" BoundaryBot \"", serverSlug: " g3-request-boundary ")
             let basic = Data("\(f.local.clientId):\(f.local.clientSecret)".utf8).base64EncodedString()
@@ -503,7 +473,7 @@ private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTP
             let globalBody = appAgentBoundaryBody(f.global, selector: "\"agentId\":\"\(f.agentId)\"")
             expectAppAgentBoundaryWire(try await postAppAgentBoundary(client, body: globalBody), status: .unauthorized,
                 body: "{\"error\":\"Invalid client credentials\"}")
-            f.accounts.oauth.setClientEnabled(clientRecordId: f.global.id, enabled: true)
+            f.scene.oauth.setClientEnabled(clientRecordId: f.global.id, enabled: true)
             #expect(try await postAppAgentBoundary(client, body: globalBody).status == .ok)
         }
     }
@@ -511,11 +481,11 @@ private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTP
 
 @Test func appAgentRequestStrictScopesKeepBytesLegacyExceptionsAndNarrowExistingGrants() async throws {
     let f = try AppAgentRequestBoundaryFixture()
-    let legacy = try f.accounts.oauth.createClient(
+    let legacy = try f.scene.oauth.createClient(
         serverId: f.serverId, createdByUserId: f.ownerId, name: "Legacy App", clientId: "local-collabdoc-1", allowedScopes: []
     )
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let selector = "\"agentId\":\"\(f.agentId)\""
             let invalidScopes: [String?] = [nil, "null", "\"openid\"", "[]", "[\" \",\"\"]", "[\"openid\",7]"]
@@ -532,7 +502,7 @@ private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTP
             expectAppAgentBoundaryWire(repeated, status: .ok,
                 body: "{\"requestId\":\"\(nextRequest)\",\"status\":\"approved\",\"client\":{\"clientId\":\"g3-local-boundary\",\"appType\":\"server_local\",\"name\":\"请求 / App\",\"description\":null,\"homepageUrl\":null},\"agent\":{\"id\":\"\(f.agentId)\",\"name\":\"BoundaryBot\",\"displayName\":\"显示 / Bot\",\"serverId\":\"\(f.serverId)\",\"serverSlug\":\"g3-request-boundary\"},\"scopes\":[\"openid\",\"profile\"]}")
             var human = HTTPFields()
-            human[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: f.ownerId))"
+            human[.authorization] = "Bearer \(f.scene.auth.mintAccessTokenForTesting(userId: f.ownerId))"
             let grantList = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/grants"), headers: human)
             #expect(grantList.status == .ok)
             let grants = try #require(JSONSerialization.jsonObject(with: Data((grantList.body.string ?? "").utf8)) as? [[String: Any]])
@@ -550,11 +520,11 @@ private func expectAppAgentBoundaryWire(_ response: ClientResponse, status: HTTP
 @Test(arguments: ["0", "1", "2", "true", "\"true\""])
 func appAgentRequestInitiatedByAgentKeepsBooleanAndNumericCompatibility(value: String) async throws {
     let f = try AppAgentRequestBoundaryFixture()
-    let loginApp = try f.accounts.oauth.createClient(
+    let loginApp = try f.scene.oauth.createClient(
         serverId: f.serverId, createdByUserId: "unrelated-user", name: "Agent Login", clientId: "g3-agent-login"
     )
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
             let response = try await postAppAgentBoundary(client, body: appAgentBoundaryBody(
                 loginApp, selector: "\"agentId\":\"\(f.agentId)\"", extra: ",\"initiatedByAgent\":\(value)"

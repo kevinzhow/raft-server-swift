@@ -68,7 +68,15 @@ struct FeatureIntegrationsRoutesTests {
         )
 
         try await withApp { app in
-            try await app.register(collection: IntegrationsFeature(services: services))
+            try await app.register(collection: IntegrationsFeature(
+                controlPlane: services.emailAccounts.managedMCPControlPlane,
+                identities: services.emailAccounts.authIdentities,
+                apps: services.emailAccounts.integrationsAndAppAccess,
+                cardPrepare: services.emailAccounts.actionCardPrepare,
+                agentsLifecycle: services.emailAccounts.agentsLifecycle,
+                providerConnections: services.emailAccounts.managedMCPProviderConnections,
+                actionCards: services.emailAccounts.actionCards
+            ))
 
             let registered = Set(app.routes.all.map { "\($0.method.rawValue) \($0.path.string)" })
             let expected = Set(expectedIntegrationsRoutes.map { "\($0.0.rawValue) \($0.1)" })
