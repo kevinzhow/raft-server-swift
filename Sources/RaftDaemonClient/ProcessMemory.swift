@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// How much memory this daemon process holds, sampled on a timer: process
 /// counters only, never heap contents. Samples go to a local file the Computer
@@ -168,11 +169,18 @@ public enum ProcessMemory {
         try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     }
 
-    public final class Reporter: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stopped = false
-        private var timerId: Int?
-        private var lastTraceAt: Int?
+    public final class Reporter: Sendable {
+        private final class ScheduleIdentity: Sendable {}
+        private struct TimerSlot: Sendable {
+            let identity: ScheduleIdentity
+            var id: Int?
+        }
+        private struct State: Sendable {
+            var stopped = false
+            var slot: TimerSlot?
+            var lastTraceAt: Int?
+        }
+        private let state = Mutex(State())
 
         private let clock: ProcessMemoryClock
         private let sample: @Sendable (Int) -> ProcessMemorySample
@@ -202,25 +210,32 @@ public enum ProcessMemory {
             self.onWriteError = onWriteError
             self.sampleMs = sampleMs
             self.traceEveryMs = traceEveryMs
-            self.timerId = clock.schedule(afterMs: firstSampleMs) { [weak self] in self?.tick() }
+            arm(afterMs: firstSampleMs)
         }
 
         public func stop() {
-            lock.lock(); defer { lock.unlock() }
-            stopped = true
-            if let timerId { clock.cancel(timerId) }
-            timerId = nil
+            let id = state.withLock { state in
+                state.stopped = true
+                let id = state.slot?.id
+                state.slot = nil
+                return id
+            }
+            if let id { clock.cancel(id) }
         }
 
         private func tick() {
-            lock.lock()
-            timerId = nil
-            if stopped { lock.unlock(); return }
+            let admitted = state.withLock { state in
+                state.slot = nil
+                return !state.stopped
+            }
+            guard admitted else { return }
             let now = clock.nowMs
             let current = sample(now)
-            let shouldTrace = lastTraceAt == nil || now - lastTraceAt! >= traceEveryMs
-            if shouldTrace { lastTraceAt = now }
-            lock.unlock()
+            let shouldTrace = state.withLock { state in
+                let shouldTrace = state.lastTraceAt == nil || now - state.lastTraceAt! >= traceEveryMs
+                if shouldTrace { state.lastTraceAt = now }
+                return shouldTrace
+            }
 
             if let samplePath {
                 do { try ProcessMemory.writeSample(path: samplePath, sample: current) } catch { onWriteError?(error) }
@@ -230,10 +245,24 @@ public enum ProcessMemory {
                 for (key, value) in ProcessMemory.traceAttributes(current) { attrs[key] = value }
                 trace(attrs)
             }
-            lock.lock()
-            if stopped { lock.unlock(); return }
-            timerId = clock.schedule(afterMs: sampleMs) { [weak self] in self?.tick() }
-            lock.unlock()
+            arm(afterMs: sampleMs)
+        }
+
+        private func arm(afterMs: Int) {
+            let identity = ScheduleIdentity()
+            let reserved = state.withLock { state in
+                guard !state.stopped else { return false }
+                state.slot = TimerSlot(identity: identity)
+                return true
+            }
+            guard reserved else { return }
+            let id = clock.schedule(afterMs: afterMs) { [weak self] in self?.tick() }
+            let published = state.withLock { state in
+                guard !state.stopped, state.slot?.identity === identity else { return false }
+                state.slot?.id = id
+                return true
+            }
+            if !published { clock.cancel(id) }
         }
     }
 

@@ -1,3 +1,2 @@
 Sources/RaftDaemonClient/DirectUploadCapability.swift	1
-Sources/RaftDaemonClient/ProcessMemory.swift	1
 Sources/RaftDaemonClient/ScopedAppStorage.swift	2
