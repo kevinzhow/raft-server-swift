@@ -101,7 +101,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
         oauth.post("agent-events") { request async throws -> Response in
             let body = try await request.bodyText()
             return try await respond(status: { $0.httpStatus }, headers: { _ in .standard() }) {
-                try services.emailAccounts.oauth.postAgentEvent(
+                try services.emailAccounts.integrationsAndAppAccess.postAgentEvent(
                     authorization: request.headers[.authorization],
                     body: body
                 )

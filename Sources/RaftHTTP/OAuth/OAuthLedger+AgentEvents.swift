@@ -29,47 +29,38 @@ extension OAuthLedger {
         return id
     }
 
-    /// `POST /api/oauth/agent-events`. Only a resource-bound agent token with
-    /// the matching inbound scope may enqueue an event.
-    public func postAgentEvent(authorization: String?, body: String) throws -> OAuthAgentEventResponse {
-        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
-            throw OAuthLedgerError(.missingBearerToken)
-        }
-        return try self.state.withLock { ledgerState in
-            guard let token = principalTokenLocked(raw, state: ledgerState) else {
-                throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+    /// Validates the resource-bound principal and claims or appends an event in
+    /// one transaction. Invalid field markers are consumed in the original order.
+    func ingestAgentEvent(_ attempt: AppAgentEventAttempt) -> AppAgentEventOutcome {
+        return self.state.withLock { ledgerState in
+            guard let token = principalTokenLocked(attempt.bearerToken, state: ledgerState) else {
+                return .invalidToken
             }
             guard token.principalType == "agent", let agentId = token.agentId else {
-                throw OAuthLedgerError(.agentTokenRequired)
+                return .agentTokenRequired
             }
             let expectedResource = "urn:raft:server:\(token.serverId):agent-inbound"
             guard token.resource == expectedResource else {
-                throw OAuthLedgerError(.resourceBoundTokenRequired(resource: expectedResource))
+                return .resourceRequired(expectedResource)
             }
-            let object = OAuthRequestBody.parse(body)
-            let kind = object?.string("kind") ?? ""
-            guard kind == "event" || kind == "notification" else {
-                throw OAuthLedgerError(.eventKindInvalid)
+            guard let kind = attempt.kind else {
+                return .invalidKind
             }
-            let requiredScope = kind == "event" ? "agent:event:write" : "agent:notification:write"
+            let requiredScope = kind.requiredScope
             guard token.scopes.contains(requiredScope) else {
-                throw OAuthLedgerError(.insufficientScope(requiredScope: requiredScope))
+                return .insufficientScope(requiredScope)
             }
-            let target = (object?.string("agentId") ?? object?.string("agent_id") ?? agentId).lowercased()
+            let target = (attempt.target ?? agentId).lowercased()
             guard target == agentId else {
-                throw OAuthLedgerError(.crossAgentTarget)
+                return .crossAgentTarget
             }
-            let summary = (object?.string("summary") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !summary.isEmpty, summary.count <= 500 else {
-                throw OAuthLedgerError(.eventSummaryRequired)
+            guard let summary = attempt.summary else {
+                return .summaryRequired
             }
-            // The compatibility parser preserves the legacy Foundation bytes,
-            // including large integers that a Double-backed tree cannot retain.
-            guard let payloadJSON = object?.payloadJSON else {
-                throw OAuthLedgerError(.eventPayloadNotObject)
+            guard let payloadJSON = attempt.payloadJSON else {
+                return .invalidPayload
             }
-            let external = (object?.string("externalEventId") ?? object?.string("external_event_id"))
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let external = attempt.externalEventId
             let payloadHash = sha256(payloadJSON)
             let now = Date()
             if let external, !external.isEmpty,
@@ -84,20 +75,15 @@ extension OAuthLedger {
                     event.status = "delivering"
                     ledgerState.agentEvents[index] = event
                 }
-                return OAuthAgentEventResponse(
-                    id: event.id,
-                    status: claimed ? "queued" : "duplicate",
-                    deduped: true,
-                    expiresAt: iso8601(event.expiresAt),
-                    payloadHash: event.payloadHash
-                )
+                let receipt = AppAgentEventReceipt(id: event.id, expiresAt: event.expiresAt, payloadHash: event.payloadHash)
+                return claimed ? .reclaimed(receipt) : .duplicate(receipt)
             }
             let event = AgentEvent(
                 id: UUID().uuidString.lowercased(),
                 serverId: token.serverId,
                 agentId: agentId,
                 clientId: token.clientId,
-                kind: kind,
+                kind: kind.rawValue,
                 summary: summary,
                 payloadHash: payloadHash,
                 payloadJSON: payloadJSON,
@@ -107,13 +93,7 @@ extension OAuthLedger {
                 createdAt: now
             )
             ledgerState.agentEvents.append(event)
-            return OAuthAgentEventResponse(
-                id: event.id,
-                status: "queued",
-                deduped: false,
-                expiresAt: iso8601(event.expiresAt),
-                payloadHash: event.payloadHash
-            )
+            return .created(AppAgentEventReceipt(id: event.id, expiresAt: event.expiresAt, payloadHash: event.payloadHash))
         }
     }
 

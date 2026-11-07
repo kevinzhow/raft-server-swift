@@ -2303,3 +2303,10 @@ RFC 074 personal assistant：
 - ProbeGate 的共享任务直接持 any Sendable result，删除原私有 Any ResultBox。登记在首次 await 前；相同 key 的 caller 加入同 Task；成功和失败均先清 key、释放并 FIFO 移交 slot，再完成结果/原错误。原同 key 同结果类型假设和取消 caller 不取消共享工作的语义保留。
 - LegacyActivitySink 五个不可变 Sendable callbacks 得到 checked conformance，消息、fact ID、sequence/time 与 drop/probe/heartbeat/send 的原方法体不变；不新增全局串行化或承诺外部 sequence callback 的唯一性。
 - 原十四个 helper 用例在迁移前后全部通过；probe fixture 的并发计数/数组改为 checked Mutex 观测，原调用数、sleep、timeout 和断言保持。证据来自 compiler、公开 helper 结果与源码核对，不声称真实 daemon wiring、TSan 或未专门测试的所有 reference/optional/error identity/FIFO 交错。
+
+### Resource-bound agent event ingress 的领域边界
+
+- `POST /api/oauth/agent-events` 的 Service 仅缺 Bearer 早拒绝，Foundation parse 后将 kind/summary/payload 的错误保留为 typed marker；payload 原 sorted JSON string 直传，保数组、UInt64.max、1.0、URL/Unicode/duplicate-key bytes，不能经 Double tree 或 JSONDecoder 重建。
+- owner 同锁保原 principal→agent→resource→kind→kind-scope→target→summary→payload→hash→now→firstIndex/claim/append。camel string 优先 snake，错类型可 fallback、空 string 可压住 fallback；target 含默认值均 lowercase 不 trim，summary trim 后按 Swift String.count 的 500 上限，external 只 trim，nil/空区别保留。不加 live client/agent/server/member gate。
+- 非空 external 去重仍按 server/agent/internal client/external/未过期 first match，不能增 kind/status 条件。queued 只改旧 status 为 delivering；返回旧 id/hash/expiry，HTTP200 queued+deduped；其他旧状态返回duplicate。新记录才 UUID+append，createdAt 与 24h expiry 共用原 now，HTTP202 queued+not-deduped。
+- owner 只 typed attempt/outcome/Date receipt，Service 以原 ISO8601DateFormatter 默认整秒投影同 DTO/错误；Feature 保原 httpStatus/standard headers，旧 owner HTTP API 无 wrapper。四个旧Source characterization 和十三个新实现定向均通过，含真实32次queued竞争单claim与原内容/队列消费。精确旧时间未覆盖部分依据原赋值核对；本片仍完整旧Fallback验收，不冒称新全图已切换。

@@ -185,7 +185,7 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
             }
             let access = try #require(try oauthBytesObject(exchanged)["access_token"] as? String)
             headers[.authorization] = "Bearer \(access)"
-            let payload = "[{\"z\":\"https://raft.test/用户\",\"a\":1.5,\"a2\":1.0,\"large\":18446744073709551615},true,null]"
+            let payload = "[{\"z\":\"https://raft.test/用户\",\"a\":0,\"a\":1.5,\"a2\":1.0,\"large\":18446744073709551615},true,null]"
             let sorted = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: Data(payload.utf8)), options: [.sortedKeys])
             let hash = SHA256.hash(data: sorted).map { String(format: "%02x", $0) }.joined()
             let eventBody = "{\"kind\":\"invalid\",\"kind\":\"event\",\"summary\":\" Summary \",\"payload\":\(payload),\"external_event_id\":\" external-bytes \"}"
@@ -204,6 +204,210 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
                 }
                 #expect(refused.status == .badRequest)
                 expectOAuthBytes(refused, "{\"error\":\"payload must be an object\"}")
+            }
+        }
+    }
+}
+
+private struct AgentEventIngressFixture: Sendable {
+    let accounts: EmailLoginDirectory
+    let ownerId: String
+    let serverId: String
+    let agentId: String
+    let app: CreatedOAuthClient
+
+    init() throws {
+        let accounts = EmailLoginDirectory()
+        let ownerId = "11111111-1111-4111-8111-111111111644"
+        let serverId = "33333333-3333-4333-8333-333333333670"
+        accounts.addAccount(id: ownerId, email: "g4-ingress-644@test.invalid", password: "password123")
+        accounts.markEmailVerified(userId: ownerId)
+        accounts.oauth.addOwnedServer(id: serverId, slug: "g4-event-ingress", name: "G4 Events", ownerId: ownerId)
+        let agentId = accounts.oauth.createAgent(serverId: serverId, name: "IngressBot", creatorUserId: ownerId)
+        let app = try accounts.oauth.createClient(
+            serverId: serverId, createdByUserId: ownerId, name: "Ingress App", clientId: "g4-event-ingress",
+            allowedScopes: ["openid", "profile", "agent:event:write", "agent:notification:write"]
+        )
+        self.accounts = accounts
+        self.ownerId = ownerId
+        self.serverId = serverId
+        self.agentId = agentId
+        self.app = app
+    }
+
+    func agentToken(_ client: any Client, scopes: [String], bound: Bool = true) async throws -> String {
+        let requested = try await agentEventIngressPost(client,
+            body: "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"serverSlug\":\"g4-event-ingress\",\"agentId\":\"\(agentId)\",\"scopes\":[\(scopes.map(jsonString).joined(separator: ","))]}",
+            path: "/api/oauth/requests/agent")
+        #expect(requested.status == .ok)
+        let requestId = try #require(try oauthBytesObject(requested)["requestId"] as? String)
+        let resource = bound ? ",\"resource\":\"urn:raft:server:\(serverId):agent-inbound\"" : ""
+        let exchanged = try await agentEventIngressPost(client,
+            body: "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"grantType\":\"urn:slock:grant-type:agent_request\",\"requestId\":\"\(requestId)\"\(resource)}",
+            path: "/api/oauth/token")
+        #expect(exchanged.status == .ok)
+        return try #require(try oauthBytesObject(exchanged)["access_token"] as? String)
+    }
+
+    func humanToken(_ client: any Client) async throws -> String {
+        let session = accounts.mintAccessTokenForTesting(userId: ownerId)
+        let authorized = try await agentEventIngressPost(client,
+            body: "{\"clientId\":\"\(app.clientId)\",\"serverId\":\"\(serverId)\",\"scopes\":[\"openid\"]}",
+            token: session, path: "/api/oauth/authorize/human")
+        #expect(authorized.status == .ok)
+        let code = try #require(try oauthBytesObject(authorized)["code"] as? String)
+        let exchanged = try await agentEventIngressPost(client,
+            body: "{\"clientId\":\"\(app.clientId)\",\"clientSecret\":\"\(app.clientSecret)\",\"grantType\":\"authorization_code\",\"code\":\"\(code)\"}",
+            path: "/api/oauth/token")
+        #expect(exchanged.status == .ok)
+        return try #require(try oauthBytesObject(exchanged)["access_token"] as? String)
+    }
+}
+
+private func agentEventIngressPost(
+    _ client: any Client, body: String, token: String? = nil, path: String = "/api/oauth/agent-events"
+) async throws -> ClientResponse {
+    var headers = HTTPFields()
+    headers[.contentType] = "application/json"
+    if let token { headers[.authorization] = "Bearer \(token)" }
+    return try await client.send(.post, headers: headers, to: URI(string: path)) { $0.body = .init(string: body) }
+}
+
+@Test func agentEventIngressRefusalsKeepPrincipalResourceKindScopeTargetSummaryPayloadOrder() async throws {
+    let f = try AgentEventIngressFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let bound = try await f.agentToken(client, scopes: ["agent:event:write"])
+            let unbound = try await f.agentToken(client, scopes: ["openid"], bound: false)
+            let human = try await f.humanToken(client)
+            let cases: [(String?, String, HTTPResponse.Status, String)] = [
+                (nil, "{}", .unauthorized, "{\"error\":\"Missing bearer token\"}"),
+                ("invalid", "{}", .unauthorized, "{\"error\":\"Invalid or expired access token\"}"),
+                (human, "{}", .forbidden, "{\"error\":\"agent token required\"}"),
+                (unbound, "{}", .forbidden, "{\"error\":\"resource-bound token required\",\"resource\":\"urn:raft:server:\(f.serverId):agent-inbound\"}"),
+                (bound, "{\"kind\":\" Event \"}", .badRequest, "{\"error\":\"kind must be event or notification\"}"),
+                (bound, "{\"kind\":\"notification\",\"agentId\":\"other\",\"summary\":\"\",\"payload\":null}", .forbidden, "{\"error\":\"insufficient_scope\",\"required_scope\":\"agent:notification:write\"}"),
+                (bound, "{\"kind\":\"event\",\"agentId\":\"other\",\"summary\":\"\",\"payload\":null}", .forbidden, "{\"error\":\"token cannot target a different agent\"}"),
+                (bound, "{\"kind\":\"event\",\"summary\":\"  \",\"payload\":null}", .badRequest, "{\"error\":\"summary is required\"}"),
+                (bound, "{\"kind\":\"event\",\"summary\":\"Valid\",\"payload\":null}", .badRequest, "{\"error\":\"payload must be an object\"}"),
+            ]
+            for (token, body, status, expected) in cases {
+                let response = try await agentEventIngressPost(client, body: body, token: token)
+                #expect(response.status == status)
+                expectOAuthBytes(response, expected)
+            }
+        }
+    }
+}
+
+private struct AgentEventIngressReply: Sendable {
+    let status: Int
+    let body: String
+}
+
+@Test func agentEventIngressQueuedRetriesClaimOnceAndKeepTheOriginalEventBody() async throws {
+    let f = try AgentEventIngressFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let token = try await f.agentToken(client, scopes: ["agent:event:write", "agent:notification:write"])
+            let eventId = f.accounts.oauth.seedQueuedAgentEvent(
+                serverId: f.serverId, agentId: f.agentId, clientRecordId: f.app.id, externalEventId: "g4-queued-claim"
+            )
+            let replies = try await withThrowingTaskGroup(of: AgentEventIngressReply.self) { group in
+                for index in 0..<32 {
+                    group.addTask {
+                        let response = try await agentEventIngressPost(client,
+                            body: "{\"kind\":\"notification\",\"summary\":\"Replacement \(index)\",\"externalEventId\":\" g4-queued-claim \",\"payload\":{\"replacement\":\(index)}}", token: token)
+                        return AgentEventIngressReply(status: response.status.code, body: response.body.string ?? "")
+                    }
+                }
+                var result: [AgentEventIngressReply] = []
+                for try await reply in group { result.append(reply) }
+                return result
+            }
+            #expect(replies.allSatisfy { $0.status == 200 })
+            let objects = try replies.map { reply in
+                try #require(JSONSerialization.jsonObject(with: Data(reply.body.utf8)) as? [String: Any])
+            }
+            #expect(objects.filter { $0["status"] as? String == "queued" }.count == 1)
+            #expect(objects.filter { $0["status"] as? String == "duplicate" }.count == 31)
+            #expect(objects.allSatisfy { $0["id"] as? String == eventId && $0["deduped"] as? Bool == true })
+            #expect(objects.allSatisfy { $0["payloadHash"] as? String == String(repeating: "0", count: 64) })
+            let expiries = try objects.map { try #require($0["expiresAt"] as? String) }
+            #expect(Set(expiries).count == 1)
+            var human = HTTPFields()
+            human[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: f.ownerId))"
+            let detail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(eventId)"), headers: human)
+            #expect(detail.status == .ok)
+            let stored = try oauthBytesObject(detail)
+            #expect(stored["kind"] as? String == "event")
+            #expect(stored["summary"] as? String == "Queued before delivery failed")
+            #expect((stored["payload"] as? [String: Any])?.isEmpty == true)
+            #expect(stored["expiresAt"] as? String == expiries.first)
+            #expect(stored["externalEventId"] as? String == "g4-queued-claim")
+            let list = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events"), headers: human)
+            #expect((try oauthBytesObject(list)["events"] as? [[String: Any]])?.count == 1)
+        }
+    }
+}
+
+@Test func agentEventIngressKeepsFieldPrecedenceUnicodeLimitsAndItsExistingLiveGates() async throws {
+    let f = try AgentEventIngressFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let token = try await f.agentToken(client, scopes: ["agent:event:write"])
+            let family = "👨‍👩‍👧‍👦"
+            let summary = String(repeating: family, count: 500)
+            let accepted = try await agentEventIngressPost(client,
+                body: "{\"kind\":\"event\",\"agentId\":\"\(f.agentId.uppercased())\",\"agent_id\":\"other\",\"summary\":\(jsonString(summary)),\"payload\":{}}", token: token)
+            #expect(accepted.status == .accepted)
+            let tooLong = try await agentEventIngressPost(client,
+                body: "{\"kind\":\"event\",\"summary\":\(jsonString(summary + family)),\"payload\":null}", token: token)
+            #expect(tooLong.status == .badRequest)
+            expectOAuthBytes(tooLong, "{\"error\":\"summary is required\"}")
+            for target in ["\"agentId\":\"\",\"agent_id\":\"\(f.agentId)\"", "\"agentId\":\" \(f.agentId) \",\"agent_id\":\"\(f.agentId)\""] {
+                let response = try await agentEventIngressPost(client, body: "{\"kind\":\"event\",\(target),\"summary\":\"Target\",\"payload\":{}}", token: token)
+                #expect(response.status == .forbidden)
+                expectOAuthBytes(response, "{\"error\":\"token cannot target a different agent\"}")
+            }
+            let fallback = try await agentEventIngressPost(client,
+                body: "{\"kind\":\"event\",\"agentId\":7,\"agent_id\":\"\(f.agentId.uppercased())\",\"summary\":\"Target\",\"payload\":{}}", token: token)
+            #expect(fallback.status == .accepted)
+            let emptyExternalBody = "{\"kind\":\"event\",\"summary\":\"External\",\"payload\":{},\"externalEventId\":\"\",\"external_event_id\":\"ignored\"}"
+            let emptyOne = try await agentEventIngressPost(client, body: emptyExternalBody, token: token)
+            let emptyTwo = try await agentEventIngressPost(client, body: emptyExternalBody, token: token)
+            #expect(emptyOne.status == .accepted && emptyTwo.status == .accepted)
+            let emptyId = try #require(try oauthBytesObject(emptyOne)["id"] as? String)
+            #expect(try oauthBytesObject(emptyTwo)["id"] as? String != emptyId)
+            let missing = try await agentEventIngressPost(client, body: "{\"kind\":\"event\",\"summary\":\"External\",\"payload\":{}}", token: token)
+            let missingId = try #require(try oauthBytesObject(missing)["id"] as? String)
+            let snakeExternalBody = "{\"kind\":\"event\",\"summary\":\"External\",\"payload\":{},\"externalEventId\":7,\"external_event_id\":\" Case-Key \"}"
+            let snakeOne = try await agentEventIngressPost(client, body: snakeExternalBody, token: token)
+            let snakeTwo = try await agentEventIngressPost(client, body: snakeExternalBody, token: token)
+            #expect(snakeOne.status == .accepted && snakeTwo.status == .ok)
+            let snakeId = try #require(try oauthBytesObject(snakeOne)["id"] as? String)
+            #expect(try oauthBytesObject(snakeTwo)["id"] as? String == snakeId)
+            var human = HTTPFields()
+            human[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: f.ownerId))"
+            let emptyDetail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(emptyId)"), headers: human)
+            let missingDetail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(missingId)"), headers: human)
+            #expect(try oauthBytesObject(emptyDetail)["externalEventId"] as? String == "")
+            #expect(try oauthBytesObject(missingDetail)["externalEventId"] is NSNull)
+            let snakeDetail = try await client.get(URI(string: "/api/integrations/agents/\(f.agentId)/events/\(snakeId)"), headers: human)
+            #expect(try oauthBytesObject(snakeDetail)["externalEventId"] as? String == "Case-Key")
+            // These current-state changes do not invalidate this token surface.
+            let mutations: [@Sendable () -> Void] = [
+                { f.accounts.oauth.setClientEnabled(clientRecordId: f.app.id, enabled: false) },
+                { f.accounts.oauth.removeAgentMember(serverId: f.serverId, agentId: f.agentId) },
+                { f.accounts.oauth.deleteAgent(id: f.agentId) },
+                { f.accounts.oauth.deleteServer(id: f.serverId) },
+            ]
+            for mutate in mutations {
+                mutate()
+                #expect(try await agentEventIngressPost(client, body: "{\"kind\":\"event\",\"summary\":\"Still valid\",\"payload\":{}}", token: token).status == .accepted)
             }
         }
     }

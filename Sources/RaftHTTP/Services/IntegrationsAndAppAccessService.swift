@@ -541,6 +541,58 @@ public struct IntegrationsAndAppAccessService: Sendable {
 
     // MARK: - Agent app events
 
+    /// `POST /api/oauth/agent-events`. Only missing Bearer admission refuses
+    /// before the owner transaction. Malformed fields remain markers so invalid
+    /// token/principal/resource/scope/target failures retain their precedence.
+    public func postAgentEvent(authorization: String?, body: String) throws -> OAuthAgentEventResponse {
+        guard let raw = OAuthRequestParsing.bearerToken(authorization) else {
+            throw OAuthLedgerError(.missingBearerToken)
+        }
+        let object = OAuthRequestBody.parse(body)
+        let summary = (object?.string("summary") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let attempt = AppAgentEventAttempt(
+            bearerToken: raw,
+            kind: AppAgentEventKind(rawValue: object?.string("kind") ?? ""),
+            target: object?.string("agentId") ?? object?.string("agent_id"),
+            summary: !summary.isEmpty && summary.count <= 500 ? summary : nil,
+            payloadJSON: object?.payloadJSON,
+            externalEventId: (object?.string("externalEventId") ?? object?.string("external_event_id"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        )
+        let completion: (receipt: AppAgentEventReceipt, status: String, deduped: Bool)
+        switch oauth.ingestAgentEvent(attempt) {
+        case .invalidToken:
+            throw OAuthLedgerError(.invalidOrExpiredAccessToken)
+        case .agentTokenRequired:
+            throw OAuthLedgerError(.agentTokenRequired)
+        case .resourceRequired(let resource):
+            throw OAuthLedgerError(.resourceBoundTokenRequired(resource: resource))
+        case .invalidKind:
+            throw OAuthLedgerError(.eventKindInvalid)
+        case .insufficientScope(let scope):
+            throw OAuthLedgerError(.insufficientScope(requiredScope: scope))
+        case .crossAgentTarget:
+            throw OAuthLedgerError(.crossAgentTarget)
+        case .summaryRequired:
+            throw OAuthLedgerError(.eventSummaryRequired)
+        case .invalidPayload:
+            throw OAuthLedgerError(.eventPayloadNotObject)
+        case .created(let receipt):
+            completion = (receipt, "queued", false)
+        case .reclaimed(let receipt):
+            completion = (receipt, "queued", true)
+        case .duplicate(let receipt):
+            completion = (receipt, "duplicate", true)
+        }
+        return OAuthAgentEventResponse(
+            id: completion.receipt.id,
+            status: completion.status,
+            deduped: completion.deduped,
+            expiresAt: ISO8601DateFormatter().string(from: completion.receipt.expiresAt),
+            payloadHash: completion.receipt.payloadHash
+        )
+    }
+
     /// `GET /api/integrations/agents/:agentId/events`.
     public func agentAppEvents(
         authorization: String?,
