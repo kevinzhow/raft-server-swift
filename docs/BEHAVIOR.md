@@ -2529,3 +2529,11 @@ RFC 074 personal assistant：
 - ChannelsFeature仅接受15个具体Service和显式可选Hub；caller选择custom Threads与silent Assignments。54条注册顺序、body/header/refusal、成功后room副作用以及thread body fallback/activity固定Content-Length合同保持，原route-table54条与五处断言保留。
 - 同13-owner ChannelsScene经真实HTTP创建channel和empty thread。POST存description但原created DTO仍省略它，固定Hub独立发原channel:updated(desc null)并实际授予新room；新room probe不由测试join掩盖。非creator member相同PATCH先403，注册后真实角色晋升后200并保stored description/system sequence；兄弟GET读同id/newName/admin authority，继续省description字段。现有family撤销后同GET401，服务值保live role/profile。
 - named follow经原general relay仅到B，已构建Feature之后重装relay到A，unfollow仅到A，保持唯一canonical follower frame。thread订阅是明确transport setup，各Hub阳性probe后再取mutation前起点；三阶段六个完整FIFO wire窗口验证固定user与live general的区别。focused mount只用公开JSON边界，不冒称完整Fallback私有decoder或Main/transport图构造已切换。
+
+### Soto attachment object storage
+
+- `RaftObjectStorage` uses Soto/SotoCore 7.17 for S3 requests and swift-crypto AES-GCM for application encryption. Objects contain the AES-GCM combined bytes; durable references retain encryption version 1, the object key, plaintext byte count and SHA-256. The object key is authenticated as additional data.
+- Environment configuration requires an independent canonical-base64 32-byte encryption key and explicit storage credentials. R2 derives its HTTPS endpoint from the configured account ID. Unsafe endpoints, invalid references and oversized content fail closed; errors and configuration descriptions redact credentials.
+- An actual local AWS test server verifies SDK PUT/GET/DELETE, encrypted stored bytes, authentication failure after tampering and missing-object handling. The explicit live acceptance uses a random isolated prefix, checks binary bytes with a recreated client, then deletes its object and verifies absence.
+- Concurrent desktop-platform HTTP requests retain complete platform/version JSON and public cache headers. Their scripted feed inputs and test clock use checked Mutex state; this removes the ASAN-confirmed shared-array double-free while retaining the three concurrent production feed reads.
+- This slice supplies the storage adapter and its acceptance tests. HTTP attachment binding, database reference persistence and production activation remain separate integration work. Existing parity classifications and daemon execution qualifications are unchanged.

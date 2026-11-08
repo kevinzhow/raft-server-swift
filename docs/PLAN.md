@@ -65,6 +65,10 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 5. daemon-only 原 41 处已逐项评估。六个不可变错误、child guard lifecycle、HTTP completion/loop timer、四个可变模型及 notification/Janitor timer、immutable activity sink、progress clock、actor-owned probe results、immutable managed MCP tool 与 reminder/delivery关联集合及StandingPrompt锁外clock、两个private completion gate及完整turn-token fold/count及turn-summary归属及Kimi lock-handle状态、WalkBudget内部消费、FetchPool缓存及ModelLister Task及native deadline scheduler所有权及daemon upgrade handler NIO confinement及AgentStartCoordinator值状态及RuntimeModelSourceCache时钟/值状态、DaemonLog回调/退役与DaemonReconnectLoop策略调用所有权及ProcessMemory.Reporter锁外sampling/clock/timer token-handoff已迁移，余 3 处见 `docs/CONCURRENCY.md`。child timer、并发 Probe 快照、Data 释放、notification、Janitor及StandingPrompt clock均有各自红→绿证据。StandingPrompt mkdir与commit两IO段之间无锁采clock，保每次步骤/原文件格式和last-actual-commit，不新增重叠clock全局串行或timestamp单调；原4绿/新3文件断言红，v2五例全绿。Janitor 的公开 Timers seam 确定性交错证明 stop/register/rearm 与不重叠 pass，原磁盘策略、已准入 pass 保活与 pending 弱引用保持；notification 另有一次真实默认 timer。这些证据不是 stdin/socket 或 TSan；HTTP 跨队列问题的原证据是源码审查。Reporter sample内publicstop旧started124→新真实sampleFileJSON/原6+新1通过；强identity slot仅保护schedule返回ID的发布，不过滤tick/admitted输出，stop仍非drain。剩余 raw Any 和 storage 能力仍需收窄，不能因 daemon-only 而判为安全。
 6. 如实同步文档，再跑最终完整门禁。只在所有目标确实完成后宣布 Phase 6 结束。
 
+## Production storage foundation
+
+The isolated `RaftObjectStorage` adapter now uses Soto/SotoCore 7.17 and swift-crypto AES-GCM. Its local network acceptance covers ciphertext, tampering, roundtrip and deletion. An explicitly enabled live acceptance checks a separate prefix with existing credentials. HTTP binding, persistent attachment references, production execution activation and deployment recovery remain integration work. Phase 6 and all existing parity qualifications remain open as stated above.
+
 ## 3. 切片门禁与工作契约
 
 结构变更与行为变更分开。以领域或明确同步边界为单位；原路径、方法、状态、JSON 字节、头与帧保持不变。优先使用已有验收测试锁住行为，新增风险先补失败回归。

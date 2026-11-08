@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import Synchronization
 import Testing
 import Vapor
 import VaporTesting
@@ -46,23 +47,47 @@ releaseDate: '2026-10-12T16:26:07.802Z'
 
 private let releasesBase = "https://github.com/botiverse/desktop-beta/releases"
 
-private final class ScriptedFeeds: @unchecked Sendable {
-    var requested: [String] = []
-    var status: Int
-    var feeds: [String: String]
-    var throwsError = false
+private final class ScriptedFeeds: Sendable {
+    private struct State: Sendable {
+        var requested: [String] = []
+        var status: Int
+        var feeds: [String: String]
+        var throwsError = false
+    }
+
+    private let state: Mutex<State>
+
+    var requested: [String] {
+        state.withLock { $0.requested }
+    }
+
+    var status: Int {
+        get { state.withLock { $0.status } }
+        set { state.withLock { $0.status = newValue } }
+    }
+
+    var feeds: [String: String] {
+        get { state.withLock { $0.feeds } }
+        set { state.withLock { $0.feeds = newValue } }
+    }
+
+    var throwsError: Bool {
+        get { state.withLock { $0.throwsError } }
+        set { state.withLock { $0.throwsError = newValue } }
+    }
 
     init(feeds: [String: String], status: Int = 200) {
-        self.feeds = feeds
-        self.status = status
+        state = Mutex(State(status: status, feeds: feeds))
     }
 
     func fetch(_ url: String) async throws -> DesktopFeedHTTP {
-        requested.append(url)
-        if throwsError { throw URLError(.cannotConnectToHost) }
-        let name = url.split(separator: "/").last.map(String.init) ?? ""
-        guard let body = feeds[name] else { return DesktopFeedHTTP(status: 404, body: "Not Found") }
-        return DesktopFeedHTTP(status: status, body: body)
+        try state.withLock { value in
+            value.requested.append(url)
+            if value.throwsError { throw URLError(.cannotConnectToHost) }
+            let name = url.split(separator: "/").last.map(String.init) ?? ""
+            guard let body = value.feeds[name] else { return DesktopFeedHTTP(status: 404, body: "Not Found") }
+            return DesktopFeedHTTP(status: value.status, body: body)
+        }
     }
 }
 
@@ -275,6 +300,35 @@ private func services(_ script: ScriptedFeeds, cache: DesktopFeedCache? = nil) -
     }
 }
 
-private final class TestClock: @unchecked Sendable {
-    var ms = 0
+@Test func concurrentPlatformsRequestsKeepCompletePublicResponses() async throws {
+    let script = ScriptedFeeds(feeds: ["latest-mac.yml": macFeed, "latest-linux.yml": linuxFeed])
+    let expectedBody = #"{"mac":{"status":"available","version":"0.1.42","universal":false},"linux":{"status":"available","version":"0.1.42"},"windows":{"status":"none"}}"#
+    try await withApp { app in
+        configure(app, services: services(script))
+        try await app.testing { client in
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for _ in 0..<24 {
+                    group.addTask {
+                        let response = try await client.get("/api/desktop-download/platforms")
+                        #expect(response.status == .ok)
+                        #expect(response.body.string == expectedBody)
+                        #expect(response.headers[.contentType] == "application/json; charset=utf-8")
+                        #expect(response.headers[.contentLength] == String(expectedBody.utf8.count))
+                        #expect(response.headers[HTTPField.Name("Cache-Control")!] == "public, max-age=60")
+                        #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
+                    }
+                }
+                try await group.waitForAll()
+            }
+        }
+    }
+}
+
+private final class TestClock: Sendable {
+    private let milliseconds = Mutex(0)
+
+    var ms: Int {
+        get { milliseconds.withLock { $0 } }
+        set { milliseconds.withLock { $0 = newValue } }
+    }
 }

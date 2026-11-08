@@ -1,5 +1,5 @@
 {
-  "originHash" : "03e6cf90b0f445b5310ffa87b8bdccd7de9c406b98e2c0eb62f0131e033dea42",
+  "originHash" : "d5cf48d29670942648aafa22f050846f5856e722b84ea1c630ab385c80d7da36",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "df9e94c23cf3a31588b31a360e530bbd8e4bccae",
         "version" : "5.0.0-beta.3"
+      }
+    },
+    {
+      "identity" : "jmespath.swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jmespath/jmespath.swift.git",
+      "state" : {
+        "revision" : "7b8e32f1d38028c2fd640d6fd45b233707a17489",
+        "version" : "1.2.0"
       }
     },
     {
@@ -43,6 +52,24 @@
       "state" : {
         "revision" : "96f0fa9b25a870ec5920ee2eaf69e41a6a610a20",
         "version" : "5.0.0-beta.3"
+      }
+    },
+    {
+      "identity" : "soto",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/soto-project/soto.git",
+      "state" : {
+        "revision" : "19c212921c56125ab40ca91213e97890aef8be1b",
+        "version" : "7.17.0"
+      }
+    },
+    {
+      "identity" : "soto-core",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/soto-project/soto-core.git",
+      "state" : {
+        "revision" : "4309f0c0f608b1f4db1d84e5928a925a3894ee91",
+        "version" : "7.17.0"
       }
     },
     {

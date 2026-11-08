@@ -13,6 +13,9 @@ let package = Package(
         .executable(name: "RaftDaemon", targets: ["RaftDaemon"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/soto-project/soto.git", exact: "7.17.0"),
+        .package(url: "https://github.com/soto-project/soto-core.git", exact: "7.17.0"),
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.30.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/vapor/postgres-nio.git", revision: "1025d0a10ea9f5dd110f13e9b62aa42dc4358841"),
@@ -20,6 +23,24 @@ let package = Package(
         .package(url: "https://github.com/vapor/vapor.git", revision: "0f2a8ee9f38b2589c066b604de3e3168ed54c82d"),
     ],
     targets: [
+        .target(
+            name: "RaftObjectStorage",
+            dependencies: [
+                .product(name: "SotoS3", package: "soto"),
+                .product(name: "SotoCore", package: "soto-core"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
+        .testTarget(
+            name: "RaftObjectStorageTests",
+            dependencies: [
+                "RaftObjectStorage",
+                .product(name: "SotoTestUtils", package: "soto-core"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "NIOCore", package: "swift-nio"),
+            ]
+        ),
         .target(
             name: "RaftConnectAuth",
             dependencies: [
