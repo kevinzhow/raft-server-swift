@@ -650,6 +650,16 @@ extension EmailLoginDirectory {
         ))
     }
 
+    /// The router-wide `requireServerMatchesParam` funnel plus the guest-hidden
+    /// surface rule. The Feature layer mounts it on the `/:id` route group; the
+    /// session lookup and the live server/membership rows stay in their owners.
+    public var serverRequestScope: ServerRequestScopeService {
+        ServerRequestScopeService(dependencies: ServerRequestScopeDependencies(
+            sessionUserId: { [auth = authCore] in try? auth.authenticate($0) },
+            oauth: oauth
+        ))
+    }
+
     /// Execution and ingress share the same retained domain owners and writer.
     public func agentExecution(persistence: BusinessPersistenceRuntime) -> AgentExecutionService {
         AgentExecutionService(

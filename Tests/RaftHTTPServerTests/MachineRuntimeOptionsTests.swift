@@ -42,6 +42,7 @@ import VaporTesting
             func get(_ bearer: String, _ path: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get(URI(string: path), headers: headers)
             }
             let owner = try await token("runtime-options-owner@slock.test")

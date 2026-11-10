@@ -26,6 +26,21 @@ public struct ServersFeature: RouteCollection, Sendable {
     public func register(routes: any RoutesBuilder) {
         let servers = routes.grouped("api", "servers")
 
+        // `routes/servers.ts:993` mounts the labs sub-router before the
+        // lockdown; those three routes stay on the bare group and keep their
+        // own cross-server contract (`server_scope_required` /
+        // `server_scope_forbidden`). Every route registered after line 994 is
+        // funneled once here, and the eight guest-hidden path families inherit
+        // the second check from `routes/servers.ts:1010-1019`.
+        let scoped = servers.grouped(ServerRequestScopeMiddleware(
+            scope: services.emailAccounts.serverRequestScope,
+            hidesGuests: false
+        ))
+        let guestHidden = servers.grouped(ServerRequestScopeMiddleware(
+            scope: services.emailAccounts.serverRequestScope,
+            hidesGuests: true
+        ))
+
         servers.post("join-community") { request async throws -> Response in
             try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
                 guard let directory = services.publicVisits else {
@@ -100,7 +115,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "agents", ":agentId", "feedback", ":reportId", "transcript") { request async throws -> Response in
             // A typed body is the common case; a body without a JSON
             // Content-Type keeps the raw parser, which is the authority for the
             // published `Invalid transcript request` and timestamp errors.
@@ -126,7 +141,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "computer-lifecycle-operations") { request async throws -> Response in
             let body = await jsonRequestBody(ComputerLifecycleRequest.self, request) ?? ComputerLifecycleRequest()
             return try await respond(status: 201) {
                 try services.emailAccounts.computersFleet.computerLifecycleOperation(
@@ -137,7 +152,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId") { request async throws -> Response in
             try await respond(status: 404) {
                 try services.emailAccounts.runtimeUsageAttestations.mentionDeliveryDiagnostic(
                     authorization: request.headers[.authorization],
@@ -148,7 +163,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "session-transcript") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.agentSessionTranscript(
                     authorization: request.headers[.authorization],
@@ -158,7 +173,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId", "redrive") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "agents", ":agentId", "diagnostic", "mention-delivery", ":messageId", "redrive") { request async throws -> Response in
             // Same split as transcript feedback: a decodable typed body keeps
             // the route on `content.decode`, and every other spelling (boolean
             // or zero-fraction numbers included) stays on the legacy parser.
@@ -186,7 +201,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "scope-attestation") { request async throws -> Response in
+        scoped.post(":id", "scope-attestation") { request async throws -> Response in
             let body = await jsonRequestBody(ServerScopeAttestationRequest.self, request)
             return try await respond {
                 try services.emailAccounts.serverProfileAndOrder.serverScopeAttestation(
@@ -196,7 +211,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "translation-settings") { request async throws -> Response in
+        scoped.get(":id", "translation-settings") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.serverProfileAndOrder.serverTranslationSettings(
                     authorization: request.headers[.authorization],
@@ -204,7 +219,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "translation-settings") { request async throws -> Response in
+        scoped.patch(":id", "translation-settings") { request async throws -> Response in
             let body = await jsonRequestBody(ServerTranslationSettingsPatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.serverProfileAndOrder.patchServerTranslationSettings(
@@ -246,7 +261,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "agreement") { request async throws -> Response in
+        scoped.get(":id", "agreement") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.serverProfileAndOrder.getServerAgreement(
                     authorization: request.headers[.authorization],
@@ -254,7 +269,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.put(":id", "agreement") { request async throws -> Response in
+        scoped.put(":id", "agreement") { request async throws -> Response in
             let body = await jsonRequestBody(ServerAgreementPutRequest.self, request)
             return try await respond {
                 try services.emailAccounts.serverProfileAndOrder.putServerAgreement(
@@ -264,7 +279,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "avatar") { request async throws -> Response in
+        scoped.post(":id", "avatar") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.serverProfileAndOrder.uploadServerAvatar(
                     authorization: request.headers[.authorization],
@@ -272,7 +287,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "join-links") { request async throws -> Response in
+        guestHidden.post(":id", "join-links") { request async throws -> Response in
             // `expiresAt` and `maxUses` are the only fields. The typed decoder
             // keeps the raw parser's tolerance: a wrong-typed field reads as
             // absent and an invalid cap still answers the published 400.
@@ -285,7 +300,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "join-links") { request async throws -> Response in
+        guestHidden.get(":id", "join-links") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.listJoinLinks(
                     authorization: request.headers[.authorization],
@@ -293,7 +308,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.delete(":id", "join-links", ":linkId") { request async throws -> Response in
+        guestHidden.delete(":id", "join-links", ":linkId") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.revokeJoinLink(
                     authorization: request.headers[.authorization],
@@ -302,7 +317,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "invites") { request async throws -> Response in
+        guestHidden.get(":id", "invites") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.listServerInvites(
                     authorization: request.headers[.authorization],
@@ -310,7 +325,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "invites") { request async throws -> Response in
+        guestHidden.post(":id", "invites") { request async throws -> Response in
             // `email` is required and `role` defaults to `member`. A body that
             // is not a JSON object falls back to the empty request, which is
             // the published invite error for a missing address.
@@ -323,7 +338,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "setup-reset") { request async throws -> Response in
+        scoped.post(":id", "setup-reset") { request async throws -> Response in
             // The reset selects its target by path and reads no body fields.
             // Decoding states that empty contract; a malformed body still
             // resolves through the same path-only authorization.
@@ -336,7 +351,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "setup-handoff") { request async throws -> Response in
+        scoped.post(":id", "setup-handoff") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupHandoff(
                     authorization: request.headers[.authorization],
@@ -345,7 +360,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.delete(":id", "invites", ":inviteId") { request async throws -> Response in
+        guestHidden.delete(":id", "invites", ":inviteId") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.revokeServerInvite(
                     authorization: request.headers[.authorization],
@@ -354,7 +369,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "leave") { request async throws -> Response in
+        scoped.post(":id", "leave") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             let authorization = request.headers[.authorization]
             let userId = services.emailAccounts.sessionUserId(authorization: authorization)
@@ -373,7 +388,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 return result
             }
         }
-        servers.get(":id", "setup-projection") { request async throws -> Response in
+        guestHidden.get(":id", "setup-projection") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupProjection(
                     authorization: request.headers[.authorization],
@@ -382,7 +397,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "setup-transition") { request async throws -> Response in
+        scoped.post(":id", "setup-transition") { request async throws -> Response in
             let body = try await decodeJSONRequestBody(ServerSetupTransitionRequest.self, request)
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupTransition(
@@ -393,7 +408,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "members", ":memberId") { request async throws -> Response in
+        scoped.patch(":id", "members", ":memberId") { request async throws -> Response in
             // A body that does not decode keeps the service's published
             // `Invalid member role` 400; an absent one does too.
             let body = await jsonRequestBody(ServerMemberRolePatchRequest.self, request)
@@ -411,7 +426,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 return result
             }
         }
-        servers.delete(":id", "members", ":memberId") { request async throws -> Response in
+        scoped.delete(":id", "members", ":memberId") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             let memberId = request.parameters.get("memberId") ?? ""
             return try await respond {
@@ -428,7 +443,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 return result
             }
         }
-        servers.delete(":id") { request async throws -> Response in
+        scoped.delete(":id") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: serverId,
@@ -443,7 +458,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "sidebar-order") { request async throws -> Response in
+        scoped.patch(":id", "sidebar-order") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -466,7 +481,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "sidebar-order") { request async throws -> Response in
+        scoped.get(":id", "sidebar-order") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -481,7 +496,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "model-label-catalog") { request async throws -> Response in
+        scoped.get(":id", "model-label-catalog") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.computersFleet.modelLabelCatalog(
                     authorization: request.headers[.authorization],
@@ -489,7 +504,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "product-analytics-settings") { request async throws -> Response in
+        scoped.get(":id", "product-analytics-settings") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.managedMCPLifecycle.serverProductAnalyticsSettings(
                     authorization: request.headers[.authorization],
@@ -497,7 +512,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "product-analytics-settings") { request async throws -> Response in
+        scoped.patch(":id", "product-analytics-settings") { request async throws -> Response in
             let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
             return try await respond {
                 try services.emailAccounts.managedMCPLifecycle.patchServerProductAnalyticsSettings(
@@ -507,7 +522,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "settings") { request async throws -> Response in
+        guestHidden.get(":id", "settings") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.serverSettings(
                     authorization: request.headers[.authorization],
@@ -515,7 +530,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "notification-settings") { request async throws -> Response in
+        scoped.get(":id", "notification-settings") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.memberNotificationSettings(
                     authorization: request.headers[.authorization],
@@ -523,7 +538,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "notification-settings") { request async throws -> Response in
+        scoped.patch(":id", "notification-settings") { request async throws -> Response in
             let body = try await decodeJSONRequestBody(ServerNotificationPatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.patchServerNotificationSettings(
@@ -533,7 +548,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "onboarding-settings") { request async throws -> Response in
+        guestHidden.get(":id", "onboarding-settings") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.serverOnboardingSettings(
                     authorization: request.headers[.authorization],
@@ -541,7 +556,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "onboarding-settings") { request async throws -> Response in
+        guestHidden.patch(":id", "onboarding-settings") { request async throws -> Response in
             let body = try await decodeJSONRequestBody(ServerOnboardingPatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.patchServerOnboardingSettings(
@@ -551,7 +566,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines", ":machineId", "computer", ":action") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "computer", ":action") { request async throws -> Response in
             let body = await jsonRequestBody(ComputerActionRequest.self, request) ?? ComputerActionRequest()
             return try await respond {
                 try services.emailAccounts.computersFleet.computerAction(
@@ -563,8 +578,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        registerServerMachineDelete(on: servers)
-        servers.get(":id", "usage") { request async throws -> Response in
+        registerServerMachineDelete(on: scoped)
+        guestHidden.get(":id", "usage") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.serverUsage(
                     authorization: request.headers[.authorization],
@@ -572,7 +587,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "workspaces") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "workspaces") { request async throws -> Response in
             let serverId = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: serverId,
@@ -589,7 +604,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines", ":machineId", "runtimes", "rescan") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "runtimes", "rescan") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.computersFleet.machineRuntimeRescan(
                     authorization: request.headers[.authorization],
@@ -598,7 +613,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "runtime-options") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-options") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.machineRuntimeOptions(
                     authorization: request.headers[.authorization],
@@ -608,7 +623,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "runtime-models", ":runtime") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-models", ":runtime") { request async throws -> Response in
             try await respond {
                 try await services.emailAccounts.runtimeFormsAndProbes.queryMachineRuntimeModels(
                     authorization: request.headers[.authorization],
@@ -618,7 +633,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId") { request async throws -> Response in
             var response = try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.runtimeFormDefinition(
                     authorization: request.headers[.authorization],
@@ -633,7 +648,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId") { request async throws -> Response in
             var response = try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.runtimeFormDefinition(
                     authorization: request.headers[.authorization],
@@ -648,7 +663,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
             var response = try await respond {
                 try await services.emailAccounts.runtimeFormsAndProbes.queryRuntimeFormOptionSource(
                     authorization: request.headers[.authorization],
@@ -664,7 +679,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
             var response = try await respond {
                 try await services.emailAccounts.runtimeFormsAndProbes.queryRuntimeFormOptionSource(
                     authorization: request.headers[.authorization],
@@ -681,7 +696,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
             return response
         }
-        servers.get(":id", "machines", ":machineId", "runtime-account-usage", ":provider") { request async throws -> Response in
+        scoped.get(":id", "machines", ":machineId", "runtime-account-usage", ":provider") { request async throws -> Response in
             var response = try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.machineRuntimeAccountUsage(
                     authorization: request.headers[.authorization],
@@ -693,7 +708,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.post(":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "runtime-account-usage", ":provider", "refresh") { request async throws -> Response in
             let body = try await decodeJSONRequestBody(RuntimeAccountUsageRefreshRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.refreshMachineRuntimeAccountUsage(
@@ -705,7 +720,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request async throws -> Response in
+        scoped.delete(":id", "machines", ":machineId", "workspaces", ":directoryName") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.computersFleet.deleteMachineWorkspace(
                     authorization: request.headers[.authorization],
@@ -715,7 +730,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "system-notifications") { request async throws -> Response in
+        scoped.get(":id", "system-notifications") { request async throws -> Response in
             var response = try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.serverSystemNotifications(
                     authorization: request.headers[.authorization],
@@ -725,7 +740,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.get(":id", "system-notifications-v2") { request async throws -> Response in
+        scoped.get(":id", "system-notifications-v2") { request async throws -> Response in
             var response = try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.listSystemAttention(
                     authorization: request.headers[.authorization],
@@ -735,7 +750,7 @@ public struct ServersFeature: RouteCollection, Sendable {
             response.headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
             return response
         }
-        servers.post(":id", "system-notifications-v2", ":incidentId", "seen") { request async throws -> Response in
+        scoped.post(":id", "system-notifications-v2", ":incidentId", "seen") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.markSystemAttentionSeen(
                     authorization: request.headers[.authorization],
@@ -744,7 +759,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "system-notifications-v2", ":incidentId", "dismiss") { request async throws -> Response in
+        scoped.post(":id", "system-notifications-v2", ":incidentId", "dismiss") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.runtimeUsageAttestations.dismissSystemAttention(
                     authorization: request.headers[.authorization],
@@ -753,7 +768,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines") { request async throws -> Response in
+        scoped.post(":id", "machines") { request async throws -> Response in
             let body = try await decodeJSONRequestBody(ServerMachineRegistrationRequest.self, request)
             return try await respond {
                 try services.emailAccounts.runtimeFormsAndProbes.registerServerMachine(
@@ -763,7 +778,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "machines") { request async throws -> Response in
+        scoped.get(":id", "machines") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.computersFleet.listServerMachines(
                     authorization: request.headers[.authorization],
@@ -771,7 +786,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.post(":id", "machines", ":machineId", "rotate-key") { request async throws -> Response in
+        scoped.post(":id", "machines", ":machineId", "rotate-key") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.computersFleet.rotateServerMachineKey(
                     authorization: request.headers[.authorization],
@@ -780,8 +795,8 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        registerServerMachineDelete(on: servers)
-        servers.patch(":id", "machines", ":machineId") { request async throws -> Response in
+        registerServerMachineDelete(on: scoped)
+        scoped.patch(":id", "machines", ":machineId") { request async throws -> Response in
             let body = await jsonRequestBody(MachineDescriptionRequest.self, request) ?? MachineDescriptionRequest()
             return try await respond {
                 try services.emailAccounts.computersFleet.patchServerMachine(
@@ -792,7 +807,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id") { request async throws -> Response in
+        scoped.patch(":id") { request async throws -> Response in
             let body = await jsonRequestBody(ServerProfilePatchRequest.self, request)
             return try await respond {
                 try services.emailAccounts.serverProfileAndOrder.patchServerProfile(
@@ -802,7 +817,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id") { request async throws -> Response in
+        scoped.get(":id") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.managedMCPLifecycle.serverDetails(
                     authorization: request.headers[.authorization],
@@ -810,7 +825,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "members", ":memberId", "profile") { request async throws -> Response in
+        scoped.get(":id", "members", ":memberId", "profile") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             let memberId = request.parameters.get("memberId") ?? ""
             if let reply = ServerScope.membersGuard(
@@ -834,7 +849,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "apps") { request async throws -> Response in
+        guestHidden.get(":id", "apps") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.serverProfileAndOrder.serverApps(
                     authorization: request.headers[.authorization],
@@ -842,7 +857,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "member-graph") { request async throws -> Response in
+        guestHidden.get(":id", "member-graph") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -857,7 +872,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "members") { request async throws -> Response in
+        scoped.get(":id", "members") { request async throws -> Response in
             let id = request.parameters.get("id") ?? ""
             if let reply = ServerScope.membersGuard(
                 serverId: id,
@@ -872,13 +887,13 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.get(":id", "public-visibility") { request async throws -> Response in
+        scoped.get(":id", "public-visibility") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
             return try await respond { try directory.readVisibility(serverId: id, authorization: request.headers[.authorization]) }
         }
-        servers.patch(":id", "public-guest-join") { request async throws -> Response in
+        scoped.patch(":id", "public-guest-join") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
@@ -890,7 +905,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "public-visibility") { request async throws -> Response in
+        scoped.patch(":id", "public-visibility") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }
@@ -902,7 +917,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        servers.patch(":id", "public-search") { request async throws -> Response in
+        scoped.patch(":id", "public-search") { request async throws -> Response in
             guard let directory = services.publicServerDirectory, let id = request.parameters.get("id") else {
                 return respond(status: 404, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Not found")]).render())
             }

@@ -55,6 +55,7 @@ import VaporTesting
             func details(_ token: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(token)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.get, headers: headers, to: "/api/servers/\(serverId)")
             }
 

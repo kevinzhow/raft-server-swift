@@ -47,6 +47,7 @@ import VaporTesting
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 let target = machine ?? managedMachine
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(serverId)/machines/\(target)/computer-lifecycle-operations") { request in
                     request.body = .init(string: body)
