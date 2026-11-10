@@ -6,7 +6,7 @@ import Foundation
 /// - profile: all three timezone/contact/journey ledgers.
 /// - identityRows, passwordResetTokens, legalAcceptances,
 ///   emailVerificationTokens (including rawToken), emailVerificationIssueDates.
-/// - accountSurface: accounts (all 26 fields), analyticsIds, sessions,
+/// - accountSurface: accounts (all 30 fields), analyticsIds, sessions,
 ///   rotationReceipts (successor and ciphertext), predecessorFamilies,
 ///   revokedFamilies, sessionFamilies (nonce, revocation and retention),
 ///   retirementReceipts, accessTokens, accessTokenFamilies, appLoginRequests,

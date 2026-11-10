@@ -70,6 +70,9 @@ struct AccountProfileUpdate: Sendable {
     var referralSource: String?? = nil
     var referralSourceOther: String?? = nil
     var referralSourceSkipped = false
+    /// The signup survey role. Outer `nil` leaves role and completion time
+    /// alone; `.some(nil)` clears the role and still stamps the request time.
+    var signupRole: String?? = nil
     var preferredLanguage: String?? = nil
     var preferredTimezone: String?? = nil
     var preferredTranslationMode: String? = nil

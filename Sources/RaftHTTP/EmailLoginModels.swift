@@ -494,6 +494,17 @@ struct Account: Sendable {
         var referralSource: String? = nil
         var referralSourceOther: String? = nil
         var referralSourceSkippedAt: Date? = nil
+        /// Signup survey role, one of the upstream `SIGNUP_ROLES` ids. `nil` is
+        /// a legal stored value; the completion stamp below is the gate.
+        var signupRole: String? = nil
+        /// The request time that answered the survey. Account-global and
+        /// monotonic in practice: every present `signupRole` re-stamps it.
+        var signupSurveyCompletedAt: Date? = nil
+        /// The first final onboarding handoff on this account. Both facts are
+        /// written only while the time is absent
+        /// (upstream `users.first_onboarding_completed_at`).
+        var firstOnboardingCompletedAt: Date? = nil
+        var firstOnboardingCompletedSessionFamilyId: String? = nil
     }
 
 struct LinkedIdentity: Sendable {

@@ -309,6 +309,10 @@ public struct RegisterResponse: JSONBodyConvertible, Equatable {
                 OrderedJSONField("profileSetupCompletedAt", .null),
                 OrderedJSONField("profileSetupSuggestedHandle", profileSetupSuggestedHandle),
                 OrderedJSONField("profileSetupProvider", .null),
+                // A just-created account cannot have answered the signup survey;
+                // the published user object still carries both nullable members.
+                OrderedJSONField("signupSurveyCompletedAt", .null),
+                OrderedJSONField("signupRole", .null),
             ])),
             OrderedJSONField("accessToken", accessToken),
             OrderedJSONField("refreshToken", refreshToken),

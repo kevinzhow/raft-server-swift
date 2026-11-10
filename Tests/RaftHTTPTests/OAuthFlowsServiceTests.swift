@@ -195,7 +195,8 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     let rendered = completed.jsonBody.render()
     #expect(rendered.hasPrefix(#"{"user":{"id":""#))
     #expect(rendered.contains(#","email":"person@flows.test","name":"pending_"#))
-    #expect(rendered.contains(#","profileSetupCompletedAt":null,"profileSetupProvider":"google"},"accessToken":""#))
+    #expect(rendered.contains(#","profileSetupCompletedAt":null,"profileSetupProvider":"google""#))
+    #expect(rendered.contains(#","signupSurveyCompletedAt":null,"signupRole":null},"accessToken":""#))
     #expect(rendered.hasSuffix(#","mode":"login","returnUri":"raft://oauth/callback"}"#))
     #expect(throws: OAuthFlowsError.handoffCodeConsumed) {
         try service.completeMobileOAuth(MobileOAuthCompleteRequest(code: fresh, codeVerifier: verifier))
