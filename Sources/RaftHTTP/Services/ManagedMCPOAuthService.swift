@@ -322,11 +322,12 @@ public struct ManagedMCPOAuthService: Sendable {
         let channelType = oauth.channelType(id: channelId) ?? "channel"
         guard channelType != "thread" else { throw ManagedMCPOAuthError.threadsUseFollow }
         let prefs = oauth.notificationPrefs(channelId: channelId, userId: userId)
+        let muted = prefs.activityMuted && prefs.muteFromSeq != nil
         return ChannelNotificationSettingsResponse(
-            activityMuted: prefs.activityMuted,
-            muteFromSeq: prefs.muteFromSeq,
+            activityMuted: muted,
+            muteFromSeq: muted ? prefs.muteFromSeq : nil,
             prefsVersion: prefs.prefsVersion,
-            activityMuteSupported: channelType == "channel"
+            activityMuteSupported: ChannelActivityMuteSupport.supports(channelType)
         )
     }
 
@@ -350,11 +351,12 @@ public struct ManagedMCPOAuthService: Sendable {
             throw ManagedMCPOAuthError.activityMutedNotBoolean
         }
         let result = oauth.setActivityMuted(channelId: channelId, userId: userId, muted: muted)
+        let appliedMute = result.prefs.activityMuted && result.prefs.muteFromSeq != nil
         return ChannelNotificationSettingsResponse(
-            activityMuted: result.prefs.activityMuted,
-            muteFromSeq: result.prefs.muteFromSeq,
+            activityMuted: appliedMute,
+            muteFromSeq: appliedMute ? result.prefs.muteFromSeq : nil,
             prefsVersion: result.prefs.prefsVersion,
-            activityMuteSupported: channelType == "channel"
+            activityMuteSupported: ChannelActivityMuteSupport.supports(channelType)
         )
     }
 

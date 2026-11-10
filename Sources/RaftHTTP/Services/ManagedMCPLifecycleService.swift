@@ -192,9 +192,15 @@ public struct ManagedMCPLifecycleService: Sendable {
             throw ManagedMCPLifecycleError.notAMember
         }
         let facts = channels.channelListFacts()
+        let snapshot = channels.state
+        let rowFacts = ChannelRowFacts(oauth: oauth, messages: messages)
         let includeArchived = archived == "include"
         let serverAdmin = role == "owner" || role == "admin"
         let rows = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: includeArchived)
+            // Upstream `listChannels` only lists `channel`, `private` and
+            // `joint`; DMs have their own directory and threads hydrate through
+            // their parent.
+            .filter { ["channel", "private", "joint"].contains($0.type) }
             .filter { includeArchived || oauth.channelArchivedAt(id: $0.id) == nil }
             .filter { role != "guest" || (facts.guestVisible[$0.id] ?? true) }
             .map { channel -> ManagedMCPChannelListResponse.Row in
@@ -202,23 +208,33 @@ public struct ManagedMCPLifecycleService: Sendable {
                 let localRole = facts.humanRoles["\(channel.id)\n\(userId)"]
                 let capability = localRole == "admin" || serverAdmin
                 let basis: String? = localRole == "admin" ? "channel_role" : (serverAdmin ? "server_role" : nil)
+                let readState = rowFacts.readState(channelId: channel.id, userId: userId)
+                // Upstream reports a mute only while it has a mute frontier.
+                let muted = channel.activityMuted && channel.muteFromSeq != nil
                 return ManagedMCPChannelListResponse.Row(
                     id: channel.id,
+                    serverId: channel.serverId,
                     name: channel.name,
+                    description: channel.description,
                     type: channel.type,
+                    createdAt: channel.createdAt,
                     joined: channel.joined,
                     archivedAt: oauth.channelArchivedAt(id: channel.id),
                     lastMessageAt: channel.lastMessageAt,
-                    activityMuted: channel.activityMuted,
-                    muteFromSeq: channel.muteFromSeq,
+                    activityMuted: muted,
+                    muteFromSeq: muted ? channel.muteFromSeq : nil,
                     prefsVersion: channel.prefsVersion,
                     collapseLongMessages: displayPrefs.collapseLongMessages,
                     displayPrefsVersion: displayPrefs.prefsVersion,
+                    maxReadSeq: readState.maxReadSeq,
+                    readStateVersion: readState.readStateVersion,
+                    readState: readState,
                     channelRole: basis == nil ? "member" : "admin",
                     channelAdminBasis: basis,
                     capability: capability,
                     isJoint: facts.jointLocalChannelIds.contains(channel.id),
-                    serverAdmin: serverAdmin
+                    serverAdmin: serverAdmin,
+                    channelAuthorityRevision: snapshot.channelAuthorityRevisions[channel.id] ?? 1
                 )
             }
         return ManagedMCPChannelListResponse(rows: rows)
