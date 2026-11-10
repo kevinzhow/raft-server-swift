@@ -285,6 +285,16 @@ public struct AuthIdentitiesService: Sendable {
         return (AccountNaming.normalize(email ?? ""), password ?? "", request.pendingLinkToken)
     }
 
+    /// The full public user projection, including the separately stored
+    /// timezone observation pair `toPublicUser` reads from the same row.
+    private func userDTO(_ account: Account) -> AuthUserDTO {
+        AuthUserDTO(
+            account: account,
+            observation: store.timezoneObservation(userId: account.id),
+            profileSetupProvider: store.profileSetupProvider(userId: account.id)
+        )
+    }
+
     private func finishLogin(_ candidate: PasswordCredentialCandidate, pendingLinkToken: String?) throws -> LoginResponse {
         switch store.authenticate(
             email: candidate.email,
@@ -295,7 +305,7 @@ public struct AuthIdentitiesService: Sendable {
         ) {
         case .authenticated(let account, let tokens, let linkedProvider):
             return LoginResponse(
-                user: AuthUserDTO(account: account),
+                user: userDTO(account),
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
                 linkedProvider: linkedProvider
@@ -438,7 +448,7 @@ public struct AuthIdentitiesService: Sendable {
         ) {
         case .completed(let account, let tokens):
             return AppLoginCompleteResponse(
-                user: AuthUserDTO(account: account),
+                user: userDTO(account),
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken
             )
@@ -466,15 +476,7 @@ public struct AuthIdentitiesService: Sendable {
         guard let account = store.account(userId: userId), account.retiredAt == nil else {
             throw AuthIdentitiesError.invalidToken
         }
-        let observed = store.timezoneObservation(userId: userId).map {
-            TimezoneObservationResponse(
-                firstObservedTimezone: $0.firstTimezone,
-                firstObservedTimezoneAt: DateText.iso8601($0.firstAt),
-                lastObservedTimezone: $0.lastTimezone,
-                lastObservedTimezoneAt: DateText.iso8601($0.lastAt)
-            )
-        }
-        return AuthMeResponse(user: AuthUserDTO(account: account), observedTimezone: observed)
+        return AuthMeResponse(user: userDTO(account))
     }
 
     /// `POST /api/auth/me/avatar`. A file over 5 MB is refused before the stored path changes.
@@ -494,7 +496,7 @@ public struct AuthIdentitiesService: Sendable {
         guard let account = store.setAvatarURL(userId: userId, url: "/api/avatars/users/\(hash).webp") else {
             throw AuthIdentitiesError.invalidToken
         }
-        return AuthProfileUserResponse(user: AuthUserDTO(account: account))
+        return AuthProfileUserResponse(user: userDTO(account))
     }
 
     /// `PATCH /api/auth/me`. A wrong current password is refused before any
@@ -565,7 +567,7 @@ public struct AuthIdentitiesService: Sendable {
             now: now(),
             newAnalyticsId: UUID().uuidString.lowercased()
         ) else { throw AuthIdentitiesError.invalidToken }
-        return AuthProfileUserResponse(user: AuthUserDTO(account: account))
+        return AuthProfileUserResponse(user: userDTO(account))
     }
 
     /// The per-field checks in the order the retired handler ran them: the
@@ -621,13 +623,20 @@ public struct AuthIdentitiesService: Sendable {
         case .absent: break
         case .value(let value) where ["off", "manual", "auto"].contains(value):
             update.preferredTranslationMode = value
+            update.autoTranslationEnabled = value == "auto"
         default:
             throw AuthIdentitiesError.invalidProfile("Invalid preferredTranslationMode")
         }
 
         switch request.autoTranslationEnabled {
         case .absent: break
-        case .value(let value): update.autoTranslationEnabled = value
+        case .value(let value):
+            // Upstream derives the mode-less boolean into the mode too; when
+            // the request named a mode, that mode's derivation wins.
+            if case .absent = request.preferredTranslationMode {
+                update.autoTranslationEnabled = value
+                update.preferredTranslationMode = value ? "auto" : "off"
+            }
         default:
             throw AuthIdentitiesError.invalidProfile("Invalid autoTranslationEnabled")
         }

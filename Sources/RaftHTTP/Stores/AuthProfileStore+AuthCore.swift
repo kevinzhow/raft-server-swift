@@ -67,12 +67,10 @@ struct RegistrationAttempt: Sendable {
     var now: Date
 }
 
-struct RegisteredAccount: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
-    var id: String
-    var email: String
-    var name: String
-    var suggestedHandle: String
-    var emailVerified: Bool
+struct RegisteredAccount: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    /// The retained account row; the response projects it through the one
+    /// canonical `AuthUserDTO`, not a registration-only field list.
+    var account: Account
     var tokens: IssuedSessionTokens
     /// Internal delivery fact, never included in RegisterResponse or snapshots.
     var verificationToken: String
@@ -81,7 +79,7 @@ struct RegisteredAccount: Sendable, Equatable, CustomStringConvertible, CustomDe
     var debugDescription: String { description }
 }
 
-enum RegistrationOutcome: Sendable, Equatable {
+enum RegistrationOutcome: Sendable {
     case emailTaken
     case created(RegisteredAccount)
 }
@@ -359,13 +357,12 @@ extension AuthProfileStore {
             if attempt.autoVerify {
                 state.accountSurface.accounts[normalized]?.emailVerified = true
             }
+            guard let account = state.accountSurface.accounts[normalized] else {
+                return .emailTaken
+            }
             let tokens = Self.openSessionLocked(state: &state, userId: id)
             return .created(RegisteredAccount(
-                id: id,
-                email: normalized,
-                name: pendingName,
-                suggestedHandle: suggested,
-                emailVerified: attempt.autoVerify,
+                account: account,
                 tokens: tokens,
                 verificationToken: verificationToken
             ))

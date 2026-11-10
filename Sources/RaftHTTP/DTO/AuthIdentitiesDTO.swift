@@ -405,94 +405,121 @@ public struct AppLoginRedirectResponse: JSONBodyConvertible, Equatable {
     }
 }
 
-/// The full `user` object `GET /api/auth/me`, the avatar upload and the app
-/// login completion publish. `AuthUserDTO(account:)` is the one place the
-/// member order is written down; `EmailLoginDirectory.userJSON` renders it for
-/// the domains that still embed the object in their own bodies.
+/// The full `user` object `toPublicUser` publishes: register, login,
+/// `GET`/`PATCH /api/auth/me`, complete-profile, the avatar upload, app-login
+/// completion and both mobile OAuth completion paths embed this one value.
+///
+/// Member order, presence and nullability follow `services/userService.ts`
+/// `toPublicUser` exactly: every member is always present, nullable members
+/// print JSON null, `displayName` is not derived from `name`, and the four
+/// observed-timezone members sit between `preferredTimezone` and
+/// `preferredTranslationMode`. `autoTranslationEnabled` is derived from the
+/// stored mode, as upstream does, rather than read independently.
 public struct AuthUserDTO: JSONBodyConvertible, Equatable {
     public let id: String
     public let email: String
-    public let name: String
-    public let emailVerified: Bool
-    public let displayName: String
     public let gravatarHash: String
-    public let displayLanguage: String?
-    public let profileSetupCompletedAt: String?
-    public let profileSetupSuggestedHandle: String?
-    public let profileSetupProvider: String?
+    public let name: String
+    public let displayName: String?
+    public let description: String?
     public let avatarUrl: String?
-    public let shareUsageData: Bool?
+    public let emailVerified: Bool
     public let preferredLanguage: String?
+    public let displayLanguage: String?
     public let preferredTimezone: String?
+    public let firstObservedTimezone: String?
+    public let firstObservedTimezoneAt: String?
+    public let lastObservedTimezone: String?
+    public let lastObservedTimezoneAt: String?
     public let preferredTranslationMode: String
     public let autoTranslationEnabled: Bool
     public let preferredTranslationDisplay: String
     public let preferredTimeFormat: String?
     public let preferredMessageBodyFontSize: String?
+    public let shareUsageData: Bool?
     public let referralSource: String?
     public let referralSourceOther: String?
     public let referralSourceSkippedAt: String?
+    public let profileSetupCompletedAt: String?
+    public let profileSetupSuggestedHandle: String?
     /// Signup survey state. Both members are always present, matching
     /// `toPublicUser`'s `?? null`; `signupSurveyCompletedAt` is the gate the
     /// client reads. The account-global first-onboarding pair is not published.
     public let signupSurveyCompletedAt: String?
     public let signupRole: String?
+    public let profileSetupProvider: String?
 
-    init(account: Account) {
+    init(
+        account: Account,
+        observation: TimezoneObservation? = nil,
+        profileSetupProvider: String? = nil
+    ) {
         id = account.id
         email = account.email
-        name = account.name
-        emailVerified = account.emailVerified
-        displayName = account.displayName ?? account.name
         gravatarHash = AuthTokenCodec.sha256(
             account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         )
-        displayLanguage = account.displayLanguage
-        profileSetupCompletedAt = account.profileSetupCompletedAt.map(DateText.iso8601)
-        profileSetupSuggestedHandle = account.profileSetupSuggestedHandle
-        profileSetupProvider = account.profileSetupProvider
+        name = account.name
+        displayName = account.displayName
+        description = account.description
         avatarUrl = account.avatarUrl
-        shareUsageData = account.shareUsageData
+        emailVerified = account.emailVerified
         preferredLanguage = account.preferredLanguage
+        displayLanguage = account.displayLanguage
         preferredTimezone = account.preferredTimezone
+        firstObservedTimezone = observation?.firstTimezone
+        firstObservedTimezoneAt = observation.map { DateText.iso8601($0.firstAt) }
+        // During a rolling deploy, a pre-0187 row can populate only the first
+        // pair; upstream treats that accepted state as the latest observation.
+        lastObservedTimezone = observation?.lastTimezone ?? observation?.firstTimezone
+        lastObservedTimezoneAt = observation.map { DateText.iso8601($0.lastAt) }
         preferredTranslationMode = account.preferredTranslationMode
-        autoTranslationEnabled = account.autoTranslationEnabled
+        autoTranslationEnabled = account.preferredTranslationMode == "auto"
         preferredTranslationDisplay = account.preferredTranslationDisplay
         preferredTimeFormat = account.preferredTimeFormat
         preferredMessageBodyFontSize = account.preferredMessageBodyFontSize
+        shareUsageData = account.shareUsageData
         referralSource = account.referralSource
         referralSourceOther = account.referralSourceOther
         referralSourceSkippedAt = account.referralSourceSkippedAt.map(DateText.iso8601)
+        profileSetupCompletedAt = account.profileSetupCompletedAt.map(DateText.iso8601)
+        profileSetupSuggestedHandle = account.profileSetupSuggestedHandle
         signupSurveyCompletedAt = account.signupSurveyCompletedAt.map(DateText.iso8601)
         signupRole = account.signupRole
+        self.profileSetupProvider = profileSetupProvider
     }
 
     var fields: [OrderedJSONField] {
         [
             OrderedJSONField("id", id),
             OrderedJSONField("email", email),
-            OrderedJSONField("name", name),
-            OrderedJSONField("emailVerified", emailVerified),
-            OrderedJSONField("displayName", displayName),
             OrderedJSONField("gravatarHash", gravatarHash),
-            OrderedJSONField("displayLanguage", optional: displayLanguage),
-            OrderedJSONField("profileSetupCompletedAt", optional: profileSetupCompletedAt),
-            OrderedJSONField("profileSetupSuggestedHandle", optional: profileSetupSuggestedHandle),
-            OrderedJSONField("profileSetupProvider", optional: profileSetupProvider),
+            OrderedJSONField("name", name),
+            OrderedJSONField("displayName", optional: displayName),
+            OrderedJSONField("description", optional: description),
             OrderedJSONField("avatarUrl", optional: avatarUrl),
-            OrderedJSONField("shareUsageData", optional: shareUsageData),
+            OrderedJSONField("emailVerified", emailVerified),
             OrderedJSONField("preferredLanguage", optional: preferredLanguage),
+            OrderedJSONField("displayLanguage", optional: displayLanguage),
             OrderedJSONField("preferredTimezone", optional: preferredTimezone),
+            OrderedJSONField("firstObservedTimezone", optional: firstObservedTimezone),
+            OrderedJSONField("firstObservedTimezoneAt", optional: firstObservedTimezoneAt),
+            OrderedJSONField("lastObservedTimezone", optional: lastObservedTimezone),
+            OrderedJSONField("lastObservedTimezoneAt", optional: lastObservedTimezoneAt),
             OrderedJSONField("preferredTranslationMode", preferredTranslationMode),
             OrderedJSONField("autoTranslationEnabled", autoTranslationEnabled),
             OrderedJSONField("preferredTranslationDisplay", preferredTranslationDisplay),
             OrderedJSONField("preferredTimeFormat", optional: preferredTimeFormat),
             OrderedJSONField("preferredMessageBodyFontSize", optional: preferredMessageBodyFontSize),
+            OrderedJSONField("shareUsageData", optional: shareUsageData),
             OrderedJSONField("referralSource", optional: referralSource),
             OrderedJSONField("referralSourceOther", optional: referralSourceOther),
             OrderedJSONField("referralSourceSkippedAt", optional: referralSourceSkippedAt),
+            OrderedJSONField("profileSetupCompletedAt", optional: profileSetupCompletedAt),
+            OrderedJSONField("profileSetupSuggestedHandle", optional: profileSetupSuggestedHandle),
             OrderedJSONField("signupSurveyCompletedAt", optional: signupSurveyCompletedAt),
             OrderedJSONField("signupRole", optional: signupRole),
+            OrderedJSONField("profileSetupProvider", optional: profileSetupProvider),
         ]
     }
 
@@ -501,22 +528,15 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
     }
 }
 
-/// `GET /api/auth/me`: the user object, with the four observed-timezone
-/// members appended to the same object once the user has reported one.
+/// `GET /api/auth/me`: the bare user object, unchanged from `toPublicUser`.
 public struct AuthMeResponse: JSONBodyConvertible, Equatable {
     public let user: AuthUserDTO
-    public let observedTimezone: TimezoneObservationResponse?
 
-    public var jsonBody: OrderedJSON {
-        var fields = user.fields
-        if let observed = observedTimezone {
-            fields.append(OrderedJSONField("firstObservedTimezone", observed.firstObservedTimezone))
-            fields.append(OrderedJSONField("firstObservedTimezoneAt", observed.firstObservedTimezoneAt))
-            fields.append(OrderedJSONField("lastObservedTimezone", observed.lastObservedTimezone))
-            fields.append(OrderedJSONField("lastObservedTimezoneAt", observed.lastObservedTimezoneAt))
-        }
-        return .object(fields)
+    public init(user: AuthUserDTO) {
+        self.user = user
     }
+
+    public var jsonBody: OrderedJSON { user.jsonBody }
 }
 
 /// `PATCH /api/auth/me` and `POST /api/auth/me/avatar`: the bare user object.

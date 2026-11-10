@@ -289,31 +289,25 @@ public enum SocialCompleteResponse: JSONBodyConvertible, Equatable {
     }
 }
 
-/// `POST /api/auth/register` success body.
+/// `POST /api/auth/register` success body. Upstream returns the complete
+/// `toPublicUser` projection, not a registration-only subset.
 public struct RegisterResponse: JSONBodyConvertible, Equatable {
-    public var id: String
-    public var email: String
-    public var name: String
-    public var emailVerified: Bool
-    public var profileSetupSuggestedHandle: String
+    public var user: AuthUserDTO
     public var accessToken: String
     public var refreshToken: String
 
+    public var id: String { user.id }
+    public var email: String { user.email }
+
+    public init(user: AuthUserDTO, accessToken: String, refreshToken: String) {
+        self.user = user
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+    }
+
     public var jsonBody: OrderedJSON {
         .object([
-            OrderedJSONField("user", .object([
-                OrderedJSONField("id", id),
-                OrderedJSONField("email", email),
-                OrderedJSONField("name", name),
-                OrderedJSONField("emailVerified", emailVerified),
-                OrderedJSONField("profileSetupCompletedAt", .null),
-                OrderedJSONField("profileSetupSuggestedHandle", profileSetupSuggestedHandle),
-                OrderedJSONField("profileSetupProvider", .null),
-                // A just-created account cannot have answered the signup survey;
-                // the published user object still carries both nullable members.
-                OrderedJSONField("signupSurveyCompletedAt", .null),
-                OrderedJSONField("signupRole", .null),
-            ])),
+            OrderedJSONField("user", user.jsonBody),
             OrderedJSONField("accessToken", accessToken),
             OrderedJSONField("refreshToken", refreshToken),
         ])

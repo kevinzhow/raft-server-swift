@@ -131,17 +131,20 @@ private func render(_ error: AuthIdentitiesError) -> String {
         userId: userId, email: "identity-03@slock.test", password: "password123", completedAt: fixedDate
     )
     let gravatar = AuthTokenCodec.sha256("identity-03@slock.test")
-    let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","name":"identity-03","emailVerified":true,"displayName":"identity-03","gravatarHash":"\#(gravatar)","displayLanguage":"en","profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","profileSetupProvider":"google","avatarUrl":"/api/avatars/users/x.webp","shareUsageData":true,"preferredLanguage":null,"preferredTimezone":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"signupSurveyCompletedAt":null,"signupRole":null"#
+    // Pinned `services/userService.ts` `toPublicUser`: every member is present
+    // in this order; nullable members print null, `displayName` is not derived
+    // from `name`, and the observed-timezone pair sits after `preferredTimezone`.
+    let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","gravatarHash":"\#(gravatar)","name":"identity-03","displayName":null,"description":null,"avatarUrl":"/api/avatars/users/x.webp","emailVerified":true,"preferredLanguage":null,"displayLanguage":"en","preferredTimezone":null,"firstObservedTimezone":null,"firstObservedTimezoneAt":null,"lastObservedTimezone":null,"lastObservedTimezoneAt":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"shareUsageData":true,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","signupSurveyCompletedAt":null,"signupRole":null,"profileSetupProvider":"google"}"#
 
-    #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render() == user + "}")
+    #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render() == user)
     // The standalone user payload other domains embed renders the same bytes.
-    #expect(scene.userDTO(userId: userId)!.jsonBody.render() == user + "}")
+    #expect(scene.userDTO(userId: userId)!.jsonBody.render() == user)
 
     scene.seedTimezoneObservation(
         userId: userId, firstTimezone: "Asia/Tokyo", firstAt: fixedDate, lastTimezone: "UTC", lastAt: fixedDate
     )
-    #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render()
-        == user + #","firstObservedTimezone":"Asia/Tokyo","firstObservedTimezoneAt":"2023-11-14T22:13:20.000Z","lastObservedTimezone":"UTC","lastObservedTimezoneAt":"2023-11-14T22:13:20.000Z"}"#)
+    let observed = #"{"id":"\#(userId)","email":"identity-03@slock.test","gravatarHash":"\#(gravatar)","name":"identity-03","displayName":null,"description":null,"avatarUrl":"/api/avatars/users/x.webp","emailVerified":true,"preferredLanguage":null,"displayLanguage":"en","preferredTimezone":null,"firstObservedTimezone":"Asia/Tokyo","firstObservedTimezoneAt":"2023-11-14T22:13:20.000Z","lastObservedTimezone":"UTC","lastObservedTimezoneAt":"2023-11-14T22:13:20.000Z","preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"shareUsageData":true,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","signupSurveyCompletedAt":null,"signupRole":null,"profileSetupProvider":"google"}"#
+    #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render() == observed)
 
     #expect(throws: AuthIdentitiesError.missingAuthorization) { try service.me(authorization: nil) }
     #expect(throws: AuthIdentitiesError.invalidToken) { try service.me(authorization: "Bearer nope") }

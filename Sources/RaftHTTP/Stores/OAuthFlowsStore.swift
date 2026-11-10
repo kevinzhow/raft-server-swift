@@ -37,27 +37,22 @@ enum MobileHandoffRefusal: Sendable, Equatable {
 }
 
 /// The account a completed handoff signed in (an existing account or the one
-/// just created) and the session it opened.
-struct MobileSignedIn: Sendable, Equatable {
-    var userId: String
-    var email: String
-    var name: String
+/// just created) and the session it opened. The account value is the retained
+/// row every published user member is projected from; a just-created account
+/// has no signup-survey facts yet.
+struct MobileSignedIn: Sendable {
+    var account: Account
     var provider: String
     var mode: String
     var returnUri: String
     var tokens: IssuedSessionTokens
-    /// The account's retained signup-survey facts; a just-created account has
-    /// neither.
-    var signupSurveyCompletedAt: Date?
-    var signupRole: String?
+    /// Set only when this completion spent a pending link token.
+    var linkedProvider: String?
 }
 
 /// What one `complete` call decided and wrote.
 enum MobileCompletionOutcome: Sendable {
     case refused(MobileHandoffRefusal)
-    /// A pending link token was spent: the owner is signed in with the
-    /// provider linked.
-    case pendingLinkSpent(userId: String, linkedProvider: String, tokens: IssuedSessionTokens)
     /// The provider identity matches an existing account: a pending link token
     /// was issued and the handoff spent.
     case linkRequired(
@@ -137,6 +132,15 @@ struct OAuthFlowsStore: Sendable {
     /// or a revoked session family.
     func userId(forAccessToken token: String) -> String? {
         profiles.userId(forAccessToken: token)
+    }
+
+    /// The observed-timezone pair published on every full user object.
+    func timezoneObservation(userId: String) -> TimezoneObservation? {
+        profiles.timezoneObservation(userId: userId)
+    }
+
+    func profileSetupProvider(userId: String) -> String? {
+        profiles.profileSetupProvider(userId: userId)
     }
 
     func isEmailVerified(userId: String) -> Bool {
@@ -315,17 +319,26 @@ struct OAuthFlowsStore: Sendable {
             }
             let email = AccountNaming.normalize(profile.email)
             var intendedAction = "login"
-            if request.mode == "login",
-               let existing = state.accountSurface.accounts[email],
-               state.accountSurface.linkedIdentities.first(where: {
-                   $0.provider == provider && $0.providerUserId == profile.providerUserId
-               })?.userId != existing.id {
-                guard request.linkOnConflict else { return fail("account_conflict") }
-                intendedAction = "link"
+            var existingUserId: String?
+            if request.mode == "login", let existing = state.accountSurface.accounts[email] {
+                let linkedOwner = state.accountSurface.linkedIdentities.first {
+                    $0.provider == provider && $0.providerUserId == profile.providerUserId
+                }?.userId
+                if linkedOwner == existing.id {
+                    existingUserId = existing.id
+                } else {
+                    guard request.linkOnConflict else { return fail("account_conflict") }
+                    intendedAction = "link"
+                }
             }
             state.accountSurface.providerExchanges += 1
             request.status = "provider_completed"
             request.intendedAction = intendedAction
+            // A conflict completion carries no userId, so a server that
+            // predates pending links cannot read it as "sign in to the
+            // existing account". Link-mode starts keep the authenticated owner.
+            request.userId = request.mode == "link" ? request.userId
+                : (intendedAction == "link" ? nil : existingUserId)
             request.handoffCode = handoff
             request.codeHash = AuthTokenCodec.sha256(handoff)
             request.profileEmail = email
@@ -402,11 +415,21 @@ struct OAuthFlowsStore: Sendable {
                         providerUserId: pending.providerUserId, providerEmail: pending.email
                     ))
                 }
+                guard let signedInAccount = state.accountSurface.accounts.values.first(where: { $0.id == identityOwner }) else {
+                    return .refused(.invalid)
+                }
                 request.status = "completed"
                 state.accountSurface.mobileRequests[requestId] = request
                 state.accountSurface.consumedHandoffs.insert(code)
                 let tokens = Self.openSession(&state.accountSurface, userId: identityOwner)
-                return .pendingLinkSpent(userId: identityOwner, linkedProvider: pending.provider, tokens: tokens)
+                return .signedIn(MobileSignedIn(
+                    account: signedInAccount,
+                    provider: request.provider,
+                    mode: request.mode,
+                    returnUri: request.returnUri,
+                    tokens: tokens,
+                    linkedProvider: pending.provider
+                ))
             }
             if request.intendedAction == "link", let email = request.profileEmail,
                let existing = state.accountSurface.accounts[email] {
@@ -441,11 +464,12 @@ struct OAuthFlowsStore: Sendable {
                 state.accountSurface.mobileRequests[requestId] = request
                 state.accountSurface.consumedHandoffs.insert(code)
                 return .signedIn(MobileSignedIn(
-                    userId: account.id, email: account.email, name: account.name,
-                    provider: request.provider, mode: request.mode, returnUri: request.returnUri,
+                    account: account,
+                    provider: request.provider,
+                    mode: request.mode,
+                    returnUri: request.returnUri,
                     tokens: tokens,
-                    signupSurveyCompletedAt: account.signupSurveyCompletedAt,
-                    signupRole: account.signupRole
+                    linkedProvider: nil
                 ))
             }
             if !acceptTerms { return .refused(.legalRequired) }
@@ -456,17 +480,23 @@ struct OAuthFlowsStore: Sendable {
             guard !email.isEmpty, let passwordPlaceholder else { return .refused(.invalid) }
             let taken = Set(state.accountSurface.accounts.values.map(\.name))
             let pendingName = AccountNaming.pendingHandle(taken: taken)
+            let suggestedHandle = AccountNaming.availableUserName(
+                seed: request.profileName ?? email, taken: taken
+            )
+            let providerDisplayName = request.profileName?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             let id = UUID().uuidString.lowercased()
             state.accountSurface.accounts[email] = Account(
                 id: id,
                 email: email,
                 passwordHash: passwordPlaceholder,
+                passwordCredentialEstablishedAt: nil,
                 displayLanguage: nil,
                 name: pendingName,
-                profileSetupSuggestedHandle: AccountNaming.availableUserName(
-                    seed: request.profileName ?? email, taken: taken
-                ),
-                profileSetupProvider: request.provider
+                displayName: providerDisplayName.flatMap { $0.isEmpty ? nil : $0 } ?? suggestedHandle,
+                profileSetupSuggestedHandle: suggestedHandle,
+                profileSetupProvider: request.provider,
+                emailVerified: true
             )
             state.legalAcceptances[id] = EmailLegalAcceptance(
                 termsVersion: AuthLegalPolicy.termsVersion,
@@ -492,12 +522,16 @@ struct OAuthFlowsStore: Sendable {
             request.handoffCode = nil
             state.accountSurface.mobileRequests[requestId] = request
             state.accountSurface.consumedHandoffs.insert(code)
+            guard let created = state.accountSurface.accounts[email] else {
+                return .refused(.invalid)
+            }
             return .signedIn(MobileSignedIn(
-                userId: id, email: email, name: pendingName,
-                provider: request.provider, mode: request.mode, returnUri: request.returnUri,
+                account: created,
+                provider: request.provider,
+                mode: request.mode,
+                returnUri: request.returnUri,
                 tokens: tokens,
-                signupSurveyCompletedAt: nil,
-                signupRole: nil
+                linkedProvider: nil
             ))
         }
     }

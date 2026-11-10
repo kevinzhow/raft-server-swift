@@ -169,11 +169,21 @@ struct AuthServicesUnitFixture: Sendable {
                 shareUsageData: true,
                 emailVerified: true
             )
+            state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                userId: userId, provider: "google", providerUserId: "identity-03-sub",
+                providerEmail: email
+            ))
         }
     }
 
     func userDTO(userId: String) -> AuthUserDTO? {
-        profiles.account(userId: userId).map { AuthUserDTO(account: $0) }
+        profiles.account(userId: userId).map {
+            AuthUserDTO(
+                account: $0,
+                observation: profiles.timezoneObservation(userId: userId),
+                profileSetupProvider: profiles.profileSetupProvider(userId: userId)
+            )
+        }
     }
 
     func seedTimezoneObservation(

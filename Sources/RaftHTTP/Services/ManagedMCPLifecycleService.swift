@@ -257,14 +257,22 @@ public struct ManagedMCPLifecycleService: Sendable {
                 name: account.name,
                 displayName: account.displayName ?? account.name,
                 completedAt: account.profileSetupCompletedAt ?? completedAt,
-                user: AuthUserDTO(account: account)
+                user: AuthUserDTO(
+                    account: account,
+                    observation: profiles.timezoneObservation(userId: userId),
+                    profileSetupProvider: profiles.profileSetupProvider(userId: userId)
+                )
             )
         case .completed(let account):
             return ProfileCompletionResponse(
                 name: name,
                 displayName: displayName,
                 completedAt: account.profileSetupCompletedAt ?? completedAt,
-                user: AuthUserDTO(account: account)
+                user: AuthUserDTO(
+                    account: account,
+                    observation: profiles.timezoneObservation(userId: userId),
+                    profileSetupProvider: profiles.profileSetupProvider(userId: userId)
+                )
             )
         }
     }

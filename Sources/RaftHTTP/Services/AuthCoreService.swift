@@ -255,19 +255,15 @@ public struct AuthCoreService: Sendable {
         switch store.registerAccount(attempt) {
         case .emailTaken:
             throw AuthCoreError.emailAlreadyRegistered
-        case .created(let account):
+        case .created(let registered):
             try transactionalEmail.verification(
-                recipientEmail: account.email, name: "there", rawToken: account.verificationToken,
+                recipientEmail: registered.account.email, name: "there", rawToken: registered.verificationToken,
                 issuedAt: attempt.now
             )
             return RegisterResponse(
-                id: account.id,
-                email: account.email,
-                name: account.name,
-                emailVerified: account.emailVerified,
-                profileSetupSuggestedHandle: account.suggestedHandle,
-                accessToken: account.tokens.accessToken,
-                refreshToken: account.tokens.refreshToken
+                user: AuthUserDTO(account: registered.account),
+                accessToken: registered.tokens.accessToken,
+                refreshToken: registered.tokens.refreshToken
             )
         }
     }

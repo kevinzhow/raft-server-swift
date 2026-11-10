@@ -204,9 +204,12 @@ private func successes<T: Sendable>(
 
     let created = try service.register(request(), userAgent: "ua", acceptLanguage: "en")
     let rendered = created.jsonBody.render()
-    #expect(rendered.hasPrefix("{\"user\":{\"id\":\"\(created.id)\",\"email\":\"new@slock.test\",\"name\":\"pending_"))
-    #expect(rendered.contains("\"emailVerified\":false,\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\"newbie\",\"profileSetupProvider\":null"))
-    #expect(rendered.contains("\"signupSurveyCompletedAt\":null,\"signupRole\":null},\"accessToken\":\""))
+    let gravatar = AuthTokenCodec.sha256("new@slock.test")
+    let userJSON = created.user.jsonBody.render()
+    #expect(userJSON.hasPrefix("{\"id\":\"\(created.id)\",\"email\":\"new@slock.test\",\"gravatarHash\":\"\(gravatar)\",\"name\":\"pending_"))
+    #expect(userJSON.contains("\",\"displayName\":null,\"description\":null,\"avatarUrl\":null,\"emailVerified\":false,\"preferredLanguage\":null,\"displayLanguage\":null,\"preferredTimezone\":null,\"firstObservedTimezone\":null,\"firstObservedTimezoneAt\":null,\"lastObservedTimezone\":null,\"lastObservedTimezoneAt\":null,\"preferredTranslationMode\":\"off\",\"autoTranslationEnabled\":false,\"preferredTranslationDisplay\":\"translated\","))
+    #expect(userJSON.hasSuffix(",\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\"newbie\",\"signupSurveyCompletedAt\":null,\"signupRole\":null,\"profileSetupProvider\":null}"))
+    #expect(rendered == "{\"user\":\(userJSON),\"accessToken\":\"\(created.accessToken)\",\"refreshToken\":\"\(created.refreshToken)\"}")
     #expect(scene.legalAcceptance(userId: created.id)?.source == "signup")
     #expect(scene.emailVerificationRecordCount(userId: created.id) == 1)
     #expect(thrown { try service.register(request(), userAgent: nil, acceptLanguage: nil) }

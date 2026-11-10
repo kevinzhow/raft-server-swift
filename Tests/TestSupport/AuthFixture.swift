@@ -80,14 +80,48 @@ public struct AuthFixture: Sendable {
         profiles.identitySnapshot(userId: userId).passwordConfigured
     }
 
-    public func setAccountProfileForTesting(id: String, name: String, displayName: String? = nil) {
+    public func setAccountProfileForTesting(
+        id: String, name: String, displayName: String? = nil, description: String? = nil
+    ) {
         profiles.state.withLock { owned in
             if let key = owned.accountSurface.accounts.first(where: { $0.value.id == id })?.key,
                var account = owned.accountSurface.accounts[key] {
                 account.name = name
                 account.displayName = displayName ?? name
+                account.description = description
                 owned.accountSurface.accounts[key] = account
             }
+        }
+    }
+
+    public func linkSocialIdentityForTesting(
+        userId: String, provider: String, providerUserId: String, providerEmail: String? = nil
+    ) {
+        profiles.state.withLock { owned in
+            owned.accountSurface.linkedIdentities.append(LinkedIdentity(
+                userId: userId, provider: provider, providerUserId: providerUserId,
+                providerEmail: providerEmail
+            ))
+        }
+    }
+
+    public func setSignupSurveyForTesting(userId: String, role: String?, completedAt: Date) {
+        profiles.state.withLock { owned in
+            if let key = owned.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
+                owned.accountSurface.accounts[key]?.signupRole = role
+                owned.accountSurface.accounts[key]?.signupSurveyCompletedAt = completedAt
+            }
+        }
+    }
+
+    public func setTimezoneObservationForTesting(
+        userId: String, firstTimezone: String, firstAt: Date, lastTimezone: String, lastAt: Date
+    ) {
+        profiles.state.withLock { owned in
+            owned.profile.timezoneObservations[userId] = TimezoneObservation(
+                firstTimezone: firstTimezone, firstAt: firstAt,
+                lastTimezone: lastTimezone, lastAt: lastAt
+            )
         }
     }
 

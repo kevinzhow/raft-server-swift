@@ -103,7 +103,7 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             let plain = try await send(client, .post, "/api/auth/login", contentType: nil, body: #"{"email":"bytes@slock.test","password":"password123"}"#)
             #expect(plain.status == .ok)
             let text = plain.body.string ?? ""
-            #expect(text.hasPrefix(#"{"user":{"id":"\#(fixture.userId)","email":"bytes@slock.test","name":"bytes","emailVerified":false,"displayName":"bytes","gravatarHash":""#))
+            #expect(text.hasPrefix(#"{"user":{"id":"\#(fixture.userId)","email":"bytes@slock.test","gravatarHash":""#))
             #expect(text.hasSuffix(#","linkedProvider":null}"#))
             expectStandard(plain, length: text.utf8.count)
 
@@ -148,8 +148,9 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             let me = try await send(client, .get, "/api/auth/me", bearer: fixture.bearer)
             #expect(me.status == .ok)
             let meText = me.body.string ?? ""
-            #expect(meText.hasPrefix(#"{"id":"\#(fixture.userId)","email":"bytes@slock.test","name":"bytes","emailVerified":false,"displayName":"bytes","gravatarHash":""#))
-            #expect(meText.hasSuffix(#""preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"signupSurveyCompletedAt":null,"signupRole":null}"#))
+            #expect(meText.hasPrefix(#"{"id":"\#(fixture.userId)","email":"bytes@slock.test","gravatarHash":""#))
+            #expect(meText.contains(#","name":"bytes","displayName":null,"description":null,"avatarUrl":null,"emailVerified":false,"preferredLanguage":null,"displayLanguage":null,"preferredTimezone":null,"firstObservedTimezone":null,"firstObservedTimezoneAt":null,"lastObservedTimezone":null,"lastObservedTimezoneAt":null,"#))
+            #expect(meText.hasSuffix(#","signupSurveyCompletedAt":null,"signupRole":null,"profileSetupProvider":null}"#))
 
             let notObject = try await send(client, .patch, "/api/auth/me", bearer: fixture.bearer, body: "[1]")
             #expect(notObject.status == .badRequest)
@@ -182,6 +183,10 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             let userId = UUID().uuidString.lowercased()
             let email = "projection-\(userId)@auth.test"
             accounts.addAccount(id: userId, email: email, password: "projection-test-password")
+            accounts.linkIdentityForTesting(
+                userId: userId, provider: "github", providerUserId: "projection-github",
+                providerEmail: email
+            )
             accounts.authProfileStore.state.withLock { owned in
                 owned.accountSurface.accounts[email]?.emailVerified = verified
                 owned.accountSurface.accounts[email]?.name = completed ? "ready-handle" : ""

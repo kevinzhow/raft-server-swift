@@ -169,4 +169,12 @@ extension AuthProfileStore {
             return state.profile.timezoneObservations[userId]
         }
     }
+
+    /// Upstream `getProfileSetupProvider`: the first linked identity row for
+    /// the account, in insertion order.
+    func profileSetupProvider(userId: String) -> String? {
+        state.withLock { state in
+            state.accountSurface.linkedIdentities.first { $0.userId == userId }?.provider
+        }
+    }
 }

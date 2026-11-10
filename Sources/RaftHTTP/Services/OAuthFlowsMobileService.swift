@@ -162,13 +162,6 @@ extension OAuthFlowsService {
         switch outcome {
         case .refused(let refusal):
             throw Self.error(for: refusal)
-        case .pendingLinkSpent(let userId, let linkedProvider, let tokens):
-            return .pendingLinkSpent(
-                userId: userId,
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken,
-                linkedProvider: linkedProvider
-            )
         case .linkRequired(let token, let provider, let email, let expiresAt, let hasPassword, let providers, let returnUri):
             throw OAuthFlowsError.accountLinkRequired(
                 pendingLinkToken: token,
@@ -180,17 +173,18 @@ extension OAuthFlowsService {
                 returnUri: returnUri
             )
         case .signedIn(let signedIn):
-            return .signedIn(
-                id: signedIn.userId,
-                email: signedIn.email,
-                name: signedIn.name,
+            return MobileOAuthCompleted(
+                user: AuthUserDTO(
+                    account: signedIn.account,
+                    observation: store.timezoneObservation(userId: signedIn.account.id),
+                    profileSetupProvider: store.profileSetupProvider(userId: signedIn.account.id)
+                ),
                 provider: signedIn.provider,
                 mode: signedIn.mode,
                 returnUri: signedIn.returnUri,
                 accessToken: signedIn.tokens.accessToken,
                 refreshToken: signedIn.tokens.refreshToken,
-                signupSurveyCompletedAt: signedIn.signupSurveyCompletedAt,
-                signupRole: signedIn.signupRole
+                linkedProvider: signedIn.linkedProvider
             )
         }
     }
