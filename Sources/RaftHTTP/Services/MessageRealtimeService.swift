@@ -32,11 +32,42 @@ struct MessageRealtimeService: Sendable {
     let profiles: AuthProfileStore?
     let oauth: OAuthLedger
 
-    func frames(for message: StoredHumanMessage) -> [MessageRealtimeFrame] {
+    func frames(
+        for message: StoredHumanMessage,
+        actionMetadata: OrderedJSON? = nil
+    ) -> [MessageRealtimeFrame] {
         let state = channels.state
         guard let channel = state.postableChannels[message.channelId] else {
             // Upstream still publishes the row when the channel read is
             // missing, using the ordinary channel context.
+            return [MessageRealtimeFrame(
+                room: "channel:\(message.channelId)", event: "message:new", identity: message.id,
+                payload: canonicalPayload(message, conversationContext: .object([
+                    OrderedJSONField("channelType", "channel"),
+                ]), actionMetadata: actionMetadata)
+            )]
+        }
+        switch channel.kind {
+        case "dm":
+            return dmFrames(message, channel: channel, actionMetadata: actionMetadata)
+        case "thread":
+            return threadFrames(message, channel: channel, state: state, actionMetadata: actionMetadata)
+        default:
+            let context = messageConversationContext(channel: channel, channels: state.postableChannels)
+            return [MessageRealtimeFrame(
+                room: "channel:\(message.channelId)", event: "message:new", identity: message.id,
+                payload: canonicalPayload(message, conversationContext: context, actionMetadata: actionMetadata)
+            )]
+        }
+    }
+
+    /// Upstream `broadcastSystemMessage`: a persisted system row joins the DM
+    /// humans or thread followers first, then publishes `message:new` (and
+    /// `dm:new` for a DM). Unlike an ordinary reply it records no thread
+    /// follows, clears no Done scope and publishes no `thread:updated`.
+    func systemFrames(for message: StoredHumanMessage) -> [MessageRealtimeFrame] {
+        let state = channels.state
+        guard let channel = state.postableChannels[message.channelId] else {
             return [MessageRealtimeFrame(
                 room: "channel:\(message.channelId)", event: "message:new", identity: message.id,
                 payload: canonicalPayload(message, conversationContext: .object([
@@ -48,7 +79,7 @@ struct MessageRealtimeService: Sendable {
         case "dm":
             return dmFrames(message, channel: channel)
         case "thread":
-            return threadFrames(message, channel: channel, state: state)
+            return systemThreadFrames(message, channel: channel, state: state)
         default:
             let context = messageConversationContext(channel: channel, channels: state.postableChannels)
             return [MessageRealtimeFrame(
@@ -58,12 +89,61 @@ struct MessageRealtimeService: Sendable {
         }
     }
 
+    /// The audience of a `message:updated` frame: reaction/edit producers use
+    /// the channel room, while an action-card carrier in a thread uses the
+    /// authority-filtered follower user rooms.
+    enum MessageUpdateAudience: Sendable {
+        case channel
+        case threadFollowers
+    }
+
+    /// Upstream `getMessageContext` update projection: the same canonical row
+    /// as `message:new` without the creation-time `conversationContext`, with
+    /// the retained reaction buckets, forwarded/action-card metadata and the
+    /// shared-broadcast comment scrub (null).
+    func messageUpdatedFrames(
+        for message: StoredHumanMessage,
+        actionMetadata: OrderedJSON? = nil,
+        reactions: [OrderedJSON] = [],
+        commentRef: OrderedJSON? = nil,
+        audience: MessageUpdateAudience = .channel
+    ) -> [MessageRealtimeFrame] {
+        let payload = canonicalPayload(
+            message, conversationContext: nil, actionMetadata: actionMetadata,
+            reactions: reactions, commentRef: commentRef
+        )
+        switch audience {
+        case .channel:
+            return [MessageRealtimeFrame(
+                room: "channel:\(message.channelId)", event: "message:updated", identity: message.id, payload: payload
+            )]
+        case .threadFollowers:
+            let state = channels.state
+            guard let channel = state.postableChannels[message.channelId], channel.kind == "thread" else {
+                return [MessageRealtimeFrame(
+                    room: "channel:\(message.channelId)", event: "message:updated", identity: message.id, payload: payload
+                )]
+            }
+            let followerIds = ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
+                .humanFollowerIds(threadChannelId: message.channelId, serverId: channel.serverId)
+            return followerIds.map { userId in
+                MessageRealtimeFrame(
+                    room: "user:\(userId)", event: "message:updated", identity: message.id, payload: payload
+                )
+            }
+        }
+    }
+
     // MARK: - DM
 
     /// Upstream joins the DM's humans, publishes `message:new` to the channel
     /// room, then publishes `dm:new` for the DM list to the room and to each
     /// human's own room.
-    private func dmFrames(_ message: StoredHumanMessage, channel: PostableChannel) -> [MessageRealtimeFrame] {
+    private func dmFrames(
+        _ message: StoredHumanMessage,
+        channel: PostableChannel,
+        actionMetadata: OrderedJSON? = nil
+    ) -> [MessageRealtimeFrame] {
         let relay = RealtimeRelayService(messages: messages)
         let humans = oauth.channelHumanIds(channelId: message.channelId)
         for userId in humans {
@@ -72,7 +152,7 @@ struct MessageRealtimeService: Sendable {
         let context = messageConversationContext(channel: channel, channels: channels.state.postableChannels)
         var frames = [MessageRealtimeFrame(
             room: "channel:\(message.channelId)", event: "message:new", identity: message.id,
-            payload: canonicalPayload(message, conversationContext: context)
+            payload: canonicalPayload(message, conversationContext: context, actionMetadata: actionMetadata)
         )]
         let dmPayload = OrderedJSON.object([OrderedJSONField("channelId", message.channelId)]).render()
         frames.append(MessageRealtimeFrame(
@@ -96,13 +176,14 @@ struct MessageRealtimeService: Sendable {
     private func threadFrames(
         _ message: StoredHumanMessage,
         channel: PostableChannel,
-        state: ServersAndChannelsStore.State
+        state: ServersAndChannelsStore.State,
+        actionMetadata: OrderedJSON? = nil
     ) -> [MessageRealtimeFrame] {
         guard let parentMessageId = channel.parentMessageId else {
             let context = messageConversationContext(channel: channel, channels: state.postableChannels)
             return [MessageRealtimeFrame(
                 room: "channel:\(message.channelId)", event: "message:new", identity: message.id,
-                payload: canonicalPayload(message, conversationContext: context)
+                payload: canonicalPayload(message, conversationContext: context, actionMetadata: actionMetadata)
             )]
         }
         // The human writer already clears Done inside its message transaction;
@@ -129,7 +210,7 @@ struct MessageRealtimeService: Sendable {
 
         let parentChannel = channel.parentChannelId.flatMap { state.postableChannels[$0] }
         let context = messageConversationContext(channel: channel, channels: state.postableChannels)
-        let messagePayload = canonicalPayload(message, conversationContext: context)
+        let messagePayload = canonicalPayload(message, conversationContext: context, actionMetadata: actionMetadata)
         var frames: [MessageRealtimeFrame] = []
         if parentChannel?.kind == "channel" {
             frames.append(MessageRealtimeFrame(
@@ -176,6 +257,36 @@ struct MessageRealtimeService: Sendable {
         return frames
     }
 
+    /// A persisted system row in a thread: join the follower audience, then
+    /// publish `message:new` to the thread room for a public parent or each
+    /// follower's own room for a private/DM parent. No follow write and no
+    /// `thread:updated` summary (upstream `broadcastSystemMessage`).
+    private func systemThreadFrames(
+        _ message: StoredHumanMessage,
+        channel: PostableChannel,
+        state: ServersAndChannelsStore.State
+    ) -> [MessageRealtimeFrame] {
+        let followerIds = ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
+            .humanFollowerIds(threadChannelId: message.channelId, serverId: channel.serverId)
+        let relay = RealtimeRelayService(messages: messages)
+        for userId in followerIds {
+            relay.joinUserServerSessions(userId, channel.serverId, "channel:\(message.channelId)")
+        }
+        let parentChannel = channel.parentChannelId.flatMap { state.postableChannels[$0] }
+        let context = messageConversationContext(channel: channel, channels: state.postableChannels)
+        let payload = canonicalPayload(message, conversationContext: context)
+        if parentChannel?.kind == "channel" {
+            return [MessageRealtimeFrame(
+                room: "channel:\(message.channelId)", event: "message:new", identity: message.id, payload: payload
+            )]
+        }
+        return followerIds.map { userId in
+            MessageRealtimeFrame(
+                room: "user:\(userId)", event: "message:new", identity: message.id, payload: payload
+            )
+        }
+    }
+
     /// The retained `getThreadInfo` read: every message row in the thread,
     /// including system rows, with the parent author not invented as a
     /// participant unless they replied.
@@ -198,7 +309,13 @@ struct MessageRealtimeService: Sendable {
     /// The canonical message manifest plus the sender facts the row itself
     /// cannot carry. Agent labels come from the OAuth ledger; human labels from
     /// the account store.
-    private func canonicalPayload(_ message: StoredHumanMessage, conversationContext: OrderedJSON?) -> String {
+    func canonicalPayload(
+        _ message: StoredHumanMessage,
+        conversationContext: OrderedJSON?,
+        actionMetadata: OrderedJSON? = nil,
+        reactions: [OrderedJSON] = [],
+        commentRef: OrderedJSON? = nil
+    ) -> String {
         let account = profiles?.account(userId: message.senderId)
         let agent = message.senderType == "agent" ? oauth.agentRuntimeInfo(id: message.senderId) : nil
         let name: String
@@ -227,7 +344,10 @@ struct MessageRealtimeService: Sendable {
             sender: sender,
             attachments: attachments,
             mentions: message.mentions,
-            conversationContext: conversationContext
+            conversationContext: conversationContext,
+            actionMetadata: actionMetadata,
+            reactions: reactions,
+            commentRef: commentRef
         ).jsonBody.render()
     }
 

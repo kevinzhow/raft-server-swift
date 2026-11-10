@@ -15,6 +15,10 @@ struct HumanMessageCommitService: Sendable {
     let ledger: MessageLedgerPort
     let emit: @Sendable (String, String, String?) -> Void
 
+    /// Commits one human-send row. `publishes` is false only for the forward
+    /// path, whose `message:new` must carry the forwarded-bundle metadata the
+    /// post-commit forward write attaches; that path calls
+    /// `publishForwarded` after the bundle is retained.
     func store(
         channelId: String,
         senderId: String,
@@ -22,7 +26,8 @@ struct HumanMessageCommitService: Sendable {
         randomId: String?,
         attachmentIds: [String],
         senderTimezone: String?,
-        mentions: [MentionInput]
+        mentions: [MentionInput],
+        publishes: Bool = true
     ) -> HumanMessageWrite {
         let channel = channels.postableChannel(id: channelId)
         let kind = channel?.kind
@@ -42,11 +47,8 @@ struct HumanMessageCommitService: Sendable {
             // Upstream `emitPersistedMessageToFrontend`: the DM/thread room
             // grants and reply follows run before `message:new`; the same
             // service then publishes `dm:new` or the parent `thread:updated`.
-            let realtime = MessageRealtimeService(
-                messages: messages, channels: channels, profiles: profiles, oauth: oauth
-            )
-            for frame in realtime.frames(for: message) {
-                emit(frame.room, frame.event, frame.payload)
+            if publishes {
+                emitFrames(for: message, actionMetadata: nil)
             }
             return HumanMessageWrite(status: 200, body: body, created: true)
         case .replayed(let message):
@@ -70,6 +72,32 @@ struct HumanMessageCommitService: Sendable {
             case .ok:
                 preconditionFailure("A successful attachment check cannot be a commit refusal")
             }
+        }
+    }
+
+    /// The forward path's deferred publish: the bundle exists by now, so the
+    /// frame carries the same forwarded-bundle metadata the HTTP response and
+    /// the read paths project.
+    func publishForwarded(_ message: StoredHumanMessage) {
+        var metadata: OrderedJSON?
+        if let record = messages.forwardRecord(messageId: message.id) {
+            metadata = OrderedJSON.object([
+                OrderedJSONField("kind", "forwarded-bundle"),
+                OrderedJSONField("destinationTargetId", record.destinationTargetId),
+                OrderedJSONField("forwardedItems", .array(record.items.map {
+                    .raw(MessageForwardProjection.forwardItemJSON($0))
+                })),
+            ])
+        }
+        emitFrames(for: message, actionMetadata: metadata)
+    }
+
+    private func emitFrames(for message: StoredHumanMessage, actionMetadata: OrderedJSON?) {
+        let realtime = MessageRealtimeService(
+            messages: messages, channels: channels, profiles: profiles, oauth: oauth
+        )
+        for frame in realtime.frames(for: message, actionMetadata: actionMetadata) {
+            emit(frame.room, frame.event, frame.payload)
         }
     }
 

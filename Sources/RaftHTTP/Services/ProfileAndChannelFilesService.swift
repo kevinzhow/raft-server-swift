@@ -733,19 +733,20 @@ public struct ProfileAndChannelFilesService: Sendable {
             viewer = nil
         }
 
-        var payload = OrderedJSONObject()
-        payload.append("id", message.id)
-        payload.append("channelId", message.channelId)
-        payload.append("content", message.content)
-        payload.append("senderName", senderName(message.senderId))
-        payload.append("commentRef", OrderedJSON.null)
-        payload.append("reactions", .array(buckets.map(\.jsonBody)))
-        payload.append("actionMetadata", ifPresent: socketMetadata)
-        dependencies.emitRealtime(
-            "channel:\(message.channelId)",
-            "message:updated",
-            payload.json.render()
+        // Upstream reloads the enriched message context after the reaction
+        // write and broadcasts the canonical row (without conversationContext),
+        // not the legacy reduced shape. The shared broadcast scrubs commentRef
+        // and the viewer-scoped attachment comment count.
+        let realtime = MessageRealtimeService(
+            messages: messages, channels: channels, profiles: accounts, oauth: oauth
         )
+        for frame in realtime.messageUpdatedFrames(
+            for: message,
+            actionMetadata: socketMetadata,
+            reactions: buckets.map(\.jsonBody)
+        ) {
+            dependencies.emitRealtime(frame.room, frame.event, frame.payload)
+        }
         // The legacy writer published the caller's versioned viewer snapshot on
         // the caller's own room after the channel frame. Agent routes carry no
         // viewer snapshot and therefore emit no viewer frame.
@@ -798,10 +799,6 @@ public struct ProfileAndChannelFilesService: Sendable {
         }
         return accounts.accounts.values.first { $0.id == row.reactorId }
             .map { $0.displayName ?? $0.name } ?? "Unknown user"
-    }
-
-    private func senderName(_ senderId: String) -> String {
-        accounts.accounts.values.first { $0.id == senderId }?.name ?? "Unknown user"
     }
 
     /// The HTTP body keeps a forwarded source the viewer can read; the channel

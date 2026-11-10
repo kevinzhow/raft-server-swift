@@ -280,7 +280,20 @@ extension EmailLoginDirectory {
     /// commit as ordinary sends.
     var agentRoleNotices: AgentRoleNoticeService {
         AgentRoleNoticeService(profiles: authProfileStore, channels: serversAndChannelsStore,
-            messages: messagesAndThreadsStore, oauth: oauth)
+            oauth: oauth, notices: systemNoticeAppenderService)
+    }
+
+    /// The system-notice write and its frontend publication. The directory
+    /// supplies the message/channel/account owners and the realtime relay.
+    private var systemNoticeAppenderService: SystemNoticeAppender {
+        SystemNoticeAppender(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            ledger: MessageLedgerPort(oauth: oauth),
+            emit: { [realtimeRelay] room, event, payload in realtimeRelay.emit(room, event, payload) }
+        )
     }
 
     /// Human message create, the sender-side mention actions and the forward
@@ -755,8 +768,8 @@ extension EmailLoginDirectory {
     /// The notice, mirror and acting agent's born-read cursor share one
     /// Messages transaction; external effects run after that transaction returns.
     var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {
-        { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message, bornReadAgentId in
-            messages.appendMessage(message, ledger: ledger, bornReadAgentId: bornReadAgentId)
+        { [appender = systemNoticeAppenderService] message, bornReadAgentId in
+            appender.append(message, bornReadAgentId)
         }
     }
 

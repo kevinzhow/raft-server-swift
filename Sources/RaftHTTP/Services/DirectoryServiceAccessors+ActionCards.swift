@@ -98,6 +98,16 @@ extension EmailLoginDirectory {
                 emitRealtime: { [self] room, event, payload in
                     realtimeRelay.emit(room, event, payload)
                 },
+                publishMessageUpdated: { [messages = messagesAndThreadsStore, serversAndChannelsStore,
+                                          authProfileStore, oauth, realtimeRelay] messageId, metadataJSON in
+                    MessageUpdatePublisher(
+                        messages: messages,
+                        channels: serversAndChannelsStore,
+                        profiles: authProfileStore,
+                        oauth: oauth,
+                        emit: { room, event, payload in realtimeRelay.emit(room, event, payload) }
+                    ).actionCard(messageId: messageId, metadataJSON: metadataJSON)
+                },
                 marketplaceInstallableClient: { [self] recordId in
                     oauth.marketplaceInstallableClientIdentity(recordId: recordId)
                 },

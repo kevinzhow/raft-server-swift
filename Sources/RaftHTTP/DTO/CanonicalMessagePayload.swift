@@ -62,7 +62,21 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
     let sender: Sender
     let attachments: [Attachment]
     let mentions: [StoredMessageMention]
+    /// Creation-time conversation identity. Only `message:new` carries it;
+    /// `message:updated` is the same canonical row without this member.
     let conversationContext: OrderedJSON?
+    /// The retained forwarded-bundle / action-card metadata for an update
+    /// projection. A freshly persisted ordinary row has none.
+    var actionMetadata: OrderedJSON? = nil
+    /// Reaction buckets in first-reaction order; empty for a fresh row.
+    var reactions: [OrderedJSON] = []
+    /// The scoped attachment-comment reference. Shared broadcast frames scrub
+    /// it to null; only viewer-private reads carry the object.
+    var commentRef: OrderedJSON? = nil
+    var externalAuthor: OrderedJSON? = nil
+    /// The row's retained update time; a fresh row and a reaction-only update
+    /// both publish the creation time.
+    var updatedAt: Date? = nil
 
     /// The same members `jsonBody` publishes, exposed so the thread-summary
     /// `latestReply` projection can append its display-only fields without
@@ -77,10 +91,10 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
             OrderedJSONField("randomId", optional: message.randomId),
             OrderedJSONField("messageType", message.messageType),
             OrderedJSONField("content", message.content),
-            OrderedJSONField("actionMetadata", .null),
+            OrderedJSONField("actionMetadata", actionMetadata ?? .null),
             OrderedJSONField("threadId", .null),
             OrderedJSONField("createdAt", DateText.isoString(message.createdAt)),
-            OrderedJSONField("updatedAt", DateText.isoString(message.createdAt)),
+            OrderedJSONField("updatedAt", DateText.isoString(updatedAt ?? message.createdAt)),
             OrderedJSONField("senderName", sender.name),
             OrderedJSONField("senderDescription", optional: sender.description),
             OrderedJSONField("senderMembershipStatus", optional: sender.membershipStatus),
@@ -92,12 +106,13 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
                     OrderedJSONField("name", mention.name),
                 ])
             })),
-            // A freshly persisted row has no reactions, comment ref or external
-            // author; the persisted frontend payload publishes the explicit
-            // empty/null values.
-            OrderedJSONField("reactions", .array([])),
-            OrderedJSONField("commentRef", .null),
-            OrderedJSONField("externalAuthor", .null),
+            // The persisted frontend payload always publishes the aggregate
+            // members explicitly: a freshly persisted row has no reactions,
+            // comment ref or external author, while an update projection
+            // carries the retained values.
+            OrderedJSONField("reactions", .array(reactions)),
+            OrderedJSONField("commentRef", commentRef ?? .null),
+            OrderedJSONField("externalAuthor", externalAuthor ?? .null),
         ])
         if let conversationContext {
             body.append("conversationContext", conversationContext)

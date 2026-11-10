@@ -20,6 +20,20 @@ struct HumanMessageCreateDependencies: Sendable {
         _ senderTimezone: String?,
         _ mentions: [MentionInput]
     ) -> HumanMessageWrite
+    /// Commits the row without publishing. The forward route calls this, then
+    /// attaches the forwarded bundle, then `publishForwardedMessage`; upstream
+    /// persists the bundle before `broadcastAndDeliver` for the same reason.
+    var storeHumanMessageDeferred: @Sendable (
+        _ channelId: String,
+        _ senderId: String,
+        _ content: String,
+        _ randomId: String?,
+        _ attachmentIds: [String],
+        _ senderTimezone: String?,
+        _ mentions: [MentionInput]
+    ) -> HumanMessageWrite
+    /// Publishes the committed forward row with its retained bundle metadata.
+    var publishForwardedMessage: @Sendable (_ message: StoredHumanMessage) -> Void
     var resolveMentions: @Sendable (
         _ serverId: String,
         _ channelId: String,
@@ -67,6 +81,11 @@ extension HumanMessageCreateDependencies {
                 writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
                     attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions)
             },
+            storeHumanMessageDeferred: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
+                writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
+                    attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions, publishes: false)
+            },
+            publishForwardedMessage: { writer.publishForwarded($0) },
             resolveMentions: { serverId, channelId, senderId, content, typed, warn in
                 try mentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId, content: content, typed: typed, warnUnresolved: warn)
             },
