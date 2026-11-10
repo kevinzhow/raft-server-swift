@@ -56,6 +56,10 @@ import Testing
                 #expect(f.accounts.agentsRuntimeStore.state.execution.commands.isEmpty)
                 #expect(f.accounts.agentsRuntimeStore.state.execution.agents.isEmpty)
                 #expect(f.accounts.agentsRuntimeStore.state.execution.heldDeliveries?.isEmpty ?? true)
+                // Accepted while the recipient is not deliverable: the durable
+                // message row plus one pending-delivery fact, still no launch,
+                // process or command.
+                #expect(f.accounts.agentsRuntimeStore.state.execution.pendingHumanDeliveries?.count == 1)
                 try context.prepareCommit()
                 #expect(try context.preparedDurableEffects().allSatisfy { $0.kind != "agent.execution" })
             }

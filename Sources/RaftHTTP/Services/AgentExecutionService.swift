@@ -168,6 +168,15 @@ public struct AgentExecutionService: Sendable {
                 }
             }
         }
+        // A separate committed step: a release refusal cannot roll back the
+        // ready reconciliation, and the durable pending facts stay for the next
+        // ready when the recipient is still not deliverable. The ready itself is
+        // already committed, so a release failure must not turn it into a hold.
+        do {
+            try await requirePersistence().execute {
+                try self.domain.releasePendingHumanDeliveries(context)
+            }
+        } catch {}
     }
 
     public func connectionReady(_ context: AgentExecutionMachineContext, daemonInstanceId: String,
@@ -180,6 +189,13 @@ public struct AgentExecutionService: Sendable {
 
     public func connectionClosed(_ context: AgentExecutionMachineContext) async throws {
         try await requirePersistence().execute { try self.domain.connectionClosed(context) }
+    }
+
+    /// The downstream half of the machine-disconnect projection: the upstream
+    /// ingress waits its two-second grace window and calls this only if the
+    /// machine is still offline on that connection epoch.
+    public func projectMachineDisconnect(_ context: AgentExecutionMachineContext) async throws {
+        try await requirePersistence().execute { try self.domain.projectMachineDisconnect(context) }
     }
 
     /// The pending decision cannot escape this method before the atomic owner /

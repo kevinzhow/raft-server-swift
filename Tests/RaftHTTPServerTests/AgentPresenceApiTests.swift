@@ -85,21 +85,34 @@ import VaporTesting
                 return body?.first { $0["id"] as? String == agent } ?? [:]
             }
 
-            // Baseline: no daemon fact retained, inactive + unreachable activity.
+            // Baseline: a complete ready reports no running process for the
+            // inactive agent; the reconcile keeps it inactive/offline with the
+            // upstream runtime-interrupted detail.
             let baseline = try await listedAgent()
             #expect(baseline["status"] as? String == "inactive")
             #expect(baseline["activity"] as? String == "offline")
-            #expect(baseline["activityDetail"] as? String == "")
+            #expect(baseline["activityDetail"] as? String == "Runtime interrupted")
 
-            // A running process with a reachable machine derives online even
-            // before the first activity frame (upstream resolveDerivedActivity).
+            // The Computer reconnects with its idle Codex process alive:
+            // ready.runningAgents makes the agent active and online
+            // (upstream planReadyReconcileAction mark-active-online), which is
+            // the production restart symptom this projection repairs.
             try await commit {
-                try domain.stageIngress(context: machineContext, type: "agent:status",
-                                        payload: try frame("agent:status", body: ["status": "active"]))
+                try domain.connectionOpened(machineContext)
+                try domain.connectionReady(machineContext, daemonInstanceId: "daemon-api",
+                                           runtimes: ["codex"], runningAgentIds: [agent], detectionComplete: true)
             }
             let active = try await listedAgent()
             #expect(active["status"] as? String == "active")
             #expect(active["activity"] as? String == "online")
+            #expect(active["activityDetail"] as? String == "")
+
+            // The daemon's sequenced status frame keeps the same state.
+            try await commit {
+                try domain.stageIngress(context: machineContext, type: "agent:status",
+                                        payload: try frame("agent:status", body: ["status": "active"]))
+            }
+            #expect((try await listedAgent())["status"] as? String == "active")
 
             // The daemon's live activity is projected with its detail.
             try await commit {

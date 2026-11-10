@@ -14,6 +14,11 @@ struct AgentExecutionState: Codable, Sendable {
     /// These facts do not require a machine, launch, process or socket receipt.
     var stopIntents: [String: AgentExecutionStopIntent]?
     var heldDeliveries: [String: AgentExecutionHeldDelivery]?
+    /// Human messages accepted while the recipient was not deliverable. The
+    /// canonical message row is the durable inbox; this owner records the
+    /// pending delivery so a later machine `ready` releases it through the
+    /// ordinary strict delivery path exactly once.
+    var pendingHumanDeliveries: [String: AgentExecutionPendingDelivery]?
     /// Optional to decode every snapshot predating durable reset.
     var resetIntents: [String: AgentExecutionResetIntent]?
 
@@ -106,6 +111,18 @@ struct AgentExecutionStopIntent: Codable, Sendable {
     var admission: AgentExecutionStopAdmission {
         .init(commandId: commandId, requiresMachineDispatch: machineId != nil)
     }
+}
+
+/// A human message queued because its recipient agent's machine was offline (or
+/// the agent was unassigned) at commit time. `releasedCommandId` links the one
+/// strict delivery attempt staged when the machine becomes ready.
+struct AgentExecutionPendingDelivery: Codable, Sendable {
+    let serverId: String
+    let agentId: String
+    let channelId: String
+    let messageId: String
+    let createdAt: Date
+    var releasedCommandId: UUID?
 }
 
 /// A real delivery request held without inventing a launch or daemon admission.

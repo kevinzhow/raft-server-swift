@@ -226,8 +226,8 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             // `GET /server`: the runtime context, role, channels and agents in order.
             // Agent rows follow the ledger's own (hash) order, so the expectation reads it.
             let agentRows = [
-                agentId: "{\"id\":\"\(agentId)\",\"name\":\"ByteBot\",\"role\":\"admin\",\"status\":\"active\",\"activity\":\"offline\",\"activityDetail\":\"\"}",
-                memberAgent: "{\"id\":\"\(memberAgent)\",\"name\":\"PlainBot\",\"role\":\"member\",\"status\":\"active\",\"activity\":\"offline\",\"activityDetail\":\"\"}",
+                agentId: "{\"id\":\"\(agentId)\",\"name\":\"ByteBot\",\"role\":\"admin\",\"status\":\"inactive\",\"activity\":\"offline\",\"activityDetail\":\"\"}",
+                memberAgent: "{\"id\":\"\(memberAgent)\",\"name\":\"PlainBot\",\"role\":\"member\",\"status\":\"inactive\",\"activity\":\"offline\",\"activityDetail\":\"\"}",
             ]
             let infoAgents = accounts.oauth.activeAgentIds(serverId: serverId)
                 .compactMap { agentRows[$0] }.joined(separator: ",")
@@ -321,7 +321,7 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             // `GET /channel-members`.
             let memberNames = [agentId: "ByteBot", memberAgent: "PlainBot"]
             let memberRows = accounts.oauth.channelAgentIds(channelId: alpha).map {
-                "{\"id\":\"\($0)\",\"name\":\"\(memberNames[$0] ?? "")\",\"status\":\"active\"}"
+                "{\"id\":\"\($0)\",\"name\":\"\(memberNames[$0] ?? "")\",\"status\":\"inactive\"}"
             }.joined(separator: ",")
             let members = try await client.send(.get, headers: admin, to: "/internal/agent-api/channel-members?channel=%23alpha")
             #expect(members.status == .ok)
