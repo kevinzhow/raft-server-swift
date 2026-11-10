@@ -25,8 +25,12 @@ extension ServersAndChannelsStore {
         }
     }
 
-    /// Writes one setup phase and returns the new value in the same critical
-    /// section, so the transition reply cannot observe a torn state.
+    /// Raw phase write for fixtures that seed a phase without provenance (the
+    /// legacy `complete` row an old build wrote). Production completion goes
+    /// through `completeSetup` so the phase and its `normal` reason are one
+    /// mutation; a raw write can therefore produce the intended "unknown"
+    /// legacy state but must never be used to backfill a reason.
+    @discardableResult
     func setSetupPhase(serverId: String, userId: String, phase: String) -> String {
         mutex.withLock { storage in
             storage.setupPhases["\(serverId)\n\(userId)"] = phase
@@ -34,18 +38,82 @@ extension ServersAndChannelsStore {
         }
     }
 
-    /// Clears every setup phase and the handoff marker for one server in one
-    /// critical section.
-    func clearSetupState(serverId: String) {
+    /// Records a NEW terminal completion: `phase = complete` and the `normal`
+    /// provenance in one critical section (upstream
+    /// services/serverSetupStateService.ts:555-571). A row that is already
+    /// `complete` keeps its retained phase, reason and timestamps: a terminal
+    /// retry never rewrites provenance, and an old complete without a reason
+    /// stays unknown rather than being backfilled with `normal`.
+    @discardableResult
+    func completeSetup(serverId: String, userId: String) -> String {
         mutex.withLock { storage in
-            storage.setupPhases = storage.setupPhases.filter { !$0.key.hasPrefix("\(serverId)\n") }
-            storage.setupHandoffs.remove(serverId)
+            let key = "\(serverId)\n\(userId)"
+            let phase = storage.setupPhases[key] ?? "not_started"
+            guard phase != "complete" else { return phase }
+            storage.setupPhases[key] = "complete"
+            storage.setupCompletionReasons[key] = ServerSetupCompletionReason.normal.rawValue
+            return "complete"
         }
     }
 
-    func setSetupHandoff(serverId: String) {
-        _ = mutex.withLock { storage in
-            storage.setupHandoffs.insert(serverId)
+    /// `start`: enter `in_progress` and drop any retained provenance in the same
+    /// critical section. Upstream `nextStateForAction` returns the state unchanged
+    /// for `complete`/`in_progress` and clears `completionReason` only when a row
+    /// leaves the pre-flow state (serverSetupStateService.ts:479-489).
+    func startSetup(serverId: String, userId: String) {
+        mutex.withLock { storage in
+            let key = "\(serverId)\n\(userId)"
+            let phase = storage.setupPhases[key] ?? "not_started"
+            guard phase != "complete", phase != "in_progress" else { return }
+            storage.setupPhases[key] = "in_progress"
+            storage.setupCompletionReasons.removeValue(forKey: key)
+        }
+    }
+
+    /// The retained completion reason for one member row. `nil` is unknown, not
+    /// `normal`: a legacy complete with no recorded reason owes nothing.
+    func setupCompletionReason(serverId: String, userId: String) -> ServerSetupCompletionReason? {
+        mutex.withLock { storage in
+            storage.setupCompletionReasons["\(serverId)\n\(userId)"]
+                .flatMap(ServerSetupCompletionReason.init(rawValue:))
+        }
+    }
+
+    /// The real first owner acknowledgment, or nil when the owner never pressed
+    /// "Let's Go". The legacy `setupHandoffs` marker is deliberately not read.
+    func setupHandoffReceipt(serverId: String, ownerId: String) -> SetupHandoffReceipt? {
+        mutex.withLock { storage in
+            storage.setupHandoffReceipts["\(serverId)\n\(ownerId)"]
+        }
+    }
+
+    /// Retains the FIRST `(serverId, originalOwnerId)` acknowledgment. The
+    /// second and later commands keep the first time (upstream stamps only while
+    /// `setup_handoff_acknowledged_at` is null). Returns the retained receipt.
+    @discardableResult
+    func acknowledgeSetupHandoff(serverId: String, originalOwnerId: String, at date: Date) -> SetupHandoffReceipt {
+        mutex.withLock { storage in
+            let key = "\(serverId)\n\(originalOwnerId)"
+            if let retained = storage.setupHandoffReceipts[key] { return retained }
+            let receipt = SetupHandoffReceipt(
+                serverId: serverId,
+                originalOwnerId: originalOwnerId,
+                acknowledgedAt: date
+            )
+            storage.setupHandoffReceipts[key] = receipt
+            return receipt
+        }
+    }
+
+    /// Clears every setup phase, reason and handoff receipt for one server in one
+    /// critical section (the reset rollback). The legacy marker is cleared too.
+    func clearSetupState(serverId: String) {
+        mutex.withLock { storage in
+            let prefix = "\(serverId)\n"
+            storage.setupPhases = storage.setupPhases.filter { !$0.key.hasPrefix(prefix) }
+            storage.setupCompletionReasons = storage.setupCompletionReasons.filter { !$0.key.hasPrefix(prefix) }
+            storage.setupHandoffReceipts = storage.setupHandoffReceipts.filter { $0.value.serverId != serverId }
+            storage.setupHandoffs.remove(serverId)
         }
     }
 
