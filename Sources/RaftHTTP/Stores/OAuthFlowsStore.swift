@@ -515,7 +515,8 @@ struct OAuthFlowsStore: Sendable {
                 state.accountSurface.linkedIdentities.append(LinkedIdentity(
                     userId: id,
                     provider: request.provider,
-                    providerUserId: providerUserId
+                    providerUserId: providerUserId,
+                    providerEmail: email
                 ))
             }
             request.status = "completed"

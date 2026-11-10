@@ -195,6 +195,9 @@ private extension KeyedDecodingContainer {
 public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     public var currentPassword: ProfileField<String> = .absent
     public var newPassword: ProfileField<String> = .absent
+    /// The upstream `description` profile field: absent leaves it alone, JSON
+    /// null clears it, and a string is trimmed (empty becomes null).
+    public var description: ProfileField<String> = .absent
     public var displayLanguage: ProfileField<String> = .absent
     public var shareUsageData: ProfileField<Bool> = .absent
     public var preferredLanguage: ProfileField<String> = .absent
@@ -216,6 +219,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case currentPassword
         case newPassword
+        case description
         case displayLanguage
         case shareUsageData
         case preferredLanguage
@@ -235,6 +239,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         currentPassword = container.profileString(.currentPassword)
         newPassword = container.profileString(.newPassword)
+        description = container.profileString(.description)
         displayLanguage = container.profileString(.displayLanguage)
         shareUsageData = container.profileBool(.shareUsageData)
         preferredLanguage = container.profileString(.preferredLanguage)
@@ -257,12 +262,14 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
 // part of the contract and `OrderedJSON` keeps the legacy `jsonString`
 // escaping (the sorted `JSONEncoder` would escape `/`).
 
-/// One linked sign-in identity as the identity list publishes it.
+/// One linked sign-in identity as the identity list publishes it. The pinned
+/// `user_auth_identities.provider_email` column is nullable; a retained row
+/// without one publishes JSON null.
 public struct AuthIdentityRow: Sendable, Equatable {
     public let provider: String
-    public let providerEmail: String
+    public let providerEmail: String?
 
-    public init(provider: String, providerEmail: String) {
+    public init(provider: String, providerEmail: String?) {
         self.provider = provider
         self.providerEmail = providerEmail
     }
@@ -270,7 +277,7 @@ public struct AuthIdentityRow: Sendable, Equatable {
     var json: OrderedJSON {
         .object([
             OrderedJSONField("provider", provider),
-            OrderedJSONField("providerEmail", providerEmail),
+            OrderedJSONField("providerEmail", optional: providerEmail),
         ])
     }
 }

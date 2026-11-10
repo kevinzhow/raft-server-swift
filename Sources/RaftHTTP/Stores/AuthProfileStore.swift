@@ -46,7 +46,6 @@ final class AuthProfileStore: Sendable {
     /// All mutable rows share one Mutex so cross-ledger decisions remain atomic.
     struct State: Sendable {
         var profile = ProfileState()
-        var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
         var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
         var legalAcceptances: [String: EmailLegalAcceptance] = [:]
         /// Replacing a live token does not erase the hourly issue history.
@@ -60,15 +59,19 @@ final class AuthProfileStore: Sendable {
     /// Shared by the store's file extensions; every access borrows state via withLock.
     let state = TransactionalState(State())
 
+    /// Fixture seed for one linked identity. The row is the same unified owner
+    /// the social link flows append to; it has no provider subject.
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
         state.withLock { state in
-            state.identityRows[userId, default: []].append((provider, providerEmail))
+            state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                userId: userId, provider: provider, providerEmail: providerEmail
+            ))
         }
     }
 
     func identityCount(userId: String) -> Int {
         return state.withLock { state in
-            return state.identityRows[userId]?.count ?? 0
+            return state.accountSurface.linkedIdentities.filter { $0.userId == userId }.count
         }
     }
 

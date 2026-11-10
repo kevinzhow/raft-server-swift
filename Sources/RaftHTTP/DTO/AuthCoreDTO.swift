@@ -240,14 +240,16 @@ public struct RefreshTokenRequest: Decodable, Sendable, Equatable {
 
 // MARK: - Responses
 
-/// One identity row of the link-completion reply.
+/// One identity row of the link-completion reply. Upstream returns the same
+/// `{provider, providerEmail}` rows as `GET /api/auth/identities`
+/// (`services/userService.ts:658-681`, `routes/auth.ts:1173-1188`).
 public struct SocialLinkedIdentityDTO: Sendable, Equatable {
     public var provider: String
-    public var providerUserId: String
+    public var providerEmail: String?
 
-    public init(provider: String, providerUserId: String) {
+    public init(provider: String, providerEmail: String?) {
         self.provider = provider
-        self.providerUserId = providerUserId
+        self.providerEmail = providerEmail
     }
 }
 
@@ -274,7 +276,7 @@ public enum SocialCompleteResponse: JSONBodyConvertible, Equatable {
             body.append("identities", .array(identities.map {
                 .object([
                     OrderedJSONField("provider", $0.provider),
-                    OrderedJSONField("providerUserId", $0.providerUserId),
+                    OrderedJSONField("providerEmail", optional: $0.providerEmail),
                 ])
             }))
         case .session(let provider, let mode, let returnTo, let accessToken, let refreshToken, let linkedProvider):

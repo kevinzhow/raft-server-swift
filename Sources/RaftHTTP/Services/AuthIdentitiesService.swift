@@ -570,10 +570,34 @@ public struct AuthIdentitiesService: Sendable {
         return AuthProfileUserResponse(user: userDTO(account))
     }
 
+    private static let descriptionValidationMessage =
+        "Description must be a string of at most \(AccountNaming.maxUserDescriptionLength) characters"
+
     /// The per-field checks in the order the retired handler ran them: the
     /// first failing field decides the 400.
     private static func validatedUpdate(_ request: UpdateProfileRequest) throws -> AccountProfileUpdate {
         var update = AccountProfileUpdate()
+
+        // Pinned `routes/auth.ts:1531-1537`: the raw value is capped at 3000
+        // JavaScript UTF-16 units, then `.trim() || null`. The check runs before
+        // the preference, survey and referral fields, and nothing is written
+        // until every field has passed.
+        switch request.description {
+        case .absent:
+            break
+        case .null:
+            update.description = .some(nil)
+        case .invalid:
+            throw AuthIdentitiesError.invalidProfile(Self.descriptionValidationMessage)
+        case .value(let raw):
+            guard raw.utf16.count <= AccountNaming.maxUserDescriptionLength else {
+                throw AuthIdentitiesError.invalidProfile(Self.descriptionValidationMessage)
+            }
+            // JavaScript `.trim()` is the ECMAScript whitespace set; Foundation
+            // also trims NEL, which the source preserves.
+            let trimmed = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
+            update.description = .some(trimmed.isEmpty ? nil : trimmed)
+        }
 
         switch request.displayLanguage {
         case .absent:
