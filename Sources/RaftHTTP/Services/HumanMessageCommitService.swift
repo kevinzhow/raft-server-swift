@@ -11,6 +11,7 @@ struct HumanMessageCommitService: Sendable {
     let messages: MessagesAndThreadsStore
     let channels: ServersAndChannelsStore
     let profiles: AuthProfileStore
+    let oauth: OAuthLedger
     let ledger: MessageLedgerPort
     let emit: @Sendable (String, String, String?) -> Void
 
@@ -40,9 +41,29 @@ struct HumanMessageCommitService: Sendable {
             // A new DM has no room members yet. Join every participant's live
             // sockets before publishing so the first frame is not lost
             // (upstream `emitPersistedMessageToFrontend`).
-            if kind == "dm", let channel {
-                for participantId in channel.memberIds {
-                    messages.realtimeRoomJoinerStorage?(participantId, "channel:\(channelId)")
+            if let channel {
+                let relay = RealtimeRelayService(messages: messages)
+                if kind == "dm" {
+                    for participantId in channel.memberIds {
+                        relay.joinUserServerSessions(participantId, channel.serverId, "channel:\(channelId)")
+                    }
+                } else if kind == "thread", let parentMessageId = channel.parentMessageId {
+                    // Upstream records the reply sender and, when present and
+                    // not the sender, the parent author before joining the
+                    // follower audience. The store write must precede the room
+                    // grant or the sender's own first reply is lost.
+                    let parent = messages.humanMessageRows.first { $0.id == parentMessageId }
+                    messages.recordThreadReplyJoinFollows(
+                        serverId: channel.serverId,
+                        threadChannelId: channelId,
+                        parentMessageId: parentMessageId,
+                        senderId: senderId,
+                        parentAuthorId: ThreadFollowerRealtimeService.parentAuthorId(
+                            of: parent, replyingSenderId: senderId
+                        )
+                    )
+                    ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
+                        .joinHumanFollowers(threadChannelId: channelId, serverId: channel.serverId)
                 }
             }
             let body = payload(message, conversationContext: nil)

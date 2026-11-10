@@ -1082,6 +1082,10 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             OrderedJSONField("channelId", threadId),
             OrderedJSONField("content", content),
         ]).render()
+        // `emitActionCardCarrierMessage` grants the thread room to every human
+        // follower before emitting `message:new` for a thread carrier.
+        ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
+            .joinHumanFollowers(threadChannelId: threadId, serverId: card.serverId)
         dependencies.emitRealtime("channel:\(threadId)", "message:new", payload)
     }
 

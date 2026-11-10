@@ -301,6 +301,7 @@ extension EmailLoginDirectory {
                     messages: messagesAndThreadsStore,
                     channels: serversAndChannelsStore,
                     profiles: authProfileStore,
+                    oauth: oauth,
                     ledger: MessageLedgerPort(oauth: oauth),
                     emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
                 ),

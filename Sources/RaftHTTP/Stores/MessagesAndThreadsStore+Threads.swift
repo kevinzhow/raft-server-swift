@@ -153,6 +153,43 @@ extension MessagesAndThreadsStore {
         )
     }
 
+    /// The reply-path follows that upstream writes before the frontend emit:
+    /// the sender always reactivates (a new reply is an explicit re-follow),
+    /// while the parent author is only ensured and never overrides an explicit
+    /// unfollow (`recordThreadFollow(..., "authored")` without reactivation).
+    ///
+    /// This runs inside the caller's Messages transaction, so the join
+    /// audience computed by the send path already contains both rows.
+    func recordThreadReplyJoinFollows(
+        serverId: String,
+        threadChannelId: String,
+        parentMessageId: String,
+        senderId: String,
+        parentAuthorId: String?
+    ) {
+        withState { state in
+            let senderKey = "\(serverId)\n\(senderId)\n\(threadChannelId)"
+            state.threadUnfollows.removeValue(forKey: senderKey)
+            Self.retireManagedThreadFollowerRemovals(in: &state, serverId: serverId,
+                threadId: threadChannelId, agentId: senderId)
+            state.threadFollows[senderKey] = (
+                serverId: serverId,
+                userId: senderId,
+                threadChannelId: threadChannelId,
+                parentMessageId: parentMessageId
+            )
+            guard let parentAuthorId, parentAuthorId != senderId else { return }
+            let authorKey = "\(serverId)\n\(parentAuthorId)\n\(threadChannelId)"
+            guard state.threadUnfollows[authorKey] == nil else { return }
+            state.threadFollows[authorKey] = (
+                serverId: serverId,
+                userId: parentAuthorId,
+                threadChannelId: threadChannelId,
+                parentMessageId: parentMessageId
+            )
+        }
+    }
+
     /// Follows the creator (and, when a different live member wrote the
     /// parent, the parent author) of a freshly created thread in one critical
     /// section.

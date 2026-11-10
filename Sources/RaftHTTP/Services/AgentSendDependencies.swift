@@ -109,6 +109,33 @@ extension AgentSendDependencies {
                 if case .committed(let seq) = outcome {
                     var committed = message
                     committed.seq = seq
+                    // The agent reply auto-follows its sender (and, when
+                    // eligible, the parent author) before the frontend emit,
+                    // then grants the thread room to every human follower.
+                    if let channel = channels.postableChannel(id: channelId) {
+                        if channel.kind == "dm" {
+                            let relay = RealtimeRelayService(messages: messages)
+                            for participantId in channel.memberIds {
+                                relay.joinUserServerSessions(
+                                    participantId, channel.serverId, "channel:\(channelId)"
+                                )
+                            }
+                        } else if channel.kind == "thread", let parentMessageId = channel.parentMessageId {
+                            let parent = messages.humanMessageRows.first { $0.id == parentMessageId }
+                            messages.recordThreadReplyJoinFollows(
+                                serverId: channel.serverId,
+                                threadChannelId: channelId,
+                                parentMessageId: parentMessageId,
+                                senderId: message.senderId,
+                                parentAuthorId: ThreadFollowerRealtimeService.parentAuthorId(
+                                    of: parent, replyingSenderId: message.senderId
+                                )
+                            )
+                            ThreadFollowerRealtimeService(
+                                messages: messages, channels: channels, oauth: mentionService.oauth
+                            ).joinHumanFollowers(threadChannelId: channelId, serverId: channel.serverId)
+                        }
+                    }
                     let relay = RealtimeRelayService(messages: messages)
                     try AgentExecutionPublication.publish(room: "channel:\(channelId)", event: "message:new", identity: message.id,
                         payloadJSON: AgentExecutionPublication.messagePayload(committed, senderName: mentionService.oauth.agentRuntimeInfo(id: message.senderId).map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? "Unknown", includeAttachments: true),

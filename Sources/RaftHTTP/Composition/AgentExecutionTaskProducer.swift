@@ -226,6 +226,11 @@ struct AgentExecutionTaskProducer: Sendable {
         let notice = append(StoredHumanMessage(id: UUID().uuidString.lowercased(), channelId: threadId,
             senderId: "system", content: content, randomId: nil, messageType: "system", senderType: "user",
             systemSubtype: "task.lifecycle_thread", causalActorType: "user", causalActorId: actorId))
+        // Upstream `broadcastSystemMessage` joins the thread's human followers
+        // before its `message:new`. The newly created thread already followed
+        // the actor above; join that audience now.
+        ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
+            .joinHumanFollowers(threadChannelId: threadId, serverId: surface.serverId)
         let relay = RealtimeRelayService(messages: messages)
         try AgentExecutionPublication.publish(room: "channel:\(threadId)", event: "message:new", identity: notice.id,
             payloadJSON: AgentExecutionPublication.systemMessagePayload(notice, channelType: "thread",
