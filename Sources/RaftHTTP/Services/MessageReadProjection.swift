@@ -40,6 +40,24 @@ struct MessageChannelFacts: Sendable {
     }
 }
 
+/// The creation-time `conversationContext` of a retained row: the channel's
+/// kind and, for a thread reply, the parent message's coordinates. Shared by
+/// the channel-history read and the human-send `message:new` frame.
+func messageConversationContext(
+    channel: PostableChannel,
+    channels: [String: PostableChannel]
+) -> OrderedJSON {
+    var fields: [OrderedJSONField] = [.init("channelType", channel.kind)]
+    if channel.kind == "thread" {
+        if let parent = channel.parentChannelId { fields.append(.init("parentChannelId", parent)) }
+        if let parent = channel.parentMessageId { fields.append(.init("parentMessageId", parent)) }
+        if let id = channel.parentChannelId, let parent = channels[id] {
+            fields.append(.init("parentChannelType", parent.kind))
+        }
+    }
+    return .object(fields)
+}
+
 /// Read-side composition returns the existing ordered DTOs. Stores provide
 /// atomic row snapshots; channel/OAuth authority is a separate explicit input.
 struct MessageReadProjection: Sendable {
@@ -83,16 +101,8 @@ struct MessageReadProjection: Sendable {
         } else { membership = channelState.serverMemberStatuses["\(channel?.serverId ?? "")\n\(row.senderId)"] ?? "removed" }
         let threadId = readableChildThreads(parentChannelId: channelId, parentIds: [row.id],
             serverId: serverId, userId: userId, channelState: channelState).first?.id
-        let conversation: OrderedJSON? = channel.map { channel in
-            var fields: [OrderedJSONField] = [.init("channelType", channel.kind)]
-            if channel.kind == "thread" {
-                if let parent = channel.parentChannelId { fields.append(.init("parentChannelId", parent)) }
-                if let parent = channel.parentMessageId { fields.append(.init("parentMessageId", parent)) }
-                if let id = channel.parentChannelId, let parent = channelState.postableChannels[id] {
-                    fields.append(.init("parentChannelType", parent.kind))
-                }
-            }
-            return .object(fields)
+        let conversation: OrderedJSON? = channel.map {
+            messageConversationContext(channel: $0, channels: channelState.postableChannels)
         }
         var retained: [OrderedJSONField] = []
         for (key, value) in [
@@ -269,20 +279,10 @@ struct MessageReadProjection: Sendable {
     /// upload channel is irrelevant once the actual host message owns the link.
     private func attachmentChips(_ message: StoredHumanMessage, commentsVisible: Bool,
                                  state: MessagesAndThreadsStore.State) -> [InboxAttachmentChipDTO] {
-        let linked = state.channelAttachments.values.filter { $0.messageId == message.id }.sorted { left, right in
-            if left.messagePosition != right.messagePosition {
-                return (left.messagePosition ?? Int.max) < (right.messagePosition ?? Int.max)
-            }
-            if left.messagePosition == nil, left.createdAt != right.createdAt { return left.createdAt < right.createdAt }
-            return left.id < right.id
-        }
-        var ids = message.attachmentIds
-        for row in linked where !ids.contains(row.id) { ids.append(row.id) }
-        return ids.map { id in
-            let retained = state.channelAttachments[id]
-            let row = retained?.messageId == message.id ? retained : nil
-            return InboxAttachmentChipDTO(id: id,
-                commentCount: commentsVisible ? (state.attachmentCommentRecords[id]?.filter { $0.hostMessageId == message.id }.count ?? 0) : 0,
+        messages.orderedAttachmentRows(for: message).map { entry in
+            let row = entry.row?.messageId == message.id ? entry.row : nil
+            return InboxAttachmentChipDTO(id: entry.id,
+                commentCount: commentsVisible ? (state.attachmentCommentRecords[entry.id]?.filter { $0.hostMessageId == message.id }.count ?? 0) : 0,
                 filename: row?.filename,
                 mimeType: row.map { ChannelFileRules.resolveAttachmentMimeType(filename: $0.filename, stored: $0.mimeType) },
                 sizeBytes: row?.sizeBytes,

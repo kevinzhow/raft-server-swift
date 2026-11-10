@@ -84,4 +84,23 @@ extension MessagesAndThreadsStore {
             state.channelAttachments[attachment.id] = attachment
         }
     }
+
+    /// One retained message's attachments in published order: the message's
+    /// ordered id list first, then real linked rows missing from a legacy id
+    /// array in persisted link order. A missing row keeps its id so each caller
+    /// can degrade it without dropping the position.
+    func orderedAttachmentRows(for message: StoredHumanMessage) -> [(id: String, row: ChannelAttachment?)] {
+        withState { state in
+            let linked = state.channelAttachments.values.filter { $0.messageId == message.id }.sorted { left, right in
+                if left.messagePosition != right.messagePosition {
+                    return (left.messagePosition ?? Int.max) < (right.messagePosition ?? Int.max)
+                }
+                if left.messagePosition == nil, left.createdAt != right.createdAt { return left.createdAt < right.createdAt }
+                return left.id < right.id
+            }
+            var ids = message.attachmentIds
+            for row in linked where !ids.contains(row.id) { ids.append(row.id) }
+            return ids.map { (id: $0, row: state.channelAttachments[$0]) }
+        }
+    }
 }
