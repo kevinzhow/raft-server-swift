@@ -32,9 +32,13 @@ struct MessageRealtimeService: Sendable {
     let profiles: AuthProfileStore?
     let oauth: OAuthLedger
 
+    /// `replaying` re-emits the committed row's frames without re-applying the
+    /// commit-time follow/Done mutations. An idempotent replay must not undo an
+    /// explicit unfollow that happened after the original send.
     func frames(
         for message: StoredHumanMessage,
-        task: CanonicalMessagePayload.TaskFacts? = nil
+        task: CanonicalMessagePayload.TaskFacts? = nil,
+        replaying: Bool = false
     ) -> [MessageRealtimeFrame] {
         let state = channels.state
         guard let channel = state.postableChannels[message.channelId] else {
@@ -51,7 +55,7 @@ struct MessageRealtimeService: Sendable {
         case "dm":
             return dmFrames(message, channel: channel, task: task)
         case "thread":
-            return threadFrames(message, channel: channel, state: state, task: task)
+            return threadFrames(message, channel: channel, state: state, task: task, replaying: replaying)
         default:
             let context = messageConversationContext(channel: channel, channels: state.postableChannels)
             return [MessageRealtimeFrame(
@@ -104,7 +108,8 @@ struct MessageRealtimeService: Sendable {
         _ message: StoredHumanMessage,
         channel: PostableChannel,
         state: ServersAndChannelsStore.State,
-        task: CanonicalMessagePayload.TaskFacts?
+        task: CanonicalMessagePayload.TaskFacts?,
+        replaying: Bool
     ) -> [MessageRealtimeFrame] {
         guard let parentMessageId = channel.parentMessageId else {
             let context = messageConversationContext(channel: channel, channels: state.postableChannels)
@@ -113,21 +118,24 @@ struct MessageRealtimeService: Sendable {
                 payload: canonicalPayload(message, conversationContext: context, task: task)
             )]
         }
-        // The human writer already clears Done inside its message transaction;
-        // agent sends reach the same upstream step here.
-        if message.senderType != "user" {
-            messages.clearThreadDone(threadChannelId: message.channelId)
-        }
         let parent = messages.humanMessageRows.first { $0.id == parentMessageId }
-        messages.recordThreadReplyJoinFollows(
-            serverId: channel.serverId,
-            threadChannelId: message.channelId,
-            parentMessageId: parentMessageId,
-            senderId: message.senderId,
-            parentAuthorId: ThreadFollowerRealtimeService.parentAuthorId(
-                of: parent, replyingSenderId: message.senderId
+        // The human writer already clears Done inside its message transaction;
+        // agent sends reach the same upstream step here. Both are commit-time
+        // mutations: a replay only re-emits the frames.
+        if !replaying {
+            if message.senderType != "user" {
+                messages.clearThreadDone(threadChannelId: message.channelId)
+            }
+            messages.recordThreadReplyJoinFollows(
+                serverId: channel.serverId,
+                threadChannelId: message.channelId,
+                parentMessageId: parentMessageId,
+                senderId: message.senderId,
+                parentAuthorId: ThreadFollowerRealtimeService.parentAuthorId(
+                    of: parent, replyingSenderId: message.senderId
+                )
             )
-        )
+        }
         let followerService = ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
         let followerIds = followerService.humanFollowerIds(threadChannelId: message.channelId, serverId: channel.serverId)
         let relay = RealtimeRelayService(messages: messages)

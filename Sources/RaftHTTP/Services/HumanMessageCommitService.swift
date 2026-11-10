@@ -93,7 +93,7 @@ struct HumanMessageCommitService: Sendable {
             let realtime = MessageRealtimeService(
                 messages: messages, channels: channels, profiles: profiles, oauth: oauth
             )
-            for frame in realtime.frames(for: message, task: taskFacts) {
+            for frame in realtime.frames(for: message, task: taskFacts, replaying: true) {
                 emit(frame.room, frame.event, frame.payload)
             }
             if let replayedTask, let channel {
