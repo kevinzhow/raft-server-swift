@@ -300,6 +300,7 @@ extension EmailLoginDirectory {
                 writer: HumanMessageCommitService(
                     messages: messagesAndThreadsStore,
                     channels: serversAndChannelsStore,
+                    profiles: authProfileStore,
                     ledger: MessageLedgerPort(oauth: oauth),
                     emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
                 ),

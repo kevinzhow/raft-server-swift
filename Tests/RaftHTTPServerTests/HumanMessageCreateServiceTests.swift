@@ -95,10 +95,26 @@ private final class ResultBox<T: Sendable>: @unchecked Sendable {
 
 // MARK: - Byte-exact responses
 
+/// The canonical message manifest projection the create ack publishes. Values
+/// are the retained row columns; the socket frame (not this body) also carries
+/// `conversationContext`.
+private func canonicalCreateBody(
+    id: String, seq: Int, channelId: String, senderId: String,
+    contentJSON: String, randomId: String, createdAt: String, senderName: String
+) -> String {
+    "{\"id\":\"\(id)\",\"seq\":\(seq),\"channelId\":\"\(channelId)\",\"senderType\":\"user\""
+        + ",\"senderId\":\"\(senderId)\",\"randomId\":\"\(randomId)\",\"messageType\":\"chat\""
+        + ",\"content\":\"\(contentJSON)\",\"actionMetadata\":null,\"threadId\":null"
+        + ",\"createdAt\":\"\(createdAt)\",\"updatedAt\":\"\(createdAt)\""
+        + ",\"senderName\":\"\(senderName)\",\"senderDescription\":null"
+        + ",\"senderMembershipStatus\":\"active\",\"attachments\":[],\"mentions\":[]"
+        + ",\"reactions\":[],\"commentRef\":null,\"externalAuthor\":null}"
+}
+
 @Test func humanMessageCreateRepliesAreByteExact() async throws {
     let f = makeCreateFixture("create-bytes", ownerSuffix: 51, serverSuffix: 51)
     try await withCreateApp(f.accounts) { client in
-        // v1: the stored row alone, keys in the published order.
+        // v1: the canonical message row alone, keys in the published order.
         let sent = try await routeRequest(
             client, .post, "/api/messages",
             body: "{\"channelId\":\"\(f.channelId)\",\"content\":\"hi \\\"there\\\"\",\"randomId\":\"r-1\"}",
@@ -106,7 +122,19 @@ private final class ResultBox<T: Sendable>: @unchecked Sendable {
         )
         #expect(sent.status == .ok)
         let id = try #require(storedMessageId(text(sent)))
-        #expect(text(sent) == "{\"id\":\"\(id)\",\"channelId\":\"\(f.channelId)\",\"content\":\"hi \\\"there\\\"\",\"attachments\":[],\"mentions\":[],\"randomId\":\"r-1\"}")
+        let sentObject = try #require(try JSONSerialization.jsonObject(with: Data(text(sent).utf8)) as? [String: Any])
+        let sentCreatedAt = try #require(sentObject["createdAt"] as? String)
+        let sentSeq = try #require(sentObject["seq"] as? Int)
+        #expect(text(sent) == canonicalCreateBody(
+            id: id, seq: sentSeq, channelId: f.channelId, senderId: f.ownerId,
+            contentJSON: "hi \\\"there\\\"", randomId: "r-1",
+            createdAt: sentCreatedAt, senderName: "create-bytes"
+        ))
+        #expect(Set(sentObject.keys) == [
+            "id", "seq", "channelId", "senderType", "senderId", "randomId", "messageType", "content",
+            "actionMetadata", "threadId", "createdAt", "updatedAt", "senderName", "senderDescription",
+            "senderMembershipStatus", "attachments", "mentions", "reactions", "commentRef", "externalAuthor",
+        ])
         #expect(header(sent, "Content-Length") == String(text(sent).utf8.count))
         // The same randomId replays the same row.
         let replay = try await routeRequest(
@@ -121,8 +149,16 @@ private final class ResultBox<T: Sendable>: @unchecked Sendable {
             body: "{\"channelId\":\"\(f.channelId)\",\"content\":\"v2\",\"randomId\":\"r-2\"}",
             token: f.token, serverId: f.serverId
         )
-        let v2Id = try #require(storedMessageId(text(v2).replacingOccurrences(of: "{\"message\":", with: "")))
-        #expect(text(v2) == "{\"message\":{\"id\":\"\(v2Id)\",\"channelId\":\"\(f.channelId)\",\"content\":\"v2\",\"attachments\":[],\"mentions\":[],\"randomId\":\"r-2\"}}")
+        let v2Body = String(text(v2).dropFirst("{\"message\":".count).dropLast())
+        let v2Id = try #require(storedMessageId(v2Body))
+        let v2Object = try #require(try JSONSerialization.jsonObject(with: Data(v2Body.utf8)) as? [String: Any])
+        let v2CreatedAt = try #require(v2Object["createdAt"] as? String)
+        let v2Seq = try #require(v2Object["seq"] as? Int)
+        #expect(text(v2) == "{\"message\":" + canonicalCreateBody(
+            id: v2Id, seq: v2Seq, channelId: f.channelId, senderId: f.ownerId,
+            contentJSON: "v2", randomId: "r-2",
+            createdAt: v2CreatedAt, senderName: "create-bytes"
+        ) + "}")
         // Session refusal: public auth_required body with no-store.
         let anonymous = try await routeRequest(client, .post, "/api/messages", body: "{}", serverId: f.serverId)
         #expect(anonymous.status == .unauthorized)

@@ -329,7 +329,7 @@ func composeServices(
         oauth: oauth,
         dependencies: HumanMessageCreateDependencies(
             credentials: lookup,
-            writer: HumanMessageCommitService(messages: messages, channels: channels, ledger: ledger, emit: realtime.emit),
+            writer: HumanMessageCommitService(messages: messages, channels: channels, profiles: profiles, ledger: ledger, emit: realtime.emit),
             mentions: mentions,
             channels: channels,
             search: search
