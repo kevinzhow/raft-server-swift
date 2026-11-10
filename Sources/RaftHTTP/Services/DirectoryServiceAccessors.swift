@@ -502,6 +502,7 @@ extension EmailLoginDirectory {
             threadFollows: threadFollowStore,
             managedMCP: managedMCPAndCardsStore,
             oauth: oauth,
+            prepare: actionCardPrepare,
             search: searchMentions,
             ledger: MessageLedgerPort(oauth: oauth)
         )

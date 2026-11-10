@@ -909,6 +909,11 @@ struct AttestedSendEventRecord: Sendable {
         var agentId: String
         var messageId: String?
         var metadataJSON: String
+        /// The retained `new_message_count` column; `nil` for events whose
+        /// upstream row stores null.
+        var newMessageCount: Int? = nil
+        /// The retained `result` column (`committed`, `committed_anyway`).
+        var result: String? = nil
     }
 
 struct ThreadUnfollowRecord: Sendable {

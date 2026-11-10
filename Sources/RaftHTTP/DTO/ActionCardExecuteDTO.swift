@@ -561,6 +561,7 @@ public enum AttestedSendEventMetadata: Sendable, Equatable {
         mentionedHandle: String,
         newMessageCountSinceLastSeen: Int
     )
+    case continueEvent(continueAnyway: Bool)
 }
 
 // MARK: - Agent send responses

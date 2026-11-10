@@ -35,18 +35,6 @@ struct AgentSendDependencies: Sendable {
         _ resolution: ResolvedMentions
     ) -> Void
     var targetAvatar: @Sendable (_ type: String, _ id: String) -> String?
-    var recordAttestedSendEvent: @Sendable (
-        _ eventType: String,
-        _ agentId: String,
-        _ messageId: String?,
-        _ metadata: AttestedSendEventMetadata
-    ) -> Void
-    var recordAgentSendActivity: @Sendable (
-        _ agentId: String,
-        _ title: String,
-        _ text: String,
-        _ producerFactId: String?
-    ) -> Void
     var commitAgentSend: @Sendable (
         _ message: StoredHumanMessage,
         _ attachmentIds: [String],
@@ -112,22 +100,6 @@ extension AgentSendDependencies {
             targetAvatar: { type, id in
                 type == "user" ? mentionService.profiles.account(userId: id)?.avatarUrl
                     : mentionService.oauth.agentRuntimeInfo(id: id)?.avatarUrl
-            },
-            recordAttestedSendEvent: { eventType, agentId, messageId, metadata in
-                messages.recordAttestedSendEvent(AttestedSendEventRecord(
-                    eventType: eventType,
-                    agentId: agentId,
-                    messageId: messageId,
-                    metadataJSON: metadata.jsonBody.render()
-                ))
-            },
-            recordAgentSendActivity: { agentId, title, text, producerFactId in
-                messages.recordAgentSendActivity(
-                    agentId: agentId,
-                    title: title,
-                    text: text,
-                    producerFactId: producerFactId
-                )
             },
             commitAgentSend: { message, attachmentIds, channelId, uploaderId in
                 let outcome = messages.commitAgentSend(

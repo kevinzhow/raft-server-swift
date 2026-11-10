@@ -24,7 +24,7 @@
 
 **当前模型路径验证**：六文件 owned reset 修复及完整 PG 回归已由同一独审者整组复核，并与 Core 的共享文件精确合并。三个独立 fresh-PG/public-HTTP 场景均已实际运行到尾且未 skip：canonical 新模型 PATCH 触发并完成 reset；正常 active no-op 保留真实未退出 process 的等待窗口，human POST 形成真实 held 消息，随后经受控 exit／automatic start／实际 delivery／ACK 完成释放与重放不重复；真实 pending-ready 下，已 written 的 public reset 经两次同值 session PATCH 只清 session／发布一次，保持原 operation、terminal generation、fence 与 stop，再由实际 ready 恢复正常 start。旧 controls／config／human／conversation／builtin 也通过。保留 Node 首次配置更改的两次 lift 与正常 start generation、旧 public reset 默认、manual／unexited／backoff 保护和 14-owner rollback。此处是服务器真实 HTTP／PG／NIO 与受控 daemon 协议资格；没有 stop ACK，也不把协议回执当作 OS cleanup 或官方 Codex／provider 接受。
 
-**明确能力边界**：legacy machine-on-behalf attested-send 的 E1／freshness 仍为 partial；credential-route 测试不锁该旧 funnel。正常 CLI／官方 Computer 强制 credential v2，本批不伪造 legacy 成功。CLI threads list 所需未知历史 follow time／reason 不猜造，不用 last message 或 UUID 时间代替。active joint HUMAN 写入、物理 workspace 删除保持明确 503；未知旧 metadata、survey／handoff、owner intro 和 native TTL 不补造。通用文档预览保留下载回退，HTML 为独立路径。Share 的 local PNG 已验证；若配置非空 CDN base，URL shape 不代表已写入外部对象，部署配置必须与实际存储路径一致。
+**明确能力边界**：legacy machine-on-behalf attested-send 的请求契约、machine 归属／scope 拒绝、target、成功体、held／E1／draft／continue／并发与 activity 已由 legacy 路由的公开 HTTP 与保留行锁定（tracer、orchestrator capability patch、unmute 历史按 `internal.attestedSend.api` 裁决记录）；credential route 仍不豁免 formal mention。正常 CLI／官方 Computer 强制 credential v2，本批不伪造 legacy 成功。CLI threads list 所需未知历史 follow time／reason 不猜造，不用 last message 或 UUID 时间代替。active joint HUMAN 写入、物理 workspace 删除保持明确 503；未知旧 metadata、survey／handoff、owner intro 和 native TTL 不补造。通用文档预览保留下载回退，HTML 为独立路径。Share 的 local PNG 已验证；若配置非空 CDN base，URL shape 不代表已写入外部对象，部署配置必须与实际存储路径一致。
 
 **下一批与完成条件**：
 
@@ -60,15 +60,17 @@
 
 ## 1. 行为覆盖与已完成阶段
 
-`make parity` / `make parity-check`：**406 个模块纳入账本，405 locked、1 partial**。legacy machine-on-behalf attested-send 的限定见上节。
+`make parity` / `make parity-check`：**406 个模块纳入账本，406 locked、0 partial**。legacy machine-on-behalf attested-send 的裁决与有界项见上节。
 
 | 区域 | 模块 | 用例 |
 | --- | --- | --- |
-| Route | `218 locked + 1 partial / 219 tracked` | `1975 / 2000`（98.8%） |
+| Route | `219 locked / 219 tracked` | `2000 / 2000`（100.0%） |
 | Socket | `7 / 7` | `16 / 16`（100.0%） |
 | Daemon | `180 / 180` | `2616 / 2616`（含账本中注明的排除项） |
 
 Daemon 的 2616 条账本用例包含 Node 运行时、进程管理和外部集成轨道；约 1130 条已在 `docs/PARITY.tsv` 注明排除，便携可执行口径约 616 条。报告进度须保留这些资格说明，不能把账本总量当作实际执行量。
+
+**Parity 批次快照（2026-11-10）**：`internal.attestedSend.api` 由 partial 转为 locked。legacy `POST /internal/agent/:agentId/send` 现按 pin 校验完整 legacy body（400 issues）、machine key/agent-machine 归属/`message:send` 拒绝、`#channel`/`#parent:short`/`dm:@peer`/`channel`/`dm_to` 目标、`{ok,state,messageId,messageSeq}` 成功体、idempotency replay/409 与 attachment link 拒绝；freshness funnel 与 credential route 共用新的 `AgentSendFreshnessGate`（held 包络、bounded context、read checkpoint、gate metadata `copy_variant`/`available_actions`、E1 豁免、continue 事件、activity、并发 commit gate），credential route 仍不豁免 formal mention 且其既有测试保持绿色。tracer span、orchestrator capability patch 与 unmute 历史按 `docs/BEHAVIOR.md` 裁决；可选 mention prompt/mention 行与 inbox suppression 为有界项。
 
 Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离的 `RaftServer` 和一个 `RaftDaemon`；`scripts/smoke-server.sh` 检查真实端口上的注册、验证邮件、建服建频道、人类与 Agent 消息、Socket.IO 和 `/daemon/connect`。26 项 smoke 是接线检查，不单独证明全部 parity 模块。
 

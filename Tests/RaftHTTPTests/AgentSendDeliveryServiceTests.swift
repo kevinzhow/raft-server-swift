@@ -29,6 +29,7 @@ private struct DeliveryFixture {
         agentId = directory.oauth.createAgent(serverId: serverId, name: "BytesBot")
         let machineId = directory.registerMachine(serverId: serverId, userId: ownerId, name: "bytes-machine")
         machineKey = directory.machineAPIKey(machineId: machineId) ?? ""
+        directory.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
         channelId = directory.oauth.createChannel(
             serverId: serverId,
             name: "general",
@@ -45,7 +46,7 @@ private struct DeliveryFixture {
     }
 
     func service(
-        appendHumanMessage: @escaping @Sendable (StoredHumanMessage) -> Int = { _ in 0 },
+        commitSend: @escaping @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome = { _, _, _, _ in .committed(seq: 7) },
         makeMessageId: @escaping @Sendable () -> String = { "fixed-message-id" }
     ) -> AgentSendDeliveryService {
         AgentSendDeliveryService(
@@ -56,8 +57,10 @@ private struct DeliveryFixture {
             threadFollows: directory.threadFollowStore,
             managedMCP: directory.managedMCPAndCardsStore,
             oauth: directory.oauth,
+            prepare: directory.actionCardPrepare,
+            assistantOwner: { _, _ in nil },
             searchVisible: { _, _, _ in true },
-            appendHumanMessage: appendHumanMessage,
+            commitSend: commitSend,
             integrationServices: { _ in [] },
             now: { Date(timeIntervalSince1970: 1_789_000_000) },
             makeMessageId: makeMessageId
@@ -73,7 +76,10 @@ private struct DeliveryFixture {
         agentId: fixture.agentId,
         body: AgentSendRequest(target: "#general", content: "hello")
     )
-    #expect(reply.jsonBody.render() == #"{"id":"fixed-message-id","channelId":"\#(fixture.channelId)"}"#)
+    #expect(
+        reply.jsonBody.render()
+            == #"{"ok":true,"state":"sent","messageId":"fixed-message-id","messageSeq":7}"#
+    )
 }
 
 @Test func agentSendRefusalsKeepTheLegacyErrorBytes() throws {
@@ -85,9 +91,9 @@ private struct DeliveryFixture {
             agentId: fixture.agentId,
             body: AgentSendRequest(target: "dm:@Twin", content: "hello")
         )
-        Issue.record("expected Invalid target")
+        Issue.record("expected an unknown DM peer")
     } catch let error as AgentSendDeliveryError {
-        #expect(error.publishedErrorBody.render() == #"{"error":"Invalid target"}"#)
+        #expect(error.publishedErrorBody.render() == #"{"error":"User or agent not found: @Twin"}"#)
     }
 
     fixture.directory.serversAndChannelsStore.postableChannels[fixture.channelId]?.archived = true
