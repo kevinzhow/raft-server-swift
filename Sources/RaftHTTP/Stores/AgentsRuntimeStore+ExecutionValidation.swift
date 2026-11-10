@@ -153,6 +153,12 @@ extension AgentExecutionState {
                       validCount(launch.takeoverEpoch), launch.takeoverEpoch <= agent.takeoverEpoch,
                       launch.runnerCredentialId.map({ !$0.isEmpty }) ?? true,
                       !(launch.completed && launch.notSpawned) else { throw RuntimePersistenceError.invalidSnapshot }
+                for commandId in launch.inFlightDeliveryCommandIds ?? [] {
+                    guard let command = commands[commandId.uuidString], command.kind == .delivery,
+                          command.agentId == agentId, command.launchId == launchId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                }
             }
             for (processId, process) in agent.processes {
                 guard processId == process.processInstanceId, !processId.isEmpty, !process.daemonInstanceId.isEmpty,

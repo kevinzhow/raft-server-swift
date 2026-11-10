@@ -239,15 +239,32 @@ struct AgentExecutionDomain: Sendable {
             return nil
         }
         let machineId = try boundMachine(serverId: request.serverId, agentId: request.agentId)
-        let snapshot = agents.state.execution.agents[request.agentId]
-        if snapshot?.currentLaunchId.flatMap({ snapshot?.launches[$0] }).map({ !$0.completed && !$0.notSpawned && !$0.terminalFailure }) != true {
+        let snapshot = agents.state.execution
+        let current = snapshot.agents[request.agentId].flatMap { agent in
+            agent.currentLaunchId.flatMap { agent.launches[$0] }
+        }
+        let live = snapshot.agents[request.agentId].flatMap { liveRuntimeProcess($0, in: snapshot) }
+        // Upstream starts a runtime only when the daemon has none. A resident
+        // process (idle or busy) receives the delivery itself, and an admitted
+        // launch still starting buffers it. Neither case starts a new launch:
+        // that start is what used to be refused for the unexited process and
+        // silently wedged every message after the first turn.
+        if live == nil, current.map(launchIsInFlight) != true {
             _ = try requestStart(.init(serverId: request.serverId, agentId: request.agentId))
         }
         do {
             let command = try mutate { state -> AgentExecutionCommand in
                 guard let connection = state.connections[machineId], connection.online, connection.ready,
-                      let agent = state.agents[request.agentId], agent.needsManual == nil,
-                      let launchId = agent.currentLaunchId, let launch = agent.launches[launchId], !launch.stopRequested, !launch.terminalFailure else {
+                      let owner = state.agents[request.agentId], owner.needsManual == nil else {
+                    throw AgentExecutionError.manualRecoveryRequired
+                }
+                // The delivery carries no launch id on the wire; the command
+                // nevertheless names the launch the daemon reports as current.
+                // A live process keeps carrying that launch across turns, so a
+                // completed turn adopts it again instead of cold-starting.
+                let launchId = try deliveryLaunchId(state: &state, agentId: request.agentId)
+                guard let agent = state.agents[request.agentId],
+                      let launch = agent.launches[launchId], launchIsUsableForDelivery(launch) else {
                     throw AgentExecutionError.manualRecoveryRequired
                 }
                 let command = AgentExecutionCommand(
@@ -267,6 +284,56 @@ struct AgentExecutionDomain: Sendable {
             DeferredEffects.markRollbackOnly()
             throw error
         }
+    }
+
+    /// The process the daemon reports as this agent's live runtime on the
+    /// current connection. Upstream's `runtimeState === "running"`: a resident
+    /// `codex app-server` keeps serving after each turn completes, so a
+    /// completed turn is not the absence of a runtime.
+    func liveRuntimeProcess(_ agent: AgentExecutionAgent, in state: AgentExecutionState) -> AgentExecutionProcess? {
+        guard let connection = state.connections[agent.machineId], connection.online,
+              connection.serverId == agent.serverId,
+              let daemonInstanceId = connection.daemonInstanceId else { return nil }
+        return agent.processes.values
+            .filter { !$0.exited && $0.daemonInstanceId == daemonInstanceId }
+            .sorted { $0.processInstanceId < $1.processInstanceId }
+            .first
+    }
+
+    /// A launch the daemon admitted or still carries a process for. A stopped,
+    /// refused or terminally failed launch carries no delivery.
+    func launchIsUsableForDelivery(_ launch: AgentExecutionLaunch) -> Bool {
+        !launch.notSpawned && !launch.terminalFailure && !launch.stopRequested
+    }
+
+    /// A launch whose turn has not completed (or whose start result is still
+    /// unknown): a delivery may be staged on it because the daemon buffers it
+    /// during startup and queues it while the runtime is busy.
+    func launchIsInFlight(_ launch: AgentExecutionLaunch) -> Bool {
+        !launch.completed && !launch.notSpawned && !launch.terminalFailure
+    }
+
+    /// The launch a delivery command must name. The current launch is used when
+    /// it can carry a delivery. A configuration lift clears `currentLaunchId`
+    /// but not process facts; the live resident process still carries the
+    /// launch the daemon reports, so it becomes current again rather than
+    /// forcing a cold start the unexited process would refuse.
+    func deliveryLaunchId(state: inout AgentExecutionState, agentId: String) throws -> String {
+        guard var agent = state.agents[agentId] else { throw AgentExecutionError.manualRecoveryRequired }
+        if let currentId = agent.currentLaunchId, let current = agent.launches[currentId],
+           launchIsUsableForDelivery(current) {
+            return currentId
+        }
+        guard let process = liveRuntimeProcess(agent, in: state) else {
+            throw AgentExecutionError.manualRecoveryRequired
+        }
+        let carried = process.launchIds.compactMap { agent.launches[$0] }
+            .filter(launchIsUsableForDelivery)
+            .sorted { ($0.generation, $0.launchId) > ($1.generation, $1.launchId) }
+        guard let adopted = carried.first else { throw AgentExecutionError.manualRecoveryRequired }
+        agent.currentLaunchId = adopted.launchId
+        state.agents[agentId] = agent
+        return adopted.launchId
     }
 
     func retireKnownCredentials(agentId: String) throws {

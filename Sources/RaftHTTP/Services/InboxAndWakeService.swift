@@ -365,13 +365,15 @@ public struct InboxAndWakeService: Sendable {
         else {
             throw InboxAndWakeError.notJoinable
         }
+        let deliveryFacts = MentionDeliveryOutcomeProjection(execution: flags.state.execution)
         let deliveries = messageState.storedMentions.filter {
             $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
         }.map { mention in
             MentionDeliveryRowDTO(
                 targetId: mention.targetId,
                 handle: mention.handle,
-                terminalCode: mention.terminalCode
+                outcome: deliveryFacts.outcome(agentId: mention.targetId, messageId: mention.messageId,
+                                               terminalCode: mention.terminalCode)
             )
         }
         return MentionDeliveriesResponseDTO(messageId: message.id, deliveries: deliveries)

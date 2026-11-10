@@ -233,9 +233,12 @@ final class AgentExecutionPostgresFixture: Sendable {
     }
 
     /// One repeatable-read snapshot spanning the fourteen actual PG documents.
+    /// The writer now commits only the rows a request actually changed (the
+    /// fail-closed incident fix), so revisions legitimately differ per document;
+    /// the repeatable-read transaction is what makes the snapshot coherent.
     func audit() async throws -> ProtocolPGAudit {
         let documents = try await observer.readSnapshot(keys)
-        guard documents.count == keys.count, Set(documents.map(\.revision)).count == 1 else {
+        guard documents.count == keys.count else {
             throw ProtocolPGFailure.invalidSnapshot
         }
         func bytes(_ domain: DurableDomain) throws -> Data {

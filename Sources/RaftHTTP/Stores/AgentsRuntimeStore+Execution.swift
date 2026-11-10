@@ -168,24 +168,29 @@ struct AgentExecutionAgent: Codable, Sendable {
     var processes: [String: AgentExecutionProcess] = [:]
 
     /// A launch whose turn has not completed is in flight (or its start result
-    /// is still unknown). A process that stays alive between turns is the
-    /// upstream idle runtime, not an in-flight turn, so it is not unsettled by
-    /// itself: `connectionClosed`/restore must not turn an idle agent into
-    /// manual recovery merely because its long-lived process survived.
+    /// is still unknown), and a delivery the daemon acknowledged on a resident
+    /// launch whose turn has not been observed complete is also in flight. A
+    /// process that stays alive between turns is the upstream idle runtime, not
+    /// an in-flight turn, so it is not unsettled by itself:
+    /// `connectionClosed`/restore must not turn an idle agent into manual
+    /// recovery merely because its long-lived process survived.
     var hasUnsettledExecution: Bool {
-        launches.values.contains { !$0.completed && !$0.notSpawned }
+        launches.values.contains {
+            (!$0.completed && !$0.notSpawned) || $0.inFlightDeliveryCommandIds?.isEmpty == false
+        }
     }
 }
 
 extension AgentExecutionState {
-    /// A delivery the daemon acknowledged on a launch whose turn never
-    /// completed. This is real retained turn-in-flight evidence.
+    /// A delivery the daemon acknowledged on a launch whose turn the server has
+    /// not observed complete. A resident runtime keeps one launch across turns,
+    /// so this retained set (not `launch.completed`) is the in-flight-turn fact.
     func hasAcceptedTurnWithoutCompletion(agentId: String) -> Bool {
         guard let agent = agents[agentId] else { return false }
         return commands.values.contains { command in
             guard command.agentId == agentId, command.kind == .delivery, command.status == .accepted,
                   let launch = agent.launches[command.launchId] else { return false }
-            return !launch.completed && !launch.notSpawned && !launch.terminalFailure
+            return launch.inFlightDeliveryCommandIds?.contains(command.commandId) == true
         }
     }
 
@@ -217,6 +222,11 @@ struct AgentExecutionLaunch: Codable, Sendable {
     var terminalFailure = false
     var stopRequested = false
     var runnerCredentialId: String?
+    /// Deliveries the daemon acknowledged on this launch without a later
+    /// observed turn completion. A resident `codex app-server` keeps carrying
+    /// the same launch across turns, so this set (cleared by `turn_completed`
+    /// or a terminal turn) is the only retained in-flight-turn evidence.
+    var inFlightDeliveryCommandIds: Set<UUID>?
 }
 
 struct AgentExecutionProcess: Codable, Sendable {

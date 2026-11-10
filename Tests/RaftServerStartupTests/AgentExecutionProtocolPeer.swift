@@ -266,6 +266,19 @@ final class ControlledMachineProtocolPeer: Sendable {
         ]))
         try await socket.applicationFence()
     }
+    /// The official daemon's rebind ack: `queueState: running`/`rebound` plus
+    /// the registered process identity (RFC 071 §4.3 rule 2).
+    func acknowledgeControlledRebind(_ frame: ProtocolPGObject, processInstanceId: String,
+                                     queueState: String = "running") async throws {
+        try await socket.send(.init([
+            "type": .string("agent:start:ack"), "agentId": .string(try frame.requireString("agentId")),
+            "launchId": .string(try frame.requireString("launchId")),
+            "startDispatchId": .string(try frame.requireString("startDispatchId")),
+            "queueState": .string(queueState), "queueDepth": .integer(0), "queueAgeMs": .integer(0),
+            "processInstanceId": .string(processInstanceId),
+        ]))
+        try await socket.applicationFence()
+    }
     func acknowledgeControlledDelivery(_ frame: ProtocolPGObject) async throws {
         guard let sequence = frame.integer("seq") else { throw ProtocolPGFailure.missingField }
         try await socket.send(.init([

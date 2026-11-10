@@ -118,17 +118,16 @@ import Testing
         return (channel, message.id)
     }
 
-    /// Deliver one human message and let the daemon acknowledge it without a
-    /// turn outcome: an in-flight turn whose result the server cannot observe.
+    /// Deliver one human message to the resident launch and let the daemon
+    /// acknowledge it without a turn outcome: an in-flight turn whose result the
+    /// server cannot observe. Upstream sends no second start for a running
+    /// process, so the acknowledged delivery itself is the in-flight fact.
     private func startInFlightTurn(_ domain: AgentExecutionDomain, context: AgentExecutionMachineContext,
                                    _ f: Fixture) async throws {
         let (channel, message) = conversation(domain, f, content: "In flight at disconnect")
         let admitted = try #require(try await commit {
             try domain.requestDelivery(.init(serverId: f.server, agentId: f.agent, channelId: channel, messageId: message))
         })
-        let launch = try #require(f.agents.state.execution.agents[f.agent]?.launches[admitted.launchId])
-        try await startAck(domain, context: context, launchId: launch.launchId,
-                           startDispatchId: launch.startDispatchId, agent: f.agent)
         try await commit {
             let grant = try domain.beginDispatch(reference: .init(commandId: admitted.commandId),
                                                  context: context, deliverySequence: 42)
@@ -142,7 +141,9 @@ import Testing
             try domain.stageIngress(context: context, type: "agent:deliver:ack", payload: ack)
         }
         #expect(result == .committed(ack: nil))
-        #expect(f.agents.state.execution.agents[f.agent]?.launches[launch.launchId]?.completed == false)
+        let launch = try #require(f.agents.state.execution.agents[f.agent]?.launches[admitted.launchId])
+        #expect(launch.inFlightDeliveryCommandIds?.contains(admitted.commandId) == true)
+        #expect(f.agents.state.execution.agents[f.agent]?.hasUnsettledExecution == true)
     }
 
     @Test func idleLiveProcessWithCompletedTurnIsSettledWhenTheConnectionCloses() async throws {

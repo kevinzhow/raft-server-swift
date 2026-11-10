@@ -214,9 +214,34 @@ public struct AgentExecutionService: Sendable {
     /// watermark / receipt commit. Failed SQL/CAS/admission throws and authorizes
     /// no ACK, so the daemon keeps its durable evidence for a later connection.
     public func consume(context: AgentExecutionMachineContext, type: String, payload: Data) async throws -> AgentExecutionIngressResult {
-        try await requirePersistence().execute {
+        let result = try await requirePersistence().execute {
             try self.domain.stageIngress(context: context, type: type, payload: payload)
         }
+        // A start admission that carries the daemon's process identity settles
+        // a launch that previously blocked a human wake. Release the durable
+        // pending deliveries in a separate committed step: a release refusal
+        // must never fail the daemon's already-committed outcome ACK.
+        if case .committed = result, let agentId = Self.wakeSettlingAgentId(type: type, payload: payload) {
+            if let persistence = self.persistence {
+                try? await persistence.execute {
+                    try self.domain.releasePendingHumanDeliveries(serverId: context.serverId, agentId: agentId)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Frames whose committed application can make a previously refused wake
+    /// deliverable: the start admission (with or without a rebind identity), the
+    /// outcomes that name the process, and its exit (which frees the next start).
+    /// The payload was already validated by the ingress; this only reads the
+    /// agent id for the release step.
+    private static func wakeSettlingAgentId(type: String, payload: Data) -> String? {
+        guard ["agent:start:ack", "agent:process_spawned", "agent:start:outcome", "agent:process_exited"].contains(type),
+              let body = try? JSONDecoder().decode(JSONValue.self, from: payload),
+              case .object(let fields) = body,
+              case .string(let agentId)? = fields["agentId"], !agentId.isEmpty else { return nil }
+        return agentId
     }
 
     /// Worker/audit access only. This value contains confidential command input

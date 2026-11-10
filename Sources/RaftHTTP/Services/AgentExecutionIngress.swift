@@ -90,8 +90,8 @@ extension AgentExecutionDomain {
                     || agent.needsManual == "server_restarted_with_unsettled_execution" else { continue }
             guard let currentId = agent.currentLaunchId, let current = agent.launches[currentId] else { continue }
             // The current launch must be usable for the next delivery: a
-            // completed turn starts a new launch, and an incomplete one must
-            // have been admitted by the daemon.
+            // resident process keeps carrying it after a completed turn, and an
+            // incomplete one must have been admitted by the daemon.
             guard current.completed || current.notSpawned || current.terminalFailure
                     || current.startAccepted || current.processInstanceId != nil else { continue }
             // The daemon's report is the only reconnect fact that proves this
@@ -240,11 +240,11 @@ extension AgentExecutionDomain {
         case .rebound(_, let processId):
             guard !launch.notSpawned else { return "rebound_after_not_spawned" }
             guard processIsOwned(processId, frame: frame, agent: agent, state: state) else { return "process_ownership_mismatch" }
-            var process = agent.processes[processId] ?? AgentExecutionProcess(
-                processInstanceId: processId, daemonInstanceId: frame.daemonInstanceId!, spawnLaunchId: nil, launchIds: [])
-            guard !process.exited, process.daemonInstanceId == frame.daemonInstanceId else { return "process_identity_conflict" }
-            process.launchIds.insert(launchId)
-            agent.processes[processId] = process
+            if let refusal = bindReboundIdentity(agentId: frame.agentId, agent: &agent, state: state,
+                                                 processId: processId, daemonInstanceId: frame.daemonInstanceId!,
+                                                 launchId: launchId) {
+                return refusal
+            }
             launch.processInstanceId = processId
             launch.startAccepted = true
         case .exited(_, let processId, let spawnLaunch):
@@ -270,6 +270,7 @@ extension AgentExecutionDomain {
                 }
             }
         case .terminalFailure(_, _, let fingerprint):
+            launch.inFlightDeliveryCommandIds = nil
             if !launch.terminalFailure && !launch.completed {
                 // Historical outcomes remain real launch/exit evidence after
                 // E3; they cannot update the new generation's breaker counts.
@@ -288,6 +289,9 @@ extension AgentExecutionDomain {
                 }
             }
         case .turnCompleted(_, let session, let catchupBatchId):
+            // Every delivery acknowledged before this completion was consumed
+            // by the turn that just ended.
+            launch.inFlightDeliveryCommandIds = nil
             if !launch.terminalFailure {
                 if launch.generation == agent.generation {
                     if let session, let persisted = agent.sessionId, session != persisted { return "session_identity_conflict" }
@@ -318,6 +322,28 @@ extension AgentExecutionDomain {
             key != frame.agentId && other.machineId == agent.machineId
                 && other.processes[processId]?.daemonInstanceId == frame.daemonInstanceId
         }
+    }
+
+    /// RFC 071 §4.3 rule 2: a rebind names the process that already carries the
+    /// launch. Both the official daemon's `agent:start:ack`
+    /// (`queueState: running`/`rebound` + `processInstanceId`) and its
+    /// `agent:start:outcome` rebound report the same identity. Recording it is
+    /// what makes a launch deliverable between turns instead of looking like an
+    /// unconfirmed dispatch that blocks every later automatic wake.
+    private func bindReboundIdentity(agentId: String, agent: inout AgentExecutionAgent, state: AgentExecutionState,
+                                     processId: String, daemonInstanceId: String, launchId: String) -> String? {
+        guard !state.agents.contains(where: { key, other in
+            key != agentId && other.machineId == agent.machineId
+                && other.processes[processId]?.daemonInstanceId == daemonInstanceId
+        }) else { return "process_ownership_mismatch" }
+        if let existing = agent.processes[processId] {
+            guard !existing.exited, existing.daemonInstanceId == daemonInstanceId else { return "process_identity_conflict" }
+        }
+        var process = agent.processes[processId] ?? AgentExecutionProcess(
+            processInstanceId: processId, daemonInstanceId: daemonInstanceId, spawnLaunchId: nil, launchIds: [])
+        process.launchIds.insert(launchId)
+        agent.processes[processId] = process
+        return nil
     }
 
     private enum ReportedStatusDecision: Sendable, Equatable {
@@ -519,6 +545,16 @@ extension AgentExecutionDomain {
             dispatches[match.key] = dispatch
             state.dispatches = dispatches
             state.commands[match.key]?.status = .accepted
+            // A delivery the daemon acknowledged starts a turn on a resident
+            // launch. The acknowledgement is receipt-level; the turn becomes
+            // settled only when its completion (or terminal failure) arrives.
+            if match.value.kind == .delivery,
+               var launch = state.agents[agentId]?.launches[match.value.launchId] {
+                var inFlight = launch.inFlightDeliveryCommandIds ?? []
+                inFlight.insert(match.value.commandId)
+                launch.inFlightDeliveryCommandIds = inFlight
+                state.agents[agentId]?.launches[launch.launchId] = launch
+            }
             // The accepted delivery settles its queued offline send; the
             // canonical message row keeps the history.
             if var pending = state.pendingHumanDeliveries {
@@ -558,8 +594,22 @@ extension AgentExecutionDomain {
                     return .hold(reason: "start_dispatch_mismatch")
                 }
                 // Admission ACK is not evidence of a process, turn, posted
-                // message, task completion, or cursor/catchup advancement.
+                // message, task completion, or cursor/catchup advancement. It
+                // may, however, carry the rebind identity (RFC 071 §4.3 rule 2):
+                // the official daemon adds `processInstanceId` to a
+                // `running`/`rebound` ack, which is the same fact its separate
+                // `agent:start:outcome` rebound reports.
                 launch.startAccepted = true
+                if ["running", "rebound"].contains(queueState),
+                   let processId = AgentExecutionOutcomeFrame.id(body["processInstanceId"]),
+                   let daemonInstanceId = connection.daemonInstanceId {
+                    if let refusal = bindReboundIdentity(
+                        agentId: agentId, agent: &agent, state: state, processId: processId,
+                        daemonInstanceId: daemonInstanceId, launchId: launchId) {
+                        return .hold(reason: refusal)
+                    }
+                    launch.processInstanceId = processId
+                }
                 for key in Array(state.commands.keys) where state.commands[key]?.startDispatchId == launch.startDispatchId {
                     state.commands[key]?.status = .accepted
                     if var dispatches = state.dispatches, var dispatch = dispatches[key] {

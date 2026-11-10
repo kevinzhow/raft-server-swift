@@ -74,38 +74,13 @@ extension AgentExecutionDomain {
     /// Read-only mention admission preflight. A known manual stop/reset must not
     /// call requestHumanMessageDelivery, whose ordinary message behavior records
     /// a held delivery. The mutating path remains the existing retained facade.
+    /// The deliverability rule is the same one an ordinary human message uses.
     func mentionDeliveryDropReason(serverId: String, agentId: String) -> String? {
         guard (try? ownedAgent(serverId: serverId, agentId: agentId)) != nil else { return "delivery_unavailable" }
-        if manuallyStopped(serverId: serverId, agentId: agentId) || hasActiveReset(serverId: serverId, agentId: agentId) {
+        do {
+            return try humanMessageWakeRefusal(serverId: serverId, agentId: agentId) == nil ? nil : "target_not_queued"
+        } catch {
             return "target_not_queued"
         }
-        guard let machineId = agents.agentMachineIds[agentId],
-              machines.machines.contains(where: { $0.id == machineId && $0.serverId == serverId }) else { return "target_not_queued" }
-        let state = agents.state.execution
-        guard let connection = state.connections[machineId], connection.serverId == serverId,
-              connection.online, connection.ready, connection.runtimes.contains("codex"), connection.daemonInstanceId != nil else {
-            return "target_not_queued"
-        }
-        if let agent = state.agents[agentId] {
-            guard agent.serverId == serverId, agent.machineId == machineId, agent.needsManual == nil else { return "target_not_queued" }
-            let current = agent.currentLaunchId.flatMap { agent.launches[$0] }
-            if current.map({ !$0.completed && !$0.notSpawned && !$0.terminalFailure }) != true {
-                guard !hasBlockingUnexitedExecution(agentId: agentId, agent: agent, state: state) else { return "target_not_queued" }
-                let now = Date()
-                if agent.blockedUntil.map({ now < $0 }) == true || agent.probeExpiresAt.map({ now >= $0 }) == true {
-                    return "target_not_queued"
-                }
-                if let launch = current {
-                    if !launch.completed && !launch.notSpawned && !launch.terminalFailure { return "target_not_queued" }
-                    if launch.terminalFailure && agent.processes.values.contains(where: { !$0.exited && $0.launchIds.contains(launch.launchId) }) {
-                        return "target_not_queued"
-                    }
-                }
-                guard agent.generation < 9_007_199_254_740_991, agent.takeoverEpoch < 9_007_199_254_740_991 else {
-                    return "target_not_queued"
-                }
-            } else if current?.stopRequested == true { return "target_not_queued" }
-        }
-        return nil
     }
 }
