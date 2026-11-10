@@ -87,8 +87,11 @@ extension BusinessPersistenceRuntime {
             if let refusal = error as? PersistenceError,
                refusal == .outboxClaimLost || refusal == .invalidOutboxRequest {
                 // Preserve the active writer for this known command refusal.
+            } else if error is CancellationError {
+                // Cancelled before the fenced command was admitted (worker stop).
+                // No transaction was opened, so this is not a durability failure.
             } else {
-                await failClosed()
+                await failClosed(operation: "outbox command", error: error)
             }
             throw error
         }

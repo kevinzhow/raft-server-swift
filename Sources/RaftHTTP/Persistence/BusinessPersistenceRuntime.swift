@@ -1,29 +1,65 @@
 import Foundation
+import Logging
 import RaftPersistence
 import RaftShared
 
+/// A business-persistence failure that permanently closes admission. The reason
+/// is produced from redacted error descriptions only; never add a raw driver
+/// error, SQL, URL, credential or payload to this value.
+public struct BusinessPersistenceFatalFailure: Sendable, CustomStringConvertible {
+    public let operation: String
+    public let reason: String
+    public let writerEpoch: Int64
+    public let phase: BusinessPersistencePhase
+
+    init(operation: String, reason: String, writerEpoch: Int64, phase: BusinessPersistencePhase) {
+        self.operation = operation
+        self.reason = reason
+        self.writerEpoch = writerEpoch
+        self.phase = phase
+    }
+
+    public var description: String {
+        "\(operation): \(reason) (writer epoch \(writerEpoch), phase \(phase.rawValue))"
+    }
+}
+
+/// The composition owner decides what happens after admission failed closed.
+/// Production passes a supervisor restart (non-zero exit); tests observe it.
+public typealias BusinessPersistenceFatalFailureHandler = @Sendable (BusinessPersistenceFatalFailure) -> Void
+
 /// Coordinates the same retained owners with one fenced PostgreSQL writer.
-/// A failed commit closes admission permanently; restart and reload to recover.
+/// A failed commit closes admission permanently; the supervisor must restart
+/// and reload. Request cancellation is not a commit failure: the fenced
+/// transaction is shielded from the HTTP request task and always resolves.
 public actor BusinessPersistenceRuntime {
     let persistence: PostgresPersistence
     let lease: WriterLease
     nonisolated let domain: TransactionDomain
     nonisolated let readyState = BusinessPersistenceReadinessState()
     let bindings: [DurableSnapshotBinding]
+    let fatalFailureHandler: BusinessPersistenceFatalFailureHandler
+    let logger: Logger
     var revisions: [DurableKey: Int64] = [:]
     var activated = false
     var stopping = false
     var resourcesClosed = false
     var healthMonitor: Task<Void, Never>?
+    var fatalFailure: BusinessPersistenceFatalFailure?
+    var terminationSignaled = false
+    var shutdownRequested = false
 
     private init(
         persistence: PostgresPersistence, lease: WriterLease,
-        bindings: [DurableSnapshotBinding], domain: TransactionDomain
+        bindings: [DurableSnapshotBinding], domain: TransactionDomain,
+        fatalFailureHandler: @escaping BusinessPersistenceFatalFailureHandler, logger: Logger
     ) {
         self.persistence = persistence
         self.lease = lease
         self.bindings = bindings
         self.domain = domain
+        self.fatalFailureHandler = fatalFailureHandler
+        self.logger = logger
     }
 
     /// All transactional cells, including OAuth's secret, must already exist.
@@ -31,7 +67,8 @@ public actor BusinessPersistenceRuntime {
     /// Configure live relays/providers next, then activate before listeners start.
     public static func start(
         configuration: PostgresPersistenceConfiguration,
-        bindings: [DurableSnapshotBinding], domain: TransactionDomain = .shared
+        bindings: [DurableSnapshotBinding], domain: TransactionDomain = .shared,
+        fatalFailureHandler: @escaping BusinessPersistenceFatalFailureHandler = { _ in }
     ) async throws -> BusinessPersistenceRuntime {
         try validateBusinessBindings(bindings)
         guard !domain.isReadOnlyUnscoped else { throw BusinessPersistenceError.unavailable }
@@ -41,7 +78,9 @@ public actor BusinessPersistenceRuntime {
                 throw BusinessPersistenceError.writerUnavailable
             }
             let runtime = BusinessPersistenceRuntime(
-                persistence: persistence, lease: lease, bindings: bindings, domain: domain
+                persistence: persistence, lease: lease, bindings: bindings, domain: domain,
+                fatalFailureHandler: fatalFailureHandler,
+                logger: Logger(label: "raft.persistence.business")
             )
             do {
                 try await runtime.bootstrap()
@@ -112,6 +151,11 @@ public actor BusinessPersistenceRuntime {
         }
     }
 
+    private struct PreparedWrites {
+        let writes: [DurableWrite]
+        let changed: Set<DurableKey>
+    }
+
     private func executeAdmitted<Output: Sendable>(
         context: TransactionContext,
         operation: @Sendable () async throws -> Output
@@ -124,35 +168,67 @@ public actor BusinessPersistenceRuntime {
         catch { result = .failure(error) }
         do {
             try context.prepareCommit()
-            let writes = try preparedWrites(context: context, creating: false)
-            let conditions = try bindings.map { binding in
-                guard let revision = revisions[binding.key] else {
-                    throw BusinessPersistenceError.invalidRevisionSet
-                }
-                return try DurableCondition(key: binding.key, expectedRevision: revision)
-            }
+            let prepared = try preparedWrites(context: context, creating: false)
             let effects = try context.preparedDurableEffects().map { intent in
                 try DurableEffect(
                     effectID: intent.effectID, kind: DurableEffectKind(intent.kind),
                     payload: intent.payload, createdAt: intent.createdAt
                 )
             }
-            let committed = try await persistence.compareAndSwap(
-                writes, checking: conditions, expectedWriterEpoch: lease.epoch, effects: effects
-            )
-            // A confirmed COMMIT must publish even if close starts concurrently.
-            // Never substitute a blind in-memory rollback for an unknown COMMIT.
-            revisions = try checkedRevisions(committed)
-            context.publishCommitted()
-            context.flushDeferredEffects()
+            if prepared.writes.isEmpty && effects.isEmpty {
+                // A pure read leaves every durable fact unchanged. Upstream GET
+                // handlers do not write either; publishing the identical snapshot
+                // keeps the committed view coherent without consuming a revision.
+                context.publishCommitted()
+                context.flushDeferredEffects()
+            } else {
+                // A durable effect needs a real SQL transaction. Store writes are
+                // then the transaction payload even when no snapshot byte moved.
+                let writes = prepared.writes.isEmpty
+                    ? try preparedWrites(context: context, creating: false, forceAll: true).writes
+                    : prepared.writes
+                let conditions = try bindings.map { binding in
+                    guard let revision = revisions[binding.key] else {
+                        throw BusinessPersistenceError.invalidRevisionSet
+                    }
+                    return try DurableCondition(key: binding.key, expectedRevision: revision)
+                }
+                // The HTTP request task is cancelled when its client disconnects
+                // (browser reload). Running the fenced transaction in a child task
+                // keeps that transport cancellation from closing the writer
+                // connection with an open transaction or failing admission closed.
+                let committed = try await Self.runCommitShielded { [persistence, lease] in
+                    try await persistence.compareAndSwap(
+                        writes, checking: conditions,
+                        expectedWriterEpoch: lease.epoch, effects: effects
+                    )
+                }
+                // A confirmed COMMIT must publish even if close starts concurrently.
+                // Never substitute a blind in-memory rollback for an unknown COMMIT.
+                let written = prepared.writes.isEmpty
+                    ? Set(bindings.map(\.key)) : prepared.changed
+                try applyCommittedRevisions(committed, written: written)
+                context.publishCommitted()
+                context.flushDeferredEffects()
+            }
         } catch {
             context.discard()
             if (error as? TransactionError) != .rollbackOnly {
-                await failClosed()
+                await failClosed(operation: "business commit", error: error)
             }
             throw error
         }
         return try result.get()
+    }
+
+    /// The child task does not inherit the caller's cancellation. Awaiting its
+    /// value parks the request until the real COMMIT resolves; the caller then
+    /// publishes. Never make this path cancellable by an HTTP client.
+    private static func runCommitShielded<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let task = Task { try await operation() }
+        return try await task.value
     }
 
     private func bootstrap() async throws {
@@ -173,12 +249,12 @@ public actor BusinessPersistenceRuntime {
     private func restoreOrCreate(documents: [DurableDocument], context: TransactionContext) async throws {
         if documents.isEmpty {
             try context.prepareCommit()
-            let writes = try preparedWrites(context: context, creating: true)
+            let prepared = try preparedWrites(context: context, creating: true)
             let conditions = try bindings.map { try DurableCondition(key: $0.key, expectedRevision: nil) }
             let created = try await persistence.compareAndSwap(
-                writes, checking: conditions, expectedWriterEpoch: lease.epoch
+                prepared.writes, checking: conditions, expectedWriterEpoch: lease.epoch
             )
-            revisions = try checkedRevisions(created)
+            try applyCommittedRevisions(created, written: prepared.changed)
         } else {
             let byKey = Dictionary(uniqueKeysWithValues: documents.map { ($0.key, $0) })
             for binding in bindings {
@@ -196,27 +272,66 @@ public actor BusinessPersistenceRuntime {
         context.flushDeferredEffects()
     }
 
-    private func preparedWrites(context: TransactionContext, creating: Bool) throws -> [DurableWrite] {
-        try context.withPendingReadView {
-            try bindings.map { binding in
-                let revision = creating ? nil : revisions[binding.key]
-                if !creating && revision == nil { throw BusinessPersistenceError.invalidRevisionSet }
-                return try DurableWrite.put(
-                    binding.encode(), key: binding.key, codecVersion: 1, expectedRevision: revision
-                )
+    /// Encode the pending and the committed snapshots in the same task. A
+    /// binding whose bytes are identical did not change any durable fact and
+    /// must not consume a revision or a row rewrite. PG still checks every
+    /// binding's revision and the total snapshot/effect budget against 16 MiB.
+    private func preparedWrites(
+        context: TransactionContext, creating: Bool, forceAll: Bool = false
+    ) throws -> PreparedWrites {
+        if !creating {
+            for binding in bindings where revisions[binding.key] == nil {
+                throw BusinessPersistenceError.invalidRevisionSet
             }
         }
-        // PG validates each outer base64 envelope and the total snapshot/effect
-        // budget against 16 MiB. This root-snapshot design has a hard scale bound.
+        if creating || forceAll {
+            let writes = try context.withPendingReadView {
+                try bindings.map { binding in
+                    try DurableWrite.put(
+                        binding.encode(), key: binding.key, codecVersion: 1,
+                        expectedRevision: creating ? nil : revisions[binding.key]
+                    )
+                }
+            }
+            return PreparedWrites(writes: writes, changed: Set(bindings.map(\.key)))
+        }
+        var pending: [DurableKey: Data] = [:]
+        try context.withPendingReadView {
+            for binding in bindings { pending[binding.key] = try binding.encode() }
+        }
+        var base: [DurableKey: Data] = [:]
+        try context.withBaseReadView {
+            for binding in bindings { base[binding.key] = try binding.encode() }
+        }
+        var writes: [DurableWrite] = []
+        var changed: Set<DurableKey> = []
+        for binding in bindings {
+            guard let snapshot = pending[binding.key],
+                  let revision = revisions[binding.key] else {
+                throw BusinessPersistenceError.invalidRevisionSet
+            }
+            guard base[binding.key] != snapshot else { continue }
+            writes.append(try DurableWrite.put(
+                snapshot, key: binding.key, codecVersion: 1, expectedRevision: revision
+            ))
+            changed.insert(binding.key)
+        }
+        return PreparedWrites(writes: writes, changed: changed)
     }
 
-    private func checkedRevisions(_ committed: [DurableRevision]) throws -> [DurableKey: Int64] {
-        guard committed.count == bindings.count,
-              Set(committed.map(\.key)) == Set(bindings.map(\.key)),
+    private func applyCommittedRevisions(_ committed: [DurableRevision], written: Set<DurableKey>) throws {
+        guard committed.count == written.count,
+              Set(committed.map(\.key)) == written,
               committed.allSatisfy({ !$0.deleted && $0.revision > 0 }) else {
             throw BusinessPersistenceError.invalidRevisionSetAfterCommit
         }
-        return Dictionary(uniqueKeysWithValues: committed.map { ($0.key, $0.revision) })
+        var merged = revisions
+        for revision in committed { merged[revision.key] = revision.revision }
+        guard merged.count == bindings.count,
+              bindings.allSatisfy({ merged[$0.key] != nil }) else {
+            throw BusinessPersistenceError.invalidRevisionSetAfterCommit
+        }
+        revisions = merged
     }
 
     func requireAdmission() async throws {
@@ -226,18 +341,59 @@ public actor BusinessPersistenceRuntime {
         }
         let health = await lease.healthSnapshot()
         guard health.isHealthy, !stopping else {
-            await failClosed()
+            await failClosed(operation: "admission lease check", reason: "writer lease is not healthy")
             throw BusinessPersistenceError.writerUnavailable
         }
         readyState.observedHealthy(epoch: health.epoch)
     }
 
-    func failClosed() async {
+    func failClosed(operation: String, error: any Error) async {
+        await failClosed(operation: operation, reason: Self.redactedReason(error))
+    }
+
+    func failClosed(operation: String, reason: String) async {
+        recordFatalFailure(operation: operation, reason: reason)
+        // The journal line is written before anything can block. The supervisor
+        // handler terminates here so a stuck drain cannot leave a 503-only
+        // zombie; tests inject a recording handler and then drain below.
+        signalFatalFailure()
+        // Caller already owns the Shared FIFO permit. Do not acquire it again.
+        await closeResources()
+    }
+
+    /// Log the redacted reason before closing anything so the journal always
+    /// carries the underlying cause, even if draining the owners stalls.
+    private func recordFatalFailure(operation: String, reason: String) {
+        guard fatalFailure == nil else { return }
         stopping = true
         readyState.stop(.failed)
         healthMonitor?.cancel()
-        // Caller already owns the Shared FIFO permit. Do not acquire it again.
-        await closeResources()
+        let failure = BusinessPersistenceFatalFailure(
+            operation: operation, reason: reason, writerEpoch: lease.epoch,
+            phase: readinessSnapshot.phase
+        )
+        fatalFailure = failure
+        logger.error("business persistence failed closed; refusing new work", metadata: [
+            "operation": "\(failure.operation)",
+            "reason": "\(failure.reason)",
+            "writerEpoch": "\(failure.writerEpoch)",
+        ])
+    }
+
+    private func signalFatalFailure() {
+        guard let fatalFailure, !terminationSignaled, !shutdownRequested else { return }
+        terminationSignaled = true
+        fatalFailureHandler(fatalFailure)
+    }
+
+    /// Driver errors are mapped to `PersistenceError` by the persistence layer;
+    /// that description omits URLs, credentials, SQL text, bindings and payloads.
+    private static func redactedReason(_ error: any Error) -> String {
+        if error is CancellationError { return "request cancelled before the fenced commit resolved" }
+        if let error = error as? PersistenceError { return error.description }
+        if let error = error as? BusinessPersistenceError { return String(describing: error) }
+        if let error = error as? TransactionError { return String(describing: error) }
+        return "unexpected \(String(reflecting: type(of: error)))"
     }
 
     private func startMonitoring() {
@@ -258,11 +414,17 @@ public actor BusinessPersistenceRuntime {
 
     private func observeHealth(healthy: Bool, epoch: Int64) {
         guard !stopping else { return }
-        if healthy { readyState.observedHealthy(epoch: epoch) }
-        else {
-            stopping = true
-            readyState.stop(.failed)
-            Task.detached { await self.close() }
+        if healthy {
+            readyState.observedHealthy(epoch: epoch)
+            return
+        }
+        recordFatalFailure(operation: "writer lease health", reason: "writer lease heartbeat is stale")
+        signalFatalFailure()
+        // This observation is synchronous and may not own the FIFO permit.
+        // A recording handler still drains; production has already exited.
+        Task.detached { [weak self] in
+            guard let self else { return }
+            await self.close()
         }
     }
 
@@ -270,6 +432,9 @@ public actor BusinessPersistenceRuntime {
     /// A close requested from inside a business UoW schedules the drain instead
     /// of awaiting its own permit; the outer command still has to finalize.
     public func close() async {
+        // An explicit shutdown is not a crash: never ask the supervisor to
+        // restart a process that is already draining after SIGTERM.
+        if fatalFailure == nil { shutdownRequested = true }
         stopping = true
         readyState.stop(.closed)
         healthMonitor?.cancel()

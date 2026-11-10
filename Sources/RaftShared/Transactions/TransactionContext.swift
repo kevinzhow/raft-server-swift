@@ -137,6 +137,17 @@ public final class TransactionContext: Sendable {
         return try withTransactionReadView(TransactionReadView(domain: domain, values: values), body)
     }
 
+    /// Encode the last committed value of every cell. This is read-only and is
+    /// used to decide whether a prepared transaction actually changed a durable
+    /// fact; it never exposes a pending value.
+    public func withBaseReadView<Output>(_ body: () throws -> Output) throws -> Output {
+        let values = try storage.withLock { stored -> [ObjectIdentifier: any FrozenTransactionEntry] in
+            guard stored.phase == .prepared else { throw TransactionError.contextNotPrepared }
+            return stored.base
+        }
+        return try withTransactionReadView(TransactionReadView(domain: domain, values: values), body)
+    }
+
     /// Infallible once prepared and the matching external database COMMIT has
     /// succeeded. All touched committed cells switch under one short barrier.
     /// The API cannot verify that a database commit actually occurred.
