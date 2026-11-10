@@ -123,7 +123,7 @@ public struct AuthCoreService: Sendable {
                 provider: provider,
                 returnTo: returnTo,
                 identities: identities.map {
-                    SocialLinkedIdentityDTO(provider: $0.provider, providerUserId: $0.providerUserId)
+                    SocialLinkedIdentityDTO(provider: $0.provider, providerEmail: $0.providerEmail)
                 }
             )
         case .pendingLinkExpired:

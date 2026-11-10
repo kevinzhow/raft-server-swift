@@ -186,7 +186,7 @@ public struct AuthFixture: Sendable {
 
     public func linkedProviderUserIds(userId: String, provider: String) -> [String] {
         profiles.accountState.linkedIdentities
-            .filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
+            .filter { $0.userId == userId && $0.provider == provider }.compactMap(\.providerUserId)
     }
 
     public func linkedProviderEmail(userId: String, provider: String) -> String? {

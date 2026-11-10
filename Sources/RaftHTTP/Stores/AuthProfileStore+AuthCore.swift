@@ -6,10 +6,11 @@ import Foundation
 // this store's Mutex, so two concurrent requests cannot both pass a check that
 // the first one's write invalidates. Nothing here builds JSON or an HTTP reply.
 
-/// One linked identity row as the link-completion reply lists it.
+/// One linked identity row as the link-completion reply lists it: the same
+/// `{provider, providerEmail}` shape `/api/auth/identities` publishes.
 struct LinkedIdentityRow: Sendable, Equatable {
     var provider: String
-    var providerUserId: String
+    var providerEmail: String?
 }
 
 /// The pending-link handle the `account_link_required` 409 publishes.
@@ -183,13 +184,14 @@ extension AuthProfileStore {
                     state.accountSurface.linkedIdentities.append(LinkedIdentity(
                         userId: caller,
                         provider: attempt.provider,
-                        providerUserId: providerUserId
+                        providerUserId: providerUserId,
+                        providerEmail: completion.email
                     ))
                 }
                 let rows = state.accountSurface.linkedIdentities.filter { $0.userId == caller }
                 return .linked(
                     returnTo: completion.returnTo,
-                    identities: rows.map { LinkedIdentityRow(provider: $0.provider, providerUserId: $0.providerUserId) }
+                    identities: rows.map { LinkedIdentityRow(provider: $0.provider, providerEmail: $0.providerEmail) }
                 )
             }
             if let rawToken = attempt.pendingLinkToken, !rawToken.isEmpty {
@@ -265,9 +267,14 @@ extension AuthProfileStore {
                     id: id,
                     email: completion.email,
                     passwordHash: attempt.passwordPlaceholder!,
+                    // The pinned `createSocialUser` stores a random placeholder
+                    // hash without credential provenance, and the provider
+                    // verified this address.
+                    passwordCredentialEstablishedAt: nil,
                     displayLanguage: nil,
                     name: pendingName,
-                    profileSetupSuggestedHandle: suggested
+                    profileSetupSuggestedHandle: suggested,
+                    emailVerified: true
                 )
                 state.legalAcceptances[id] = EmailLegalAcceptance(
                     termsVersion: AuthLegalPolicy.termsVersion,
@@ -278,6 +285,19 @@ extension AuthProfileStore {
                     userAgentHash: attempt.userAgentHash,
                     locale: attempt.locale
                 )
+                // Upstream `createSocialUser` inserts the provider row in the
+                // same transaction (`services/userService.ts:988-994`), so the
+                // new account's `/identities` list and profileSetupProvider are
+                // the facts the provider verified. A malformed completion with
+                // no subject keeps the pre-existing absence instead.
+                if let providerUserId = completion.providerUserId, !providerUserId.isEmpty {
+                    state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                        userId: id,
+                        provider: completion.provider,
+                        providerUserId: providerUserId,
+                        providerEmail: completion.email
+                    ))
+                }
             }
             return .loggedIn(
                 mode: completion.mode,

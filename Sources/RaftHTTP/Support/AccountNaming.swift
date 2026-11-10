@@ -65,6 +65,9 @@ public enum AccountNaming {
 
     static let maxProfileAvatarBytes = 5 * 1024 * 1024
 
+    /// Pinned `routes/auth.ts:93` `MAX_USER_DESCRIPTION_LENGTH`.
+    static let maxUserDescriptionLength = 3000
+
     static func trimHyphens(_ value: String) -> String {
         var text = value
         while text.hasPrefix("-") { text.removeFirst() }

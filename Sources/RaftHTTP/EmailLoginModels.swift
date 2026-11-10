@@ -539,7 +539,10 @@ struct Account: Sendable {
 struct LinkedIdentity: Sendable {
         var userId: String
         var provider: String
-        var providerUserId: String
+        /// The upstream `user_auth_identities.provider_user_id`. A row restored
+        /// from the retired `identityRows` field never carried this fact, so it
+        /// stays nil instead of inventing a subject.
+        var providerUserId: String? = nil
         var providerEmail: String? = nil
     }
 
