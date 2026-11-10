@@ -45,6 +45,10 @@ final class ServersAndChannelsStore: Sendable {
         /// Real owner handoff receipts keyed `serverId\noriginalOwnerId`. Written
         /// once by `POST .../setup-handoff` and retained on retry.
         var setupHandoffReceipts: [String: SetupHandoffReceipt] = [:]
+        /// Owner onboarding-briefing ledger keyed `serverId\nownerId` (upstream
+        /// `serverMembers.onboarding_*` plus the five-minute opener claim). The
+        /// briefing sent stamps are written only from a typed delivery receipt.
+        var ownerOpenerLedgers: [String: OwnerOpenerLedger] = [:]
         var guestRoleServers: Set<String> = []
         var proSeats: [String: Int] = [:]
         var joinLinks: [String: JoinLinkRecord] = [:]

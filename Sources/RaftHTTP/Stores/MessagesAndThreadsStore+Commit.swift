@@ -124,6 +124,48 @@ extension MessagesAndThreadsStore {
         }
     }
 
+    /// Upstream `messages.agentSendKey` replay: one message per
+    /// `(channelId, agentSendKey)`. The lookup, append and key write share the
+    /// caller's single Messages borrow so a replay is invisible (no second row,
+    /// no second seq, no second publication) without a cross-owner lock.
+    enum AgentSendOnceOutcome: Sendable {
+        case existing(StoredHumanMessage)
+        case committed(StoredHumanMessage)
+        case rejected(AgentSendAppendOutcome)
+    }
+
+    func commitAgentSendOnce(
+        _ message: StoredHumanMessage,
+        agentSendKey: String,
+        attachmentIds: [String],
+        channelId: String,
+        uploaderId: String,
+        ledger: MessageLedgerPort
+    ) -> AgentSendOnceOutcome {
+        withState { state in
+            if let existing = state.humanMessageRows.first(where: {
+                $0.channelId == channelId && $0.agentSendKey == agentSendKey
+            }) {
+                return .existing(existing)
+            }
+            switch state.validateSendAttachments(ids: attachmentIds, channelId: channelId, uploaderId: uploaderId) {
+            case .ok: break
+            case .duplicate(let id): return .rejected(.duplicate(id))
+            case .unavailable(let id): return .rejected(.unavailable(id))
+            case .alreadyLinked(let id): return .rejected(.alreadyLinked(id))
+            }
+            var stored = message
+            stored.agentSendKey = agentSendKey
+            _ = state.appendMessage(stored, ledger: ledger)
+            for id in attachmentIds { state.channelAttachments[id]?.messageId = message.id }
+            guard let committed = state.humanMessageRows.last, committed.id == message.id else {
+                return .rejected(.unavailable(message.id))
+            }
+            state.advanceAgentReadCursorAfterSend(channelId: channelId, agentId: message.senderId, ownSeq: committed.seq)
+            return .committed(committed)
+        }
+    }
+
     /// Agent sends keep their original append/mirror -> attachment link ->
     /// local read-cursor order, without releasing the Messages borrow.
     func commitAgentSend(

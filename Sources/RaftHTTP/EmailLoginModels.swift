@@ -385,6 +385,9 @@ struct StoredHumanMessage: Sendable {
         var causalActorType: String? = nil
         var causalActorId: String? = nil
         var mentions: [StoredMessageMention] = []
+        /// Upstream `messages.agentSendKey`: the producer's idempotency key.
+        /// Present only on server-authored agent messages (the owner opener).
+        var agentSendKey: String? = nil
     }
 
 struct StoredMessageMention: Equatable, Sendable {

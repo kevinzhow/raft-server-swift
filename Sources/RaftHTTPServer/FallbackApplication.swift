@@ -305,7 +305,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         invites: services.emailAccounts.joinLinksAndInvites,
         managedLifecycle: services.emailAccounts.managedMCPLifecycle,
         publicServerDirectory: services.publicServerDirectory,
-        realtime: services.realtime
+        realtime: services.realtime,
+        onboardingBriefing: services.emailAccounts.onboardingBriefing
     ).register(routes: app)
     KnowledgeFeature(services: services).register(routes: app)
     let readReceipts = services.emailAccounts.managedMCPToolExecution

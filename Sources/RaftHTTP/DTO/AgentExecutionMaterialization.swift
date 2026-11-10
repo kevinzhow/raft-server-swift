@@ -6,6 +6,9 @@ import RaftShared
 public enum AgentExecutionMaterializedPayload: Sendable {
     case start(configuration: Data)
     case delivery(message: Data, sequence: Int64)
+    /// A transient system-sender notice: no messages row and no stored seq.
+    /// The frame envelope always carries `seq: 0`.
+    case notice(message: Data)
 }
 
 /// These failures contain no config, message content, URL or credential material.
@@ -122,5 +125,26 @@ struct MaterializedAgentDelivery: Sendable {
             body["task_assignee_name"] = MaterializedCodexConfiguration.nullable(taskAssigneeName)
         }
         return try JSONValue.object(body).data()
+    }
+}
+
+/// The body of an upstream transient agent notice. The frame envelope adds
+/// `seq: 0` and `deliveryId`; the body carries the synthetic `message_id` the
+/// pinned server sends for the opener ledger and the owner-facts context.
+/// Sender identity is always the system principal, and no `seq` member is
+/// invented in the body.
+struct MaterializedAgentNotice: Sendable {
+    let channelId: String
+    let messageId: String
+    let notice: AgentExecutionNotice
+
+    func encoded() throws -> Data {
+        try JSONValue.object([
+            "channel_id": .string(channelId), "channel_name": .string(notice.channelName),
+            "channel_type": .string(notice.channelType), "message_id": .string(messageId),
+            "sender_id": .string("system"), "sender_name": .string("system"),
+            "sender_type": .string("system"), "content": .string(notice.content),
+            "timestamp": .string(notice.timestamp),
+        ]).data()
     }
 }

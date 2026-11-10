@@ -36,6 +36,28 @@ enum ProductionAgentExecutionWire {
         return try encode(envelope.value, failure: .invalidConfiguration)
     }
 
+    /// A transient notice frame. It is an `agent:deliver` with the upstream
+    /// notice body and a `seq: 0` envelope: the official Computer acks
+    /// `ackSeq = msg.seq > 0 ? msg.seq : msg.message.seq ?? 0`, i.e. 0.
+    static func notice(_ command: AgentExecutionCommand, message: Data) throws -> Data {
+        guard command.kind == .notice, let deliveryId = command.deliveryId, !deliveryId.isEmpty,
+              let channelId = command.channelId, let messageId = command.messageId,
+              !command.agentId.isEmpty else { throw Error.invalidCommandIdentity }
+        guard let body = object(message), string(body["channel_id"]) == channelId,
+              string(body["message_id"]) == messageId, string(body["channel_name"]) != nil,
+              string(body["sender_id"]) == "system", string(body["sender_name"]) == "system",
+              string(body["sender_type"]) == "system", nonempty(body["content"]),
+              nonempty(body["timestamp"]),
+              ["channel", "private", "joint", "dm", "thread"].contains(string(body["channel_type"]) ?? "") else {
+            throw Error.invalidMessage
+        }
+        // The synthetic notice has no stored `messages.seq`; the upstream body
+        // carries no seq member and the envelope owns the zero.
+        if body["seq"] != nil { throw Error.invalidMessage }
+        let envelope = DeliveryEnvelope(agentId: command.agentId, message: .object(body), seq: 0, deliveryId: deliveryId)
+        return try encode(envelope.value, failure: .invalidMessage)
+    }
+
     static func delivery(_ command: AgentExecutionCommand, message: Data, sequence: Int64) throws -> Data {
         guard command.kind == .delivery, let deliveryId = command.deliveryId, !deliveryId.isEmpty,
               let channelId = command.channelId, let messageId = command.messageId,

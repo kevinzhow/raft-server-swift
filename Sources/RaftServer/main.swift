@@ -198,7 +198,11 @@ enum Entrypoint {
                     execution: emailAccounts.agentExecution(persistence: runtime), runtime: runtime,
                     materializer: emailAccounts.agentExecutionMaterialization(
                         persistence: runtime, serverURL: production.serverURL
-                    )
+                    ),
+                    // A computer coming back is the only real "Cindy woke up"
+                    // moment the server sees; the same idempotent owner trigger
+                    // runs there (upstream onboardingBriefingOnActivation.ts).
+                    onboardingBriefing: emailAccounts.onboardingBriefing
                 )
                 executionConnection = connection
                 registry = connection.registry
