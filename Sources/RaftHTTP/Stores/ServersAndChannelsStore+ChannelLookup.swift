@@ -8,6 +8,7 @@ extension ServersAndChannelsStore {
     struct ChannelReadSnapshot: Sendable {
         let channels: [String: PostableChannel]
         let guestVisibleChannels: [String: Bool]
+        let jointProjections: [JointChannelLink]
     }
 
     /// Channel ids the guest gate currently marks visible.
@@ -22,7 +23,8 @@ extension ServersAndChannelsStore {
         mutex.withLock { storage in
             return ChannelReadSnapshot(
                 channels: storage.postableChannels,
-                guestVisibleChannels: storage.guestVisibleChannels
+                guestVisibleChannels: storage.guestVisibleChannels,
+                jointProjections: storage.jointProjections
             )
         }
     }

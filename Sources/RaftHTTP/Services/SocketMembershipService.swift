@@ -95,6 +95,25 @@ public struct SocketMembershipService: Sendable {
         SocketChannelRoomsDTO(rooms: channels.channelRoomIds(channelId: channelId))
     }
 
+    /// Upstream `messageService.getMaxSeq(serverId)`: the highest retained
+    /// message sequence for the server, published by the application
+    /// `heartbeat`. The sequence is the same `seq` assigned to message rows and
+    /// replayed by `sync:resume`; this reads those rows instead of keeping a
+    /// second in-memory counter. Canonical joint-channel rows count toward the
+    /// local server because upstream calls `updateMaxSeq(localServerId, ...)`
+    /// when it projects them.
+    public func maxMessageSeq(serverId: String) -> Int {
+        let snapshot = channels.channelReadSnapshot()
+        var channelIds = Set(snapshot.channels.compactMap { id, channel in
+            channel.serverId == serverId ? id : nil
+        })
+        for link in snapshot.jointProjections where link.serverId == serverId && link.status == "active" {
+            channelIds.insert(link.canonicalChannelId)
+        }
+        guard !channelIds.isEmpty else { return 0 }
+        return messages.maxMessageSeq(channelIds: channelIds)
+    }
+
     /// Viewer-filtered catch-up for the `sync:resume` socket outlet. Mirrors
     /// upstream `messageService.syncMessages(lastSeq, nil, limit, serverId, nil, userId)`:
     /// regular channels are server-readable (guests need `guestVisible`),

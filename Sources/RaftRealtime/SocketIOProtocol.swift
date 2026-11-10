@@ -96,8 +96,46 @@ public func emitPlatformScopedUserEvent(
     }
 }
 
-public func engineIOOpenFrame(sid: String) -> String {
-    "0{\"sid\":\"\(sid)\",\"upgrades\":[],\"pingInterval\":25000,\"pingTimeout\":20000,\"maxPayload\":1000000}"
+/// Engine.IO v4 transport heartbeat plus the application-level socket.io
+/// `heartbeat` cadence. The open packet publishes the two Engine.IO values. In
+/// protocol v4 the server sends `2` every `pingIntervalMilliseconds` and
+/// expects the client's `3` within `pingTimeoutMilliseconds`; engine.io v6
+/// closes the transport with "ping timeout" when that pong does not arrive.
+/// Independently, every server-scoped connection receives the application
+/// event `heartbeat` every `applicationIntervalMilliseconds`.
+public struct RealtimeHeartbeatConfiguration: Sendable, Equatable {
+    public var pingIntervalMilliseconds: Int
+    public var pingTimeoutMilliseconds: Int
+    /// `HEARTBEAT_INTERVAL_MS` in `socket/index.ts`, which is 15 seconds.
+    /// The first event is emitted one interval after connect, matching
+    /// `setInterval`; it is not sent immediately.
+    public var applicationIntervalMilliseconds: Int
+
+    public init(
+        pingIntervalMilliseconds: Int = 25_000,
+        pingTimeoutMilliseconds: Int = 20_000,
+        applicationIntervalMilliseconds: Int = 15_000
+    ) {
+        self.pingIntervalMilliseconds = pingIntervalMilliseconds
+        self.pingTimeoutMilliseconds = pingTimeoutMilliseconds
+        self.applicationIntervalMilliseconds = applicationIntervalMilliseconds
+    }
+
+    /// The pinned defaults: engine.io v6 advertises 25000/20000 because the
+    /// upstream socket.io server passes no heartbeat options, and
+    /// `socket/index.ts` emits the application heartbeat every 15 seconds.
+    public static let production = RealtimeHeartbeatConfiguration()
+}
+
+/// `socket.emit("heartbeat", { seq: messageService.getMaxSeq(serverId), ts: Date.now() })`.
+/// The object member order is `seq` then `ts`, and both are JSON numbers; the
+/// Web store compares `seq` with its retained message `lastSeq`.
+public func socketIOApplicationHeartbeatFrame(seq: Int, timestampMilliseconds: Int) -> String {
+    "42[\"heartbeat\",{\"seq\":\(seq),\"ts\":\(timestampMilliseconds)}]"
+}
+
+public func engineIOOpenFrame(sid: String, heartbeat: RealtimeHeartbeatConfiguration = .production) -> String {
+    "0{\"sid\":\"\(sid)\",\"upgrades\":[],\"pingInterval\":\(heartbeat.pingIntervalMilliseconds),\"pingTimeout\":\(heartbeat.pingTimeoutMilliseconds),\"maxPayload\":1000000}"
 }
 
 public func socketIOConnectFrame(sid: String) -> String {

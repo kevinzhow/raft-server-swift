@@ -23,6 +23,12 @@ public protocol RealtimeAuthorizing: Sendable {
     /// `sync:resume` catch-up body (`{messages,currentSeq,hasMore}`), or nil
     /// when the viewer cannot read the server.
     func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String?
+    /// Upstream `messageService.getMaxSeq(serverId)`: the highest retained
+    /// message sequence for the server, published by the application
+    /// `heartbeat`. It is a read of the same message rows `sync:resume`
+    /// replays, not a second counter. nil keeps the heartbeat quiet when a
+    /// provider does not expose that fact.
+    func maxMessageSeq(serverId: String) -> Int?
 }
 
 public extension RealtimeAuthorizing {
@@ -36,6 +42,12 @@ public extension RealtimeAuthorizing {
     /// Providers that do not implement reconnect replay keep the socket quiet
     /// instead of failing the event handler.
     func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String? {
+        nil
+    }
+
+    /// Transport fixtures without retained message rows stay quiet rather than
+    /// publishing an invented sequence.
+    func maxMessageSeq(serverId: String) -> Int? {
         nil
     }
 }
@@ -163,7 +175,8 @@ public final class RealtimeServer: Sendable {
         auth: any RealtimeAuthorizing,
         host: String = "127.0.0.1",
         port: Int = 0,
-        hub: RealtimeHub = RealtimeHub()
+        hub: RealtimeHub = RealtimeHub(),
+        heartbeat: RealtimeHeartbeatConfiguration = .production
     ) async throws -> RealtimeServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let desktopAttention = DesktopAttentionRegistry()
@@ -175,7 +188,7 @@ public final class RealtimeServer: Sendable {
                 // submit closure; synchronous installation never transfers the
                 // non-Sendable handler to another executor or channel.
                 let handler = NIOLoopBound(
-                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port, desktopAttention: desktopAttention),
+                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port, desktopAttention: desktopAttention, heartbeat: heartbeat),
                     eventLoop: channel.eventLoop
                 )
                 return channel.eventLoop.submit {
@@ -215,6 +228,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     private let auth: any RealtimeAuthorizing
     private let hub: RealtimeHub
     private let desktopAttention: DesktopAttentionRegistry
+    private let heartbeat: RealtimeHeartbeatConfiguration
     private var desktopAttentionHandler: DesktopAttentionHandler?
     private var httpBuffer: [UInt8] = []
     private var frameBuffer: [UInt8] = []
@@ -222,10 +236,30 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     private var session: SocketIOSession?
     private var closed = false
 
-    init(auth: any RealtimeAuthorizing, hub: RealtimeHub, serverPort: Int, desktopAttention: DesktopAttentionRegistry) {
+    // Engine.IO heartbeat timers stay on this channel's event loop. The
+    // generation invalidates a task that already fired but has not run yet.
+    private var heartbeatChannel: (any Channel)?
+    private var heartbeatTimer: Scheduled<Void>?
+    private var heartbeatGeneration = 0
+    private var awaitingPong = false
+    private var pongDeadlineExtended = false
+
+    // The application-level socket.io `heartbeat` has its own timer and
+    // generation: Engine.IO pongs must not re-arm or cancel it.
+    private var applicationHeartbeatTimer: Scheduled<Void>?
+    private var applicationHeartbeatGeneration = 0
+    private var applicationHeartbeatActive = false
+
+    private enum HeartbeatDeadline: Sendable {
+        case ping
+        case pong
+    }
+
+    init(auth: any RealtimeAuthorizing, hub: RealtimeHub, serverPort: Int, desktopAttention: DesktopAttentionRegistry, heartbeat: RealtimeHeartbeatConfiguration) {
         self.auth = auth
         self.hub = hub
         self.desktopAttention = desktopAttention
+        self.heartbeat = heartbeat
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -276,9 +310,11 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         let accept = secWebSocketAccept(key)
         let prelude = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
         var bytes = Array(prelude.utf8)
-        bytes.append(contentsOf: websocketTextFrame(engineIOOpenFrame(sid: socketIOGeneratedID())))
+        bytes.append(contentsOf: websocketTextFrame(engineIOOpenFrame(sid: socketIOGeneratedID(), heartbeat: heartbeat)))
         write(context: context, bytes: bytes)
         upgraded = true
+        heartbeatChannel = context.channel
+        startHeartbeat(context: context)
         frameBuffer.append(contentsOf: leftover)
         drainFrames(context: context)
     }
@@ -303,10 +339,22 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     }
 
     private func handleText(_ text: String, context: ChannelHandlerContext) {
-        if text == "2" {
-            send(text: "3", context: context)
+        if text == "3" {
+            receiveHeartbeatPong()
             return
         }
+        if text == "2" {
+            // engine.io 6.6.11, protocol v4: the server owns the ping
+            // direction. A client `2` is an invalid heartbeat direction; the
+            // pinned upstream closes the transport ("transport error") and
+            // sends no pong.
+            closeSession()
+            context.close(promise: nil)
+            return
+        }
+        // engine.io extends an outstanding pong deadline once when any other
+        // packet arrives before the pong.
+        extendPongDeadlineOnce()
         if text == "41" {
             closeSession()
             context.close(promise: nil)
@@ -320,6 +368,136 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         if text.hasPrefix("42") {
             handleEvent(String(text.dropFirst(2)), session: session)
         }
+    }
+
+    private func startHeartbeat(context: ChannelHandlerContext) {
+        context.eventLoop.preconditionInEventLoop()
+        awaitingPong = false
+        pongDeadlineExtended = false
+        armHeartbeat(
+            eventLoop: context.eventLoop,
+            afterMilliseconds: heartbeat.pingIntervalMilliseconds,
+            deadline: .ping
+        )
+    }
+
+    private func armHeartbeat(eventLoop: any EventLoop, afterMilliseconds milliseconds: Int, deadline: HeartbeatDeadline) {
+        eventLoop.preconditionInEventLoop()
+        heartbeatGeneration += 1
+        let generation = heartbeatGeneration
+        let loopSelf = NIOLoopBound(self, eventLoop: eventLoop)
+        heartbeatTimer?.cancel()
+        heartbeatTimer = eventLoop.scheduleTask(in: .milliseconds(Int64(milliseconds))) {
+            let handler = loopSelf.value
+            // A cancelled task that already fired can still reach this closure;
+            // the generation and the closed gate discard it.
+            guard !handler.closed, handler.heartbeatGeneration == generation else { return }
+            handler.heartbeatTimer = nil
+            switch deadline {
+            case .ping:
+                handler.sendHeartbeatPing()
+            case .pong:
+                handler.closeTimedOutHeartbeat()
+            }
+        }
+    }
+
+    private func sendHeartbeatPing() {
+        guard let channel = heartbeatChannel, !closed else { return }
+        channel.eventLoop.preconditionInEventLoop()
+        awaitingPong = true
+        pongDeadlineExtended = false
+        write(bytes: websocketTextFrame("2"), on: channel)
+        armHeartbeat(
+            eventLoop: channel.eventLoop,
+            afterMilliseconds: heartbeat.pingTimeoutMilliseconds,
+            deadline: .pong
+        )
+    }
+
+    private func receiveHeartbeatPong() {
+        guard let channel = heartbeatChannel, !closed else { return }
+        channel.eventLoop.preconditionInEventLoop()
+        awaitingPong = false
+        pongDeadlineExtended = false
+        armHeartbeat(
+            eventLoop: channel.eventLoop,
+            afterMilliseconds: heartbeat.pingIntervalMilliseconds,
+            deadline: .ping
+        )
+    }
+
+    private func extendPongDeadlineOnce() {
+        guard let channel = heartbeatChannel, !closed, awaitingPong, !pongDeadlineExtended else { return }
+        channel.eventLoop.preconditionInEventLoop()
+        pongDeadlineExtended = true
+        armHeartbeat(
+            eventLoop: channel.eventLoop,
+            afterMilliseconds: heartbeat.pingTimeoutMilliseconds,
+            deadline: .pong
+        )
+    }
+
+    private func closeTimedOutHeartbeat() {
+        guard let channel = heartbeatChannel, !closed else { return }
+        channel.eventLoop.preconditionInEventLoop()
+        awaitingPong = false
+        closeSession()
+        channel.close(promise: nil)
+    }
+
+    private func stopHeartbeat() {
+        heartbeatGeneration += 1
+        heartbeatTimer?.cancel()
+        heartbeatTimer = nil
+        awaitingPong = false
+        pongDeadlineExtended = false
+    }
+
+    // MARK: - Application-level `heartbeat` event
+
+    /// `socket/index.ts` creates this interval inside `if (serverId)` after the
+    /// socket connects, so user-scoped connections never receive the event.
+    /// A provider that does not expose the retained sequence stays quiet
+    /// instead of publishing an invented counter.
+    private func startApplicationHeartbeat(context: ChannelHandlerContext) {
+        context.eventLoop.preconditionInEventLoop()
+        guard heartbeat.applicationIntervalMilliseconds > 0, session?.serverId != nil else { return }
+        applicationHeartbeatActive = true
+        armApplicationHeartbeat(eventLoop: context.eventLoop)
+    }
+
+    private func armApplicationHeartbeat(eventLoop: any EventLoop) {
+        eventLoop.preconditionInEventLoop()
+        applicationHeartbeatGeneration += 1
+        let generation = applicationHeartbeatGeneration
+        let loopSelf = NIOLoopBound(self, eventLoop: eventLoop)
+        applicationHeartbeatTimer?.cancel()
+        applicationHeartbeatTimer = eventLoop.scheduleTask(in: .milliseconds(Int64(heartbeat.applicationIntervalMilliseconds))) {
+            let handler = loopSelf.value
+            // A cancelled task that already fired can still reach this closure;
+            // the generation and the closed gate discard it.
+            handler.applicationHeartbeatTimer = nil
+            guard !handler.closed, handler.applicationHeartbeatActive,
+                  handler.applicationHeartbeatGeneration == generation,
+                  let session = handler.session,
+                  let serverId = session.serverId
+            else { return }
+            // Upstream reads getMaxSeq inside the interval callback, so the
+            // value is the max at send time, not at connect time.
+            if let seq = handler.auth.maxMessageSeq(serverId: serverId) {
+                let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+                session.send(socketIOApplicationHeartbeatFrame(seq: seq, timestampMilliseconds: timestamp))
+            }
+            handler.armApplicationHeartbeat(eventLoop: eventLoop)
+        }
+    }
+
+    private func stopApplicationHeartbeat() {
+        applicationHeartbeatActive = false
+        applicationHeartbeatGeneration += 1
+        applicationHeartbeatTimer?.cancel()
+        applicationHeartbeatTimer = nil
     }
 
     private func connect(payload: String, context: ChannelHandlerContext) {
@@ -377,6 +555,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
             session.join([socketUserServerRoom(userId: userId, serverId: serverId)])
             session.join(channelIds.map { "channel:\($0)" })
             send(text: socketIOEventFrame("rooms:joined"), context: context)
+            startApplicationHeartbeat(context: context)
         }
     }
 
@@ -424,13 +603,18 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
 
     private func write(context: ChannelHandlerContext, bytes: [UInt8]) {
         context.eventLoop.preconditionInEventLoop()
+        write(bytes: bytes, on: context.channel)
+    }
+
+    private func write(bytes: [UInt8], on channel: any Channel) {
+        channel.eventLoop.preconditionInEventLoop()
         // Protocol replies share the terminal gate with hub events. Since this
         // write is synchronous on the owner loop, a concurrent terminal drain
         // cannot overtake it after the open-state check.
         guard session?.isClosed != true else { return }
-        var buffer = context.channel.allocator.buffer(capacity: bytes.count)
+        var buffer = channel.allocator.buffer(capacity: bytes.count)
         buffer.writeBytes(bytes)
-        context.writeAndFlush(NIOAny(buffer), promise: nil)
+        channel.writeAndFlush(buffer, promise: nil)
     }
 
     private func reject(context: ChannelHandlerContext, status: String) {
@@ -442,6 +626,8 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     private func closeSession() {
         guard !closed else { return }
         closed = true
+        stopHeartbeat()
+        stopApplicationHeartbeat()
         if let session {
             hub.unregister(session)
             session.markClosed()

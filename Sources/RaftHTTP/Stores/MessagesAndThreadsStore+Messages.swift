@@ -11,6 +11,20 @@ extension MessagesAndThreadsStore {
         }
     }
 
+    /// Highest message sequence among `channelIds`, read under one lock.
+    /// This is the retained fact behind the application `heartbeat` and the
+    /// same `seq` space as `messagesForResume`; it does not allocate a
+    /// transport-side counter.
+    func maxMessageSeq(channelIds: Set<String>) -> Int {
+        withState { state in
+            var maxSeq = 0
+            for message in state.humanMessageRows where channelIds.contains(message.channelId) {
+                if message.seq > maxSeq { maxSeq = message.seq }
+            }
+            return maxSeq
+        }
+    }
+
     // MARK: - Action-card reply rows
 
     /// The first human-message id in `channelId` that starts with `idPrefix`,
