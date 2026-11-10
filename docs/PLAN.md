@@ -24,7 +24,7 @@
 
 **当前模型路径验证**：六文件 owned reset 修复及完整 PG 回归已由同一独审者整组复核，并与 Core 的共享文件精确合并。三个独立 fresh-PG/public-HTTP 场景均已实际运行到尾且未 skip：canonical 新模型 PATCH 触发并完成 reset；正常 active no-op 保留真实未退出 process 的等待窗口，human POST 形成真实 held 消息，随后经受控 exit／automatic start／实际 delivery／ACK 完成释放与重放不重复；真实 pending-ready 下，已 written 的 public reset 经两次同值 session PATCH 只清 session／发布一次，保持原 operation、terminal generation、fence 与 stop，再由实际 ready 恢复正常 start。旧 controls／config／human／conversation／builtin 也通过。保留 Node 首次配置更改的两次 lift 与正常 start generation、旧 public reset 默认、manual／unexited／backoff 保护和 14-owner rollback。此处是服务器真实 HTTP／PG／NIO 与受控 daemon 协议资格；没有 stop ACK，也不把协议回执当作 OS cleanup 或官方 Codex／provider 接受。
 
-**明确能力边界**：legacy machine-on-behalf attested-send 的 E1／freshness 仍为 partial；credential-route 测试不锁该旧 funnel。正常 CLI／官方 Computer 强制 credential v2，本批不伪造 legacy 成功。CLI threads list 所需未知历史 follow time／reason 不猜造，不用 last message 或 UUID 时间代替。active joint HUMAN 写入、物理 workspace 删除保持明确 503；未知旧 metadata、survey／handoff、owner intro 和 native TTL 不补造。通用文档预览保留下载回退，HTML 为独立路径。Share 的 local PNG 已验证；若配置非空 CDN base，URL shape 不代表已写入外部对象，部署配置必须与实际存储路径一致。
+**明确能力边界**：legacy machine-on-behalf attested-send 的请求契约、machine 归属／scope 拒绝、target、成功体、held／E1／draft／continue／并发与 activity 已由 legacy 路由的公开 HTTP 与保留行锁定（tracer、orchestrator capability patch、unmute 历史按 `internal.attestedSend.api` 裁决记录）；credential route 仍不豁免 formal mention。正常 CLI／官方 Computer 强制 credential v2，本批不伪造 legacy 成功。CLI threads list 所需未知历史 follow time／reason 不猜造，不用 last message 或 UUID 时间代替。active joint HUMAN 写入、物理 workspace 删除保持明确 503；未知旧 metadata、survey／handoff、owner intro 和 native TTL 不补造。通用文档预览保留下载回退，HTML 为独立路径。Share 的 local PNG 已验证；若配置非空 CDN base，URL shape 不代表已写入外部对象，部署配置必须与实际存储路径一致。
 
 **下一批与完成条件**：
 
@@ -36,7 +36,7 @@
 
 **批次快照（2026-11-10）**：交接矩阵的 coherent batch 已实现。公开 Before（归档红色回归，401 而非200 `[]`）已在原 Source 上重现，After 全部通过：canonical principal 的 server collection、setup 四路由（projection／transition／handoff／reset）的 pinned `requireServerMatchesParam` 前置作用域、新真实完成的 `normal` provenance、原 owner 的 postSetup 资格、PATCH me survey、`(serverId, originalOwnerId)` 首次 ack 与 account-global 首次 onboarding 事实、Auth AccountRow 与 Collaboration servers 两类严格 v1 快照。完整 `make test`、实进程 E2E、26 项 smoke、architecture、parity-check 均通过。新增 gated 真实 PG 验收（`RAFT_ONBOARDING_PG_ACCEPTANCE`）：全新 PG 上 register→verify→profile→200 `[]`（登录与 refresh）→survey→建 server→projection，经真实新可执行进程两次重启后字节一致。`scripts/upgrade-rehearsal.sh` 在一次性 PG／Redis 上以已部署 `1c40` 二进制写入真实账号与 server，再由新二进制读取：旧密码、旧 refresh、survey 字段为 null、server 列表、无 server 用户200 `[]`、重启保持，12 项全部 PASS。完成／handoff 在 PG 上没有受控 daemon peer 无法经公开路径到达，测试断言真实409 `OFFICIAL_ONBOARDING_AGENT_NOT_USABLE`，不伪造完成。
 
-已知边界：上游 handoff 后的 Cindy briefing 服务在本移植中不存在，只保留 durable ack 之后的 no-op 钩子，不伪造送达；mobile OAuth completion、register、login、me、PATCH me、complete-profile、avatar 与 app-login 的 `user` 已统一为 `toPublicUser` 全量投影（成员顺序、null、`description`、四项 observed timezone 与由 mode 派生的 `autoTranslationEnabled`），mobile callback 也会把已绑定 provider 的既有账号写进完成事务。其余57个 `/api/servers/:id/...` 路由尚未接入 pinned 前置作用域（非 UUID／缺 header／错 header 的状态与上游不同），各 handler 自身仍校验 membership，正常 Web 路径不受影响，留作后续切片。新二进制在 SIGTERM 恰逢或紧随事务邮件投递时的 Foundation `_MultiHandle` 释放 SIGABRT（134）已定位为 pinned FoundationNetworking 6.4 的既有释放竞态：修复前同一生产模式可执行验收 20 次中 8 次退出 134（信号 6，打印 `non-zero retain count 2`）；修复后 20/20 退出 0，outbox 保持未投递可重试。修复采用进程生命周期内保留已用 `URLSession`、先停接单再取消在途 HTTP、最后等待已开始的 PG 操作，未改动 durable outbox 语义。升级前仍须以该验收与 upgrade rehearsal 复核。
+已知边界：上游 handoff 后的 Cindy briefing 服务在本移植中不存在，只保留 durable ack 之后的 no-op 钩子，不伪造送达；mobile OAuth completion、register、login、me、PATCH me、complete-profile、avatar 与 app-login 的 `user` 已统一为 `toPublicUser` 全量投影（成员顺序、null、`description`、四项 observed timezone 与由 mode 派生的 `autoTranslationEnabled`），mobile callback 也会把已绑定 provider 的既有账号写进完成事务。`/api/servers/:id/...` 的 pinned 前置作用域漏斗现已覆盖该 mount 下全部 67 个路由（含 guest-hidden 的 13 个方法与路径组合；labs 按上游在 lockdown 前挂载而不漏斗），非 UUID／缺 header／错 header／非实时成员的状态与上游一致；handler 自身 membership 校验仅保留为纵深防御。新二进制在 SIGTERM 恰逢或紧随事务邮件投递时的 Foundation `_MultiHandle` 释放 SIGABRT（134）已定位为 pinned FoundationNetworking 6.4 的既有释放竞态：修复前同一生产模式可执行验收 20 次中 8 次退出 134（信号 6，打印 `non-zero retain count 2`）；修复后 20/20 退出 0，outbox 保持未投递可重试。修复采用进程生命周期内保留已用 `URLSession`、先停接单再取消在途 HTTP、最后等待已开始的 PG 操作，未改动 durable outbox 语义。升级前仍须以该验收与 upgrade rehearsal 复核。
 
 **生产升级快照（2026-11-10）**：Main 已从干净提交 `f70d6a3`（含 onboarding 批次与事务邮件 shutdown 修复）按 release-tools 构建、暂存并以既有 launcher `verify_release` 资格化：运行时闭包与 `1c40` 逐字节一致，独立冷启动 /livez200、/health503、版本字段、映射仅含暂存文件与四个 host 库、SIGTERM 退出0。维护顺序为 pg_dump 备份 → closed-all → 停旧 unit（exit0）→ 换 manifest／launch spec（保留旧副本可回滚）→ 真实 user unit 启动 → 私有验证 → 恢复 restricted。私有 health200、版本 `f70d6a3`、PID 映射62个 release 文件加 host 库；writer epoch 2→3（正常 fencing），14个 domain row 中仅 auth 账号新增四个 null 字段、servers 新增空 setupCompletion 组，其余 payload 不变；真实 owner 登录与 refresh 后 `GET /api/servers` 均为200 `[]`。restricted operator cohort 已按用户批准从单个会过期的临时 IPv6 改为该网络 /64 前缀，并加入用户指定的四个地址；cloudflared remote_ip 约束与其余配置不变。官方 Web 自动建议的 slug `raft` 少于上游5字符下限（Swift 与上游同为400），首个 server 按用户选择使用 slug `myoland`。下一步：正常 Web 创建首个 server、官方 Computer enrollment、Cindy onboarding、真实模型／Task、冷读、重启恢复与完整 Web 验收，全部通过后才发布 full-static。
 
@@ -62,15 +62,17 @@
 
 ## 1. 行为覆盖与已完成阶段
 
-`make parity` / `make parity-check`：**406 个模块纳入账本，405 locked、1 partial**。legacy machine-on-behalf attested-send 的限定见上节。
+`make parity` / `make parity-check`：**406 个模块纳入账本，406 locked、0 partial**。legacy machine-on-behalf attested-send 的裁决与有界项见上节。
 
 | 区域 | 模块 | 用例 |
 | --- | --- | --- |
-| Route | `218 locked + 1 partial / 219 tracked` | `1975 / 2000`（98.8%） |
+| Route | `219 locked / 219 tracked` | `2000 / 2000`（100.0%） |
 | Socket | `7 / 7` | `16 / 16`（100.0%） |
 | Daemon | `180 / 180` | `2616 / 2616`（含账本中注明的排除项） |
 
 Daemon 的 2616 条账本用例包含 Node 运行时、进程管理和外部集成轨道；约 1130 条已在 `docs/PARITY.tsv` 注明排除，便携可执行口径约 616 条。报告进度须保留这些资格说明，不能把账本总量当作实际执行量。
+
+**Parity 批次快照（2026-11-10）**：`internal.attestedSend.api` 由 partial 转为 locked。legacy `POST /internal/agent/:agentId/send` 现按 pin 校验完整 legacy body（400 issues）、machine key/agent-machine 归属/`message:send` 拒绝、`#channel`/`#parent:short`/`dm:@peer`/`channel`/`dm_to` 目标、`{ok,state,messageId,messageSeq}` 成功体、idempotency replay/409 与 attachment link 拒绝；freshness funnel 与 credential route 共用新的 `AgentSendFreshnessGate`（held 包络、bounded context、read checkpoint、gate metadata `copy_variant`/`available_actions`、E1 豁免、continue 事件、activity、并发 commit gate），credential route 仍不豁免 formal mention 且其既有测试保持绿色。tracer span、orchestrator capability patch 与 unmute 历史按 `docs/BEHAVIOR.md` 裁决；可选 mention prompt/mention 行与 inbox suppression 为有界项。
 
 Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离的 `RaftServer` 和一个 `RaftDaemon`；`scripts/smoke-server.sh` 检查真实端口上的注册、验证邮件、建服建频道、人类与 Agent 消息、Socket.IO 和 `/daemon/connect`。26 项 smoke 是接线检查，不单独证明全部 parity 模块。
 

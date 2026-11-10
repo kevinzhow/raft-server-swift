@@ -54,6 +54,7 @@ import VaporTesting
             func usage(_ bearer: String?) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 if let bearer { headers[.authorization] = "Bearer \(bearer)" }
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get("/api/servers/\(serverId)/usage", headers: headers)
             }
 
@@ -70,7 +71,10 @@ import VaporTesting
             #expect(body?["channels"] as? Int == 2)
             #expect(try await usage(member).status == .ok)
             #expect(try await usage(guest).status == .forbidden)
-            #expect(try await usage(outsider).status == .notFound)
+            // The router-wide lockdown answers a non-member before the usage
+            // handler can publish its own server-not-found projection.
+            #expect(try await usage(outsider).status == .forbidden)
+            #expect(try await usage(outsider).body.string == "{\"error\":\"Not a member of this server\"}")
             #expect(try await usage(nil).status == .unauthorized)
         }
     }

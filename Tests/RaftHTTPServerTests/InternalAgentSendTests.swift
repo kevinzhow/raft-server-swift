@@ -43,6 +43,8 @@ import VaporTesting
             }
             let channelId = (try JSONSerialization.jsonObject(with: Data((channel.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
             accounts.oauth.addChannelAgent(channelId: channelId, agentId: agent)
+            accounts.assignAgentMachineForTesting(agentId: agent, machineId: machineId)
+            accounts.assignAgentMachineForTesting(agentId: outsiderAgent, machineId: machineId)
 
             func send(_ agentId: String, _ target: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
@@ -58,7 +60,12 @@ import VaporTesting
 
             let sent = try await send(agent, "#agent-send-room")
             #expect(sent.status == .ok)
-            #expect((try json(sent)["channelId"] as? String) == channelId)
+            let sentBody = try json(sent)
+            #expect(sentBody["ok"] as? Bool == true)
+            #expect(sentBody["state"] as? String == "sent")
+            let sentMessageId = try #require(sentBody["messageId"] as? String)
+            #expect((sentBody["messageSeq"] as? Int ?? 0) > 0)
+            #expect(accounts.humanMessageIds(channelId: channelId).contains(sentMessageId))
 
             #expect(try await send(outsiderAgent, "#agent-send-room").status == .forbidden)
             #expect(try await send(agent, "#missing-room").status == .notFound)
@@ -109,6 +116,8 @@ import VaporTesting
             }
             let parentId = (try JSONSerialization.jsonObject(with: Data((parent.body.string ?? "").utf8)) as? [String: Any])?["id"] as? String ?? ""
             accounts.oauth.addChannelAgent(channelId: parentId, agentId: parentAgent)
+            accounts.assignAgentMachineForTesting(agentId: parentAgent, machineId: machineId)
+            accounts.assignAgentMachineForTesting(agentId: followerAgent, machineId: machineId)
             let threadId = UUID().uuidString.lowercased()
             accounts.addPostableChannel(
                 serverId: serverId,
@@ -134,7 +143,8 @@ import VaporTesting
 
             let sent = try await send(parentAgent, "#parent-room:abcdef12")
             #expect(sent.status == .ok)
-            #expect(try json(sent)["channelId"] as? String == threadId)
+            let sentMessageId = try #require(try json(sent)["messageId"] as? String)
+            #expect(accounts.humanMessageIds(channelId: threadId).contains(sentMessageId))
 
             let follower = try await send(followerAgent, "#parent-room:abcdef12")
             #expect(follower.status == .forbidden)

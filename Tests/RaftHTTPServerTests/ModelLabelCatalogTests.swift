@@ -49,6 +49,7 @@ import VaporTesting
             func catalog(_ bearer: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get("/api/servers/\(serverId)/model-label-catalog", headers: headers)
             }
             let owner = try await token("label-owner@slock.test")

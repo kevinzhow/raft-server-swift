@@ -56,12 +56,14 @@ import VaporTesting
             func get(_ bearer: String, _ path: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get(URI(string: path), headers: headers)
             }
             func refresh(_ bearer: String, _ path: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.post, headers: headers, to: URI(string: path)) { request in
                     request.body = .init(string: "{\"reason\":\"stale_or_missing\"}")
                 }

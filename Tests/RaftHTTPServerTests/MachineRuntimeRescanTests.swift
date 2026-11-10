@@ -41,6 +41,7 @@ import VaporTesting
             func rescan(_ bearer: String, _ machineId: String = machine) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(serverId)/machines/\(machineId)/runtimes/rescan")
             }
             let owner = try await token("rescan-owner@slock.test")

@@ -37,6 +37,7 @@ import VaporTesting
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
             headers[.contentType] = "application/json"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
 
             func patch(_ machineId: String) async throws -> ClientResponse {
                 try await client.send(.patch, headers: headers, to: "/api/servers/\(serverId)/machines/\(machineId)") { request in

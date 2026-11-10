@@ -300,6 +300,7 @@ extension EmailLoginDirectory {
                 writer: HumanMessageCommitService(
                     messages: messagesAndThreadsStore,
                     channels: serversAndChannelsStore,
+                    profiles: authProfileStore,
                     ledger: MessageLedgerPort(oauth: oauth),
                     emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
                 ),
@@ -501,6 +502,7 @@ extension EmailLoginDirectory {
             threadFollows: threadFollowStore,
             managedMCP: managedMCPAndCardsStore,
             oauth: oauth,
+            prepare: actionCardPrepare,
             search: searchMentions,
             ledger: MessageLedgerPort(oauth: oauth)
         )
@@ -645,6 +647,16 @@ extension EmailLoginDirectory {
             oauth: oauth,
             channels: serversAndChannelsStore,
             tasks: tasksAndRemindersStore
+        ))
+    }
+
+    /// The router-wide `requireServerMatchesParam` funnel plus the guest-hidden
+    /// surface rule. The Feature layer mounts it on the `/:id` route group; the
+    /// session lookup and the live server/membership rows stay in their owners.
+    public var serverRequestScope: ServerRequestScopeService {
+        ServerRequestScopeService(dependencies: ServerRequestScopeDependencies(
+            sessionUserId: { [auth = authCore] in try? auth.authenticate($0) },
+            oauth: oauth
         ))
     }
 

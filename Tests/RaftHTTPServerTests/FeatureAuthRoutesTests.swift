@@ -117,6 +117,7 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(authorization)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.post, headers: headers, to: URI(string: path)) { $0.body = .init(string: body) }
             }
             func joinToken() async throws -> String {

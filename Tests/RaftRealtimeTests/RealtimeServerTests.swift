@@ -673,6 +673,34 @@ struct RealtimeTransportTests {
     #expect(event.room == "channel:\(channel)")
     #expect(event.payload?.contains("\"content\":\"hello over the wire\"") == true)
     #expect(event.payload?.contains("\"channelId\":\"\(channel)\"") == true)
+    // The frame is the canonical message manifest body, not the reduced
+    // id/channelId/content/attachments projection:
+    // seq/createdAt/sender facts must be present for the Web to order and
+    // reconcile the row without a reload.
+    let payload = try #require(event.payload)
+    let decoded = try #require(try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+    #expect(decoded["seq"] is Int)
+    #expect((decoded["seq"] as? Int ?? 0) > 0)
+    #expect(decoded["senderType"] as? String == "user")
+    #expect(decoded["senderId"] as? String == ownerId)
+    #expect(decoded["senderName"] as? String == "realtime-send")
+    #expect(decoded["messageType"] as? String == "chat")
+    #expect(decoded["senderMembershipStatus"] as? String == "active")
+    #expect(decoded["threadId"] is NSNull)
+    #expect(decoded["randomId"] is NSNull)
+    #expect(decoded["actionMetadata"] is NSNull)
+    #expect((decoded["reactions"] as? [Any])?.isEmpty == true)
+    #expect(decoded["commentRef"] is NSNull)
+    #expect(decoded["externalAuthor"] is NSNull)
+    #expect((decoded["attachments"] as? [Any])?.isEmpty == true)
+    #expect((decoded["mentions"] as? [Any])?.isEmpty == true)
+    let createdAt = try #require(decoded["createdAt"] as? String)
+    #expect(createdAt.hasSuffix("Z"))
+    #expect(createdAt.contains("."))
+    #expect(decoded["updatedAt"] as? String == createdAt)
+    #expect((decoded["conversationContext"] as? [String: Any])?["channelType"] as? String == "channel")
+    #expect(decoded["senderTimezone"] == nil)
+    #expect(decoded["searchText"] == nil)
 }
 
 @Test func reactionMutationEmitsMessageUpdatedOnTheChannelRoom() async throws {
