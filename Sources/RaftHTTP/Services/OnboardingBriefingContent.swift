@@ -1,17 +1,53 @@
 import Foundation
 
-/// Exact upstream owner-onboarding briefing text.
+/// Exact upstream owner-onboarding briefing text and asset facts.
 ///
 /// Sources (pinned `v1.21.23-source.1`):
 /// - `buildOwnerOpenerV2Messages` (`services/onboardingService.ts:463-487`)
 /// - `buildOwnerOpenerV2LedgerInstruction` (`:489-531`)
 /// - `deliverOwnerFactsContext` (`:1164-1214`)
+/// - `createOwnerOpenerArtifactAttachment` (`:243-299`) and
+///   `ownerOpenerArtifactHtml.ts` (`OWNER_OPENER_TEAM_MODE_HTML`)
 ///
 /// The legacy `buildOnboardingInstruction` path is intentionally NOT emitted
 /// here: the pinned deployment's `onboarding_opener_v2` default is ON
 /// (migration 0144), so the opener-v2 branch is the default path. A flag that is
 /// explicitly off is a documented boundary (`OnboardingBriefingOutcome.openerDisabled`).
 enum OnboardingBriefingContent {
+    /// The generated Team-Mode artifact. `createOwnerOpenerArtifactAttachment`
+    /// uses these exact filename/mime/filename-derived facts; the resource is
+    /// the pinned `OWNER_OPENER_TEAM_MODE_HTML` bytes, regenerated with
+    /// `scripts/generate-owner-opener-artifact.mjs`.
+    static let teamModeArtifactFilename = "team-mode.html"
+    static let teamModeArtifactMimeType = "text/html"
+    /// Pinned byte facts of `OWNER_OPENER_TEAM_MODE_HTML` at
+    /// `v1.21.23-source.1` (UTF-8, 569,032 bytes).
+    static let teamModeArtifactByteCount = 569_032
+    static let teamModeArtifactSHA256 = "ed98e1a523c12814eee0cc0af0ea7ec43d5bbe8abc636a9c81bcde029c740147"
+
+    enum ArtifactError: Error, Sendable, Equatable {
+        case assetMissing
+    }
+
+    /// The exact upstream single-file HTML document. It is a SwiftPM resource so
+    /// no template escaping or another copy can drift from the pinned bytes.
+    static func teamModeArtifactBytes() throws -> Data {
+        guard let url = Bundle.module.url(forResource: "owner-opener-team-mode", withExtension: "html"),
+              let bytes = try? Data(contentsOf: url) else {
+            throw ArtifactError.assetMissing
+        }
+        return bytes
+    }
+
+    /// `createOwnerOpenerArtifactAttachment`'s stable attachment id:
+    /// `stableUuid("<version>:<serverId>:<targetUserId>:team-mode")`.
+    static func teamModeArtifactAttachmentID(serverId: String, ownerId: String) -> String {
+        StableUUID.make("\(openerV2Version):\(serverId):\(ownerId):team-mode")
+    }
+
+    /// The upstream thread reply posted with `attachmentIds: [artifact.id]` and
+    /// `agentSendKey: <version>:<serverId>:<targetUserId>:team-mode-thread`.
+    static let teamModeReplyContent = "Here's what team mode looks like in practice:"
     static let openerV2Version = "owner-opener-v2.0"
     static let openerV2Topics = [
         "language_preference",
@@ -56,26 +92,35 @@ enum OnboardingBriefingContent {
 
     /// `buildOwnerOpenerV2Messages`. The `hosted` variant is unreachable in this
     /// port (no hosted provider); it is kept so the content contract is complete.
-    static func openerMessages(userName: String, hosted: Bool = false) -> [(topic: String, content: String)] {
+    /// `attachesTeamModeArtifact` is upstream's `attachTeamModeArtifact` marker
+    /// on the second message.
+    static func openerMessages(
+        userName: String, hosted: Bool = false
+    ) -> [(topic: String, content: String, attachesTeamModeArtifact: Bool)] {
         let displayName = userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "there" : userName
         return [
             (openerV2Topics[0],
-             "Hi \(displayName), I'm Cindy. I help you turn this server into a working agent team. Anything you need here, just ask me. I know Raft inside out."),
+             "Hi \(displayName), I'm Cindy. I help you turn this server into a working agent team. Anything you need here, just ask me. I know Raft inside out.",
+             false),
             (openerV2Topics[1],
-             "Raft is where your agents go into team mode. I dropped a short example in the thread right here — open it."),
+             "Raft is where your agents go into team mode. I dropped a short example in the thread right here — open it.",
+             true),
             (openerV2Topics[2],
-             "Message them like teammates — any channel, anytime, half-formed is fine."),
+             "Message them like teammates — any channel, anytime, half-formed is fine.",
+             false),
             (openerV2Topics[3],
              hosted
                 ? "Tell me what you're working on and I'll propose a starter team for it."
-                : "Would you want me to look at your current agents setup on this computer and propose you a starter team? Or just tell me what you're working on."),
+                : "Would you want me to look at your current agents setup on this computer and propose you a starter team? Or just tell me what you're working on.",
+             false),
         ]
     }
 
     /// `buildOwnerOpenerV2LedgerInstruction`. The blank line after the ledger
     /// lines is part of the text; the artifact line is conditional upstream and
-    /// is omitted while the Team-Mode artifact is deferred in this port.
+    /// appears directly after the topics line when the Team-Mode attachment was
+    /// created.
     static func ledgerInstruction(
         userName: String,
         locationHint: String,

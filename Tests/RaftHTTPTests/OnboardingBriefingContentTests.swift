@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import Testing
 @testable import RaftHTTP
@@ -75,6 +76,27 @@ When stuck, use the embedded seeded practices in `notes/onboarding_objectives.md
 When a new agent or channel is needed, use `raft action prepare` to prepare a quick-commit action card. The human must review and commit it; never auto-create agents/channels and do not pretend a pre-generated card exists.
 The action-card flow is documented in `notes/onboarding_playbook.md` (Starter Plan Output) and `notes/onboarding_knowledge_faq.md` (FAQ 15). Follow that human-commit contract.
 """)
+    }
+
+    /// The generated Team-Mode document is an upstream asset, not copy: its
+    /// bytes come from `ownerOpenerArtifactHtml.ts` (`OWNER_OPENER_TEAM_MODE_HTML`)
+    /// imported with Node type stripping. The stable attachment id is the
+    /// pinned `stableUuid("<version>:<server>:<owner>:team-mode")`.
+    @Test func teamModeArtifactIsThePinnedUpstreamDocument() throws {
+        let bytes = try OnboardingBriefingContent.teamModeArtifactBytes()
+        #expect(bytes.count == OnboardingBriefingContent.teamModeArtifactByteCount)
+        #expect(bytes.count == 569_032)
+        let sha = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        #expect(sha == OnboardingBriefingContent.teamModeArtifactSHA256)
+        #expect(sha == "ed98e1a523c12814eee0cc0af0ea7ec43d5bbe8abc636a9c81bcde029c740147")
+        #expect(String(decoding: bytes.prefix(15), as: UTF8.self) == "<!doctype html>")
+        #expect(String(decoding: bytes.suffix(13), as: UTF8.self) == "</div></body>")
+        #expect(OnboardingBriefingContent.teamModeArtifactAttachmentID(
+            serverId: "11111111-1111-4111-8111-111111111811",
+            ownerId: "11111111-1111-4111-8111-111111111812")
+            == "191cda91-0b96-4be3-9461-7f74f16a2326")
+        #expect(StableUUID.make("owner-opener-v2.0:server:owner:team-mode")
+            == "e910755b-ea0e-4d09-8fe4-dd0d78272f94")
     }
 
     @Test func ownerFactsMatchThePinnedTextWithAndWithoutOptionalLines() {

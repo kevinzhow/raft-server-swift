@@ -353,7 +353,7 @@ public struct ServersFeature: RouteCollection, Sendable {
         }
         scoped.post(":id", "setup-handoff") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.joinLinksAndInvites.serverSetupHandoff(
+                try await services.emailAccounts.joinLinksAndInvites.serverSetupHandoff(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
                     headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]

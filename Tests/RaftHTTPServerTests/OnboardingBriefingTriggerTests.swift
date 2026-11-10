@@ -135,8 +135,11 @@ import VaporTesting
                 #expect(ledger.openerClaimedAt == nil)
                 #expect(seed.accounts.agentsRuntimeStore.state.execution.commands.isEmpty)
                 let rows = openerRows(seed)
-                #expect(rows.count == 4)
-                #expect(rows.allSatisfy { $0.channelId == seed.allChannelId && $0.senderType == "agent" })
+                // Four visible opener messages plus the Team-Mode thread reply.
+                #expect(rows.count == 5)
+                let channelRows = rows.filter { $0.channelId == seed.allChannelId }
+                #expect(channelRows.count == 4)
+                #expect(rows.allSatisfy { $0.senderType == "agent" })
                 #expect(rows.allSatisfy { $0.agentSendKey?.hasPrefix("owner-opener-v2.0:") == true })
                 #expect(rows.allSatisfy { !$0.content.contains("Owner opener v2 ledger:") })
 
@@ -172,8 +175,9 @@ import VaporTesting
                 #expect(projected["signupSurveyCompletedAt"] as? String != nil)
                 #expect(seed.accounts.authProfileStore.account(userId: seed.ownerId)?
                     .signupSurveyCompletedAt != nil)
-                // The owner's server got the visible opener from this trigger.
-                #expect(openerRows(seed).count == 4)
+                // The owner's server got the visible opener (and its thread
+                // reply) from this trigger.
+                #expect(openerRows(seed).count == 5)
 
                 // A member naming someone else's server is a no-op, not an error.
                 let memberResponse = try await patchMe(
@@ -181,7 +185,7 @@ import VaporTesting
                     body: #"{"signupSurveyServerId":"\#(seed.serverId)"}"#
                 )
                 #expect(memberResponse.status == .ok)
-                #expect(openerRows(seed).count == 4)
+                #expect(openerRows(seed).count == 5)
 
                 // The same owner's second save does not duplicate the opener.
                 let repeated = try await patchMe(
@@ -189,7 +193,7 @@ import VaporTesting
                     body: #"{"signupRole":"founder","signupSurveyServerId":"\#(seed.serverId)"}"#
                 )
                 #expect(repeated.status == .ok)
-                #expect(openerRows(seed).count == 4)
+                #expect(openerRows(seed).count == 5)
                 #expect(seed.accounts.serversAndChannelsStore
                     .ownerOpenerLedger(serverId: seed.serverId, ownerId: seed.ownerId).openerV2SentAt == nil)
 
@@ -200,7 +204,7 @@ import VaporTesting
                     body: #"{"signupSurveyServerId":5,"displayLanguage":"en"}"#
                 )
                 #expect(numeric.status == .ok)
-                #expect(openerRows(seed).count == 4)
+                #expect(openerRows(seed).count == 5)
             }
         }
     }
