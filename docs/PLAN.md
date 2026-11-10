@@ -46,6 +46,8 @@
 
 **重启恢复快照（2026-11-11）**：`be903bd` 升级后实测发现：Main 停止时 Cindy 的空闲 Codex 进程仍存活，被当作 unsettled execution 标记 needsManual，重连后不清除，新 DM 返回200却静默不投递。上游断线保留 agent status、仅在途 delivery 重试、手动恢复只来自 terminal breaker。修复 `e6e62df`：unsettled 仅指在途 launch；同一 daemon instance 的完整 ready 报告 agent running 且保留事实证明无未确认派发时，清除断线／重启产生的恢复标记并重发可证明未写出的 pending delivery；不可唤醒的 DM 返回上游 `deliveryWarnings agent_stopped`。另有 `93ec8e5` 统一全部认证响应为 `toPublicUser`。组合树通过完整门禁后 push，并以 `release-tools/upgrade-main.sh` 按维护顺序升级生产 Main 到 `e6e62df`：writer epoch 4→5，needsManual 已清除。剩余：ready 时 running agent 的 status／activity 对账（目前仍显示 inactive／offline）、离线 agent 消息排队、briefing 等差异补齐中。
 
+**生产事故快照（2026-11-11）**：生产 Main 已升级到 `842163f`（canonical 消息载荷、legacy attested-send 全部锁定、`/api/servers/:id` 全量前置漏斗），该次重启后 needsManual 未再出现，重启恢复修复在生产得到验证。随后验收中连续冷加载 DM 页面期间（17:09:43Z）一次提交失败触发 business persistence fail-closed：全部业务路由永久503、/livez 与 /health 503，进程仍存活故 systemd 无法自愈，且失败原因未写日志；PG 记录写连接带未完成事务意外断开。已采集证据后手动重启恢复（writer epoch 6→7），数据为最后一次成功提交的状态。根因定位与修复（含失败日志与不可留僵尸进程的运维策略）进行中；同时发现 `GET /api/channels/dm` 行缺 `name`／`peerName`／`peerDisplayName` 导致官方 Web 冷加载 DM 路由崩溃，修复进行中。
+
 | 连接合同 | 实际消费者／生产位置 | 下一批必须保留或补齐的事实与边界 |
 | --- | --- | --- |
 | collection 身份与空列表 | Web `ServerSelector`／`serverStore` → `ServersFeature` → `ServerProfileAndOrderService`／`PublicVisitDirectory` | OAuth 非空成员列表优先；其后以既有 Auth 权威 principal 读取实际 legacy membership 投影，没有成员则200裸 `[]`。不再次用另一个 domain 的 bearer 映射选择 subject；锁定正常登录／refresh 无需 legacy token 注入、同 bearer 不同 subject 不泄露、已有 legacy／guest 投影及匿名拒绝。collection GET／POST／order 保持 user scope，不强加 tenant header。 |
