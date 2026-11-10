@@ -223,15 +223,29 @@ public struct ManagedMCPToolExecutionService: Sendable {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
                 throw ManagedMCPToolExecutionError.agentNotFoundInServer
             }
+            let peer = DirectChannelPeerFacts(
+                peerId: agent.id,
+                peerName: agent.name,
+                peerDisplayName: agent.displayName,
+                peerDescription: agent.description,
+                peerGravatarHash: nil,
+                peerAvatarUrl: agent.avatarUrl,
+                peerType: "agent"
+            )
             let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId, secondKind: .agent)
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
             channels.upsertDirectChannel(serverId: serverId, channelId: channelId, memberIds: [userId, agentId])
             let payload = OrderedJSON.object([OrderedJSONField("channelId", channelId)]).render()
             realtime.emit("channel:\(channelId)", "dm:new", payload)
             realtime.emit("user:\(userId)", "dm:new", payload)
-            return DirectChannelResponse(id: channelId, peerId: agentId, peerType: "agent")
+            return directChannelResponse(channelId: channelId, peer: peer)
         }
         guard let peerId = body.userId, oauth.memberRole(serverId: serverId, userId: peerId) != nil else {
+            throw ManagedMCPToolExecutionError.invalidDirectMessagePeer
+        }
+        // Upstream's user-DM row projects the peer account; the refusal runs
+        // before any membership/sidebar write instead of leaving a partial DM.
+        guard let peer = directPeerFacts(peerId: peerId, peerType: "user") else {
             throw ManagedMCPToolExecutionError.invalidDirectMessagePeer
         }
         let existingDm = oauth.channelsForServer(serverId: serverId, userId: userId).first { channel in
@@ -254,7 +268,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
             }
         }
         channels.upsertDirectChannel(serverId: serverId, channelId: channelId, memberIds: [userId, peerId])
-        return DirectChannelResponse(id: channelId, peerId: peerId, peerType: "user")
+        return directChannelResponse(channelId: channelId, peer: peer)
     }
 
     // MARK: - GET /api/channels/dm
@@ -263,54 +277,155 @@ public struct ManagedMCPToolExecutionService: Sendable {
         let userId = try requireSession(authorization)
         _ = try requireMember(serverId: serverId, userId: userId)
         let rows = messages.humanMessageRows
-        let accounts = profiles.accounts
-        let list = oauth.channelsForServer(serverId: serverId, userId: userId)
-            .filter { $0.type == "dm" }
-            .compactMap { channel -> DirectChannelListRowDTO? in
-                let agentIds = oauth.channelAgentIds(channelId: channel.id)
-                let humanIds = oauth.channelHumanIds(channelId: channel.id)
-                let peerId: String
-                let peerType: String
-                if let agent = agentIds.first(where: { $0 != userId }) {
-                    // A deleted agent peer stays hydratable by detail id but must
-                    // not reappear in the normal DM list.
-                    if oauth.agentRuntimeInfo(id: agent)?.deleted == true { return nil }
-                    peerId = agent
-                    peerType = "agent"
-                } else if let human = humanIds.first(where: { $0 != userId }) {
-                    peerId = human
-                    peerType = "user"
-                } else {
-                    peerId = userId
-                    peerType = "self"
-                }
-                let lastRow = rows.last { $0.channelId == channel.id }
-                let senderName: String
-                if let lastRow, lastRow.senderId != "system" {
-                    if lastRow.senderType == "agent" {
-                        if let agent = oauth.agentRuntimeInfo(id: lastRow.senderId) {
-                            senderName = agent.displayName.isEmpty ? agent.name : agent.displayName
-                        } else {
-                            senderName = ""
-                        }
-                    } else {
-                        let account = accounts.values.first { $0.id == lastRow.senderId }
-                        senderName = account.map { ($0.displayName ?? "").isEmpty ? $0.name : ($0.displayName ?? $0.name) } ?? ""
-                    }
-                } else {
-                    senderName = ""
-                }
-                return DirectChannelListRowDTO(
-                    id: channel.id,
-                    joined: channel.joined,
-                    peerId: peerId,
-                    peerType: peerType,
-                    lastMessageAt: channel.lastMessageAt.map(isoFractional),
-                    lastMessagePreview: lastRow.map { String($0.content.prefix(120)) },
-                    lastMessageSenderName: senderName.isEmpty ? nil : senderName
-                )
+        let rowFacts = ChannelRowFacts(oauth: oauth, messages: messages)
+        struct Candidate {
+            let kind: Int
+            let index: Int
+            let row: DirectChannelListRowDTO
+            let lastMessageAt: Date?
+            let createdAt: Date?
+        }
+        var candidates: [Candidate] = []
+        for (index, channel) in oauth.channelsForServer(serverId: serverId, userId: userId).enumerated() {
+            guard channel.type == "dm" else { continue }
+            let agentIds = oauth.channelAgentIds(channelId: channel.id)
+            let humanIds = oauth.channelHumanIds(channelId: channel.id)
+            let peer: DirectChannelPeerFacts
+            let kind: Int
+            if let agentId = agentIds.first(where: { $0 != userId }) {
+                // A deleted agent peer stays hydratable by detail id but must
+                // not reappear in the normal DM list.
+                if oauth.agentRuntimeInfo(id: agentId)?.deleted == true { continue }
+                // Upstream inner-joins the agent table; a membership naming a
+                // missing agent row is not a directory row.
+                guard let facts = directPeerFacts(peerId: agentId, peerType: "agent") else { continue }
+                peer = facts
+                kind = 0
+            } else if let humanId = humanIds.first(where: { $0 != userId }) {
+                guard let facts = directPeerFacts(peerId: humanId, peerType: "user") else { continue }
+                peer = facts
+                kind = 1
+            } else {
+                guard let facts = directPeerFacts(peerId: userId, peerType: "user") else { continue }
+                peer = facts
+                kind = 2
             }
-        return DirectChannelListResponse(rows: list)
+            let lastRow = rows.filter { $0.channelId == channel.id }.max { lhs, rhs in
+                if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+                return lhs.seq < rhs.seq
+            }
+            let lastMessageAt = lastRow?.createdAt ?? channel.lastMessageAt
+            let muted = channel.activityMuted && channel.muteFromSeq != nil
+            let displayPrefs = oauth.channelDisplayPrefs(channelId: channel.id, userId: userId)
+            let readState = rowFacts.readState(channelId: channel.id, userId: userId)
+            let row = DirectChannelListRowDTO(
+                id: channel.id,
+                name: channel.name,
+                description: channel.description,
+                createdAt: channel.createdAt.map(isoFractional),
+                peer: peer,
+                activityMuted: muted,
+                muteFromSeq: muted ? channel.muteFromSeq : nil,
+                prefsVersion: channel.prefsVersion,
+                collapseLongMessages: displayPrefs.collapseLongMessages,
+                displayPrefsVersion: displayPrefs.prefsVersion,
+                maxReadSeq: readState.maxReadSeq,
+                readStateVersion: readState.readStateVersion,
+                readState: readState,
+                lastMessageAt: lastMessageAt.map(isoFractional),
+                lastMessagePreview: lastRow.flatMap { ChannelLastMessageSummary.preview($0.content) },
+                lastMessageSenderName: lastRow.flatMap(lastMessageSenderName)
+            )
+            candidates.append(Candidate(
+                kind: kind, index: index, row: row, lastMessageAt: lastMessageAt, createdAt: channel.createdAt
+            ))
+        }
+        // Upstream: most recent message first, then creation time for DMs with
+        // no messages; equal keys keep the agent, user, self order and the
+        // original row order. A restored row without a creation time is not
+        // ordered by an invented date: it sorts after the known rows.
+        candidates.sort { a, b in
+            if let aLast = a.lastMessageAt, let bLast = b.lastMessageAt {
+                if aLast != bLast { return aLast > bLast }
+            } else if a.lastMessageAt == nil, b.lastMessageAt != nil {
+                return false
+            } else if a.lastMessageAt != nil, b.lastMessageAt == nil {
+                return true
+            } else {
+                let aCreated = a.createdAt ?? .distantFuture
+                let bCreated = b.createdAt ?? .distantFuture
+                if aCreated != bCreated { return aCreated < bCreated }
+            }
+            if a.kind != b.kind { return a.kind < b.kind }
+            return a.index < b.index
+        }
+        return DirectChannelListResponse(rows: candidates.map(\.row))
+    }
+
+    /// Upstream `attachLastMessageSummary`'s sender resolution:
+    /// `COALESCE(NULLIF(display_name,''), name, NULLIF(agent.display_name,''),
+    /// agent.name, external_author.display_name)`. The non-uuid `system`
+    /// sender has no user/agent row and publishes null.
+    private func lastMessageSenderName(_ row: StoredHumanMessage) -> String? {
+        if row.senderId == "system" { return nil }
+        switch row.senderType {
+        case "agent":
+            guard let agent = oauth.agentRuntimeInfo(id: row.senderId) else { return nil }
+            if !agent.displayName.isEmpty { return agent.displayName }
+            return agent.name
+        case "external_projection":
+            return row.externalSenderName
+        default:
+            guard let account = profiles.account(userId: row.senderId) else { return nil }
+            if let displayName = account.displayName, !displayName.isEmpty { return displayName }
+            return account.name
+        }
+    }
+
+    /// The DM peer block projected from the retained agent or account facts.
+    /// Agent DMs never carry a gravatar hash; human/self peers hash the stored
+    /// email exactly like upstream (`sha256(trim(lower(email)))`).
+    private func directPeerFacts(peerId: String, peerType: String) -> DirectChannelPeerFacts? {
+        if peerType == "agent" {
+            guard let agent = oauth.agentRuntimeInfo(id: peerId) else { return nil }
+            return DirectChannelPeerFacts(
+                peerId: agent.id,
+                peerName: agent.name,
+                peerDisplayName: agent.displayName,
+                peerDescription: agent.description,
+                peerGravatarHash: nil,
+                peerAvatarUrl: agent.avatarUrl,
+                peerType: "agent"
+            )
+        }
+        guard let account = profiles.account(userId: peerId) else { return nil }
+        return DirectChannelPeerFacts(
+            peerId: account.id,
+            peerName: account.name,
+            peerDisplayName: account.displayName,
+            peerDescription: account.description,
+            peerGravatarHash: Self.gravatarHash(email: account.email),
+            peerAvatarUrl: account.avatarUrl,
+            peerType: "user"
+        )
+    }
+
+    private static func gravatarHash(email: String) -> String {
+        AuthTokenCodec.sha256Hex(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    /// The `POST /api/channels/dm` row: the same DM channel row upstream's
+    /// `findOrCreateDM`/`findOrCreateUserDM` return, without the list-only
+    /// joined/read/prefs fields.
+    private func directChannelResponse(channelId: String, peer: DirectChannelPeerFacts) -> DirectChannelResponse {
+        let info = oauth.channelInfo(id: channelId)
+        return DirectChannelResponse(
+            id: channelId,
+            name: info?.name ?? "",
+            description: info?.description,
+            createdAt: oauth.channelCreatedAt(id: channelId).map(isoFractional),
+            peer: peer
+        )
     }
 
     // MARK: - Read receipts
@@ -442,8 +557,6 @@ public struct ManagedMCPToolExecutionService: Sendable {
         let joined = channel.name == "all"
             || snapshot.postableChannels[channelId]?.memberIds.contains(userId) == true
             || oauth.channelHumanIds(channelId: channelId).contains(userId)
-        let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
-        let version = messages.channelReadVersion(channelId: channelId, userId: userId)
         let receiptsEnabled = snapshot.readReceiptsServers.contains(serverId)
         let peerSeqs = oauth.channelAgentIds(channelId: channelId).map { agentId in
             (agentId, messages.agentChannelReadSeq(channelId: channelId, agentId: agentId))
@@ -470,31 +583,60 @@ public struct ManagedMCPToolExecutionService: Sendable {
             }
         }
         let displayPrefs = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
-        var directPeer: ChannelDetailResponse.DirectPeer?
+        let readState = ChannelRowFacts(oauth: oauth, messages: messages)
+            .readState(channelId: channelId, userId: userId)
+        var directPeer: DirectChannelPeerFacts?
         if type == "dm" {
-            let peerId = snapshot.postableChannels[channelId]?.memberIds.first { $0 != userId }
-            if let peerId {
-                if let agent = oauth.agentRuntimeInfo(id: peerId) {
-                    directPeer = .init(peerType: "agent", peerId: peerId, peerName: agent.name)
-                } else if let account = profiles.accounts.values.first(where: { $0.id == peerId }) {
-                    directPeer = .init(peerType: "human", peerId: peerId, peerName: account.name)
+            let agentIds = oauth.channelAgentIds(channelId: channelId)
+            let humanIds = oauth.channelHumanIds(channelId: channelId)
+            if let agentId = agentIds.first(where: { $0 != userId }) {
+                if let agent = oauth.agentRuntimeInfo(id: agentId) {
+                    directPeer = DirectChannelPeerFacts(
+                        peerId: agent.id,
+                        peerName: agent.name,
+                        peerDisplayName: agent.displayName,
+                        peerDescription: agent.description,
+                        peerGravatarHash: nil,
+                        peerAvatarUrl: agent.avatarUrl,
+                        peerType: "agent"
+                    )
+                } else {
+                    // Upstream keeps a participant DM hydratable when the peer
+                    // agent row is gone: `COALESCE(agents.name, channels.name,
+                    // 'Agent')`.
+                    directPeer = DirectChannelPeerFacts(
+                        peerId: agentId,
+                        peerName: channel.name.isEmpty ? "Agent" : channel.name,
+                        peerDisplayName: nil,
+                        peerDescription: nil,
+                        peerGravatarHash: nil,
+                        peerAvatarUrl: nil,
+                        peerType: "agent"
+                    )
                 }
+            } else if let peerId = humanIds.first(where: { $0 != userId }) {
+                directPeer = directPeerFacts(peerId: peerId, peerType: "user")
+            } else if humanIds.contains(userId) {
+                directPeer = directPeerFacts(peerId: userId, peerType: "user")
             }
         }
         return ChannelDetailResponse(
             id: channelId,
+            serverId: channel.serverId,
             name: channel.name,
+            description: channel.description,
             type: type,
-            joined: joined,
+            createdAt: oauth.channelCreatedAt(id: channelId).map(isoFractional),
             directPeer: directPeer,
-            maxReadSeq: info.maxReadSeq,
-            readStateVersion: version,
-            activityMuteSupported: type == "channel",
+            joined: joined,
             collapseLongMessages: displayPrefs.collapseLongMessages,
             displayPrefsVersion: displayPrefs.prefsVersion,
+            maxReadSeq: readState.maxReadSeq,
+            readStateVersion: readState.readStateVersion,
+            readState: readState,
+            activityMuteSupported: ChannelActivityMuteSupport.supports(type),
             channelRole: basis == nil ? "member" : "admin",
             channelAdminBasis: basis,
-            channelAuthorityRevision: authorityRevision,
             capabilities: .init(
                 editChannelMetadata: capability,
                 archiveChannels: capability && !isJoint,
@@ -506,6 +648,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
                 changeChannelVisibility: serverAdmin,
                 federateChannels: serverAdmin
             ),
+            channelAuthorityRevision: authorityRevision,
             peerReadState: peerReadState
         )
     }

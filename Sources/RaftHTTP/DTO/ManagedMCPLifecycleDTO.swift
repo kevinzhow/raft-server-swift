@@ -120,11 +120,23 @@ public struct JointInviteAcceptedResponse: JSONBodyConvertible, Equatable {
 }
 
 /// `GET /api/channels`.
+///
+/// Published row order for the fields this port retains: `id`, `serverId`,
+/// `name`, `description`, `type`, `createdAt`, `archivedAt`, `joined`,
+/// `activityMuted`, `muteFromSeq`, `prefsVersion`, `activityMuteSupported`,
+/// `collapseLongMessages`, `displayPrefsVersion`, `maxReadSeq`,
+/// `readStateVersion`, `readState`, `lastMessageAt`, `channelRole`,
+/// `channelAdminBasis`, `channelCapabilities`, `channelAuthorityRevision`.
+/// Upstream also carries the remaining channel columns, joint metadata, bridge
+/// metadata and conversion jobs; those are not projected by this slice.
 public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
     struct Row: Sendable {
         let id: String
+        let serverId: String
         let name: String
+        let description: String?
         let type: String
+        let createdAt: Date?
         let joined: Bool
         let archivedAt: Date?
         let lastMessageAt: Date?
@@ -133,11 +145,15 @@ public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
         let prefsVersion: Int
         let collapseLongMessages: Bool
         let displayPrefsVersion: Int
+        let maxReadSeq: Int
+        let readStateVersion: Int
+        let readState: ChannelReadStateFrontier
         let channelRole: String
         let channelAdminBasis: String?
         let capability: Bool
         let isJoint: Bool
         let serverAdmin: Bool
+        let channelAuthorityRevision: Int
     }
 
     let rows: [Row]
@@ -157,20 +173,27 @@ public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
             ])
             return .object([
                 OrderedJSONField("id", row.id),
+                OrderedJSONField("serverId", row.serverId),
                 OrderedJSONField("name", row.name),
+                OrderedJSONField("description", optional: row.description),
                 OrderedJSONField("type", row.type),
-                OrderedJSONField("joined", row.name == "all" || row.joined),
+                OrderedJSONField("createdAt", optional: row.createdAt.map(RuntimeUsageISO.string)),
                 OrderedJSONField("archivedAt", optional: row.archivedAt.map(RuntimeUsageISO.string)),
-                OrderedJSONField("lastMessageAt", optional: row.lastMessageAt.map(RuntimeUsageISO.string)),
+                OrderedJSONField("joined", row.name == "all" || row.joined),
                 OrderedJSONField("activityMuted", row.activityMuted),
                 OrderedJSONField("muteFromSeq", optional: row.muteFromSeq),
                 OrderedJSONField("prefsVersion", row.prefsVersion),
-                OrderedJSONField("activityMuteSupported", row.type == "channel"),
+                OrderedJSONField("activityMuteSupported", ChannelActivityMuteSupport.supports(row.type)),
                 OrderedJSONField("collapseLongMessages", row.collapseLongMessages),
                 OrderedJSONField("displayPrefsVersion", row.displayPrefsVersion),
+                OrderedJSONField("maxReadSeq", row.maxReadSeq),
+                OrderedJSONField("readStateVersion", row.readStateVersion),
+                OrderedJSONField("readState", row.readState.json),
+                OrderedJSONField("lastMessageAt", optional: row.lastMessageAt.map(RuntimeUsageISO.string)),
                 OrderedJSONField("channelRole", row.channelRole),
                 OrderedJSONField("channelAdminBasis", optional: row.channelAdminBasis),
                 OrderedJSONField("channelCapabilities", caps),
+                OrderedJSONField("channelAuthorityRevision", row.channelAuthorityRevision),
             ])
         })
     }

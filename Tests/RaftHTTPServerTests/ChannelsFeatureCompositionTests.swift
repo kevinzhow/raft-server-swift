@@ -170,9 +170,10 @@ private func channelsEntryProbe(
                 #expect(detailBody["channelAdminBasis"] as? String == "server_role")
                 let capabilities = try #require(detailBody["channelCapabilities"] as? [String: Any])
                 #expect(capabilities["manageGuestAccess"] as? Bool == true)
-                // Description is published by PATCH; this sibling GET has never
-                // carried that field. Its live name and authority prove sharing.
-                #expect(detailBody["description"] == nil)
+                // The detail row publishes the same stored channel description
+                // (upstream GET /channels/:id returns the channel row). Its live
+                // name and authority prove scene sharing.
+                #expect(detailBody["description"] as? String == "stored detail")
 
                 let parentMessageId = scene.channels.appendParentMessage(channelId: channelId, senderId: ownerId, content: "entry parent")
                 let thread = try await channelsEntryPost(

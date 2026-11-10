@@ -111,7 +111,8 @@ extension OAuthLedger {
                 name: "",
                 type: "thread",
                 parentChannelId: parentChannelId,
-                parentMessageId: parentMessageId
+                parentMessageId: parentMessageId,
+                createdAt: Date()
             ))
             return id
         }
@@ -220,6 +221,10 @@ extension OAuthLedger {
         var parentMessageId: String?
         var archived = false
         var archivedAt: Date?
+        /// Creation time of the channel row. Optional because snapshots
+        /// written before this fact was retained decode it as absent; the
+        /// route projection then publishes `null` instead of inventing a time.
+        var createdAt: Date?
     }
 
     struct ChannelMessageRecord: Sendable {
