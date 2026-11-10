@@ -650,19 +650,38 @@ public final class PublicVisitDirectory: Sendable {
 
     /// Member server list. `publicPageLive` is the anonymous page gate
     /// (`publiclyVisible` and the rollout flag). The stored switch itself is omitted.
+    ///
+    /// This is the legacy token-domain entry, kept for a bearer the canonical
+    /// Auth domain does not admit. A canonical principal projects through
+    /// `serverList(userId:)` instead, so its subject is never re-selected by
+    /// this directory's own bearer map.
     public func serverList(authorization: String?) throws -> PublicServerListResponse {
         return try state.withLock { state in
             guard let userId = Self.bearerUserId(state: &state, authorization), state.users[userId] != nil else {
                 throw PublicVisits.authRequired(authorization: authorization)
             }
-            let rows = state.servers
-                .filter { $0.value.memberIds.contains(userId) }
-                .sorted { $0.value.id < $1.value.id }
-            return PublicServerListResponse(servers: rows.map { slug, server in
-                .init(id: server.id, slug: slug, role: server.memberRoles[userId] ?? "member",
-                      publicPageLive: server.publiclyVisible && server.publicEnabled)
-            })
+            return Self.serverListRows(userId: userId, state: &state)
         }
+    }
+
+    /// The same projection for an already-admitted canonical principal: the
+    /// directory supplies its actual membership/role/`publicPageLive` rows
+    /// without re-authenticating the bearer and without requiring a separate
+    /// legacy user row. A principal with no membership is the legal bare `[]`.
+    public func serverList(userId: String) -> PublicServerListResponse {
+        state.withLock { state in
+            Self.serverListRows(userId: userId, state: &state)
+        }
+    }
+
+    private static func serverListRows(userId: String, state: inout State) -> PublicServerListResponse {
+        let rows = state.servers
+            .filter { $0.value.memberIds.contains(userId) }
+            .sorted { $0.value.id < $1.value.id }
+        return PublicServerListResponse(servers: rows.map { slug, server in
+            .init(id: server.id, slug: slug, role: server.memberRoles[userId] ?? "member",
+                  publicPageLive: server.publiclyVisible && server.publicEnabled)
+        })
     }
 
     public func joinCommunity(userId: String, slug rawSlug: String?) throws -> PublicServerJoinedResponse {

@@ -45,9 +45,10 @@ import VaporTesting
                 }
                 return (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
             }
-            func post(_ bearer: String?, _ path: String) async throws -> ClientResponse {
+            func post(_ bearer: String?, _ path: String, headerServerId: String? = nil) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 if let bearer { headers[.authorization] = "Bearer \(bearer)" }
+                if let headerServerId { headers[HTTPField.Name("X-Server-Id")!] = headerServerId }
                 return try await client.send(.post, headers: headers, to: URI(string: path))
             }
             let owner = try await token("setup-owner@slock.test")
@@ -70,12 +71,21 @@ import VaporTesting
             #expect(refused.status == .conflict)
             #expect((try JSONSerialization.jsonObject(with: Data((refused.body.string ?? "").utf8)) as? [String: Any])?["error"] as? String == "SERVER_ALREADY_SET_UP")
 
-            #expect(try await post(admin, handoff).status == .forbidden)
-            #expect(try await post(nil, handoff).status == .unauthorized)
-            #expect(try await post(owner, "/api/servers/33333333-3333-4333-8333-333333333999/setup-handoff").status == .notFound)
-            let handoffResponse = try await post(owner, handoff)
+            // The three setup routes sit behind the pinned `/:id` lockdown:
+            // a matching X-Server-Id plus live membership reach the handler,
+            // and an unknown server is 403 `Not a member of this server`.
+            #expect(try await post(admin, handoff, headerServerId: serverId).status == .forbidden)
+            #expect(try await post(nil, handoff, headerServerId: serverId).status == .unauthorized)
+            let unknownHandoff = try await post(
+                owner,
+                "/api/servers/33333333-3333-4333-8333-333333333999/setup-handoff",
+                headerServerId: "33333333-3333-4333-8333-333333333999"
+            )
+            #expect(unknownHandoff.status == .forbidden)
+            #expect(unknownHandoff.body.string == "{\"error\":\"Not a member of this server\"}")
+            let handoffResponse = try await post(owner, handoff, headerServerId: serverId)
             #expect(handoffResponse.status == .ok)
-            #expect(try await post(owner, handoff).status == .ok)
+            #expect(try await post(owner, handoff, headerServerId: serverId).status == .ok)
         }
     }
 }
