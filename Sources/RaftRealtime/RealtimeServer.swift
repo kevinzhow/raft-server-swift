@@ -125,6 +125,16 @@ public final class RealtimeHub: Sendable {
         }
     }
 
+    /// The server-scoped join used by send-time `socketsJoin`
+    /// (`socketUserServerRoom(userId, serverId)`): only sessions attached to
+    /// the same server receive the room, never the user's other-server tabs.
+    public func joinUserSessions(userId: String, serverId: String, room: String) {
+        DeferredEffects.emit { [self] in
+            let targets = snapshot().filter { $0.userId == userId && $0.serverId == serverId }
+            for session in targets { session.join([room]) }
+        }
+    }
+
     /// `server:membership-removed` is the last packet before the close, and
     /// only connections attached to that server are affected.
     public func removeServerMembership(serverId: String, userId: String) {

@@ -302,6 +302,7 @@ extension EmailLoginDirectory {
                     channels: serversAndChannelsStore,
                     profiles: authProfileStore,
                     catalog: taskCatalog,
+                    oauth: oauth,
                     ledger: MessageLedgerPort(oauth: oauth),
                     emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
                 ),
@@ -506,7 +507,17 @@ extension EmailLoginDirectory {
             oauth: oauth,
             prepare: actionCardPrepare,
             search: searchMentions,
-            ledger: MessageLedgerPort(oauth: oauth)
+            ledger: MessageLedgerPort(oauth: oauth),
+            publishCommittedMessage: { [relay = realtimeRelay, messages = messagesAndThreadsStore,
+                                        channels = serversAndChannelsStore,
+                                        profiles = authProfileStore, oauth = oauth] message in
+                let realtimeFrames = MessageRealtimeService(
+                    messages: messages, channels: channels, profiles: profiles, oauth: oauth
+                )
+                for frame in realtimeFrames.frames(for: message) {
+                    relay.emit(frame.room, frame.event, frame.payload)
+                }
+            }
         )
     }
 

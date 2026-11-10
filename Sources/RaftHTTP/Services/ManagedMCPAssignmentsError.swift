@@ -16,6 +16,8 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
     case assistantChannelForbidden
     case parentMessageIdRequired
     case parentMessageNotFound
+    /// The thread-create route's nested-thread refusal.
+    case threadInsideThread
     case invalidChannelMember
     case invalidAgent
     case invalidMember
@@ -57,7 +59,7 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
         case .invalidChannelMembers, .usersNotInServer, .parentMessageIdRequired, .invalidChannelMember,
              .invalidAgent, .invalidMember, .invalidChannelRole, .invalidTaskStatus,
              .repeatedQueryParameter, .detailMustBeFullOrSummary, .limitOutOfRange,
-             .cursorRequiresLimit, .invalidCursor:
+             .cursorRequiresLimit, .invalidCursor, .threadInsideThread:
             400
         }
     }
@@ -70,6 +72,7 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
         case .assistantChannelForbidden: "An assistant can only be in its DM with its owner"
         case .parentMessageIdRequired: "parentMessageId is required"
         case .parentMessageNotFound: "Parent message not found"
+        case .threadInsideThread: "Cannot create a thread inside a thread"
         case .invalidChannelMember: "Invalid channel member"
         case .invalidAgent: "Invalid agent"
         case .invalidMember: "Invalid member"
@@ -109,7 +112,8 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
              .memberNotFound, .taskNotFound, .joinChannelToChangeTasks, .onlyCreatorCanDeleteTask,
              .onlyAssigneeCanReturnToTodo, .invalidTaskStatus, .messageNotFound,
              .repeatedQueryParameter, .detailMustBeFullOrSummary, .limitOutOfRange,
-             .cursorRequiresLimit, .invalidCursor, .taskConflict, .onlyAdminsCanCloseDeletedTask:
+             .cursorRequiresLimit, .invalidCursor, .taskConflict, .onlyAdminsCanCloseDeletedTask,
+             .threadInsideThread:
             nil
         }
     }

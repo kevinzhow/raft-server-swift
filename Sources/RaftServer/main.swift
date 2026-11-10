@@ -174,6 +174,9 @@ enum Entrypoint {
                 emailAccounts.realtimeRelay.installRoomJoiner { userId, room in
                     hub.joinUserSessions(userId: userId, room: room)
                 }
+                emailAccounts.realtimeRelay.installServerRoomJoiner { userId, serverId, room in
+                    hub.joinUserSessions(userId: userId, serverId: serverId, room: room)
+                }
                 emailAccounts.managedMCPToolExecution.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
                     guard emailAccounts.managedMCPToolExecution.shouldEmitStartupScopeRead(
                         serverId: serverId, channelId: channelId, agentId: agentId

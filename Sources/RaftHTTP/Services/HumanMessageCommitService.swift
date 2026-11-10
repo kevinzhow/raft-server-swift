@@ -12,6 +12,7 @@ struct HumanMessageCommitService: Sendable {
     let channels: ServersAndChannelsStore
     let profiles: AuthProfileStore
     let catalog: TaskCatalogService
+    let oauth: OAuthLedger
     let ledger: MessageLedgerPort
     let emit: @Sendable (String, String, String?) -> Void
 
@@ -39,14 +40,11 @@ struct HumanMessageCommitService: Sendable {
         )
         switch messages.commitHumanMessage(request, ledger: ledger) {
         case .created(let message):
-            // A new DM has no room members yet. Join every participant's live
-            // sockets before publishing so the first frame is not lost
-            // (upstream `emitPersistedMessageToFrontend`).
-            if kind == "dm", let channel {
-                for participantId in channel.memberIds {
-                    messages.realtimeRoomJoinerStorage?(participantId, "channel:\(channelId)")
-                }
-            }
+            // The DM/thread room grants and reply follows run before publishing
+            // (`emitPersistedMessageToFrontend`); the single persisted-frontend
+            // publisher then emits `message:new` with its `conversationContext`,
+            // `dm:new` or the parent `thread:updated`.
+            //
             // `asTask`: the host message stays a plain chat row; the canonical
             // task is created in this same request transaction, before the
             // acknowledgement and before agent delivery is staged, so the task
@@ -55,7 +53,7 @@ struct HumanMessageCommitService: Sendable {
             // continues); the plain message is still accepted.
             var createdTask: TaskRecord?
             var taskCreated = false
-            if asTask, kind != "thread", let channel {
+            if asTask, kind != "thread" {
                 let ensured = catalog.ensureSentTask(
                     channelId: channelId, messageId: message.id, title: message.content,
                     creatorId: message.senderId, hasLegacyTask: message.taskStatus != nil, now: Date()
@@ -65,8 +63,12 @@ struct HumanMessageCommitService: Sendable {
             }
             let taskFacts = createdTask.map(CanonicalMessagePayload.TaskFacts.init)
             let body = payload(message, task: taskFacts, conversationContext: nil)
-            emit("channel:\(channelId)", "message:new",
-                 payload(message, task: taskFacts, conversationContext: conversationContext(channelId: channelId)))
+            let realtime = MessageRealtimeService(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth
+            )
+            for frame in realtime.frames(for: message, task: taskFacts) {
+                emit(frame.room, frame.event, frame.payload)
+            }
             // Publish the board frame after the host `message:new`, as upstream
             // does. The publication is staged in this transaction; a staging
             // failure discards the message and task together.
@@ -77,8 +79,9 @@ struct HumanMessageCommitService: Sendable {
         case .replayed(let message):
             // Upstream `broadcastAndDeliver` builds the enriched row and calls
             // `emitPersistedMessageToFrontend` on every send, including a
-            // randomId replay. That emitter also publishes `task:created`
-            // whenever the send's canonical task resolved (created or replayed).
+            // randomId replay, so the frames re-emit through the same publisher
+            // and `task:created` follows whenever the send's canonical task
+            // resolved (created or replayed).
             var replayedTask: TaskRecord?
             if asTask, kind != "thread" {
                 replayedTask = catalog.ensureSentTask(
@@ -87,8 +90,12 @@ struct HumanMessageCommitService: Sendable {
                 )?.task
             }
             let taskFacts = replayedTask.map(CanonicalMessagePayload.TaskFacts.init)
-            emit("channel:\(channelId)", "message:new",
-                 payload(message, task: taskFacts, conversationContext: conversationContext(channelId: channelId)))
+            let realtime = MessageRealtimeService(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth
+            )
+            for frame in realtime.frames(for: message, task: taskFacts) {
+                emit(frame.room, frame.event, frame.payload)
+            }
             if let replayedTask, let channel {
                 try catalog.publishSentTask(replayedTask, channelId: channelId, serverId: channel.serverId)
             }

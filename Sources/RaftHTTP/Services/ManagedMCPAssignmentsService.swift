@@ -30,6 +30,12 @@ public struct ManagedMCPAssignmentsService: Sendable {
     private let notices: SystemNoticeAppender
     private let membership: ChannelMembershipService
     private let catalog: TaskCatalogService
+    /// The canonical human-send pipeline for a thread's first reply. Upstream's
+    /// thread route posts it through `broadcastAndDeliver`, so the commit,
+    /// mention rows, agent delivery and realtime frames are the ordinary
+    /// message path rather than a private append.
+    private let createThreadFirstReply: @Sendable (_ serverId: String, _ channelId: String,
+        _ userId: String, _ content: String) throws -> Void
     private let now: @Sendable () -> Date
     private let publishTaskUpdated: @Sendable (String) -> Void
 
@@ -48,6 +54,8 @@ public struct ManagedMCPAssignmentsService: Sendable {
         notices: SystemNoticeAppender,
         membership: ChannelMembershipService,
         catalog: TaskCatalogService,
+        createThreadFirstReply: @escaping @Sendable (_ serverId: String, _ channelId: String,
+            _ userId: String, _ content: String) throws -> Void,
         now: @escaping @Sendable () -> Date = { Date() },
         publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
     ) {
@@ -63,6 +71,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         self.notices = notices
         self.membership = membership
         self.catalog = catalog
+        self.createThreadFirstReply = createThreadFirstReply
         self.now = now
         self.publishTaskUpdated = publishTaskUpdated
     }
@@ -74,6 +83,22 @@ public struct ManagedMCPAssignmentsService: Sendable {
             channels: channels, messages: messages, tasks: tasks, agents: agents,
             profiles: profiles, oauth: oauth, auth: auth, ownership: ownership,
             probe: probe, notices: notices, membership: membership, catalog: catalog,
+            createThreadFirstReply: createThreadFirstReply,
+            now: now, publishTaskUpdated: publishTaskUpdated
+        )
+    }
+
+    /// Rebinds the first-reply pipeline to the execution-bound human create
+    /// service the HTTP composition owns.
+    public func bindingFirstThreadReply(
+        _ createThreadFirstReply: @escaping @Sendable (_ serverId: String, _ channelId: String,
+            _ userId: String, _ content: String) throws -> Void
+    ) -> Self {
+        Self(
+            channels: channels, messages: messages, tasks: tasks, agents: agents,
+            profiles: profiles, oauth: oauth, auth: auth, ownership: ownership,
+            probe: probe, notices: notices, membership: membership, catalog: catalog,
+            createThreadFirstReply: createThreadFirstReply,
             now: now, publishTaskUpdated: publishTaskUpdated
         )
     }
@@ -273,6 +298,10 @@ public struct ManagedMCPAssignmentsService: Sendable {
         let probeAccess = probe.access(channelId: channelId, serverId: serverId, userId: userId)
         if probeAccess == .residue { throw ChannelMembershipError.forbidden }
         guard probeAccess == .allowed else { throw ChannelMembershipError.channelNotFound }
+        // Nested threads are reported only to a caller who can already see the
+        // channel, before the archive and first-reply gates.
+        let kind = channels.postableChannel(id: channelId)?.kind ?? oauth.channelType(id: channelId)
+        guard kind != "thread" else { throw ManagedMCPAssignmentsError.threadInsideThread }
         try requireNotArchived(channelId)
         guard let parentMessageId = body?.parentMessageId else {
             throw ManagedMCPAssignmentsError.parentMessageIdRequired
@@ -281,6 +310,24 @@ public struct ManagedMCPAssignmentsService: Sendable {
         guard rows.contains(where: { $0.id == parentMessageId && $0.channelId == channelId }) else {
             throw ManagedMCPAssignmentsError.parentMessageNotFound
         }
+        // Upstream treats a first reply as an ordinary message post: its
+        // length and post-authority gates run before the thread is
+        // materialized, so a refused first reply leaves no thread behind.
+        let firstReply: String? = {
+            guard let content = body?.content,
+                  !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return content
+        }()
+        if let firstReply {
+            if firstReply.utf16.count > 32_000 {
+                throw HumanMessageCreateError.messageTooLong
+            }
+            guard channels.postableChannel(id: channelId)?.memberIds.contains(userId) == true else {
+                throw HumanMessageCreateError.mustJoinChannel
+            }
+        }
+
         let outcome = channels.findOrCreateThread(
             serverId: serverId,
             parentChannelId: channelId,
@@ -288,43 +335,23 @@ public struct ManagedMCPAssignmentsService: Sendable {
             creatorId: userId,
             threadChannels: ThreadChannelCommand(oauth: oauth)
         )
+        let threadId: String
         switch outcome {
-        case .existing(let threadId):
-            let replies = messages.humanMessageRows.filter { $0.channelId == threadId }
-            return .existing(
-                threadChannelId: threadId,
-                replyCount: replies.count,
-                lastReplyAt: replies.last.map { ISO8601DateFormatter().string(from: $0.createdAt) },
-                participantIds: Array(Set(replies.map(\.senderId))).sorted()
-            )
-        case .created(let threadId):
-            var messageId: String?
-            if let content = body?.content, !content.isEmpty {
-                let id = UUID().uuidString.lowercased()
-                _ = notices.append(
-                    StoredHumanMessage(id: id, channelId: threadId, senderId: userId, content: content, randomId: nil),
-                    nil
-                )
-                messageId = id
-            }
-            if messageId != nil {
-                let parentAuthorId = rows.first(where: { $0.id == parentMessageId })?.senderId
-                var followedParentAuthor: String?
-                if let parentAuthorId, parentAuthorId != userId, parentAuthorId != "system",
-                   accountName(parentAuthorId) != nil,
-                   oauth.memberRole(serverId: serverId, userId: parentAuthorId) != nil {
-                    followedParentAuthor = parentAuthorId
-                }
-                messages.followCreatedThread(
-                    serverId: serverId,
-                    userId: userId,
-                    threadChannelId: threadId,
-                    parentMessageId: parentMessageId,
-                    parentAuthorId: followedParentAuthor
-                )
-            }
-            return .created(threadChannelId: threadId, messageId: messageId)
+        case .existing(let id), .created(let id):
+            threadId = id
         }
+        if let firstReply {
+            try createThreadFirstReply(serverId, threadId, userId, firstReply)
+        }
+        // `getThreadInfoForChannel` runs after the optional post, so the reply
+        // count/last reply/participants include the first reply.
+        let replies = messages.humanMessageRows.filter { $0.channelId == threadId }
+        return ChannelThreadResponse(
+            threadChannelId: threadId,
+            replyCount: replies.count,
+            lastReplyAt: replies.map(\.createdAt).max().map { ISO8601DateFormatter().string(from: $0) },
+            participantIds: Array(Set(replies.map(\.senderId))).sorted()
+        )
     }
 
     // MARK: - POST /api/channels/:channelId/members

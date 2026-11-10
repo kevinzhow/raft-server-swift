@@ -124,6 +124,33 @@ public struct HumanMessageCreateService: Sendable {
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
             throw HumanMessageCreateError.notServerMember
         }
+        return try createHumanMessage(userId: userId, request: request, serverId: serverId, contract: contract)
+    }
+
+    /// `POST /api/channels/:channelId/threads` first reply: upstream runs the
+    /// same `broadcastAndDeliver` pipeline as `POST /api/messages`, but the
+    /// thread route has already authenticated and gated the caller, so this
+    /// entry takes the resolved user instead of repeating the session checks.
+    public func createThreadFirstReply(
+        serverId: String,
+        channelId: String,
+        userId: String,
+        content: String
+    ) throws {
+        _ = try createHumanMessage(
+            userId: userId,
+            request: HumanMessageCreateRequest(channelId: channelId, content: content),
+            serverId: serverId,
+            contract: .v1
+        )
+    }
+
+    private func createHumanMessage(
+        userId: String,
+        request: HumanMessageCreateRequest?,
+        serverId: String?,
+        contract: HumanMessageContract
+    ) throws -> HumanMessageCreatedResponse {
         guard let request, Self.isValidCreateBody(request),
               case .string(let channelId)? = request.channelId,
               case .string(let content)? = request.content

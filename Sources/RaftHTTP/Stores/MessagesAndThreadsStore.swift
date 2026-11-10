@@ -68,6 +68,7 @@ final class MessagesAndThreadsStore: Sendable {
         /// The room-membership grant the human-send path applies before a new
         /// DM's first `message:new` frame.
         var realtimeRoomJoinerStorage: (@Sendable (String, String) -> Void)? = nil
+        var realtimeServerRoomJoinerStorage: (@Sendable (String, String, String) -> Void)? = nil
     }
 
     private let stateStorage = TransactionalState(State())
@@ -289,5 +290,10 @@ final class MessagesAndThreadsStore: Sendable {
     var realtimeRoomJoinerStorage: (@Sendable (String, String) -> Void)? {
         get { withState { $0.realtimeRoomJoinerStorage } }
         set { withState { $0.realtimeRoomJoinerStorage = newValue } }
+    }
+
+    var realtimeServerRoomJoinerStorage: (@Sendable (String, String, String) -> Void)? {
+        get { withState { $0.realtimeServerRoomJoinerStorage } }
+        set { withState { $0.realtimeServerRoomJoinerStorage = newValue } }
     }
 }

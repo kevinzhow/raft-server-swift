@@ -107,7 +107,10 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
         self.task = task
     }
 
-    var jsonBody: OrderedJSON {
+    /// The same members `jsonBody` publishes, exposed so the thread-summary
+    /// `latestReply` projection can append its display-only fields without
+    /// re-rendering and re-sorting the canonical object.
+    var orderedObject: OrderedJSONObject {
         let taskStatus = task?.status ?? message.taskStatus
         let taskNumber = task?.number ?? message.taskNumber
         let taskAssigneeType = task?.assigneeType ?? message.taskAssigneeType
@@ -157,6 +160,8 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
         if let conversationContext {
             body.append("conversationContext", conversationContext)
         }
-        return body.json
+        return body
     }
+
+    var jsonBody: OrderedJSON { orderedObject.json }
 }

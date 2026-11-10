@@ -182,7 +182,7 @@ private func channelsEntryProbe(
                 )
                 #expect(thread.status == .ok)
                 let threadId = try #require(try channelsEntryJSON(thread)["threadChannelId"] as? String)
-                #expect(thread.body.string == "{\"threadChannelId\":\"\(threadId)\",\"messageId\":null,\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
+                #expect(thread.body.string == "{\"threadChannelId\":\"\(threadId)\",\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
                 // Threads are not automatic handshake rooms. These public Hub
                 // joins are transport setup, then each queue proves reachability.
                 hubA.joinUserSessions(userId: ownerId, room: "channel:\(threadId)")

@@ -134,6 +134,9 @@ private func messagePayloadInstall(_ fixture: MessagePayloadFixture, hub: Realti
     fixture.accounts.realtimeRelay.installRoomJoiner { userId, room in
         hub.joinUserSessions(userId: userId, room: room)
     }
+    fixture.accounts.realtimeRelay.installServerRoomJoiner { userId, serverId, room in
+        hub.joinUserSessions(userId: userId, serverId: serverId, room: room)
+    }
 }
 
 private func messagePayloadAssertCanonical(
@@ -433,11 +436,6 @@ struct HumanMessageWirePayloadTests {
                 let thread = try messagePayloadObject(messagePayloadBodyText(created))
                 let threadId = try #require(thread["threadChannelId"] as? String)
 
-                // Thread rooms are not part of the handshake snapshot; grant the
-                // creator's live socket the thread room the send will publish to.
-                messagePayloadInstall(fixture, hub: realtime.hub)
-                fixture.accounts.realtimeRelay.joinUserSessions(fixture.ownerId, "channel:\(threadId)")
-
                 let sent = try await messagePayloadPOST(
                     client, path: "/api/v2/messages",
                     body: "{\"channelId\":\"\(threadId)\",\"content\":\"thread reply over the wire\"}",
@@ -464,6 +462,224 @@ struct HumanMessageWirePayloadTests {
                 #expect(context["parentChannelId"] as? String == channelId)
                 #expect(context["parentMessageId"] as? String == parentId)
                 #expect(context["parentChannelType"] as? String == "channel")
+            }
+        }
+    }
+
+    /// A human who follows a thread after connecting must still receive the
+    /// next reply: the production send path joins every human follower's live
+    /// sockets to the thread room before publishing (`messageService.ts`
+    /// `emitPersistedMessageToFrontend`). The follow route itself must not be
+    /// the thing that grants the room.
+    @Test func threadReplyJoinsFollowerSocketsBeforeBroadcast() async throws {
+        let fixture = MessagePayloadFixture()
+        let channelId = fixture.addChannel(name: "wire-payload-thread-follower")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let followerSocket = try await messagePayloadConnect(fixture, server: realtime, userId: fixture.peerId)
+        defer {
+            followerSocket.close()
+            Task { try? await realtime.close() }
+        }
+        messagePayloadInstall(fixture, hub: realtime.hub)
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let ownerHeaders = fixture.headers(fixture.ownerToken)
+                let parent = try await messagePayloadPOST(
+                    client, path: "/api/messages",
+                    body: "{\"channelId\":\"\(channelId)\",\"content\":\"follower parent\"}",
+                    headers: ownerHeaders
+                )
+                #expect(parent.status == .ok)
+                let parentId = try #require(try messagePayloadObject(messagePayloadBodyText(parent))["id"] as? String)
+
+                let created = try await messagePayloadPOST(
+                    client, path: "/api/channels/\(channelId)/threads",
+                    body: "{\"parentMessageId\":\"\(parentId)\",\"content\":\"thread seed\"}",
+                    headers: ownerHeaders
+                )
+                #expect(created.status == .ok)
+                let threadId = try #require(
+                    try messagePayloadObject(messagePayloadBodyText(created))["threadChannelId"] as? String
+                )
+
+                let peerToken = fixture.accounts.mintAccessTokenForTesting(userId: fixture.peerId)
+                let followed = try await messagePayloadPOST(
+                    client, path: "/api/channels/threads/follow",
+                    body: "{\"parentMessageId\":\"\(parentId)\"}",
+                    headers: fixture.headers(peerToken)
+                )
+                #expect(followed.status == .ok)
+
+                let sent = try await messagePayloadPOST(
+                    client, path: "/api/v2/messages",
+                    body: "{\"channelId\":\"\(threadId)\",\"content\":\"follower-visible reply\"}",
+                    headers: ownerHeaders
+                )
+                #expect(sent.status == .ok)
+
+                let frame = try #require(await followerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:new""#) && $0.contains("\"follower-visible reply\"")
+                })
+                let parsed = try messagePayloadFrame(frame)
+                #expect(parsed.payload["channelId"] as? String == threadId)
+                let context = try #require(parsed.payload["conversationContext"] as? [String: Any])
+                #expect(context["channelType"] as? String == "thread")
+                #expect(context["parentMessageId"] as? String == parentId)
+            }
+        }
+    }
+
+    /// An agent reply uses the same persisted-message frontend emit. The
+    /// thread's human follower receives the frame only because the agent send
+    /// path joins follower sockets before publishing.
+    @Test func agentThreadReplyJoinsFollowerSocketsBeforeBroadcast() async throws {
+        let fixture = MessagePayloadFixture()
+        let channelId = fixture.addChannel(name: "wire-payload-agent-thread")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let followerSocket = try await messagePayloadConnect(fixture, server: realtime, userId: fixture.ownerId)
+        defer {
+            followerSocket.close()
+            Task { try? await realtime.close() }
+        }
+        messagePayloadInstall(fixture, hub: realtime.hub)
+        let agentId = fixture.accounts.oauth.createAgent(
+            serverId: fixture.serverId, name: "WireAgent", creatorUserId: fixture.ownerId, runtime: "managed"
+        )
+        fixture.accounts.oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+        fixture.accounts.addPostableChannel(
+            serverId: fixture.serverId, channelId: channelId, memberId: agentId, name: "wire-payload-agent-thread"
+        )
+        let agentKey = fixture.accounts.mintAgentCredential(
+            agentId: agentId, scopes: ["send", "read"], name: "wire-agent"
+        )
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let ownerHeaders = fixture.headers(fixture.ownerToken)
+                let parent = try await messagePayloadPOST(
+                    client, path: "/api/messages",
+                    body: "{\"channelId\":\"\(channelId)\",\"content\":\"agent thread parent\"}",
+                    headers: ownerHeaders
+                )
+                #expect(parent.status == .ok)
+                let parentId = try #require(try messagePayloadObject(messagePayloadBodyText(parent))["id"] as? String)
+
+                let created = try await messagePayloadPOST(
+                    client, path: "/api/channels/\(channelId)/threads",
+                    body: "{\"parentMessageId\":\"\(parentId)\",\"content\":\"agent thread seed\"}",
+                    headers: ownerHeaders
+                )
+                #expect(created.status == .ok)
+                let createdBody = try messagePayloadObject(messagePayloadBodyText(created))
+                let threadId = try #require(createdBody["threadChannelId"] as? String)
+                let seedHistory = try await client.get(
+                    URI(string: "/api/messages/channel/\(threadId)?limit=50"), headers: ownerHeaders
+                )
+                #expect(seedHistory.status == .ok)
+                let seedMessages = try #require(
+                    try messagePayloadObject(messagePayloadBodyText(seedHistory))["messages"] as? [[String: Any]]
+                )
+                let seed = try #require(seedMessages.first {
+                    ($0["content"] as? String) == "agent thread seed"
+                })
+                let seedMessageId = try #require(seed["id"] as? String)
+                let seedSeq = try #require(seed["seq"] as? Int)
+                #expect(seedSeq > 0)
+
+                var agentHeaders = HTTPFields()
+                agentHeaders[.authorization] = "Bearer \(agentKey)"
+                agentHeaders[.contentType] = "application/json"
+                let sent = try await messagePayloadPOST(
+                    client, path: "/internal/agent-api/send",
+                    body: "{\"target\":\"#wire-payload-agent-thread:\(parentId.prefix(8))\",\"content\":\"agent follower-visible reply\",\"seenUpToSeq\":\(seedSeq)}",
+                    headers: agentHeaders
+                )
+                #expect(sent.status == .ok)
+                let agentBody = try messagePayloadObject(messagePayloadBodyText(sent))
+                #expect(agentBody["state"] as? String == "sent")
+                let agentMessageId = try #require(agentBody["messageId"] as? String)
+                let agentChannelId = try #require(
+                    fixture.accounts.messageChannelIdForTesting(messageId: agentMessageId)
+                )
+                #expect(agentChannelId == threadId)
+
+                let frame = try #require(await followerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:new""#) && $0.contains("\"agent follower-visible reply\"")
+                })
+                let parsed = try messagePayloadFrame(frame)
+                #expect(parsed.payload["channelId"] as? String == threadId)
+                #expect(parsed.payload["senderType"] as? String == "agent")
+                #expect(parsed.payload["senderId"] as? String == agentId)
+            }
+        }
+    }
+
+    /// A task-assignment notice is a system `message:new` in a freshly created
+    /// thread. The actor is followed before the notice is committed, and the
+    /// system emit path must join that follower audience before publishing
+    /// (`broadcastSystemMessage` in the upstream service).
+    @Test func systemThreadNoticeJoinsFollowerSocketsBeforeBroadcast() async throws {
+        let fixture = MessagePayloadFixture()
+        let channelId = fixture.addChannel(name: "wire-payload-system-thread")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let actorSocket = try await messagePayloadConnect(fixture, server: realtime, userId: fixture.ownerId)
+        defer {
+            actorSocket.close()
+            Task { try? await realtime.close() }
+        }
+        messagePayloadInstall(fixture, hub: realtime.hub)
+        let agentId = fixture.accounts.oauth.createAgent(
+            serverId: fixture.serverId, name: "AssignBot", creatorUserId: fixture.ownerId, runtime: "managed"
+        )
+        fixture.accounts.oauth.addChannelAgent(channelId: channelId, agentId: agentId)
+        fixture.accounts.addPostableChannel(
+            serverId: fixture.serverId, channelId: channelId, memberId: agentId,
+            name: "wire-payload-system-thread"
+        )
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let headers = fixture.headers(fixture.ownerToken)
+                let created = try await messagePayloadPOST(
+                    client, path: "/api/tasks/channel/\(channelId)",
+                    body: "{\"tasks\":[{\"title\":\"system join task\"}]}",
+                    headers: headers
+                )
+                #expect(created.status == .ok)
+                let createdBody = try messagePayloadObject(messagePayloadBodyText(created))
+                let task = try #require((createdBody["tasks"] as? [[String: Any]])?.first)
+                let taskId = try #require(task["id"] as? String)
+
+                let assigned = try await client.send(
+                    .patch, headers: headers, to: URI(string: "/api/tasks/\(taskId)/assignee")
+                ) { request in
+                    request.body = .init(string: "{\"assignee\":{\"type\":\"agent\",\"id\":\"\(agentId)\"}}")
+                }
+                #expect(assigned.status == .ok, "\(assigned.status) \(assigned.body.string ?? "")")
+
+                let frame = try #require(await actorSocket.waitForText {
+                    $0.hasPrefix(#"42["message:new""#)
+                        && $0.contains("assigned") && $0.contains("AssignBot")
+                })
+                let parsed = try messagePayloadFrame(frame)
+                let threadId = try #require(parsed.payload["channelId"] as? String)
+                #expect(fixture.accounts.oauth.channelType(id: threadId) == "thread")
+                #expect(parsed.payload["senderId"] as? String == "system")
+                #expect(fixture.accounts.threadFollowerIdsForTesting(threadChannelId: threadId)
+                    .contains(fixture.ownerId))
             }
         }
     }

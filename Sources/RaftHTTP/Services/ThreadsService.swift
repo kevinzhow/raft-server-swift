@@ -237,9 +237,11 @@ public struct ThreadsService: Sendable {
             follow: follow,
             now: dependencies.now()
         )
-        if let requested = body.threadChannelId, !requested.isEmpty {
-            publishFollowersUpdated(ThreadFollowersUpdatedPayload(threadChannelId: requested))
-        }
+        // Upstream follows `POST /threads/follow` through
+        // `getOrCreateThreadForChannel` and emits for the resolved thread, so a
+        // body that named only `parentMessageId` publishes the same
+        // `thread:followers-updated` frame as a direct thread id.
+        publishFollowersUpdated(ThreadFollowersUpdatedPayload(threadChannelId: threadId))
         return ThreadFollowResponse(following: follow)
     }
 

@@ -135,7 +135,9 @@ private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String
         #expect(parentOnly.jsonBody.render() == "{\"ok\":true,\"following\":true}")
         let parentFollowed = try publishedThreads.followedThreads(authorization: fixture.authorization, serverId: fixture.serverId)
         #expect(parentFollowed.threads.map(\.threadChannelId) == [fixture.threadId])
-        #expect(try await publisherBindingFrames(socketA) == [])
+        // `POST /channels/threads/follow` emits for the resolved thread whether
+        // the body named `threadChannelId` or `parentMessageId`.
+        #expect(try await publisherBindingFrames(socketA) == [followerFrame])
         #expect(try await publisherBindingFrames(socketB) == [])
 
         socketA = socketA.reset
