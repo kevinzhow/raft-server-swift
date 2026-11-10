@@ -18,7 +18,7 @@ final class TasksAndRemindersStore: Sendable {
         var reminderEvents: [ReminderEvent] = []
         var taskRecords: [TaskRecord] = []
         var taskWriteHolds: [String: (seen: Int, latest: Int)] = [:]
-        var taskEvents: [(taskId: String, eventType: String, actorType: String)] = []
+        var taskEvents: [TaskEventRecord] = []
         var lastTaskServerWarning: String? = nil
         var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] = []
     }
@@ -51,7 +51,7 @@ final class TasksAndRemindersStore: Sendable {
         set { mutex.withLock { $0.taskWriteHolds = newValue } }
     }
 
-    var taskEvents: [(taskId: String, eventType: String, actorType: String)] {
+    var taskEvents: [TaskEventRecord] {
         get { mutex.withLock { $0.taskEvents } }
         set { mutex.withLock { $0.taskEvents = newValue } }
     }
@@ -90,7 +90,10 @@ final class TasksAndRemindersStore: Sendable {
             guard isAdmin || storage.taskRecords[index].creatorId == agentId else {
                 return .forbidden
             }
+            let removedId = storage.taskRecords[index].id
             storage.taskRecords.remove(at: index)
+            storage.taskEvents.removeAll { $0.taskId == removedId }
+            storage.assigneeChangeEvents.removeAll { $0.taskId == removedId }
             return .deleted
         }
     }
@@ -124,6 +127,14 @@ final class TasksAndRemindersStore: Sendable {
             )
             record.creatorId = creatorId
             storage.taskRecords.append(record)
+            Self.appendTaskEventLocked(state: &storage, taskId: record.id, eventType: "created",
+                actorType: "agent", actorId: creatorId,
+                payloadJSON: OrderedJSON.object([
+                    .init("taskNumber", record.taskNumber),
+                    .init("status", record.status),
+                    .init("convertedFromMessage", true),
+                ]).render(),
+                now: now)
             return .created(record)
         }
     }
@@ -145,7 +156,14 @@ final class TasksAndRemindersStore: Sendable {
                     title: draft.title ?? "", description: draft.description, status: "todo",
                     taskNumber: number, messageId: hostId, createdAt: now, updatedAt: now, creatorId: creatorId)
                 storage.taskRecords.append(task)
-                storage.taskEvents.append((taskId: task.id, eventType: "created", actorType: "user"))
+                Self.appendTaskEventLocked(state: &storage, taskId: task.id, eventType: "created",
+                    actorType: "user", actorId: creatorId,
+                    payloadJSON: OrderedJSON.object([
+                        .init("taskNumber", task.taskNumber),
+                        .init("status", task.status),
+                        .init("requiresResourceReceipt", task.requiresResourceReceipt),
+                    ]).render(),
+                    now: now)
                 created.append(task)
             }
             return created
@@ -153,18 +171,22 @@ final class TasksAndRemindersStore: Sendable {
     }
 
     /// Appends one posted task batch and returns the created rows in order.
-    /// The task-number scan and every append run under the same lock.
+    /// The task-number scan, every append and the created event run under the
+    /// same lock. `resourceReceiptFlags` is the request's `creates_resource`
+    /// list; the created payload carries the stored flag like upstream
+    /// `createTasks`.
     func appendTaskBatch(
         channelId: String,
         titles: [String],
         creatorId: String,
+        resourceReceiptFlags: [Bool] = [],
         now: Date
     ) -> [TaskRecord] {
         mutex.withLock { storage in
             var created: [TaskRecord] = []
-            for title in titles {
+            for (offset, title) in titles.enumerated() {
                 let taskNumber = storage.taskRecords.filter { $0.channelId == channelId }.count + 1
-                let record = TaskRecord(
+                var record = TaskRecord(
                     id: UUID().uuidString.lowercased(),
                     channelId: channelId,
                     title: title,
@@ -175,7 +197,16 @@ final class TasksAndRemindersStore: Sendable {
                     createdAt: now,
                     creatorId: creatorId
                 )
+                if offset < resourceReceiptFlags.count { record.requiresResourceReceipt = resourceReceiptFlags[offset] }
                 storage.taskRecords.append(record)
+                Self.appendTaskEventLocked(state: &storage, taskId: record.id, eventType: "created",
+                    actorType: "agent", actorId: creatorId,
+                    payloadJSON: OrderedJSON.object([
+                        .init("taskNumber", record.taskNumber),
+                        .init("status", record.status),
+                        .init("requiresResourceReceipt", record.requiresResourceReceipt),
+                    ]).render(),
+                    now: now)
                 created.append(record)
             }
             return created
@@ -194,10 +225,14 @@ final class TasksAndRemindersStore: Sendable {
     }
 
     /// Applies one assignee to a created batch and returns the updated rows.
+    /// Upstream's assigned create records one `assignee_changed` event per row,
+    /// attributed to the creating actor.
     func applyAssignment(
         taskIds: [String],
         assigneeId: String,
-        assigneeType: String
+        assigneeType: String,
+        actorId: String,
+        now: Date = Date()
     ) -> [TaskRecord] {
         mutex.withLock { storage in
             var updated: [TaskRecord] = []
@@ -206,6 +241,13 @@ final class TasksAndRemindersStore: Sendable {
                 storage.taskRecords[index].assigneeId = assigneeId
                 storage.taskRecords[index].assigneeType = assigneeType
                 storage.taskRecords[index].revision += 1
+                Self.appendTaskEventLocked(state: &storage, taskId: id, eventType: "assignee_changed",
+                    actorType: "agent", actorId: actorId,
+                    payloadJSON: OrderedJSON.object([
+                        .init("assigneeType", assigneeType),
+                        .init("assigneeId", assigneeId),
+                    ]).render(),
+                    now: now)
                 updated.append(storage.taskRecords[index])
             }
             return updated
@@ -223,7 +265,9 @@ final class TasksAndRemindersStore: Sendable {
         channelId: String,
         taskNumber: Int,
         assigneeId: String,
-        assigneeType: String
+        assigneeType: String,
+        actorId: String,
+        now: Date = Date()
     ) -> TaskAssignOutcome {
         mutex.withLock { storage in
             guard let index = storage.taskRecords.firstIndex(where: {
@@ -231,10 +275,21 @@ final class TasksAndRemindersStore: Sendable {
             }) else {
                 return .notFound
             }
+            let previousAssigneeId = storage.taskRecords[index].assigneeId
+            let previousAssigneeType = storage.taskRecords[index].assigneeType
             storage.taskRecords[index].assigneeId = assigneeId
             storage.taskRecords[index].assigneeType = assigneeType
             storage.taskRecords[index].claimedAt = nil
             storage.taskRecords[index].revision += 1
+            Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                eventType: "assignee_changed", actorType: "agent", actorId: actorId,
+                payloadJSON: OrderedJSON.object([
+                    .init("assigneeType", assigneeType),
+                    .init("assigneeId", assigneeId),
+                    .init("previousAssigneeType", optional: previousAssigneeType),
+                    .init("previousAssigneeId", optional: previousAssigneeId),
+                ]).render(),
+                now: now)
             return .assigned(storage.taskRecords[index])
         }
     }
@@ -250,7 +305,9 @@ final class TasksAndRemindersStore: Sendable {
         channelId: String,
         taskNumber: Int,
         receiptJSON: String,
-        reminder: ReminderRecord
+        reminder: ReminderRecord,
+        actorId: String,
+        now: Date = Date()
     ) -> TaskReceiptOutcome {
         mutex.withLock { storage in
             guard let index = storage.taskRecords.firstIndex(where: {
@@ -261,6 +318,17 @@ final class TasksAndRemindersStore: Sendable {
             storage.taskRecords[index].resourceReceiptJSON = receiptJSON
             storage.taskRecords[index].revision += 1
             storage.reminderRecords.append(reminder)
+            // Upstream resolves the receipt's teardown owner to a live agent
+            // and stores that id. This port retains the raw receipt only, so the
+            // unresolved owner is published as null instead of an invented id.
+            Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                eventType: "resource_receipt_recorded", actorType: "agent", actorId: actorId,
+                payloadJSON: OrderedJSON.object([
+                    .init("receipt", .raw(receiptJSON)),
+                    .init("teardownOwnerAgentId", .null),
+                    .init("expiryFollowupId", reminder.id),
+                ]).render(),
+                now: now)
             return .stored(task: storage.taskRecords[index], reminder: reminder)
         }
     }
@@ -327,6 +395,7 @@ final class TasksAndRemindersStore: Sendable {
                     results.append(.alreadyClaimed(taskNumber: number))
                     continue
                 }
+                let previousStatus = storage.taskRecords[index].status
                 storage.taskRecords[index].assigneeId = agentId
                 storage.taskRecords[index].assigneeType = "agent"
                 storage.taskRecords[index].claimedAt = now
@@ -334,6 +403,23 @@ final class TasksAndRemindersStore: Sendable {
                     storage.taskRecords[index].status = "in_progress"
                 }
                 storage.taskRecords[index].revision += 1
+                Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                    eventType: "assignee_changed", actorType: "agent", actorId: agentId,
+                    payloadJSON: OrderedJSON.object([
+                        .init("assigneeType", "agent"),
+                        .init("assigneeId", agentId),
+                    ]).render(),
+                    now: now)
+                if previousStatus != storage.taskRecords[index].status {
+                    Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                        eventType: "status_changed", actorType: "agent", actorId: agentId,
+                        payloadJSON: OrderedJSON.object([
+                            .init("from", previousStatus),
+                            .init("to", storage.taskRecords[index].status),
+                            .init("forced", false),
+                        ]).render(),
+                        now: now)
+                }
                 results.append(.claimed(
                     taskNumber: storage.taskRecords[index].taskNumber,
                     messageId: storage.taskRecords[index].messageId
@@ -361,6 +447,7 @@ final class TasksAndRemindersStore: Sendable {
                     ))
                     continue
                 }
+                let previousStatus = storage.taskRecords[index].status
                 storage.taskRecords[index].assigneeId = agentId
                 storage.taskRecords[index].assigneeType = "agent"
                 storage.taskRecords[index].claimedAt = now
@@ -368,6 +455,23 @@ final class TasksAndRemindersStore: Sendable {
                     storage.taskRecords[index].status = "in_progress"
                 }
                 storage.taskRecords[index].revision += 1
+                Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                    eventType: "assignee_changed", actorType: "agent", actorId: agentId,
+                    payloadJSON: OrderedJSON.object([
+                        .init("assigneeType", "agent"),
+                        .init("assigneeId", agentId),
+                    ]).render(),
+                    now: now)
+                if previousStatus != storage.taskRecords[index].status {
+                    Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                        eventType: "status_changed", actorType: "agent", actorId: agentId,
+                        payloadJSON: OrderedJSON.object([
+                            .init("from", previousStatus),
+                            .init("to", storage.taskRecords[index].status),
+                            .init("forced", false),
+                        ]).render(),
+                        now: now)
+                }
                 results.append(.claimedMessage(
                     messageId: storage.taskRecords[index].messageId,
                     taskNumber: storage.taskRecords[index].taskNumber
@@ -418,6 +522,7 @@ final class TasksAndRemindersStore: Sendable {
                storage.taskRecords[index].resourceReceiptJSON == nil {
                 return .resourceReceiptRequired
             }
+            let previousStatus = storage.taskRecords[index].status
             storage.taskRecords[index].status = status
             if status == "done" || status == "closed" {
                 storage.taskRecords[index].completedAt = now
@@ -429,6 +534,11 @@ final class TasksAndRemindersStore: Sendable {
                 storage.taskRecords[index].claimedAt = nil
             }
             storage.taskRecords[index].revision += 1
+            Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                eventType: Self.statusEventType(from: previousStatus, to: status),
+                actorType: "agent", actorId: agentId,
+                payloadJSON: Self.statusEventPayload(from: previousStatus, to: status, forced: false),
+                now: now)
             return .updated(storage.taskRecords[index])
         }
     }
@@ -513,7 +623,15 @@ final class TasksAndRemindersStore: Sendable {
                 storage.taskRecords[index].completedAt = now
                 storage.taskRecords[index].closedAt = now
                 storage.taskRecords[index].revision += 1
-                storage.taskEvents.append((taskId: storage.taskRecords[index].id, eventType: "closed", actorType: "system"))
+                let taskId = storage.taskRecords[index].id
+                Self.appendTaskEventLocked(state: &storage, taskId: taskId, eventType: "closed",
+                    actorType: "system", actorId: nil,
+                    payloadJSON: OrderedJSON.object([
+                        .init("status", "closed"),
+                        .init("reason", "channel_deleted"),
+                        .init("channelId", channelId),
+                    ]).render(),
+                    now: now)
             }
         }
     }
@@ -579,186 +697,6 @@ final class TasksAndRemindersStore: Sendable {
                 createdAt: createdAt,
                 completedAt: completedAt
             ))
-        }
-    }
-}
-
-// MARK: - Server task reads, amend and reassignment
-
-extension TasksAndRemindersStore {
-    /// The rows of one channel, optionally narrowed to one status, in insertion
-    /// order. One locked snapshot.
-    func tasks(channelId: String, status: String?) -> [TaskRecord] {
-        mutex.withLock { storage in
-            return storage.taskRecords.filter {
-                $0.channelId == channelId && (status == nil || $0.status == status)
-            }
-        }
-    }
-
-    func task(channelId: String, taskNumber: Int) -> TaskRecord? {
-        mutex.withLock { storage in
-            return storage.taskRecords.first { $0.channelId == channelId && $0.taskNumber == taskNumber }
-        }
-    }
-
-    func task(id: String) -> TaskRecord? {
-        mutex.withLock { storage in
-            return storage.taskRecords.first { $0.id == id }
-        }
-    }
-
-    func task(messageId: String) -> TaskRecord? {
-        mutex.withLock { $0.taskRecords.first { $0.messageId == messageId } }
-    }
-
-    // MARK: - Human task routes (managed-MCP assignments)
-
-    /// `DELETE /api/tasks/:taskId`: removes the row by id and returns it. The
-    /// legacy handler removed by an index it had read earlier; removing by id
-    /// in one section cannot drop a neighbour when rows move in between.
-    func removeTask(id: String) -> TaskRecord? {
-        mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: { $0.id == id }) else { return nil }
-            return storage.taskRecords.remove(at: index)
-        }
-    }
-
-    enum HumanClaimOutcome: Sendable {
-        case notFound
-        case channelDeleted
-        case rejected(String)
-        case alreadyAssigned(TaskRecord)
-        case claimed(TaskRecord)
-    }
-
-    /// `PATCH /api/tasks/:taskId/claim`: the row lookup, the deleted-channel
-    /// refusal and the claim write are one critical section.
-    func claimForUser(taskId: String, userId: String, channelDeletion: TaskChannelDeletionQuery, now: Date) -> HumanClaimOutcome {
-        mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
-            guard !channelDeletion.isDeleted(channelId: storage.taskRecords[index].channelId) else { return .channelDeleted }
-            let current = storage.taskRecords[index]
-            if current.status == "closed" { return .rejected("task is closed; reopen it before claiming") }
-            if let assignee = current.assigneeId {
-                let selfAssigned = current.assigneeType == "user" && assignee == userId
-                if !(selfAssigned && current.status == "todo" && current.claimedAt == nil) {
-                    return selfAssigned ? .rejected("already claimed by you") : .alreadyAssigned(current)
-                }
-            } else if current.status == "done" { return .rejected("task is done") }
-            storage.taskRecords[index].updatedAt = now
-            storage.taskRecords[index].assigneeId = userId
-            storage.taskRecords[index].assigneeType = "user"
-            storage.taskRecords[index].claimedAt = now
-            storage.taskRecords[index].revision += 1
-            if storage.taskRecords[index].status == "todo" { storage.taskRecords[index].status = "in_progress" }
-            return .claimed(storage.taskRecords[index])
-        }
-    }
-
-    /// `PATCH /api/tasks/:taskId/unclaim`: the assignee clear, the revision
-    /// bump and the assignee-change event are one critical section.
-    enum HumanUnclaimOutcome: Sendable {
-        case notFound
-        case done
-        case unassigned
-        case unclaimed(TaskRecord)
-    }
-
-    func unclaimForUser(taskId: String, userId: String, now: Date = Date()) -> HumanUnclaimOutcome {
-        mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
-            guard storage.taskRecords[index].status != "done" else { return .done }
-            guard storage.taskRecords[index].assigneeId != nil else { return .unassigned }
-            let previousAssigneeId = storage.taskRecords[index].assigneeId
-            let previousAssigneeType = storage.taskRecords[index].assigneeType
-            storage.taskRecords[index].assigneeId = nil
-            storage.taskRecords[index].assigneeType = nil
-            storage.taskRecords[index].claimedAt = nil
-            storage.taskRecords[index].updatedAt = now
-            storage.taskRecords[index].revision += 1
-            storage.assigneeChangeEvents.append((
-                taskId: taskId, assigneeId: nil, assigneeType: nil,
-                previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
-                actorType: "user", actorId: userId
-            ))
-            return .unclaimed(storage.taskRecords[index])
-        }
-    }
-
-    /// `POST /internal/agent-api/tasks/amend`: the row lookup, the title and
-    /// description write, the revision bump and the amend markers are one
-    /// critical section. `nil` means the task does not exist.
-    func amendTask(
-        channelId: String,
-        taskNumber: Int,
-        title: String,
-        description: String?,
-        amendedByName: String,
-        now: Date
-    ) -> TaskRecord? {
-        mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: {
-                $0.channelId == channelId && $0.taskNumber == taskNumber
-            }) else { return nil }
-            storage.taskRecords[index].title = title
-            if let description { storage.taskRecords[index].description = description }
-            storage.taskRecords[index].revision += 1
-            storage.taskRecords[index].updatedAt = now
-            storage.taskRecords[index].amendedAt = now
-            storage.taskRecords[index].amendedByType = "agent"
-            storage.taskRecords[index].amendedByName = amendedByName
-            storage.taskRecords[index].superseded = true
-            return storage.taskRecords[index]
-        }
-    }
-
-    enum ReassignOutcome: Sendable {
-        case notFound
-        case done
-        case conflict(currentRevision: Int)
-        case unchanged(TaskRecord)
-        case reassigned(TaskRecord)
-    }
-
-    /// `PATCH /api/tasks/:taskId/assignee`: the done check, the expected
-    /// revision check, the same-assignee short circuit, the assignee write, the
-    /// revision bump and the assignee-change event are one critical section, so
-    /// two concurrent requests cannot both accept the same expected revision.
-    func reassign(
-        taskId: String,
-        assigneeId: String?,
-        assigneeType: String?,
-        expectedRevision: Int?,
-        actorId: String,
-        now: Date = Date()
-    ) -> ReassignOutcome {
-        mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else {
-                return .notFound
-            }
-            guard storage.taskRecords[index].status != "done" else { return .done }
-            let currentRevision = storage.taskRecords[index].revision
-            if let expectedRevision, expectedRevision != currentRevision {
-                return .conflict(currentRevision: currentRevision)
-            }
-            if storage.taskRecords[index].assigneeId == assigneeId
-                && storage.taskRecords[index].assigneeType == assigneeType {
-                return .unchanged(storage.taskRecords[index])
-            }
-            let previousAssigneeId = storage.taskRecords[index].assigneeId
-            let previousAssigneeType = storage.taskRecords[index].assigneeType
-            storage.taskRecords[index].assigneeId = assigneeId
-            storage.taskRecords[index].assigneeType = assigneeType
-            storage.taskRecords[index].claimedAt = nil
-            storage.taskRecords[index].updatedAt = now
-            storage.taskRecords[index].revision += 1
-            storage.assigneeChangeEvents.append((
-                taskId: taskId, assigneeId: assigneeId, assigneeType: assigneeType,
-                previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
-                actorType: "user", actorId: actorId
-            ))
-            return .reassigned(storage.taskRecords[index])
         }
     }
 }
@@ -943,7 +881,7 @@ extension TasksAndRemindersStore {
 extension TasksAndRemindersStore {
     /// Drops the agent's reminders and returns its claimed tasks to the pool, in
     /// one critical section.
-    func releaseAgentWork(agentId: String) {
+    func releaseAgentWork(agentId: String, now: Date = Date()) {
         mutex.withLock { storage in
             storage.reminderRecords.removeAll { $0.ownerAgentId == agentId }
             for index in storage.taskRecords.indices where
@@ -952,6 +890,17 @@ extension TasksAndRemindersStore {
                 storage.taskRecords[index].assigneeType = nil
                 storage.taskRecords[index].claimedAt = nil
                 storage.taskRecords[index].revision += 1
+                // Upstream agent deletion releases claims with a system event
+                // that names the reason and the deleted agent.
+                Self.appendTaskEventLocked(state: &storage, taskId: storage.taskRecords[index].id,
+                    eventType: "assignee_changed", actorType: "system", actorId: nil,
+                    payloadJSON: OrderedJSON.object([
+                        .init("assigneeType", .null),
+                        .init("assigneeId", .null),
+                        .init("reason", "assignee_agent_deleted"),
+                        .init("agentId", agentId),
+                    ]).render(),
+                    now: now)
             }
         }
     }

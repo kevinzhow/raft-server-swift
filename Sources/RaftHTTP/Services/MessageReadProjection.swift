@@ -114,22 +114,35 @@ struct MessageReadProjection: Sendable {
             $0.hasHostMessage && $0.messageId == row.id && $0.channelId == row.channelId
         }
         let overlay = task.map(TaskReadProjection.messageReadOverlay)
+        // Upstream `projectForwardDestinationMessage` removes the six task
+        // columns from a forwarded-bundle destination row on every read.
+        let isForwardDestination = state.forwardRecords[row.id] != nil
         let assigneeId: String?
         let assigneeType: String?
-        if let overlay {
+        if isForwardDestination {
+            assigneeId = nil
+            assigneeType = nil
+        } else if let overlay {
             retained += [.init("taskStatus", overlay.taskStatus), .init("taskNumber", overlay.taskNumber),
                 .init("taskAssigneeType", optional: overlay.taskAssigneeType), .init("taskAssigneeId", optional: overlay.taskAssigneeId),
                 .init("taskClaimedAt", optional: overlay.taskClaimedAt), .init("taskCompletedAt", optional: overlay.taskCompletedAt)]
             assigneeId = overlay.taskAssigneeId; assigneeType = overlay.taskAssigneeType
         } else {
-            for (key, value) in [("taskStatus", row.taskStatus), ("taskAssigneeType", row.taskAssigneeType),
-                ("taskAssigneeId", row.taskAssigneeId), ("taskClaimedAt", row.taskClaimedAt), ("taskCompletedAt", row.taskCompletedAt)] {
-                if let value { retained.append(.init(key, value)) }
-            }
-            if let number = row.taskNumber { retained.append(.init("taskNumber", number)) }
+            // Upstream spreads the stored message row, so the six task-domain
+            // columns are always present; an ordinary row publishes them as
+            // JSON null. This mirrors the create ack and `message:new`.
+            retained += [
+                .init("taskStatus", optional: row.taskStatus),
+                .init("taskNumber", optional: row.taskNumber),
+                .init("taskAssigneeType", optional: row.taskAssigneeType),
+                .init("taskAssigneeId", optional: row.taskAssigneeId),
+                .init("taskClaimedAt", optional: row.taskClaimedAt),
+                .init("taskCompletedAt", optional: row.taskCompletedAt),
+            ]
             assigneeId = row.taskAssigneeId; assigneeType = row.taskAssigneeType
         }
-        if overlay != nil || row.taskStatus != nil || row.taskNumber != nil || assigneeId != nil {
+        if !isForwardDestination,
+           overlay != nil || row.taskStatus != nil || row.taskNumber != nil || assigneeId != nil {
             let name = assigneeId.flatMap { id in assigneeType.flatMap { actor(id: id, type: $0).handle } }
             retained.append(.init("taskAssigneeName", optional: name))
         }

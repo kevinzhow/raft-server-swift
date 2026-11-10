@@ -433,6 +433,7 @@ extension EmailLoginDirectory {
         SocketMembershipService(
             channels: serversAndChannelsStore,
             messages: messagesAndThreadsStore,
+            tasks: tasksAndRemindersStore,
             oauth: oauth,
             flags: agentsRuntimeStore,
             attachmentCommentsEnabled: { [self] serverId, userId in

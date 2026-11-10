@@ -309,7 +309,7 @@ struct MessageSendAsTaskTests {
         }
     }
 
-    @Test func sendAsTaskReplayConvergesOnOneTaskAndOneFrame() async throws {
+    @Test func sendAsTaskReplayConvergesOnOneTaskAndRepublishesBothFrames() async throws {
         let fixture = AsTaskFixture()
         let channelId = fixture.addChannel(name: "send-as-task-replay")
         let events = Mutex<[(room: String, event: String, payload: String?)]>([])
@@ -352,9 +352,18 @@ struct MessageSendAsTaskTests {
                 #expect(converged.id == firstTask.id)
                 #expect(converged.title == "first asTask body")
 
+                // Upstream `broadcastAndDeliver` broadcasts the enriched row on
+                // every send, including an idempotent randomId replay, and
+                // `emitPersistedMessageToFrontend` emits `task:created` whenever
+                // `asTask` resolved a canonical task (created or replayed).
                 let recorded = events.withLock { $0 }
-                #expect(recorded.filter { $0.event == "message:new" }.count == 1)
-                #expect(recorded.filter { $0.event == "task:created" }.count == 1)
+                let newFrames = recorded.filter { $0.event == "message:new" }
+                #expect(newFrames.count == 2)
+                #expect(newFrames.allSatisfy { $0.room == "channel:\(channelId)" })
+                #expect(newFrames.allSatisfy { $0.payload?.contains(firstId) == true })
+                let taskFrames = recorded.filter { $0.event == "task:created" }
+                #expect(taskFrames.count == 2)
+                #expect(taskFrames.allSatisfy { $0.payload?.contains(firstTask.id) == true })
             }
         }
     }

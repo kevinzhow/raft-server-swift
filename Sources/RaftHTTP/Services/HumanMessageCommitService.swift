@@ -75,9 +75,10 @@ struct HumanMessageCommitService: Sendable {
             }
             return HumanMessageWrite(status: 200, body: body, created: true)
         case .replayed(let message):
-            // An idempotent replay converges on the same task row when a lost
-            // `asTask` send is retried. It publishes no second frontend or task
-            // frame: this port's established replay silence.
+            // Upstream `broadcastAndDeliver` builds the enriched row and calls
+            // `emitPersistedMessageToFrontend` on every send, including a
+            // randomId replay. That emitter also publishes `task:created`
+            // whenever the send's canonical task resolved (created or replayed).
             var replayedTask: TaskRecord?
             if asTask, kind != "thread" {
                 replayedTask = catalog.ensureSentTask(
@@ -86,6 +87,11 @@ struct HumanMessageCommitService: Sendable {
                 )?.task
             }
             let taskFacts = replayedTask.map(CanonicalMessagePayload.TaskFacts.init)
+            emit("channel:\(channelId)", "message:new",
+                 payload(message, task: taskFacts, conversationContext: conversationContext(channelId: channelId)))
+            if let replayedTask, let channel {
+                try catalog.publishSentTask(replayedTask, channelId: channelId, serverId: channel.serverId)
+            }
             return HumanMessageWrite(
                 status: 200,
                 body: payload(message, task: taskFacts, conversationContext: nil),

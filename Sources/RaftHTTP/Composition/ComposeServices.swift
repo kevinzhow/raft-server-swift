@@ -134,6 +134,7 @@ func composeServices(
     let socketMembership = SocketMembershipService(
         channels: channels,
         messages: messages,
+        tasks: tasks,
         oauth: oauth,
         flags: agents,
         attachmentCommentsEnabled: projection.commentsEnabled

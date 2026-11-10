@@ -8,7 +8,7 @@ import Vapor
 /// Every registration below is copied verbatim from the inline `configure`
 /// block: same method, path, request projection, helper call and
 /// `routeResponse` handling. The five owned families are `/api/messages/*`
-/// (14), `/api/attachments/*` (13), `/api/tasks/*` (12), `/api/actions/*` (3)
+/// (14), `/api/attachments/*` (13), `/api/tasks/*` (13), `/api/actions/*` (3)
 /// and `/api/read-mutations` (2) — 44 pairs in total. `/api/v2/messages` stays
 /// in `configure` because it is not one of the five extracted prefixes.
 ///
@@ -499,6 +499,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
                     body: body
+                )
+            }
+        }
+        tasks.get(":taskId", "history") { request async throws -> Response in
+            try await respond {
+                try services.tasksAndLabs.taskHistory(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
                 )
             }
         }

@@ -178,7 +178,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         #expect(summarySeq == Int64(summary.seq))
         let taskNumber = try #require(batch.tasks.first?.taskNumber)
         _ = try #require(fixture.accounts.tasksAndRemindersStore.amendTask(channelId: fixture.channelId, taskNumber: taskNumber,
-            title: "Current amended task text", description: "current description", amendedByName: "materializer-agent", now: Date()))
+            title: "Current amended task text", description: "current description", actorId: "materializer-agent", amendedByName: "materializer-agent", now: Date()))
         guard case .delivery(let updated, let sameSeq) = try service.materializeInTransaction(command: command) else { Issue.record("Expected amended projection"); return }
         let amended = try materializationObject(updated)
         #expect(amended["content"] as? String == "Original immutable title")

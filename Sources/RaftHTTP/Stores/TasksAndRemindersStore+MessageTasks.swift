@@ -42,7 +42,14 @@ extension TasksAndRemindersStore {
                 title: title, description: nil, status: "todo", taskNumber: next, messageId: messageId,
                 createdAt: now, updatedAt: now, creatorId: creatorId)
             storage.taskRecords.append(task)
-            storage.taskEvents.append((taskId: task.id, eventType: "created", actorType: "user"))
+            TasksAndRemindersStore.appendTaskEventLocked(state: &storage, taskId: task.id,
+                eventType: "created", actorType: "user", actorId: creatorId,
+                payloadJSON: OrderedJSON.object([
+                    .init("taskNumber", task.taskNumber),
+                    .init("status", task.status),
+                    .init("convertedFromMessage", true),
+                ]).render(),
+                now: now)
             return .created(task)
         }
     }

@@ -31,6 +31,7 @@ extension TasksAndRemindersStore {
                current.resourceReceiptJSON.flatMap({ try? JSONDecoder().decode(AgentTaskResourceReceipt.self, from: Data($0.utf8)) }) == nil {
                 return .resourceReceiptRequired
             }
+            let previousStatus = storage.taskRecords[index].status
             storage.taskRecords[index].updatedAt = now
             storage.taskRecords[index].status = status
             if status == "done", storage.taskRecords[index].completedAt == nil {
@@ -46,6 +47,12 @@ extension TasksAndRemindersStore {
                 storage.taskRecords[index].claimedAt = nil
             }
             storage.taskRecords[index].revision += 1
+            TasksAndRemindersStore.appendTaskEventLocked(state: &storage,
+                taskId: storage.taskRecords[index].id,
+                eventType: TasksAndRemindersStore.statusEventType(from: previousStatus, to: status),
+                actorType: "user", actorId: userId,
+                payloadJSON: TasksAndRemindersStore.statusEventPayload(from: previousStatus, to: status, forced: false),
+                now: now)
             return .updated(storage.taskRecords[index])
         }
     }
