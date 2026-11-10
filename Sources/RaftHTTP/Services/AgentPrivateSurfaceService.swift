@@ -585,7 +585,7 @@ public struct AgentPrivateSurfaceService: Sendable {
             includesLastSeen = true
             lastSeenAt = lastSeen[agent.id].map(Self.fractionalISO)
         }
-        let facts = dependencies.agents.runtimeFacts(agentId: agent.id)
+        let facts = presenceFacts(agent)
         return AgentSummary(
             id: agent.id,
             name: agent.name,
@@ -614,10 +614,22 @@ public struct AgentPrivateSurfaceService: Sendable {
         )
     }
 
+    /// Upstream `getActivity`: a retained live observation wins; otherwise the
+    /// `active` + reachable-machine fallback is `online`. Both the full and the
+    /// guest projections read the same resolved facts.
+    private func presenceFacts(_ agent: OAuthLedger.AgentRuntimeInfo) -> (machineId: String?, activity: String, detail: String) {
+        let facts = dependencies.agents.presenceFacts(agentId: agent.id)
+        let reachable = facts.machineId.map {
+            dependencies.machines.machineIsReachable(machineId: $0, serverId: agent.serverId)
+        } ?? false
+        let visible = AgentPresenceSignal.visiblePresence(recorded: facts.activity, status: agent.status, machineReachable: reachable)
+        return (facts.machineId, visible.activity, visible.detail)
+    }
+
     private func guestSummary(_ agent: OAuthLedger.AgentRuntimeInfo) -> GuestAgentSummary {
         .init(id: agent.id, serverId: agent.serverId, name: agent.name, displayName: agent.displayName,
               avatarUrl: agent.avatarUrl, description: agent.description, status: agent.status,
-              activity: dependencies.agents.runtimeFacts(agentId: agent.id).activity)
+              activity: presenceFacts(agent).activity)
     }
 
     /// Node listChannels(archived:include) -> channelAgents, with #all's implicit

@@ -272,6 +272,17 @@ final class MachinesAndComputersStore: Sendable {
         storage.withLock { $0.machineOnline[machineId] = online }
     }
 
+    /// Whether one Server's machine is currently reachable: the row exists in
+    /// this Server and its live connection flag is on. This is the single-replica
+    /// form of upstream's `local`/`remote` reachability used by the derived
+    /// agent activity projection.
+    func machineIsReachable(machineId: String, serverId: String) -> Bool {
+        return storage.withLock { state in
+            state.machineOnline[machineId] == true
+                && state.machines.contains { $0.id == machineId && $0.serverId == serverId }
+        }
+    }
+
     // MARK: - Server setup reset
 
     /// Revokes every live Computer of one server and returns how many of them

@@ -80,6 +80,7 @@ extension AgentsRuntimeStore {
             state.featureFlagRecords = business.featureFlagRecords
             state.featureFlagRuleRecords = business.featureFlagRuleRecords
             state.agentActivities = [:]
+            state.agentActivityServerSeq = 0
             state.agentLastSeenAt = [:]
             return previous
         }

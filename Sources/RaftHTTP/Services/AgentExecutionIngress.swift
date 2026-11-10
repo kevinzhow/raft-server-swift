@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 extension AgentExecutionDomain {
     func observeReady(_ context: AgentExecutionMachineContext, daemonInstanceId: String?, capabilities: [String]?,
@@ -50,6 +51,10 @@ extension AgentExecutionDomain {
         try requireTransaction()
         guard AgentExecutionOutcomeFrame.supportsCanonicalNumbers(payload) else { return .hold(reason: "unsupported_numeric_representation") }
         if type == "agent:deliver:ack" { return try stageDeliveryAcknowledgement(context: context, payload: payload) }
+        // The daemon's presence channel. Both frames are display/state facts,
+        // not execution outcomes: they carry no durable ACK.
+        if type == "agent:status" { return try stageReportedStatus(context: context, payload: payload) }
+        if type == "agent:activity" { return try stageReportedActivity(context: context, payload: payload) }
         if type == "agent:session" || type == "agent:start:ack" {
             return try stageControl(context: context, type: type, payload: payload)
         }
@@ -242,6 +247,151 @@ extension AgentExecutionDomain {
             key != frame.agentId && other.machineId == agent.machineId
                 && other.processes[processId]?.daemonInstanceId == frame.daemonInstanceId
         }
+    }
+
+    private enum ReportedStatusDecision: Sendable, Equatable {
+        case staleConnection
+        case ignore
+        case persist(String)
+    }
+
+    private enum ReportedActivityDecision: Sendable, Equatable {
+        case staleConnection
+        case staleLaunch
+        case written(Int)
+    }
+
+    /// `agent:status` is the daemon's sequenced process-state channel. Its
+    /// persisted projection is the agent's `status` (active/inactive), except
+    /// that a manual `stopped` intent can only be cleared by a human start.
+    private func stageReportedStatus(context: AgentExecutionMachineContext, payload: Data) throws -> AgentExecutionIngressResult {
+        guard let body = AgentExecutionOutcomeFrame.object(payload),
+              AgentExecutionOutcomeFrame.string(body["type"]) == "agent:status",
+              let agentId = AgentExecutionOutcomeFrame.id(body["agentId"]),
+              let rawStatus = AgentExecutionOutcomeFrame.string(body["status"]),
+              let reported = AgentPresenceSignal.reportedStatus(rawStatus),
+              validOptionalIdentity(body["launchId"]),
+              validOptionalIdentity(body["daemonInstanceId"]),
+              body["clientSeq"] == nil || AgentExecutionOutcomeFrame.count(body["clientSeq"]) != nil,
+              ownsMachine(context),
+              let current = oauth.agentRuntimeInfo(id: agentId), !current.deleted,
+              current.serverId == context.serverId,
+              (try? boundMachine(serverId: context.serverId, agentId: agentId)) == context.machineId else {
+            return .hold(reason: "malformed_status")
+        }
+        let launchId = AgentExecutionOutcomeFrame.id(body["launchId"])
+        let decision = try mutate { state -> ReportedStatusDecision in
+            guard let connection = state.connections[context.machineId], connection.online,
+                  connection.serverId == context.serverId,
+                  connection.connectionEpochId == context.connectionEpochId else {
+                return .staleConnection
+            }
+            // A launch that is not the agent's current launch is stale. An
+            // absent current launch (e.g. restored state without execution) or
+            // an unsequenced legacy frame keeps the accept path.
+            if let launchId, let currentLaunch = state.agents[agentId]?.currentLaunchId, currentLaunch != launchId {
+                return .ignore
+            }
+            guard let next = AgentPresenceSignal.nextPersistedStatus(reported: reported, persisted: current.status) else {
+                return .ignore
+            }
+            return .persist(next)
+        }
+        switch decision {
+        case .staleConnection:
+            return .hold(reason: "stale_connection")
+        case .ignore:
+            return .committed(ack: nil)
+        case .persist(let next):
+            if current.status != next { oauth.setAgentStatus(id: agentId, status: next) }
+            agents.withState { $0.serverAgents[agentId]?.status = next }
+            return .committed(ack: nil)
+        }
+    }
+
+    /// `agent:activity` is the live-activity channel. The activity kind is
+    /// derived from the canonical `detailKind`; the frame never carries an
+    /// authoritative producer conclusion. Retained state is process presence
+    /// (`agentActivities`), and the post-commit Socket.IO push is queued below.
+    private func stageReportedActivity(context: AgentExecutionMachineContext, payload: Data) throws -> AgentExecutionIngressResult {
+        guard let body = AgentExecutionOutcomeFrame.object(payload),
+              AgentExecutionOutcomeFrame.string(body["type"]) == "agent:activity",
+              let agentId = AgentExecutionOutcomeFrame.id(body["agentId"]),
+              body["detail"] == nil || AgentExecutionOutcomeFrame.string(body["detail"]) != nil,
+              body["detailKind"] == nil || body["detailKind"] == .null || AgentExecutionOutcomeFrame.string(body["detailKind"]) != nil,
+              body["activityKind"] == nil || body["activityKind"] == .null || AgentExecutionOutcomeFrame.string(body["activityKind"]) != nil,
+              body["activity"] == nil || body["activity"] == .null || AgentExecutionOutcomeFrame.string(body["activity"]) != nil,
+              validOptionalIdentity(body["launchId"]),
+              validOptionalIdentity(body["probeId"]),
+              validOptionalIdentity(body["producerFactId"]),
+              body["clientSeq"] == nil || AgentExecutionOutcomeFrame.count(body["clientSeq"]) != nil,
+              body["isHeartbeat"] == nil || body["isHeartbeat"] == .bool(true) || body["isHeartbeat"] == .bool(false),
+              let signal = AgentPresenceSignal.activity(
+                detailKind: AgentExecutionOutcomeFrame.string(body["detailKind"]),
+                legacyActivity: AgentExecutionOutcomeFrame.string(body["activityKind"])
+                    ?? AgentExecutionOutcomeFrame.string(body["activity"])
+              ),
+              ownsMachine(context),
+              let current = oauth.agentRuntimeInfo(id: agentId), !current.deleted,
+              current.serverId == context.serverId,
+              (try? boundMachine(serverId: context.serverId, agentId: agentId)) == context.machineId else {
+            return .hold(reason: "malformed_activity")
+        }
+        // A manual stop suppresses daemon activity, matching the lifecycle
+        // planner; the process is not an operator-visible state change.
+        guard current.status != "stopped" else { return .committed(ack: nil) }
+        let detail = AgentExecutionOutcomeFrame.string(body["detail"]) ?? ""
+        let launchId = AgentExecutionOutcomeFrame.id(body["launchId"])
+        let clientSeq = AgentExecutionOutcomeFrame.count(body["clientSeq"])
+        let nowMilliseconds = Int((Date().timeIntervalSince1970 * 1000).rounded(.down))
+        let decision = agents.withState { state -> ReportedActivityDecision in
+            guard let connection = state.execution.connections[context.machineId], connection.online,
+                  connection.serverId == context.serverId,
+                  connection.connectionEpochId == context.connectionEpochId else {
+                return .staleConnection
+            }
+            if let launchId, let currentLaunch = state.execution.agents[agentId]?.currentLaunchId, currentLaunch != launchId {
+                return .staleLaunch
+            }
+            state.agentActivities[agentId] = (activity: signal.activity, detail: detail)
+            // Upstream's `nextActivityServerSeq`: wall-clock milliseconds,
+            // bumped monotonically for out-of-order socket dedupe.
+            let sequence = max(nowMilliseconds, state.agentActivityServerSeq + 1)
+            state.agentActivityServerSeq = sequence
+            return .written(sequence)
+        }
+        switch decision {
+        case .staleConnection:
+            return .hold(reason: "stale_connection")
+        case .staleLaunch:
+            return .committed(ack: nil)
+        case .written(let sequence):
+            var fields: [OrderedJSONField] = [
+                OrderedJSONField("agentId", agentId),
+                OrderedJSONField("activity", signal.activity),
+                OrderedJSONField("activityKind", signal.activity),
+                OrderedJSONField("detail", detail),
+                OrderedJSONField("detailKind", signal.detailKind),
+                OrderedJSONField("timestamp", nowMilliseconds),
+                OrderedJSONField("serverSeq", sequence),
+            ]
+            if let launchId { fields.append(OrderedJSONField("launchId", launchId)) }
+            if let clientSeq { fields.append(OrderedJSONField("clientSeq", Int(clientSeq))) }
+            if let probeId = AgentExecutionOutcomeFrame.id(body["probeId"]) { fields.append(OrderedJSONField("probeId", probeId)) }
+            if let fact = AgentExecutionOutcomeFrame.id(body["producerFactId"]) { fields.append(OrderedJSONField("producerFactId", fact)) }
+            if case .bool(let heartbeat)? = body["isHeartbeat"] { fields.append(OrderedJSONField("isHeartbeat", heartbeat)) }
+            let rendered = OrderedJSON.object(fields).render()
+            DeferredEffects.emit {
+                RealtimeRelayService(messages: self.messages)
+                    .emit("server:\(context.serverId)", "agent:activity", rendered)
+            }
+            return .committed(ack: nil)
+        }
+    }
+
+    /// An optional wire identity must be absent, null, or a nonempty string.
+    private func validOptionalIdentity(_ value: JSONValue?) -> Bool {
+        value == nil || value == .null || AgentExecutionOutcomeFrame.id(value) != nil
     }
 
     private func stageDeliveryAcknowledgement(context: AgentExecutionMachineContext, payload: Data) throws -> AgentExecutionIngressResult {

@@ -75,6 +75,10 @@ final class AgentsRuntimeStore: Sendable {
         var agentChannelJoinedAt: [String: Date] = [:]
         var agentChannelPosted: Set<String> = []
         var agentActivities: [String: (activity: String, detail: String)] = [:]
+        /// Process-lifetime monotonic sequence for `agent:activity` socket
+        /// pushes (upstream `lastActivityServerSeq`). Reset with the presence
+        /// rows on restore; it is not a durable fact.
+        var agentActivityServerSeq: Int = 0
         var agentLastSeenAt: [String: Date] = [:]
         var agentAttachmentBytes: [String: Data] = [:]
         var externalPushWebhooks: [String: (url: String, secret: String)] = [:]

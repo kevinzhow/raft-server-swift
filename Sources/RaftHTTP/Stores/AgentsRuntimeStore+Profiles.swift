@@ -63,4 +63,13 @@ extension AgentsRuntimeStore {
             return (state.agentMachineIds[agentId], activity.activity, activity.detail)
         }
     }
+
+    /// The machine binding and the retained live-activity observation, when one
+    /// exists. Distinguishes a real daemon/HTTP report from the projection's
+    /// offline default in one critical section.
+    func presenceFacts(agentId: String) -> (machineId: String?, activity: (activity: String, detail: String)?) {
+        return withState { state in
+            (machineId: state.agentMachineIds[agentId], activity: state.agentActivities[agentId])
+        }
+    }
 }
