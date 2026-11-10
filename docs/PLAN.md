@@ -7,7 +7,7 @@
 
 **当前用户目标**：完成 Swift Raft 的真实生产部署，沿用既有 Cloudflare Tunnel、已登录 Codex、Cloudflare Email Sending 和 R2。开发、构建、缓存、服务与临时产物全部使用数据盘。生产域名、地址、密钥、收件人和操作凭据仅保留在仓库外。Phase 6 的架构债务不替代本次交付目标。
 
-**当前阶段**：完整交付路径已按实际 Web／CLI 消费者、注册路由与 frame、DTO、Service、真实 Store、PG／daemon／provider 建立代码契约矩阵。Codex owned reset、typed DM、non-Codex 配置保存和相关共享文件已整组收口，并通过完整相关目标及同一最终 Source 的九组独立 PG。profile 与 Task 旧 gate 消费及完整 native 接收／取消／清理出口已完成整组作者回读和同一唯一独审，精确采用两个测试／脚本差量，生产 Source 未变。最新完整实进程 E2E、smoke、architecture、parity-check 均已通过，完整单元门禁也已通过，最终 Source 输入保持不变。官方 Computer 的干净构建、复制包闭包与复制 Node 冷导入，以及现有 Caddy 两个静态 profile 的临时完整 HTTP 验证也已通过。下一步立即提交并 push 已验证批次，再从干净提交构建最终 Main、验证同一制品正常 UI／角色并启用生产。
+**当前阶段**：完整交付路径已按实际 Web／CLI 消费者、注册路由与 frame、DTO、Service、真实 Store、PG／daemon／provider 建立代码契约矩阵。Codex owned reset、typed DM、non-Codex 配置保存和相关共享文件已整组收口，并通过完整相关目标及同一最终 Source 的九组独立 PG。profile 与 Task 旧 gate 消费及完整 native 接收／取消／清理出口已完成整组作者回读和同一唯一独审，精确采用两个测试／脚本差量，生产 Source 未变。最新完整实进程 E2E、smoke、architecture、parity-check 均已通过，完整单元门禁也已通过，最终 Source 输入保持不变。官方 Computer 的干净构建、复制包闭包与复制 Node 冷导入，以及现有 Caddy 两个静态 profile 的临时完整 HTTP 验证也已通过。已验证批次已提交并 push 为 `1c40fe5b4b00f81b788f86222577dec2cd0700d5`，从该干净提交构建的最终 Main release 已成功，构建前后所有跟踪字节不变。独立复制的 Main、资源与 Swift／JSC 已通过普通冷启动和实际 PID／文件映射验证。下一步完成四角色制品来源绑定；正常 Web、邮件及 enrollment 依赖可达的公共 origin，安排在生产维护屏障、全新数据与 private Main 就绪之后的受限 canary 中验证，通过前不开放完整入口。
 
 **已验证及其边界**：
 
@@ -15,7 +15,7 @@
 - 加密 R2 字节、认证下载、有界预览、应用备份、新目录恢复和恢复后 Main／TLS 已通过。恢复复用原应用密钥与同一 R2，不代表独立对象桶或异地密钥恢复。
 - Auth、消息权限与冷读、Task、Socket、active-account、机器查询、legacy scan、human delivery、Grok admission 和 terminal recovery 已分别通过相关公开目标及独立 PG／socket。保留真实 14-owner 图、rollback-only 丢弃和原 writer lease 下的真正 stale CAS；这些协议输入受控，不能当作官方 provider 接受。
 - Builtin v2 的完整定义、sources、edit 与 formValues-only 往返、secret identity、拒绝不变、更改触发 lift 及 no-op 不重复 lift 已通过。完整八定义、v1 字节和既有 Grok／权限链保留；builtin provider/native 执行不在此资格内，真实生产模型路径使用 Codex。
-- 固定版本成熟 mdast／GFM 与上游相同配置已接入进程内 JavaScriptCore。原 UTF-16 range、非 BMP／NUL ABI、原生语料、C 审查和实际资源 bundle 已验证；独立复制制品能解析并证明 JSC 映射，缺 bundle 会在监听前拒绝。最终 release 的运行时闭包、实际载入与 Node/native-addon ABI 仍需重新取证。
+- 固定版本成熟 mdast／GFM 与上游相同配置已接入进程内 JavaScriptCore。原 UTF-16 range、非 BMP／NUL ABI、原生语料、C 审查和实际资源 bundle 已验证；独立复制制品能解析并证明 JSC 映射，缺 bundle 会在监听前拒绝。最终 release 也已实际递归核验 ELF，并显式纳入动态 JSC，复制完整选定库与内部别名。复制后的普通 Main 冷启动已真正调用随包 parser，同一 PID 的 Swift／JSC 及其余文件映射均对应复制 inventory 或明确的 host platform；全体复制 ELF 的搜索结果也符合该边界。此轮无数据库环境的 health503 只证明启动／parser／loader，不代表生产 readiness、全部业务路径、最终 user unit 或 Node/native-addon 角色已通过。
 - Forward／Share 的真实 native membership、postable facts、原重放／PNG／host 合同已通过完整相关目标。workspace 的完整授权顺序和 orphan Task retained no-write 也已通过，原 RBAC 断言保留。
 - runtime 原始输入、JS 转换失败、精确错误响应与拒绝后未写入已通过整组目标。typed DM／follow／inbox 最终 S4＋T3 经完整独审后与这些共享文件精确合并；公开 Before 已重现缺口，完整相关 After 和新的 fresh mentions PG 已通过且未 skip。覆盖实际 typed roster、同 UUID 的不同类型、真实 parent/follow、receipt 只读、实际 reminders、不可消费历史 roster 的明确 503、formal eligibility、claim／receipt／BPR。此结果不是模型 PATCH reset、全门禁或生产资格。
 - 前次完整提交门禁的 architecture 与 parity-check 通过，`make test` 因普通断言失败退出，未发生 signal 6／11。两个 quoted restart-mode 旧 golden 已按 pinned Node 的 `res.json(object)` 修正，保留精确字节断言并增加严格 JSON 对象断言。released-mobile builtin edit 的反例也已确认：原请求在裸组合返回 500，真实 PG／producer 返回 503；只补 fixture 无法修复。最终源码已从现有权威 runtime 记录读取状态，仅允许同 runtime、无 retained 执行／控制事实的窄 metadata 分支沿原 config lift 保存。其余 guard、Domain、active-reset coalescing 和既有错误路径原样保留，不新增拒绝。原 Mobile 测试及样本字节不变，修复后相关目标与独立 metadata PG 完整尾部通过，包括密钥身份／redaction、历史执行拒绝和真实 active coalescing／session publication；同一 Source 上的三个模型 PG 及旧 controls／config／human／conversation／builtin 复验也全部通过。前轮完整 `make test` 已通过；profile 平面响应适配采用后，下一次 E2E 暴露旧 `taskIds` 解码及不安全索引的确定性 SIG4。已按完整双 gate 契约矩阵收口公开 `{tasks}`／`{task}` 消费、实际帧接收与 EOF／error／取消／超时／连接清理，保持两个完整 profile 验证块。最终候选经作者全文回读和原唯一独审后已精确采用；最新实进程 E2E 完整两场景、smoke、architecture 与 parity-check 均通过，完整单元门禁也已通过，最终 Source 输入保持不变。真实 daemon 等待完整身份输出，标记后的 online 帧仍仅是本地观察位置，不当作 server epoch 或 OS 证据；新接收拒绝出口只有静态边界与正常完整帧运行证据，没有伪称故障 Before。
@@ -28,11 +28,11 @@
 
 **下一批与完成条件**：
 
-1. 保持已审查并通过完整相关目标／独立 PG 的生产源码固定。profile、canonical Task 消费、安全索引、完整 native 接收／终止／取消／清理及实际 daemon 验证已整组采用，实进程 E2E 和 smoke 均通过。本轮全部必要门禁已通过，最终 diff／依赖与配置值隐私审查完成；立即提交并 push 已验证批次。不得把协议 context 或本地帧位置当作 OS／provider 成功。
-2. 批次稳定后通过全部提交门禁：`make test`、`make test-e2e`、`./scripts/smoke-server.sh`、`make architecture`、`make parity-check` 和必须的独立 PG。审查当前依赖、全部 diff 与隐私，立即提交并 push 已验证的代码批次；不把授权 WIP 当作无关变更，不伪造旧 after receipt。
-3. 从该干净提交构建最终 Main release，完成 runtime／JSC 实际载入与四角色闭包。复用已核验的固定上游 Web、Computer 与 Node 制品，绑定各自正确来源；用同一最终制品完成正常 Cindy onboarding、支持模型选择与实际执行、消息／Task／Computers／workspace／附件冷读和监督重启。
+1. 保持已审查并通过完整相关目标／九组独立 PG 的生产源码固定。完整提交门禁、diff／依赖与配置值隐私审查已通过，已验证代码批次已提交并 push。保留 profile、canonical Task 消费、实际帧和全部拒绝边界；不把协议 context 或本地帧位置当作 OS／provider 成功。
+2. 干净提交的 Main release、实际资源 bundle、Swift 与动态 JSC 的递归依赖、独立复制及普通 Main PID／映射已验证。继续完成四角色制品来源与 inventory 的真实绑定；制品 build 资格与部署后的真实 service／resident／Codex child 及最终 Main PID 资格分开记录，不能以任一元数据替代后者。
+3. 正常 Cindy onboarding、模型选择与实际执行、消息／Task／Computers／workspace／附件冷读和监督重启均使用同一已验证制品，在下述受限入口阶段完成。保留上游 Web、Computer 与 Node 各自正确来源，不把 Web 重标为 Swift 提交，也不把旧 stage 结果提升为最终验收。
 4. 启动生产 listener 前先核查实际 gateway 与依赖并加载显式维护屏障，证明 public 503；upstream 尚未运行不能算屏障。再验证 private Main 200 和 public 仍 503，使用全新生产 PG／Redis 与正常 owner bootstrap，不迁入隔离站点的合成账号、业务数据或 Computer 凭据。
-5. 完成已授权真实邮件与验证链接、正常 enrollment、真实模型、监督重启／故障恢复和公开 canary 后切换入口。provider 接受／排队不等同邮箱到箱；挑战期间恢复 closed-all。目前尚无加载的生产维护屏障、生产库、owner、enrollment 或验收邮件。
+5. 加载已审查的新静态 restricted profile，实际验证 Cloudflare cohort、防伪、共享缓存与 Web；在该受限入口完成已授权真实邮件与验证链接、正常 enrollment、真实模型、实际 unit／PID 及故障恢复和 canary。全部完成后才发布新的 full-static profile。provider 接受／排队不等同邮箱到箱；挑战期间恢复 closed-all。目前尚无加载的生产维护屏障、生产库、owner、enrollment 或验收邮件。
 
 **目标更新纪律**：用户改变方向、代码审查改变范围或顺序、门禁失败及里程碑验证后，当轮同步本计划、任务清单和持久化 session goal，替换过期结论；不等待用户催问或上下文压缩。
 
