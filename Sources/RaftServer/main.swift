@@ -12,6 +12,8 @@ import Vapor
 
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Darwin)
+import Darwin
 #endif
 
 private struct DatabaseNotConnected: Error {}
@@ -131,7 +133,12 @@ enum Entrypoint {
         let runtime: BusinessPersistenceRuntime?
         if let production {
             runtime = try await BusinessPersistenceRuntime.start(
-                configuration: production.postgres, bindings: emailAccounts.makeDurableBindings()
+                configuration: production.postgres, bindings: emailAccounts.makeDurableBindings(),
+                // Admission is closed permanently; the process must not stay
+                // alive as a 503-only zombie. systemd Restart=on-failure starts
+                // a fresh process that claims a new writer epoch and reloads
+                // every durable owner from PostgreSQL.
+                fatalFailureHandler: { _ in exit(70) }
             )
         } else { runtime = nil }
         let database = DatabaseHealth(environment: processEnvironment)

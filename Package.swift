@@ -137,6 +137,7 @@ let package = Package(
                 "RaftPersistence",
                 "RaftRedis",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
             ],
             resources: [
@@ -237,6 +238,7 @@ let package = Package(
                 "RaftServer", "RaftHTTP", "RaftMachineSocket", "RaftConnectAuth", "RaftPersistence",
                 "RaftRealtime", "RaftHTTPServer", "RaftShared", "TestSupport",
                 .product(name: "Vapor", package: "vapor"),
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
