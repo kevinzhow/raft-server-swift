@@ -64,6 +64,7 @@ public struct AgentExecutionMaterializationService: Sendable {
             switch command.kind {
             case .start: return .start(configuration: try start(command: command, agent: agent))
             case .delivery: return try delivery(command: command, domain: domain)
+            case .notice: return .notice(message: try bounded(notice(command: command)))
             case .stop: throw AgentExecutionMaterializationError.commandUnavailable
             }
         } catch {
@@ -188,6 +189,20 @@ public struct AgentExecutionMaterializationService: Sendable {
             senderName: sender.name, senderDescription: sender.description, recipientId: command.agentId,
             task: task, taskAssigneeName: assigneeName, attachments: attachments, parent: parent)
         return .delivery(message: try bounded(projected.encoded()), sequence: sequence)
+    }
+
+    /// A notice is materialized only from its own admitted command: no
+    /// channel row, message row, task or attachment is read. The body is the
+    /// exact upstream system-notice shape; the wire layer adds seq 0.
+    private func notice(command: AgentExecutionCommand) throws -> Data {
+        guard command.kind == .notice, let channelId = command.channelId,
+              let messageId = command.messageId, let notice = command.notice,
+              !channelId.isEmpty, !messageId.isEmpty,
+              ["channel", "private", "joint", "dm", "thread"].contains(notice.channelType),
+              !notice.channelName.isEmpty, !notice.content.isEmpty, !notice.timestamp.isEmpty else {
+            throw AgentExecutionMaterializationError.messageUnavailable
+        }
+        return try MaterializedAgentNotice(channelId: channelId, messageId: messageId, notice: notice).encoded()
     }
 
     private func humanName(_ id: String) -> String {

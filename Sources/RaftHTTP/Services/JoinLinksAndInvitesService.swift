@@ -12,9 +12,10 @@ public struct JoinLinksAndInvitesDependencies: Sendable {
     /// account owner. The production assembly supplies
     /// `AuthProfileSetupAccountFacts`; tests supply fixed answers.
     public var setupAccountFacts: any SetupAccountFacts
-    /// Best-effort Cindy briefing after the "Let's Go" acknowledgment is retained.
-    /// The upstream onboarding-briefing service is not part of this port, so the
-    /// default hook is a no-op. The receipt is stored before this runs and is
+    /// Best-effort owner onboarding briefing after the "Let's Go" acknowledgment
+    /// is retained. The default hook is a no-op for focused fixtures that do not
+    /// compose the onboarding owner; the production accessor supplies
+    /// `OnboardingBriefingService`. The receipt is stored before this runs and is
     /// never derived from delivery: a briefing that fails here does not reopen
     /// the handoff.
     public var triggerOnboardingBriefing: @Sendable (String, String) -> Void
@@ -708,9 +709,9 @@ public struct JoinLinksAndInvitesService: Sendable {
             sessionFamilyId: liveSessionFamilyId(authorization)
         )
         // Best-effort, deliberately after the retained receipt: delivery never
-        // speaks for the user. The upstream Cindy briefing service is not part
-        // of this port, so the default hook is a no-op; the retained receipt,
-        // not the briefing, is what the projection reads.
+        // speaks for the user. The briefing owns every gate and idempotency
+        // fact; the retained receipt, not the briefing, is what the projection
+        // reads, so a dropped or failed wake never reopens the handoff.
         dependencies.triggerOnboardingBriefing(serverId, receipt.originalOwnerId)
         return setupProjectionService()
             .project(serverId: serverId, userId: actor.userId, role: actor.role)
@@ -932,7 +933,13 @@ extension EmailLoginDirectory {
                 // The survey answer and the account-global first-onboarding
                 // pair live on the Auth account row; this seam reads and writes
                 // them through the profile store instead of copying state.
-                setupAccountFacts: AuthProfileSetupAccountFacts(accounts: authProfileStore)
+                setupAccountFacts: AuthProfileSetupAccountFacts(accounts: authProfileStore),
+                // Best-effort owner briefing after the retained acknowledgment.
+                // The trigger owns every gate and idempotency fact; a delivery
+                // failure never reopens the handoff.
+                triggerOnboardingBriefing: { [self] serverId, ownerId in
+                    _ = onboardingBriefing.trigger(serverId: serverId, requestedByOwnerId: ownerId)
+                }
             )
         )
     }

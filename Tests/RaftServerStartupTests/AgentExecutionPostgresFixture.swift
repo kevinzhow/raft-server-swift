@@ -151,7 +151,8 @@ final class AgentExecutionPostgresFixture: Sendable {
             try await writer.activate()
             let execution = try ProductionDaemonIntegration.connect(execution: accounts.agentExecution(persistence: writer),
                 runtime: writer, materializer: accounts.agentExecutionMaterialization(persistence: writer,
-                    serverURL: "https://protocol-pg.invalid"))
+                    serverURL: "https://protocol-pg.invalid"),
+                onboardingBriefing: accounts.onboardingBriefing)
             connection = execution
             try await writer.execute {
                 accounts.configureMachineQueries(ProductionMachineQueries(registry: execution.registry))

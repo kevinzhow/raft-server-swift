@@ -660,6 +660,28 @@ extension EmailLoginDirectory {
         ))
     }
 
+    /// Producer-bound execution admission for synchronous server-authored
+    /// notices. This binding stages only; the production worker and materializer
+    /// remain the only path to the machine transport, and it cannot authorize an
+    /// ACK or read a committed view.
+    func agentExecutionForProducerRequests() -> AgentExecutionService {
+        AgentExecutionService(
+            producerTransactionAgents: agentsRuntimeStore, machines: machinesAndComputersStore,
+            oauth: oauth, channels: serversAndChannelsStore, messages: messagesAndThreadsStore
+        )
+    }
+
+    /// The owner onboarding briefing over this directory's actual owners. The
+    /// delivery admission is producer-bound: it needs the caller's durable
+    /// transaction, and a notice admitted here is sent by the production worker.
+    public var onboardingBriefing: OnboardingBriefingService {
+        OnboardingBriefingService(
+            channels: serversAndChannelsStore, profiles: authProfileStore,
+            agents: agentsRuntimeStore, messages: messagesAndThreadsStore, oauth: oauth,
+            execution: agentExecutionForProducerRequests()
+        )
+    }
+
     /// Execution and ingress share the same retained domain owners and writer.
     public func agentExecution(persistence: BusinessPersistenceRuntime) -> AgentExecutionService {
         AgentExecutionService(

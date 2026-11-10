@@ -87,7 +87,7 @@ extension AgentExecutionDomain {
                 agentId: request.agentId, launchId: agent.currentLaunchId ?? request.commandId.uuidString,
                 startDispatchId: nil, deliveryId: nil, connectionEpochId: state.connections[machineId]?.connectionEpochId ?? "",
                 takeoverEpoch: agent.takeoverEpoch, breakerGeneration: agent.generation, humanStart: false,
-                sessionId: agent.sessionId, resumePrompt: nil, channelId: nil, messageId: nil, status: .pending, createdAt: now)
+                sessionId: agent.sessionId, resumePrompt: nil, channelId: nil, messageId: nil, notice: nil, status: .pending, createdAt: now)
             state.commands[request.commandId.uuidString] = command
             return command
         }
@@ -136,7 +136,7 @@ extension AgentExecutionDomain {
                     launchId: start.launchId, startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
                     connectionEpochId: start.connectionEpochId, takeoverEpoch: start.takeoverEpoch,
                     breakerGeneration: start.breakerGeneration, humanStart: false, sessionId: start.sessionId,
-                    resumePrompt: nil, channelId: current.channelId, messageId: current.messageId, status: .pending, createdAt: Date())
+                    resumePrompt: nil, channelId: current.channelId, messageId: current.messageId, notice: nil, status: .pending, createdAt: Date())
                 current.releasedCommandId = command.commandId
                 state.heldDeliveries?[delivery.commandId.uuidString] = current
                 state.commands[command.commandId.uuidString] = command
@@ -175,7 +175,10 @@ extension AgentExecutionDomain {
             guard let channelId = command.channelId, let messageId = command.messageId,
                   deliveryIsAuthorized(serverId: command.serverId, agentId: command.agentId, channelId: channelId, messageId: messageId) else { return .obsolete }
         }
-        if command.kind == .delivery, !launch.startAccepted && launch.processInstanceId == nil {
+        // A notice has no stored row to authorize. It is still only sent to a
+        // launch the daemon admitted; a dead agent is never started here.
+        if (command.kind == .delivery || command.kind == .notice),
+           !launch.startAccepted && launch.processInstanceId == nil {
             return .wait(reason: "start_not_admitted_by_daemon")
         }
         return .ready(command)

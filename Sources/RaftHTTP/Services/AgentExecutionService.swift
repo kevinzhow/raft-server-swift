@@ -58,6 +58,18 @@ public struct AgentExecutionService: Sendable {
         catch { DeferredEffects.markRollbackOnly(); throw error }
     }
 
+    /// One system-sender transient wake for an agent that can receive NOW.
+    ///
+    /// Returns a typed receipt. A `.dropped` reason is not a failed transaction
+    /// and never marks it rollback-only: the enclosing handoff/survey/ready
+    /// transaction stays valid, and the caller leaves its one-shot sent fact
+    /// unstamped. A transaction-less caller (unsealed test graph) also drops.
+    public func requestNotice(_ request: AgentExecutionNoticeRequest) throws -> AgentExecutionNoticeReceipt {
+        do { return try domain.requestNotice(request) }
+        catch AgentExecutionError.durableTransactionRequired { return .dropped(.transactionRequired) }
+        catch { DeferredEffects.markRollbackOnly(); throw error }
+    }
+
     func requestHumanMessageDelivery(_ request: AgentExecutionDeliveryRequest) throws -> HumanMessageExecutionDisposition {
         do { return try domain.requestHumanMessageDelivery(request) }
         catch { DeferredEffects.markRollbackOnly(); throw error }
@@ -259,6 +271,13 @@ extension AgentExecutionDomain {
                   messages.deliveryAckMessageSnapshot().rows.first(where: { $0.id == messageId }).map({ Int64($0.seq) }) == sequence else {
                 throw AgentExecutionError.invalidRequest
             }
+        } else if command.kind == .notice {
+            // The daemon ack for a synthetic notice is `seq: 0`
+            // (official Computer: ackSeq = msg.seq > 0 ? msg.seq : message.seq ?? 0).
+            // There is no stored row to read an authorized sequence from.
+            guard deliverySequence == 0, command.channelId?.isEmpty == false, command.messageId?.isEmpty == false else {
+                throw AgentExecutionError.invalidRequest
+            }
         } else if deliverySequence != nil { throw AgentExecutionError.invalidRequest }
         let stopped = manuallyStopped(serverId: command.serverId, agentId: command.agentId)
         return try mutate { state in
@@ -272,8 +291,12 @@ extension AgentExecutionDomain {
             if command.status == .accepted || command.kind == .stop && command.status == .dispatched { return .alreadyAccepted }
             if let previous = state.dispatches?[reference.commandId.uuidString] {
                 if previous.phase == .accepted { return .alreadyAccepted }
-                agent.needsManual = "dispatch_outcome_unknown"
-                state.agents[command.agentId] = agent
+                // A lost onboarding notice is a dropped transient wake, not a
+                // reason to require manual recovery of the whole agent.
+                if command.kind != .notice {
+                    agent.needsManual = "dispatch_outcome_unknown"
+                    state.agents[command.agentId] = agent
+                }
                 return .uncertain
             }
             if command.kind != .stop {
@@ -281,7 +304,8 @@ extension AgentExecutionDomain {
                 guard connection.ready, connection.runtimes.contains("codex"), agent.needsManual == nil,
                       let launch = agent.launches[command.launchId], !launch.stopRequested,
                       !launch.notSpawned, command.kind != .start || !launch.completed,
-                      command.kind != .delivery || launch.startAccepted || launch.processInstanceId != nil else {
+                      (command.kind != .delivery && command.kind != .notice)
+                        || launch.startAccepted || launch.processInstanceId != nil else {
                     throw AgentExecutionError.manualRecoveryRequired
                 }
             }
@@ -305,7 +329,8 @@ extension AgentExecutionDomain {
             dispatch.phase = .ambiguous
             dispatches[reference.commandId.uuidString] = dispatch
             state.dispatches = dispatches
-            if state.agents[command.agentId]?.currentLaunchId == command.launchId,
+            if command.kind != .notice,
+               state.agents[command.agentId]?.currentLaunchId == command.launchId,
                state.agents[command.agentId]?.generation == command.breakerGeneration {
                 state.agents[command.agentId]?.needsManual = "dispatch_outcome_unknown"
             }

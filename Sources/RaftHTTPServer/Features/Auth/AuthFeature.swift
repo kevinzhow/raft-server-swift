@@ -22,6 +22,9 @@ public struct AuthFeature: RouteCollection, Sendable {
     private let managedLifecycle: ManagedMCPLifecycleService
     private let publicServerDirectory: PublicServerDirectory?
     private let realtime: RealtimeHub?
+    /// Post-update owner briefing retry for `signupSurveyServerId`; nil in
+    /// focused scenes that do not compose the onboarding owner.
+    private let onboardingBriefing: OnboardingBriefingService?
 
     public init(
         core: AuthCoreService,
@@ -32,7 +35,8 @@ public struct AuthFeature: RouteCollection, Sendable {
         invites: JoinLinksAndInvitesService,
         managedLifecycle: ManagedMCPLifecycleService,
         publicServerDirectory: PublicServerDirectory? = nil,
-        realtime: RealtimeHub? = nil
+        realtime: RealtimeHub? = nil,
+        onboardingBriefing: OnboardingBriefingService? = nil
     ) {
         self.core = core
         self.identities = identities
@@ -43,6 +47,16 @@ public struct AuthFeature: RouteCollection, Sendable {
         self.managedLifecycle = managedLifecycle
         self.publicServerDirectory = publicServerDirectory
         self.realtime = realtime
+        self.onboardingBriefing = onboardingBriefing
+    }
+
+    /// Upstream `PATCH /api/auth/me` after the profile write: a nonempty
+    /// `signupSurveyServerId` fires the same idempotent trigger when the caller
+    /// is that server's primary owner. The field is not persisted and never
+    /// changes the response.
+    private func triggerSignupSurveyBriefing(_ request: UpdateProfileRequest?, userId: String) {
+        guard case .value(let serverId)? = request?.signupSurveyServerId, !serverId.isEmpty else { return }
+        _ = onboardingBriefing?.trigger(serverId: serverId, requestedByOwnerId: userId)
     }
 
 
@@ -347,10 +361,12 @@ public struct AuthFeature: RouteCollection, Sendable {
             // published 400 after the session check, as before.
             let body = try await decodeJSONRequestBody(UpdateProfileRequest.self, request, decoding: .json)
             return try await respond {
-                try await self.identities.updateProfileAsync(
+                let response = try await self.identities.updateProfileAsync(
                     authorization: request.headers[.authorization], body,
                     onSessionsRevoked: self.closePasswordSessions
                 )
+                self.triggerSignupSurveyBriefing(body, userId: response.user.id)
+                return response
             }
         }
         auth.post("accept-invite") { request async throws -> Response in

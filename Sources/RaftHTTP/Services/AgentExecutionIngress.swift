@@ -456,13 +456,18 @@ extension AgentExecutionDomain {
                   connection.serverId == context.serverId, connection.connectionEpochId == context.connectionEpochId else {
                 return .hold(reason: "stale_connection")
             }
-            guard let match = state.commands.first(where: { $0.value.kind == .delivery && $0.value.agentId == agentId && $0.value.deliveryId == deliveryId }),
+            guard let match = state.commands.first(where: { ($0.value.kind == .delivery || $0.value.kind == .notice)
+                        && $0.value.agentId == agentId && $0.value.deliveryId == deliveryId }),
                   match.value.serverId == context.serverId, match.value.machineId == context.machineId,
                   match.value.connectionEpochId == context.connectionEpochId,
                   var dispatches = state.dispatches, var dispatch = dispatches[match.key],
                   dispatch.connectionEpochId == context.connectionEpochId else { return .hold(reason: "unowned_delivery_ack") }
             guard dispatch.deliverySequence == sequence else {
-                state.agents[agentId]?.needsManual = "conflicting_delivery_ack"
+                // A malformed receipt for a transient onboarding notice does
+                // not require manual recovery of the whole agent.
+                if match.value.kind != .notice {
+                    state.agents[agentId]?.needsManual = "conflicting_delivery_ack"
+                }
                 return .hold(reason: "conflicting_delivery_ack")
             }
             dispatch.phase = .accepted

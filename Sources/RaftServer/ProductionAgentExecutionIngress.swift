@@ -1,11 +1,17 @@
 import Foundation
 import RaftHTTP
+import RaftPersistence
 import RaftMachineSocket
 
 /// The registry consumes only post-COMMIT descriptors from the retained HTTP
 /// execution service. It keeps its own connection fence before relaying an ACK.
 struct ProductionAgentExecutionIngress: Sendable {
     let execution: AgentExecutionService
+    /// The same fenced writer; used only for the best-effort briefing retry
+    /// after a ready frame has already committed. A briefing failure can never
+    /// fail the machine's return.
+    var runtime: BusinessPersistenceRuntime? = nil
+    var onboardingBriefing: OnboardingBriefingService? = nil
 
     var callbacks: MachineDurableIngress {
         MachineDurableIngress(
@@ -31,6 +37,20 @@ struct ProductionAgentExecutionIngress: Sendable {
             )
             // Even a partial inventory first invalidates prior readiness in the
             // same owner transaction. It is never replaced by invented fields.
+            if ready != nil, let runtime, let onboardingBriefing {
+                // The machine:online analogue is fire-and-forget AFTER the
+                // readiness commit, in its own transaction: owner facts first,
+                // then the idempotent opener trigger. Upstream explicitly never
+                // lets this listener fail the reconnect. A detached task keeps
+                // the registry's ready callback free and cannot inherit a
+                // request's transaction task-locals.
+                let serverId = context.serverId
+                Task.detached {
+                    try? await runtime.execute {
+                        onboardingBriefing.connectionReady(serverId: serverId)
+                    }
+                }
+            }
             return ready == nil ? .hold(reason: "malformed_ready") : .committed(ack: nil)
         }
         if message.type == "machine:runtime_models:catalog" {

@@ -213,6 +213,11 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     /// Present null is legal and clears the stored role; absent leaves the role
     /// and its completion time untouched.
     public var signupRole: ProfileField<String> = .absent
+    /// Trigger-only back-compat field (`routes/auth.ts:1499,1628-1644`): it is
+    /// never persisted. It names the server whose onboarding agent should be
+    /// briefed after this profile update, and only the server's owner may cause
+    /// that.
+    public var signupSurveyServerId: ProfileField<String> = .absent
 
     public init() {}
 
@@ -233,6 +238,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         case referralSourceOther
         case referralSourceSkipped
         case signupRole
+        case signupSurveyServerId
     }
 
     public init(from decoder: any Decoder) throws {
@@ -253,6 +259,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         referralSourceOther = container.profileString(.referralSourceOther)
         referralSourceSkipped = container.profileBool(.referralSourceSkipped)
         signupRole = container.profileString(.signupRole)
+        signupSurveyServerId = container.profileString(.signupSurveyServerId)
     }
 }
 

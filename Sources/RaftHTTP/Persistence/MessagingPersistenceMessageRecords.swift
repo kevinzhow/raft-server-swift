@@ -108,6 +108,8 @@ struct MessagingPersistenceStoredHumanMessageDTO: Codable, Sendable {
     let causalActorType: String?
     let causalActorId: String?
     let mentions: [MessagingPersistenceStoredMessageMentionDTO]
+    /// Optional so every snapshot written before the owner opener decodes.
+    let agentSendKey: String?
 
     init(_ row: StoredHumanMessage) {
         id = row.id
@@ -135,6 +137,7 @@ struct MessagingPersistenceStoredHumanMessageDTO: Codable, Sendable {
         causalActorType = row.causalActorType
         causalActorId = row.causalActorId
         mentions = row.mentions.map(MessagingPersistenceStoredMessageMentionDTO.init)
+        agentSendKey = row.agentSendKey
     }
 
     var value: StoredHumanMessage {
@@ -163,7 +166,8 @@ struct MessagingPersistenceStoredHumanMessageDTO: Codable, Sendable {
             systemSubtype: systemSubtype,
             causalActorType: causalActorType,
             causalActorId: causalActorId,
-            mentions: mentions.map(\.value)
+            mentions: mentions.map(\.value),
+            agentSendKey: agentSendKey
         )
     }
 }

@@ -90,6 +90,9 @@ struct ProductionAgentExecutionDispatcher: Sendable {
                 case (.delivery, .delivery(let message, let actualSequence)):
                     data = try ProductionAgentExecutionWire.delivery(command, message: message, sequence: actualSequence)
                     sequence = actualSequence
+                case (.notice, .notice(let message)):
+                    data = try ProductionAgentExecutionWire.notice(command, message: message)
+                    sequence = 0
                 default: throw ProductionStartupError.agentExecutionNotConnected
                 }
                 prepared = try MachineCommand(json: String(decoding: data, as: UTF8.self),

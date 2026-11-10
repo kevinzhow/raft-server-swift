@@ -81,7 +81,8 @@ struct AgentExecutionState: Codable, Sendable {
             }
         }
         for (key, dispatch) in dispatches ?? [:] where dispatch.phase == .attempting || dispatch.phase == .ambiguous {
-            guard let command = commands[key], agents[command.agentId]?.currentLaunchId == command.launchId,
+            guard let command = commands[key], command.kind != .notice,
+                  agents[command.agentId]?.currentLaunchId == command.launchId,
                   agents[command.agentId]?.generation == command.breakerGeneration else { continue }
             agents[command.agentId]?.needsManual = "server_restarted_with_unsettled_dispatch"
         }
@@ -176,7 +177,9 @@ extension AgentExecutionState {
     /// is retryable rather than ambiguous.
     func hasUnsettledDeliveryWrite(agentId: String) -> Bool {
         commands.contains { key, command in
-            guard command.agentId == agentId else { return false }
+            // A transient onboarding notice never blocks agent recovery: its
+            // own sent fact is stamped elsewhere and the wake is lost.
+            guard command.agentId == agentId, command.kind != .notice else { return false }
             if let dispatch = dispatches?[key] { return dispatch.phase != .accepted }
             return command.kind == .delivery && command.status == .dispatched
         }

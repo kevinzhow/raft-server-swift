@@ -154,7 +154,12 @@ extension AgentExecutionState {
                   command.kind == .stop || command.connectionEpochId == dispatch.connectionEpochId else { throw RuntimePersistenceError.invalidSnapshot }
             if command.kind == .delivery {
                 guard let sequence = dispatch.deliverySequence, validCount(sequence) else { throw RuntimePersistenceError.invalidSnapshot }
-            } else if dispatch.deliverySequence != nil { throw RuntimePersistenceError.invalidSnapshot }
+            } else if command.kind == .notice {
+                // The synthetic notice envelope always acknowledges at seq 0.
+                guard dispatch.deliverySequence == 0 else { throw RuntimePersistenceError.invalidSnapshot }
+            } else if dispatch.deliverySequence != nil {
+                throw RuntimePersistenceError.invalidSnapshot
+            }
         }
         for (key, command) in commands {
             guard key == command.commandId.uuidString, !command.serverId.isEmpty, !command.agentId.isEmpty,
@@ -175,6 +180,12 @@ extension AgentExecutionState {
             if command.kind == .delivery {
                 guard command.deliveryId?.isEmpty == false, command.channelId?.isEmpty == false,
                       command.messageId?.isEmpty == false else { throw RuntimePersistenceError.invalidSnapshot }
+            }
+            if command.kind == .notice {
+                guard command.deliveryId?.isEmpty == false, command.channelId?.isEmpty == false,
+                      command.messageId?.isEmpty == false, command.notice != nil else {
+                    throw RuntimePersistenceError.invalidSnapshot
+                }
             }
         }
     }

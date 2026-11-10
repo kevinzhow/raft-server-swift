@@ -168,7 +168,7 @@ struct AgentExecutionDomain: Sendable {
                 agentId: request.agentId, launchId: launchId, startDispatchId: dispatchId, deliveryId: nil,
                 connectionEpochId: connection.connectionEpochId, takeoverEpoch: agent.takeoverEpoch,
                 breakerGeneration: agent.generation, humanStart: human, sessionId: agent.sessionId,
-                resumePrompt: request.resumePrompt, channelId: nil, messageId: nil, status: .pending, createdAt: now)
+                resumePrompt: request.resumePrompt, channelId: nil, messageId: nil, notice: nil, status: .pending, createdAt: now)
             state.agents[request.agentId] = agent
             state.commands[request.commandId.uuidString] = command
             return (command, true)
@@ -255,7 +255,7 @@ struct AgentExecutionDomain: Sendable {
                     agentId: request.agentId, launchId: launchId, startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
                     connectionEpochId: connection.connectionEpochId, takeoverEpoch: agent.takeoverEpoch,
                     breakerGeneration: agent.generation, humanStart: false, sessionId: agent.sessionId,
-                    resumePrompt: nil, channelId: request.channelId, messageId: request.messageId, status: .pending, createdAt: Date())
+                    resumePrompt: nil, channelId: request.channelId, messageId: request.messageId, notice: nil, status: .pending, createdAt: Date())
                 state.commands[request.commandId.uuidString] = command
                 return command
             }
