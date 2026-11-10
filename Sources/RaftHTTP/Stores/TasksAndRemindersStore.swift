@@ -686,29 +686,6 @@ extension TasksAndRemindersStore {
         }
     }
 
-    enum ConvertedMessageTaskOutcome: Sendable {
-        case alreadyConverted
-        case created(TaskRecord)
-    }
-
-    /// Preserve the actual immutable host text. Link uniqueness and max-number
-    /// allocation are one task-owner critical section; duplicate conversion is a
-    /// refusal, not a second task or a successful replay.
-    func appendConvertedMessageTask(channelId: String, messageId: String, title: String, creatorId: String,
-        legacyMessageMaxNumber: Int, now: Date) -> ConvertedMessageTaskOutcome {
-        mutex.withLock { storage in
-            guard !storage.taskRecords.contains(where: { $0.messageId == messageId }) else { return .alreadyConverted }
-            let next = max(legacyMessageMaxNumber,
-                storage.taskRecords.filter { $0.channelId == channelId }.map(\.taskNumber).max() ?? 0) + 1
-            let task = TaskRecord(id: UUID().uuidString.lowercased(), channelId: channelId,
-                title: title, description: nil, status: "todo", taskNumber: next, messageId: messageId,
-                createdAt: now, updatedAt: now, creatorId: creatorId)
-            storage.taskRecords.append(task)
-            storage.taskEvents.append((taskId: task.id, eventType: "created", actorType: "user"))
-            return .created(task)
-        }
-    }
-
     /// `POST /internal/agent-api/tasks/amend`: the row lookup, the title and
     /// description write, the revision bump and the amend markers are one
     /// critical section. `nil` means the task does not exist.

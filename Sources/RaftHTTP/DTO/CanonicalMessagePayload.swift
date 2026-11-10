@@ -18,6 +18,31 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
         var membershipStatus: String?
     }
 
+    /// Canonical task facts riding the host message. The `tasks` table is the
+    /// authority; the legacy `messages.task_*` columns are only a frozen
+    /// rollback snapshot and are read solely when no canonical row exists.
+    ///
+    /// `asTask` sends project the just-created task onto the acknowledgement and
+    /// the `message:new` frame; every ordinary send still publishes the six keys
+    /// as `null` because upstream spreads the stored row.
+    struct TaskFacts: Sendable, Equatable {
+        var status: String
+        var number: Int
+        var assigneeType: String?
+        var assigneeId: String?
+        var claimedAt: String?
+        var completedAt: String?
+
+        init(_ task: TaskRecord) {
+            status = task.status
+            number = task.taskNumber
+            assigneeType = task.assigneeType
+            assigneeId = task.assigneeId
+            claimedAt = task.claimedAt.map(DateText.isoString)
+            completedAt = task.completedAt.map(DateText.isoString)
+        }
+    }
+
     /// The canonical attachment object (7 fields, no viewer-scoped comment
     /// count). `mimeType` is resolved from the stored row and filename exactly
     /// as the history read resolves it.
@@ -63,8 +88,32 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
     let attachments: [Attachment]
     let mentions: [StoredMessageMention]
     let conversationContext: OrderedJSON?
+    /// Canonical task facts for an `asTask` send; `nil` for every other row.
+    let task: TaskFacts?
+
+    init(
+        message: StoredHumanMessage,
+        sender: Sender,
+        attachments: [Attachment],
+        mentions: [StoredMessageMention],
+        conversationContext: OrderedJSON?,
+        task: TaskFacts? = nil
+    ) {
+        self.message = message
+        self.sender = sender
+        self.attachments = attachments
+        self.mentions = mentions
+        self.conversationContext = conversationContext
+        self.task = task
+    }
 
     var jsonBody: OrderedJSON {
+        let taskStatus = task?.status ?? message.taskStatus
+        let taskNumber = task?.number ?? message.taskNumber
+        let taskAssigneeType = task?.assigneeType ?? message.taskAssigneeType
+        let taskAssigneeId = task?.assigneeId ?? message.taskAssigneeId
+        let taskClaimedAt = task?.claimedAt ?? message.taskClaimedAt
+        let taskCompletedAt = task?.completedAt ?? message.taskCompletedAt
         var body = OrderedJSONObject([
             OrderedJSONField("id", message.id),
             OrderedJSONField("seq", message.seq),
@@ -76,6 +125,15 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
             OrderedJSONField("content", message.content),
             OrderedJSONField("actionMetadata", .null),
             OrderedJSONField("threadId", .null),
+            // The stored row is spread upstream, so the task-domain projection
+            // keys are always present. A canonical `asTask` task wins over the
+            // frozen row columns, matching the read/mutation tie-break.
+            OrderedJSONField("taskStatus", optional: taskStatus),
+            OrderedJSONField("taskNumber", optional: taskNumber),
+            OrderedJSONField("taskAssigneeType", optional: taskAssigneeType),
+            OrderedJSONField("taskAssigneeId", optional: taskAssigneeId),
+            OrderedJSONField("taskClaimedAt", optional: taskClaimedAt),
+            OrderedJSONField("taskCompletedAt", optional: taskCompletedAt),
             OrderedJSONField("createdAt", DateText.isoString(message.createdAt)),
             OrderedJSONField("updatedAt", DateText.isoString(message.createdAt)),
             OrderedJSONField("senderName", sender.name),
