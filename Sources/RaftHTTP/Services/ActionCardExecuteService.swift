@@ -25,6 +25,7 @@ public struct ActionCardExecuteService: Sendable {
     private let feedbackLocators: FeedbackLocatorService
     private let cards: ManagedMCPAndCardsStore
     private let prepare: ActionCardPrepareService
+    private let freshness: AgentSendFreshnessGate
     private let dependencies: AgentSendDependencies
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
@@ -88,6 +89,12 @@ public struct ActionCardExecuteService: Sendable {
         self.feedbackLocators = feedbackLocators
         self.cards = cards
         self.prepare = prepare
+        self.freshness = AgentSendFreshnessGate(
+            messages: messages,
+            channels: channels,
+            prepare: prepare,
+            oauth: oauth
+        )
         self.dependencies = dependencies
         self.now = now
         self.makeMessageId = makeMessageId
@@ -429,139 +436,35 @@ public struct ActionCardExecuteService: Sendable {
             let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
 
             if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
-                let snapshot = messages.sendFreshnessSnapshot(
+                switch freshness.evaluate(AgentSendFreshnessRequest(
+                    agentId: identity.agentId,
+                    serverId: identity.serverId,
                     channelId: channelId,
-                    agentId: identity.agentId
-                )
-                let conversation = channels.postableChannels[channelId]
-                let storageChannelId = channels.jointProjections.first {
-                    $0.localChannelId == channelId
-                }?.canonicalChannelId ?? channelId
-                let rows = snapshot.rows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
-                    guard message.channelId == storageChannelId else { return nil }
-                    return (message.seq, message)
-                }
-                let latestFromOthers = rows.last {
-                    $0.message.senderType != "agent" || $0.message.senderId != identity.agentId
-                }?.seq ?? 0
-                let threadParentSeq = conversation?.kind == "thread"
-                    ? (conversation?.parentMessageId.flatMap { parentId in
-                        snapshot.rows.first { $0.id == parentId }?.seq
-                    } ?? 0)
-                    : 0
-                let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
-                let boundarySeq = min(
-                    hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq,
-                    latestFromOthers
-                )
-                let effectiveExactSeqs = Set(
-                    requestedSeenExactSeqs.filter { $0 > boundarySeq && $0 <= latestFromOthers }
-                )
-                let boundarySource: String
-                if hasClientSeenBoundary {
-                    boundarySource = "client_seen"
-                } else if !effectiveExactSeqs.isEmpty {
-                    boundarySource = "client_seen_exact"
-                } else if fallbackBoundarySeq > 0 {
-                    boundarySource = "thread_parent"
-                } else {
-                    boundarySource = "none"
-                }
-                let hasModelSeenProof = boundarySource == "client_seen"
-                    || boundarySource == "client_seen_exact"
-                let newer = rows.filter {
-                    $0.seq > boundarySeq
-                        && ($0.message.senderType != "agent" || $0.message.senderId != identity.agentId)
-                        && !effectiveExactSeqs.contains($0.seq)
-                        && !dependencies.messageSuppressed($0.message, identity.agentId)
-                        && !dependencies.selfCausedExempt($0.message, identity.agentId)
-                }
-                let formalMentionCount = newer.reduce(0) { partial, entry in
-                    partial + (snapshot.mentions.contains {
-                        $0.messageId == entry.message.id
-                            && $0.targetType == "agent"
-                            && $0.targetId == identity.agentId
-                            && ($0.notifiableAtSend || $0.notifiedAt != nil)
-                    } ? 1 : 0)
-                }
-                let boundaryMessageId: String? = boundarySeq > 0
-                    ? (conversation?.kind == "thread" && threadParentSeq == boundarySeq
-                        ? conversation?.parentMessageId
-                        : rows.first { $0.seq == boundarySeq }?.message.id)
-                    : nil
-                if let latestSeq = newer.last?.seq {
-                    let attentionCount = newer.count
-                    let shownRows = Array(newer.suffix(3))
-                    let shownCount = shownRows.count
-                    let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
-                    let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
-                    let showedEveryHeldMessage = shownCount >= attentionCount
-                    let conversationIdentity = prepare.heldConversationIdentity(
-                        channelId: channelId,
-                        agentId: identity.agentId
-                    )
-                    let heldMessageJSON = shownRows.map { entry in
-                        prepare.heldFreshnessMessageJSON(
-                            seq: entry.seq,
-                            message: entry.message,
-                            conversationIdentity: conversationIdentity
-                        )
+                    targetRef: trimmed,
+                    policy: .credential,
+                    seenUpToSeq: hasClientSeenBoundary ? clientSeenUpToSeq : nil,
+                    seenExactSeqs: requestedSeenExactSeqs,
+                    withheld: withheldMode,
+                    draftReholdCount: draftReholdCount,
+                    draftReplacedExisting: draftReplacedExisting
+                )) {
+                case .proceed:
+                    break
+                case .held(let facts):
+                    if facts.withheld {
+                        return AgentSendWithheldResponse(withheldMessageCount: facts.holdCount)
                     }
-                    if !withheldMode, showedEveryHeldMessage, latestSeq > snapshot.readCursor.seq {
-                        messages.advanceAgentReadCursors(
-                            agentId: identity.agentId,
-                            maxSeqByChannel: [channelId: latestSeq]
-                        )
-                    }
-                    if withheldMode {
-                        return AgentSendWithheldResponse(withheldMessageCount: holdCount)
-                    }
-                    let reason = boundarySource == "none" || boundarySource == "thread_parent"
-                        ? "server_first_touch_context"
-                        : "server_stale_model_boundary"
-                    let producerFactId = AgentFreshnessIdentity.freshnessDecisionProducerFactId(
-                        agentId: identity.agentId,
-                        target: trimmed,
-                        reason: reason,
-                        pendingMaxSeq: latestSeq,
-                        modelSeenSeq: boundarySource == "client_seen" ? boundarySeq : 0,
-                        heldMessageCount: shownCount,
-                        omittedMessageCount: omittedCount
-                    )
-                    dependencies.recordAttestedSendEvent(
-                        "gate_triggered",
-                        identity.agentId,
-                        newer.last?.message.id,
-                        .gateTriggered(
-                            lastSeenMessageId: boundaryMessageId,
-                            latestMessageId: newer.last?.message.id,
-                            draftReplacedExisting: draftReplacedExisting,
-                            newMessageCount: holdCount,
-                            boundarySource: boundarySource,
-                            boundarySeq: boundarySeq,
-                            latestSeq: latestSeq
-                        )
-                    )
-                    dependencies.recordAgentSendActivity(
-                        identity.agentId,
-                        "Send held by freshness check",
-                        "target: \(trimmed)\n"
-                            + "unreviewed synced context for this target: \(shownCount) messages\n"
-                            + "reason: this target's latest synced context was not yet in your reviewed context\n"
-                            + "action: review the synced context before sending",
-                        producerFactId
-                    )
                     return AgentSendHeldResponse(
-                        producerFactId: producerFactId,
-                        heldMessages: heldMessageJSON,
-                        newMessageCount: holdCount,
-                        shownMessageCount: shownCount,
-                        omittedMessageCount: omittedCount,
-                        seenUpToSeq: latestSeq,
-                        seenUpToMessageId: newer.last?.message.id,
-                        firstShownSeq: shownRows.first?.seq,
-                        formalMentionCount: formalMentionCount,
-                        continueAnywaySuggested: draftReholdCount >= 3,
+                        producerFactId: facts.producerFactId,
+                        heldMessages: facts.heldMessages,
+                        newMessageCount: facts.holdCount,
+                        shownMessageCount: facts.shownCount,
+                        omittedMessageCount: facts.omittedCount,
+                        seenUpToSeq: facts.latestSeq,
+                        seenUpToMessageId: facts.latestMessageId,
+                        firstShownSeq: facts.firstShownSeq,
+                        formalMentionCount: facts.formalMentionCount,
+                        continueAnywaySuggested: facts.continueAnywaySuggested,
                         holdReasons: holdForCards ? (["unread_messages"] + cardHoldReasons) : nil,
                         cards: cardFields
                     )

@@ -204,12 +204,32 @@ struct MessagingPersistenceAttestedSendEventRecordDTO: Codable, Sendable {
     let agentId: String
     let messageId: String?
     let metadataJSON: String
+    /// Added with the legacy attested-send columns; older snapshots omit it.
+    let newMessageCount: Int?
+    /// Added with the legacy attested-send columns; older snapshots omit it.
+    let result: String?
 
     init(_ row: AttestedSendEventRecord) {
         eventType = row.eventType
         agentId = row.agentId
         messageId = row.messageId
         metadataJSON = row.metadataJSON
+        newMessageCount = row.newMessageCount
+        result = row.result
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case eventType, agentId, messageId, metadataJSON, newMessageCount, result
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        eventType = try values.decode(String.self, forKey: .eventType)
+        agentId = try values.decode(String.self, forKey: .agentId)
+        messageId = try values.decodeIfPresent(String.self, forKey: .messageId)
+        metadataJSON = try values.decode(String.self, forKey: .metadataJSON)
+        newMessageCount = try values.decodeIfPresent(Int.self, forKey: .newMessageCount)
+        result = try values.decodeIfPresent(String.self, forKey: .result)
     }
 
     var value: AttestedSendEventRecord {
@@ -217,7 +237,9 @@ struct MessagingPersistenceAttestedSendEventRecordDTO: Codable, Sendable {
             eventType: eventType,
             agentId: agentId,
             messageId: messageId,
-            metadataJSON: metadataJSON
+            metadataJSON: metadataJSON,
+            newMessageCount: newMessageCount,
+            result: result
         )
     }
 }

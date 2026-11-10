@@ -5,17 +5,279 @@ import RaftShared
 
 /// `POST /internal/agent/:agentId/send` request body.
 ///
-/// The legacy handler accepted any JSON object with a string `target` and a
-/// string `content`; a missing or non-string key is the published
-/// `Invalid target` 400. The route decodes this shape when it can and passes
-/// `nil` when it cannot, so the same 400 stays reachable for a malformed body.
-public struct AgentSendRequest: Codable, Sendable, Equatable {
-    public var target: String?
-    public var content: String?
+/// The pinned route validates the whole body with `legacyAgentSendBodySchema`
+/// before the handler runs: every member is optional, unknown members pass
+/// through, and a wrong member type is one `issues` entry rather than a
+/// decode failure. `issues` is empty exactly when the body matches that
+/// schema; the route turns a non-empty list into the published
+/// `legacy_agent_send_contract_invalid` 400 before any side effect.
+public struct AgentSendRequest: Sendable, Equatable {
+    /// One zod issue: a dotted path and a human-readable reason.
+    public struct Issue: Sendable, Equatable {
+        public var path: String
+        public var message: String
 
-    public init(target: String? = nil, content: String? = nil) {
+        public init(path: String, message: String) {
+            self.path = path
+            self.message = message
+        }
+    }
+
+    public var target: String?
+    public var channel: String?
+    public var dmTo: String?
+    public var content: String?
+    public var attachmentIds: [String]
+    public var idempotencyKey: String?
+    public var reconcileOnly: Bool
+    /// The deprecated `continue` request member.
+    public var continueFlag: Bool
+    public var sendDraft: Bool
+    public var continueAnyway: Bool
+    public var draftReholdCount: Double?
+    public var draftReplacedExisting: Bool
+    /// Kept as the JSON number the schema accepts; the handler floors it.
+    public var seenUpToSeq: Double?
+    public var seenExactSeqs: [Int]
+    public var freshnessContextMode: String?
+    public var issues: [Issue]
+
+    public init(
+        target: String? = nil,
+        channel: String? = nil,
+        dmTo: String? = nil,
+        content: String? = nil,
+        attachmentIds: [String] = [],
+        idempotencyKey: String? = nil,
+        reconcileOnly: Bool = false,
+        continueFlag: Bool = false,
+        sendDraft: Bool = false,
+        continueAnyway: Bool = false,
+        draftReholdCount: Double? = nil,
+        draftReplacedExisting: Bool = false,
+        seenUpToSeq: Double? = nil,
+        seenExactSeqs: [Int] = [],
+        freshnessContextMode: String? = nil,
+        issues: [Issue] = []
+    ) {
         self.target = target
+        self.channel = channel
+        self.dmTo = dmTo
         self.content = content
+        self.attachmentIds = attachmentIds
+        self.idempotencyKey = idempotencyKey
+        self.reconcileOnly = reconcileOnly
+        self.continueFlag = continueFlag
+        self.sendDraft = sendDraft
+        self.continueAnyway = continueAnyway
+        self.draftReholdCount = draftReholdCount
+        self.draftReplacedExisting = draftReplacedExisting
+        self.seenUpToSeq = seenUpToSeq
+        self.seenExactSeqs = seenExactSeqs
+        self.freshnessContextMode = freshnessContextMode
+        self.issues = issues
+    }
+
+    /// The effective target: `target || channel || dm:@<dm_to>` (`||` skips an
+    /// empty string, exactly like the pinned route).
+    public var effectiveTarget: String? {
+        if let target, !target.isEmpty { return target }
+        if let channel, !channel.isEmpty { return channel }
+        if let dmTo, !dmTo.isEmpty {
+            var peer = dmTo
+            if peer.hasPrefix("@") { peer = String(peer.dropFirst()) }
+            return "dm:@\(peer)"
+        }
+        return nil
+    }
+}
+
+extension AgentSendRequest: Decodable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(JSONValue.self)
+        guard case .object(let fields) = raw else {
+            self = AgentSendRequest(issues: [
+                AgentSendRequest.Issue(path: "", message: "Expected object, received \(raw.zodKind)")
+            ])
+            return
+        }
+        self = Self.validate(fields)
+    }
+
+    private static func validate(_ fields: [String: JSONValue]) -> AgentSendRequest {
+        var issues: [AgentSendRequest.Issue] = []
+        var request = AgentSendRequest()
+
+        func string(_ key: String) -> String? {
+            guard let value = fields[key] else { return nil }
+            guard case .string(let text) = value else {
+                issues.append(.init(path: key, message: "Expected string, received \(value.zodKind)"))
+                return nil
+            }
+            return text
+        }
+
+        func trimmedString(_ key: String) -> String? {
+            guard let value = fields[key] else { return nil }
+            guard case .string(let text) = value else {
+                issues.append(.init(path: key, message: "Expected string, received \(value.zodKind)"))
+                return nil
+            }
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func bool(_ key: String) -> Bool {
+            guard let value = fields[key] else { return false }
+            guard case .bool(let flag) = value else {
+                issues.append(.init(path: key, message: "Expected boolean, received \(value.zodKind)"))
+                return false
+            }
+            return flag
+        }
+
+        func number(_ key: String) -> Double? {
+            guard let value = fields[key] else { return nil }
+            guard let double = value.finiteNumber else {
+                issues.append(.init(path: key, message: "Expected number, received \(value.zodKind)"))
+                return nil
+            }
+            return double
+        }
+
+        request.target = string("target")
+        request.channel = string("channel")
+        request.dmTo = string("dm_to")
+        request.content = string("content")
+        request.idempotencyKey = trimmedString("idempotencyKey")
+        request.reconcileOnly = bool("reconcileOnly")
+        request.continueFlag = bool("continue")
+        request.sendDraft = bool("sendDraft")
+        request.continueAnyway = bool("continueAnyway")
+        request.draftReholdCount = number("draftReholdCount")
+        request.draftReplacedExisting = bool("draftReplacedExisting")
+        request.seenUpToSeq = number("seenUpToSeq")
+
+        if let value = fields["attachmentIds"] {
+            if case .array(let entries) = value {
+                var ids: [String] = []
+                for (index, entry) in entries.enumerated() {
+                    guard case .string(let text) = entry else {
+                        issues.append(.init(
+                            path: "attachmentIds.\(index)",
+                            message: "Expected string, received \(entry.zodKind)"
+                        ))
+                        continue
+                    }
+                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.isEmpty {
+                        issues.append(.init(
+                            path: "attachmentIds.\(index)",
+                            message: "String must contain at least 1 character(s)"
+                        ))
+                        continue
+                    }
+                    ids.append(trimmed)
+                }
+                request.attachmentIds = ids
+            } else {
+                issues.append(.init(path: "attachmentIds", message: "Expected array, received \(value.zodKind)"))
+            }
+        }
+
+        if let value = fields["seenExactSeqs"] {
+            if case .array(let entries) = value {
+                var seqs: [Int] = []
+                for (index, entry) in entries.enumerated() {
+                    guard let double = entry.finiteNumber,
+                          double.rounded() == double,
+                          double > 0,
+                          let seq = Int(exactly: double)
+                    else {
+                        issues.append(.init(
+                            path: "seenExactSeqs.\(index)",
+                            message: "Expected number, received \(entry.zodKind)"
+                        ))
+                        continue
+                    }
+                    seqs.append(seq)
+                }
+                if seqs.count > 2500 {
+                    issues.append(.init(path: "seenExactSeqs", message: "Array must contain at most 2500 element(s)"))
+                }
+                request.seenExactSeqs = Array(seqs.prefix(2500))
+            } else {
+                issues.append(.init(path: "seenExactSeqs", message: "Expected array, received \(value.zodKind)"))
+            }
+        }
+
+        if let value = fields["seenCards"] {
+            if case .object(let cards) = value {
+                for key in ["channel", "peer"] {
+                    guard let entry = cards[key] else { continue }
+                    if case .null = entry { continue }
+                    if case .string(let text) = entry {
+                        if text.isEmpty {
+                            issues.append(.init(
+                                path: "seenCards.\(key)",
+                                message: "String must contain at least 1 character(s)"
+                            ))
+                        }
+                        continue
+                    }
+                    issues.append(.init(
+                        path: "seenCards.\(key)",
+                        message: "Expected string, received \(entry.zodKind)"
+                    ))
+                }
+            } else {
+                issues.append(.init(path: "seenCards", message: "Expected object, received \(value.zodKind)"))
+            }
+        }
+
+        if let value = fields["freshnessContextMode"] {
+            if case .string(let mode) = value {
+                if mode != "inline" && mode != "withheld" {
+                    issues.append(.init(
+                        path: "freshnessContextMode",
+                        message: "Invalid enum value. Expected 'inline' | 'withheld', received '\(mode)'"
+                    ))
+                } else {
+                    request.freshnessContextMode = mode
+                }
+            } else {
+                issues.append(.init(
+                    path: "freshnessContextMode",
+                    message: "Expected 'inline' | 'withheld', received \(value.zodKind)"
+                ))
+            }
+        }
+
+        request.issues = issues
+        return request
+    }
+}
+
+extension JSONValue {
+    /// The JSON type name zod prints for a received value.
+    var zodKind: String {
+        switch self {
+        case .object: "object"
+        case .array: "array"
+        case .string: "string"
+        case .number, .integer: "number"
+        case .bool: "boolean"
+        case .null: "null"
+        }
+    }
+
+    /// A finite JSON number; `nil` for booleans, strings and non-finite values.
+    var finiteNumber: Double? {
+        switch self {
+        case .integer(let value): Double(value)
+        case .number(let value): value.isFinite ? value : nil
+        case .object, .array, .string, .bool, .null: nil
+        }
     }
 }
 
@@ -166,20 +428,93 @@ public struct AgentActivityEvent: Decodable, Sendable, Equatable {
 
 // MARK: - Responses
 
-public struct AgentSendResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
-    public let id: String
-    public let channelId: String
+/// `POST /internal/agent/:agentId/send` committed body.
+///
+/// Legacy order: `ok`, `state`, `messageId`, `messageSeq`, then the optional
+/// sender-side mention fields. A held response never carries them.
+public struct AgentSendResponse: JSONBodyConvertible, Sendable, Equatable {
+    public let messageId: String
+    public let messageSeq: Int
 
-    public init(id: String, channelId: String) {
-        self.id = id
-        self.channelId = channelId
+    public init(messageId: String, messageSeq: Int) {
+        self.messageId = messageId
+        self.messageSeq = messageSeq
     }
 
-    /// Legacy order: `id`, then `channelId`.
     public var jsonBody: OrderedJSON {
         var body = OrderedJSONObject()
-        body.append("id", id)
-        body.append("channelId", channelId)
+        body.append("ok", true)
+        body.append("state", "sent")
+        body.append("messageId", messageId)
+        body.append("messageSeq", messageSeq)
+        return body.json
+    }
+}
+
+/// `POST /internal/agent/:agentId/send` freshness hold.
+///
+/// The `apmHeldFreshness` inline envelope plus the legacy-only extras. Member
+/// order is the pinned spread order; `continueAnywaySuggested` and
+/// `seenUpToMessageId` are always present (false / JSON null), while
+/// `firstShownSeq` is only present when a context window was shown.
+public struct LegacyAgentSendHeldResponse: JSONBodyConvertible, Sendable, Equatable {
+    public var producerFactId: String
+    /// Envelopes already rendered by the action-card prepare service.
+    public var heldMessages: [String]
+    public var newMessageCount: Int
+    public var shownMessageCount: Int
+    public var omittedMessageCount: Int
+    public var seenUpToSeq: Int
+    public var seenUpToMessageId: String?
+    public var formalMentionCount: Int
+    public var continueAnywaySuggested: Bool
+
+    public init(
+        producerFactId: String,
+        heldMessages: [String],
+        newMessageCount: Int,
+        shownMessageCount: Int,
+        omittedMessageCount: Int,
+        seenUpToSeq: Int,
+        seenUpToMessageId: String?,
+        formalMentionCount: Int,
+        continueAnywaySuggested: Bool
+    ) {
+        self.producerFactId = producerFactId
+        self.heldMessages = heldMessages
+        self.newMessageCount = newMessageCount
+        self.shownMessageCount = shownMessageCount
+        self.omittedMessageCount = omittedMessageCount
+        self.seenUpToSeq = seenUpToSeq
+        self.seenUpToMessageId = seenUpToMessageId
+        self.formalMentionCount = formalMentionCount
+        self.continueAnywaySuggested = continueAnywaySuggested
+    }
+
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", true)
+        body.append("state", "held")
+        body.append("outcome", "held")
+        body.append("subtype", "freshness")
+        body.append("reason", "newer_messages_available")
+        body.append("decision", "syncing_hold")
+        body.append("producerFactId", producerFactId)
+        body.append("available_actions", .array([
+            .string("check_messages"),
+            .string("send_draft"),
+            .string("send_anyway"),
+        ]))
+        body.append("heldMessages", .array(heldMessages.map(OrderedJSON.raw)))
+        body.append("newMessageCount", newMessageCount)
+        body.append("shownMessageCount", shownMessageCount)
+        body.append("omittedMessageCount", omittedMessageCount)
+        body.append("seenUpToSeq", seenUpToSeq)
+        body.append("mentionAnnotation", .object([
+            OrderedJSONField("formalMentionCount", formalMentionCount),
+        ]))
+        body.append("continueAnywaySuggested", continueAnywaySuggested)
+        body.append("seenUpToMessageId", optional: seenUpToMessageId)
         return body.json
     }
 }

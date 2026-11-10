@@ -359,6 +359,7 @@ func composeServices(
         threadFollows: threadFollows,
         managedMCP: cards,
         oauth: oauth,
+        prepare: prepare,
         search: search,
         ledger: ledger
     )
