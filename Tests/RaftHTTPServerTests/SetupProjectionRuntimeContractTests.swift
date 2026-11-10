@@ -29,20 +29,25 @@ import VaporTesting
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
         try await app.testing { client in
+            // The pinned router mounts every `/:id` setup route behind
+            // `requireServerMatchesParam`; the live client always sends the header.
             func projection(_ token: String) async throws -> [String: Any] {
                 var headers = HTTPFields(); headers[.authorization] = "Bearer \(token)"
+                headers[HTTPField.Name("X-Server-Id")!] = server
                 let response = try await client.send(.get, headers: headers, to: "/api/servers/\(server)/setup-projection")
                 #expect(response.status == .ok)
                 return try #require(try JSONSerialization.jsonObject(with: response.body.data ?? Data()) as? [String: Any])
             }
             func complete(_ token: String) async throws -> ClientResponse {
                 var headers = HTTPFields(); headers[.authorization] = "Bearer \(token)"; headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = server
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(server)/setup-transition") { request in
                     request.body = .init(string: "{\"action\":\"complete\"}")
                 }
             }
             func transition(_ token: String, _ action: String) async throws -> ClientResponse {
                 var headers = HTTPFields(); headers[.authorization] = "Bearer \(token)"; headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = server
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(server)/setup-transition") { request in
                     request.body = .init(string: "{\"action\":\"\(action)\"}")
                 }

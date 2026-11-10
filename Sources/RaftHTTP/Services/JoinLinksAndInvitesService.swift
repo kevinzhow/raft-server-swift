@@ -60,6 +60,10 @@ public enum JoinLinksAndInvitesError: DomainError, Equatable {
     case ownerCannotLeave
     case insufficientPermission
     case serverNotFound
+    case serverIdRequired
+    case missingHeaderServerId
+    case mismatchedHeaderServerId
+    case guestsCannotAccessServerManagementData
     case invalidSetupAction
     case officialOnboardingAgentNotUsable
     case serverAlreadySetUp
@@ -78,13 +82,15 @@ public enum JoinLinksAndInvitesError: DomainError, Equatable {
             401
         case .forbiddenCreateJoinLinks, .forbiddenViewJoinLinks, .forbiddenRevokeJoinLinks,
              .forbiddenRevokeInvites, .notAMember, .forbidden, .insufficientPermission,
-             .capabilityNotAuthorized, .hostedAgentDescriptionHumanOnly:
+             .capabilityNotAuthorized, .hostedAgentDescriptionHumanOnly,
+             .guestsCannotAccessServerManagementData:
             403
         case .inviteNotFound, .serverNotFound, .profileNotFound:
             404
         case .invalidInvite, .invalidExpiresAt, .invalidMaxUses, .seatLimit, .invalidEmail,
              .invalidInviteRole, .guestAccessDisabled, .ownerCannotLeave, .invalidSetupAction,
-             .invalidProfileUpdate:
+             .invalidProfileUpdate, .serverIdRequired, .missingHeaderServerId,
+             .mismatchedHeaderServerId:
             400
         case .serverAlreadySetUp, .agreementRequired, .agreementChanged, .officialOnboardingAgentNotUsable:
             409
@@ -142,6 +148,14 @@ public enum JoinLinksAndInvitesError: DomainError, Equatable {
             "INSUFFICIENT_PERMISSION"
         case .serverNotFound:
             "Server not found"
+        case .serverIdRequired:
+            "Server id is required"
+        case .missingHeaderServerId:
+            "Missing X-Server-Id header"
+        case .mismatchedHeaderServerId:
+            "X-Server-Id must match server id in URL"
+        case .guestsCannotAccessServerManagementData:
+            "Guests cannot access server management data"
         case .invalidSetupAction:
             "INVALID_SETUP_ACTION"
         case .officialOnboardingAgentNotUsable:
@@ -531,41 +545,86 @@ public struct JoinLinksAndInvitesService: Sendable {
         return JoinLinksOkResponseDTO()
     }
 
+    // MARK: - Server setup scope
+
+    /// The pre-handler `requireServerMatchesParam` funnel plus the guest-hidden
+    /// surface rule shared by the three setup routes.
+    ///
+    /// `app.ts:483` mounts `/api/servers` behind `requireAuth` + `requireVerified`,
+    /// so authentication precedes the `routes/servers.ts:1005` UUID/header
+    /// checks. The membership read joins the live server row, so an unknown or
+    /// soft-deleted server refuses exactly like a non-member. A guest reaches
+    /// the handler (which answers its owner-only refusal) unless the route is in
+    /// the guest-hidden surface list.
+    private func setupScope(
+        authorization: String?,
+        serverId: String,
+        headerServerId: String?,
+        hidesGuests: Bool
+    ) throws -> (userId: String, role: String) {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw JoinLinksAndInvitesError.unauthorized
+        }
+        switch ServerScope.validate(serverId: serverId, headerServerId: headerServerId) {
+        case nil:
+            break
+        case .serverIdRequired:
+            throw JoinLinksAndInvitesError.serverIdRequired
+        case .serverNotFound:
+            throw JoinLinksAndInvitesError.serverNotFound
+        case .missingHeader:
+            throw JoinLinksAndInvitesError.missingHeaderServerId
+        case .headerMismatch:
+            throw JoinLinksAndInvitesError.mismatchedHeaderServerId
+        }
+        guard oauth.serverProfile(id: serverId) != nil,
+              let role = oauth.memberRole(serverId: serverId, userId: userId)
+        else {
+            throw JoinLinksAndInvitesError.notAMember
+        }
+        if hidesGuests, role == "guest" {
+            throw JoinLinksAndInvitesError.guestsCannotAccessServerManagementData
+        }
+        return (userId, role)
+    }
+
     // MARK: - Server setup projection
 
     public func serverSetupProjection(
         authorization: String?,
-        serverId: String
+        serverId: String,
+        headerServerId: String?
     ) throws -> SetupProjectionResponseDTO {
-        guard let userId = dependencies.sessionUserId(authorization) else {
-            throw JoinLinksAndInvitesError.unauthorized
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            throw JoinLinksAndInvitesError.notAMember
-        }
+        let actor = try setupScope(
+            authorization: authorization,
+            serverId: serverId,
+            headerServerId: headerServerId,
+            hidesGuests: true
+        )
         return setupProjectionService()
-            .project(serverId: serverId, userId: userId, role: role)
+            .project(serverId: serverId, userId: actor.userId, role: actor.role)
     }
 
     public func serverSetupTransition(
         authorization: String?,
         serverId: String,
+        headerServerId: String?,
         body: ServerSetupTransitionRequest?
     ) throws -> SetupProjectionResponseDTO {
-        guard let userId = dependencies.sessionUserId(authorization) else {
-            throw JoinLinksAndInvitesError.unauthorized
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            throw JoinLinksAndInvitesError.notAMember
-        }
+        let actor = try setupScope(
+            authorization: authorization,
+            serverId: serverId,
+            headerServerId: headerServerId,
+            hidesGuests: false
+        )
         guard let body, let action = body.action, action == "start" || action == "complete" else {
             throw JoinLinksAndInvitesError.invalidSetupAction
         }
-        guard role == "owner" else { throw JoinLinksAndInvitesError.insufficientPermission }
+        guard actor.role == "owner" else { throw JoinLinksAndInvitesError.insufficientPermission }
         let projection = setupProjectionService()
         // A completion by any owner is terminal for the whole server. Neither a
         // late start nor a repeated complete may rewind it or recheck liveness.
-        let current = projection.project(serverId: serverId, userId: userId, role: role)
+        let current = projection.project(serverId: serverId, userId: actor.userId, role: actor.role)
         if current.phase == "complete" { return current }
         if action == "complete" {
             guard projection.canComplete(serverId: serverId) else {
@@ -574,11 +633,11 @@ public struct JoinLinksAndInvitesService: Sendable {
             // The phase and its `normal` provenance are one Store mutation
             // (services/serverSetupStateService.ts:555-571). A terminal retry
             // reaches the early return above and writes nothing.
-            store.completeSetup(serverId: serverId, userId: userId)
+            store.completeSetup(serverId: serverId, userId: actor.userId)
         } else {
-            store.startSetup(serverId: serverId, userId: userId)
+            store.startSetup(serverId: serverId, userId: actor.userId)
         }
-        return projection.project(serverId: serverId, userId: userId, role: role)
+        return projection.project(serverId: serverId, userId: actor.userId, role: actor.role)
     }
 
     public func serverSetupReset(
@@ -612,17 +671,21 @@ public struct JoinLinksAndInvitesService: Sendable {
     /// delivery: a briefing that never reaches Cindy does not reopen the handoff.
     public func serverSetupHandoff(
         authorization: String?,
-        serverId: String
+        serverId: String,
+        headerServerId: String?
     ) throws -> SetupProjectionResponseDTO {
-        guard let userId = dependencies.sessionUserId(authorization) else {
-            throw JoinLinksAndInvitesError.unauthorized
-        }
+        let actor = try setupScope(
+            authorization: authorization,
+            serverId: serverId,
+            headerServerId: headerServerId,
+            hidesGuests: false
+        )
         guard let server = oauth.serverProfile(id: serverId) else {
             throw JoinLinksAndInvitesError.serverNotFound
         }
         // Binding the command to `server.ownerId` is the whole authorization:
         // role `owner` is not enough (co-owners cannot accept the owner's handoff).
-        guard server.ownerId == userId else {
+        guard server.ownerId == actor.userId else {
             throw JoinLinksAndInvitesError.insufficientPermission
         }
         let acknowledgedAt = now()
@@ -631,8 +694,8 @@ public struct JoinLinksAndInvitesService: Sendable {
             originalOwnerId: server.ownerId,
             at: acknowledgedAt
         )
-        // Account-global, first-time-only semantics belong to the account owner
-        // (BATCH-INTEGRATION seam). It runs after the receipt is retained.
+        // Account-global, first-time-only facts are retained by the Auth
+        // account owner after the member receipt and before any briefing.
         dependencies.setupAccountFacts.recordFirstOnboarding(
             userId: server.ownerId,
             at: acknowledgedAt,
@@ -643,7 +706,7 @@ public struct JoinLinksAndInvitesService: Sendable {
         // this build; the hook keeps the ordering explicit for its integration.
         dependencies.triggerOnboardingBriefing(serverId, receipt.originalOwnerId)
         return setupProjectionService()
-            .project(serverId: serverId, userId: userId, role: "owner")
+            .project(serverId: serverId, userId: actor.userId, role: actor.role)
     }
 
     private func setupProjectionService() -> ServerSetupProjectionService {

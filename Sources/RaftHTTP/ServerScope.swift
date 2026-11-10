@@ -5,22 +5,51 @@ import Foundation
 /// A non-UUID `:id` is 404 `Server not found` before any query, so a bad id
 /// cannot surface a database cast error. A UUID that does not equal
 /// `X-Server-Id` is 400 and must stay that typed 4xx.
+///
+/// The path/header checks are also consumed by routes that run the whole
+/// funnel inside their domain service (so authentication still precedes them);
+/// `validate` is that shared, reply-free core.
 
 public enum ServerScope {
-    public static func membersGuard(serverId: String, headerServerId: String?) -> HTTPReply? {
+    /// The path and header checks `requireServerMatchesParam` performs before
+    /// the membership query.
+    public enum PathFailure: Sendable, Equatable {
+        case serverIdRequired
+        case serverNotFound
+        case missingHeader
+        case headerMismatch
+    }
+
+    /// `nil` when the path names a UUID and `X-Server-Id` exactly matches it.
+    public static func validate(serverId: String, headerServerId: String?) -> PathFailure? {
         if serverId.isEmpty {
-            return json(400, "Server id is required")
+            return .serverIdRequired
         }
         if !isUUID(serverId) {
-            return json(404, "Server not found")
+            return .serverNotFound
         }
         guard let headerServerId, !headerServerId.isEmpty else {
-            return json(400, "Missing X-Server-Id header")
+            return .missingHeader
         }
         if headerServerId != serverId {
-            return json(400, "X-Server-Id must match server id in URL")
+            return .headerMismatch
         }
         return nil
+    }
+
+    public static func membersGuard(serverId: String, headerServerId: String?) -> HTTPReply? {
+        switch validate(serverId: serverId, headerServerId: headerServerId) {
+        case nil:
+            return nil
+        case .serverIdRequired:
+            return json(400, "Server id is required")
+        case .serverNotFound:
+            return json(404, "Server not found")
+        case .missingHeader:
+            return json(400, "Missing X-Server-Id header")
+        case .headerMismatch:
+            return json(400, "X-Server-Id must match server id in URL")
+        }
     }
 
     /// `GET /:id/members/:memberId/profile`. `memberId` is guarded as `Member`

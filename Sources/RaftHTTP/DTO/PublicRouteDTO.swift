@@ -26,8 +26,20 @@ public struct PublicServerListResponse: JSONBodyConvertible {
         public let slug: String
         public let role: String
         public let publicPageLive: Bool
+
+        public init(id: String, slug: String, role: String, publicPageLive: Bool) {
+            self.id = id
+            self.slug = slug
+            self.role = role
+            self.publicPageLive = publicPageLive
+        }
     }
     public let servers: [Server]
+
+    public init(servers: [Server]) {
+        self.servers = servers
+    }
+
     public var jsonBody: OrderedJSON { .array(servers.map { .object([
         .init("id", $0.id), .init("slug", $0.slug), .init("role", $0.role),
         .init("publicPageLive", $0.publicPageLive),
