@@ -658,6 +658,26 @@ public struct AuthIdentitiesService: Sendable {
             throw AuthIdentitiesError.invalidProfile("Invalid preferredMessageBodyFontSize")
         }
 
+        // The signup survey role is validated before the referral half, as the
+        // retired handler did (`routes/auth.ts:1577-1584`). A present key
+        // closes the survey: the store stamps one request time in the same
+        // critical section, so a rejected referral cannot leave the role half
+        // written either.
+        let signupRoles = [
+            "software_engineer", "engineering_leader", "founder", "product", "design",
+            "data_ml", "devops_it", "student", "other",
+        ]
+        switch request.signupRole {
+        case .absent:
+            break
+        case .null:
+            update.signupRole = .some(nil)
+        case .value(let value) where signupRoles.contains(value):
+            update.signupRole = .some(value)
+        default:
+            throw AuthIdentitiesError.invalidProfile("Invalid signupRole")
+        }
+
         let referralSources = [
             "twitter_x", "linkedin", "friend_colleague", "search", "hn_reddit",
             "podcast_blog_newsletter", "other",

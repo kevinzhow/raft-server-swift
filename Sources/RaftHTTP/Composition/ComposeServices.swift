@@ -457,7 +457,11 @@ func composeServices(
         agents: agents,
         computers: machines,
         oauth: oauth,
-        dependencies: JoinLinksAndInvitesDependencies(sessionUserId: lifecycle.sessionUserId, emitRealtime: realtime.emit)
+        dependencies: JoinLinksAndInvitesDependencies(
+            sessionUserId: lifecycle.sessionUserId,
+            emitRealtime: realtime.emit,
+            setupAccountFacts: AuthProfileSetupAccountFacts(accounts: profiles)
+        )
     )
     let threads = composeThreads(
         messages: messages, auth: core, channels: channels, profiles: profiles,

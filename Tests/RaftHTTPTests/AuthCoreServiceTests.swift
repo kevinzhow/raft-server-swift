@@ -205,7 +205,8 @@ private func successes<T: Sendable>(
     let created = try service.register(request(), userAgent: "ua", acceptLanguage: "en")
     let rendered = created.jsonBody.render()
     #expect(rendered.hasPrefix("{\"user\":{\"id\":\"\(created.id)\",\"email\":\"new@slock.test\",\"name\":\"pending_"))
-    #expect(rendered.contains("\"emailVerified\":false,\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\"newbie\",\"profileSetupProvider\":null},\"accessToken\":\""))
+    #expect(rendered.contains("\"emailVerified\":false,\"profileSetupCompletedAt\":null,\"profileSetupSuggestedHandle\":\"newbie\",\"profileSetupProvider\":null"))
+    #expect(rendered.contains("\"signupSurveyCompletedAt\":null,\"signupRole\":null},\"accessToken\":\""))
     #expect(scene.legalAcceptance(userId: created.id)?.source == "signup")
     #expect(scene.emailVerificationRecordCount(userId: created.id) == 1)
     #expect(thrown { try service.register(request(), userAgent: nil, acceptLanguage: nil) }

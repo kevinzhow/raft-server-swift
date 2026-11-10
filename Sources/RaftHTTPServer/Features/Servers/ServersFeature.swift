@@ -57,14 +57,31 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.get() { request async throws -> Response in
-            if let ordered = services.emailAccounts.serverProfileAndOrder.orderedServerList(authorization: request.headers[.authorization]) {
+            let authorization = request.headers[.authorization]
+            // Nonempty OAuth memberships keep their typed ordered projection.
+            if let ordered = services.emailAccounts.serverProfileAndOrder.orderedServerList(authorization: authorization) {
                 return try await respond { ordered }
             }
+            // A canonical admitted Auth principal with no OAuth membership
+            // projects the public directory's actual legacy rows for that same
+            // subject. The directory's own bearer map is a separate identity
+            // domain and must not select the subject again; zero rows is the
+            // legal bare `[]`, not its 401.
+            if let userId = services.emailAccounts.authenticatedUserId(authorization: authorization) {
+                return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+                    guard let directory = services.publicVisits else {
+                        return PublicServerListResponse(servers: [])
+                    }
+                    return directory.serverList(userId: userId)
+                }
+            }
+            // Compatibility: a bearer known only to the legacy directory keeps
+            // its original token-domain entry.
             return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
                 guard let directory = services.publicVisits else {
-                    throw PublicVisits.authRequired(authorization: request.headers[.authorization])
+                    throw PublicVisits.authRequired(authorization: authorization)
                 }
-                return try directory.serverList(authorization: request.headers[.authorization])
+                return try directory.serverList(authorization: authorization)
             }
         }
         servers.get("order") { request async throws -> Response in
@@ -314,7 +331,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupReset(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? ""
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
                 )
             }
         }
@@ -322,7 +340,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupHandoff(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? ""
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
                 )
             }
         }
@@ -358,7 +377,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupProjection(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? ""
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
                 )
             }
         }
@@ -368,6 +388,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupTransition(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
                     body: body
                 )
             }

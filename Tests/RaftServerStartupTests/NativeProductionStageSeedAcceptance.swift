@@ -343,7 +343,8 @@ private enum NativeSeedAudit {
             for key in ["displayLanguage", "displayName", "profileSetupSuggestedHandle", "profileSetupProvider", "avatarUrl",
                         "description", "shareUsageData", "stagingSelfAccountCapabilityHash", "retiredAt", "preferredLanguage",
                         "preferredTimezone", "preferredTimeFormat", "preferredMessageBodyFontSize", "referralSource",
-                        "referralSourceOther", "referralSourceSkippedAt"] { expected[key] = .null }
+                        "referralSourceOther", "referralSourceSkippedAt", "signupRole", "signupSurveyCompletedAt",
+                        "firstOnboardingCompletedAt", "firstOnboardingCompletedSessionFamilyId"] { expected[key] = .null }
             guard row == expected, case .string(let analyticsID) = analytics[person.id],
                   UUID(uuidString: analyticsID) != nil else { throw NativeSeedFailure.allowlist }
         }

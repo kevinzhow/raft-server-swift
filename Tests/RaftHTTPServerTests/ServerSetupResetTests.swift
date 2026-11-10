@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -28,6 +28,14 @@ import VaporTesting
     }
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "setup-machine")
     accounts.linkComputerForTesting(serverId: serverId, machineId: machine, attachedByUserId: ownerId)
+    // A completed flow with its `normal` provenance and the owner's first
+    // handoff acknowledgment; the reset must clear the whole setup group in the
+    // same mutation that clears the phases.
+    accounts.serversAndChannelsStore.completeSetup(serverId: serverId, userId: ownerId)
+    accounts.serversAndChannelsStore.acknowledgeSetupHandoff(
+        serverId: serverId, originalOwnerId: ownerId,
+        at: Date(timeIntervalSinceReferenceDate: 812_345_678.5)
+    )
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -45,9 +53,10 @@ import VaporTesting
                 }
                 return (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
             }
-            func post(_ bearer: String?, _ path: String) async throws -> ClientResponse {
+            func post(_ bearer: String?, _ path: String, headerServerId: String? = nil) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 if let bearer { headers[.authorization] = "Bearer \(bearer)" }
+                if let headerServerId { headers[HTTPField.Name("X-Server-Id")!] = headerServerId }
                 return try await client.send(.post, headers: headers, to: URI(string: path))
             }
             let owner = try await token("setup-owner@slock.test")
@@ -56,26 +65,41 @@ import VaporTesting
             let reset = "/api/servers/\(serverId)/setup-reset"
             let handoff = "/api/servers/\(serverId)/setup-handoff"
 
-            #expect(try await post(admin, reset).status == .forbidden)
-            #expect(try await post(member, reset).status == .forbidden)
-            let resetResponse = try await post(owner, reset)
+            // The router-wide `/:id` lockdown precedes the handler: every
+            // call must carry the matching X-Server-Id.
+            #expect(try await post(admin, reset, headerServerId: serverId).status == .forbidden)
+            #expect(try await post(member, reset, headerServerId: serverId).status == .forbidden)
+            let resetResponse = try await post(owner, reset, headerServerId: serverId)
             #expect(resetResponse.status == .ok)
             let resetBody = try JSONSerialization.jsonObject(with: Data((resetResponse.body.string ?? "").utf8)) as? [String: Any]
             #expect(resetBody?["phase"] as? String == "not_started")
             #expect(resetBody?["revokedComputers"] as? Int == 1)
+            #expect((resetBody?["postSetup"] as? [String: Any])?["surveyPending"] as? Bool == false)
+            #expect((resetBody?["postSetup"] as? [String: Any])?["handoffPending"] as? Bool == false)
+            #expect(accounts.serversAndChannelsStore.setupCompletionReason(serverId: serverId, userId: ownerId) == nil)
+            #expect(accounts.serversAndChannelsStore.setupHandoffReceipt(serverId: serverId, ownerId: ownerId) == nil)
 
             let agent = accounts.oauth.createAgent(serverId: serverId, name: "setup-agent")
             accounts.addServerAgent(serverId: serverId, id: agent, name: "setup-agent", avatarUrl: nil, status: "inactive")
-            let refused = try await post(owner, reset)
+            let refused = try await post(owner, reset, headerServerId: serverId)
             #expect(refused.status == .conflict)
             #expect((try JSONSerialization.jsonObject(with: Data((refused.body.string ?? "").utf8)) as? [String: Any])?["error"] as? String == "SERVER_ALREADY_SET_UP")
 
-            #expect(try await post(admin, handoff).status == .forbidden)
-            #expect(try await post(nil, handoff).status == .unauthorized)
-            #expect(try await post(owner, "/api/servers/33333333-3333-4333-8333-333333333999/setup-handoff").status == .notFound)
-            let handoffResponse = try await post(owner, handoff)
+            // The three setup routes sit behind the pinned `/:id` lockdown:
+            // a matching X-Server-Id plus live membership reach the handler,
+            // and an unknown server is 403 `Not a member of this server`.
+            #expect(try await post(admin, handoff, headerServerId: serverId).status == .forbidden)
+            #expect(try await post(nil, handoff, headerServerId: serverId).status == .unauthorized)
+            let unknownHandoff = try await post(
+                owner,
+                "/api/servers/33333333-3333-4333-8333-333333333999/setup-handoff",
+                headerServerId: "33333333-3333-4333-8333-333333333999"
+            )
+            #expect(unknownHandoff.status == .forbidden)
+            #expect(unknownHandoff.body.string == "{\"error\":\"Not a member of this server\"}")
+            let handoffResponse = try await post(owner, handoff, headerServerId: serverId)
             #expect(handoffResponse.status == .ok)
-            #expect(try await post(owner, handoff).status == .ok)
+            #expect(try await post(owner, handoff, headerServerId: serverId).status == .ok)
         }
     }
 }

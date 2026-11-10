@@ -272,4 +272,26 @@ struct AuthServicesUnitFixture: Sendable {
     ) -> AuthProfileService {
         AuthProfileService(store: profiles, now: now, makeToken: makeToken)
     }
+
+    func makeIdentitiesService(now: @escaping @Sendable () -> Date = { Date() }) -> AuthIdentitiesService {
+        AuthIdentitiesService(store: profiles, oauth: oauth, now: now)
+    }
+
+    func account(userId: String) -> Account? {
+        profiles.account(userId: userId)
+    }
+
+    func replaceAccountForTesting(_ account: Account) {
+        profiles.state.withLock { state in
+            state.accountSurface.accounts[account.email] = account
+        }
+    }
+
+    func exportAuthProfilePersistenceData() throws -> Data {
+        try profiles.exportAuthProfilePersistence()
+    }
+
+    func restoreAuthProfilePersistenceData(_ data: Data) throws {
+        try profiles.restoreAuthProfilePersistence(from: data)
+    }
 }

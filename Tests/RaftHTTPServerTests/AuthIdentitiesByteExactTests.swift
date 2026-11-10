@@ -149,7 +149,7 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             #expect(me.status == .ok)
             let meText = me.body.string ?? ""
             #expect(meText.hasPrefix(#"{"id":"\#(fixture.userId)","email":"bytes@slock.test","name":"bytes","emailVerified":false,"displayName":"bytes","gravatarHash":""#))
-            #expect(meText.hasSuffix(#""preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null}"#))
+            #expect(meText.hasSuffix(#""preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"signupSurveyCompletedAt":null,"signupRole":null}"#))
 
             let notObject = try await send(client, .patch, "/api/auth/me", bearer: fixture.bearer, body: "[1]")
             #expect(notObject.status == .badRequest)

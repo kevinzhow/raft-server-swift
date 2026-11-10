@@ -1,6 +1,24 @@
 import Foundation
 import RaftShared
 
+/// One account's retained first final onboarding handoff facts.
+///
+/// Upstream `serverService.markSetupHandoffAcknowledged` writes
+/// `users.first_onboarding_completed_at` and
+/// `users.first_onboarding_completed_session_family_id` only while the time is
+/// null (`services/serverService.ts:1556-1570`), so a retry keeps the original
+/// pair. The facts are account-global and are not part of the published `me`
+/// user object (`services/userService.ts:54-96`).
+public struct FirstOnboardingCompletion: Sendable, Equatable {
+    public let completedAt: Date
+    public let sessionFamilyId: String?
+
+    public init(completedAt: Date, sessionFamilyId: String?) {
+        self.completedAt = completedAt
+        self.sessionFamilyId = sessionFamilyId
+    }
+}
+
 /// Domain failure shared by the account-profile operations. The feature layer
 /// owns the wire encoding; this type owns the status and published message.
 public enum AuthProfileError: DomainError, Equatable {
@@ -47,9 +65,10 @@ public enum AuthProfileError: DomainError, Equatable {
 /// whether it exists. `cancelPendingLink` is the idempotent 204. `resetPassword`
 /// spends one reset token and writes the new password in one store critical
 /// section. `observeTimezone` validates the single-key IANA shape and stores the
-/// first/last pair in one store critical section. The service returns the
-/// published DTO or throws `AuthProfileError`; it never builds a reply, JSON or
-/// header set.
+/// first/last pair in one store critical section. `recordFirstOnboardingCompletion`
+/// retains the account-global first handoff pair, writing it only once. The
+/// service returns the published DTO or throws `AuthProfileError`; it never
+/// builds a reply, JSON or header set.
 public struct AuthProfileService: Sendable {
     private static let resetTokenLifetime: TimeInterval = 60 * 60
     private static let maximumTimezoneLength = 128
@@ -207,5 +226,33 @@ public struct AuthProfileService: Sendable {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+
+    // MARK: First onboarding completion
+
+    /// The account-global first final onboarding handoff call site for domains
+    /// that do not own the auth store (for example `POST
+    /// /api/servers/:id/setup-handoff`). Only the first call writes; a retry
+    /// returns the retained time and session family unchanged. `nil` means the
+    /// account row no longer exists.
+    ///
+    /// The caller passes the command's real time and the access token's session
+    /// family, or `nil` when the request has no real family. This is not
+    /// briefing delivery acceptance.
+    @discardableResult
+    public func recordFirstOnboardingCompletion(
+        userId: String,
+        at: Date,
+        sessionFamilyId: String?
+    ) -> FirstOnboardingCompletion? {
+        store.recordFirstOnboardingCompletion(userId: userId, at: at, sessionFamilyId: sessionFamilyId)
+            .map { FirstOnboardingCompletion(completedAt: $0.completedAt, sessionFamilyId: $0.sessionFamilyId) }
+    }
+
+    /// The retained first-onboarding pair, or `nil` when the account is missing
+    /// or has not completed onboarding.
+    public func firstOnboardingCompletion(userId: String) -> FirstOnboardingCompletion? {
+        store.firstOnboardingCompletion(userId: userId)
+            .map { FirstOnboardingCompletion(completedAt: $0.completedAt, sessionFamilyId: $0.sessionFamilyId) }
     }
 }

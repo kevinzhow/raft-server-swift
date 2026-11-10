@@ -207,6 +207,9 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     public var referralSource: ProfileField<String> = .absent
     public var referralSourceOther: ProfileField<String> = .absent
     public var referralSourceSkipped: ProfileField<Bool> = .absent
+    /// Present null is legal and clears the stored role; absent leaves the role
+    /// and its completion time untouched.
+    public var signupRole: ProfileField<String> = .absent
 
     public init() {}
 
@@ -225,6 +228,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         case referralSource
         case referralSourceOther
         case referralSourceSkipped
+        case signupRole
     }
 
     public init(from decoder: any Decoder) throws {
@@ -243,6 +247,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         referralSource = container.profileString(.referralSource)
         referralSourceOther = container.profileString(.referralSourceOther)
         referralSourceSkipped = container.profileBool(.referralSourceSkipped)
+        signupRole = container.profileString(.signupRole)
     }
 }
 
@@ -427,6 +432,11 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
     public let referralSource: String?
     public let referralSourceOther: String?
     public let referralSourceSkippedAt: String?
+    /// Signup survey state. Both members are always present, matching
+    /// `toPublicUser`'s `?? null`; `signupSurveyCompletedAt` is the gate the
+    /// client reads. The account-global first-onboarding pair is not published.
+    public let signupSurveyCompletedAt: String?
+    public let signupRole: String?
 
     init(account: Account) {
         id = account.id
@@ -453,6 +463,8 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
         referralSource = account.referralSource
         referralSourceOther = account.referralSourceOther
         referralSourceSkippedAt = account.referralSourceSkippedAt.map(DateText.iso8601)
+        signupSurveyCompletedAt = account.signupSurveyCompletedAt.map(DateText.iso8601)
+        signupRole = account.signupRole
     }
 
     var fields: [OrderedJSONField] {
@@ -479,6 +491,8 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
             OrderedJSONField("referralSource", optional: referralSource),
             OrderedJSONField("referralSourceOther", optional: referralSourceOther),
             OrderedJSONField("referralSourceSkippedAt", optional: referralSourceSkippedAt),
+            OrderedJSONField("signupSurveyCompletedAt", optional: signupSurveyCompletedAt),
+            OrderedJSONField("signupRole", optional: signupRole),
         ]
     }
 

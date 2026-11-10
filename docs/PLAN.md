@@ -28,15 +28,15 @@
 
 **下一批与完成条件**：
 
-1. 已部署的 `1c40` Source、现有制品 pins 和此前完整相关目标／九组独立 PG 资格保持不变。下一位从该基线按下方交接矩阵完成新批次，再重新跑完整提交门禁和 diff／依赖／配置隐私检查；当前没有新修复的 After 或 release。保留 profile、canonical Task 消费、实际帧和全部拒绝边界，不把协议 context 或本地帧位置当作 OS／provider 成功。
+1. 交接矩阵批次已实现并通过完整提交门禁（见下方快照）。已部署的 `1c40` 制品仍在运行；下一步从该批次的干净提交重建并资格化 Main，再按维护顺序升级。保留 profile、canonical Task 消费、实际帧和全部拒绝边界，不把协议 context 或本地帧位置当作 OS／provider 成功。
 2. 干净提交的 Main release、实际资源 bundle、Swift 与动态 JSC 的递归依赖、独立复制及普通 Main PID／映射已验证，四角色制品来源与完整 inventory 绑定也已通过。最终生产 Main user unit、private200、版本字段、native／realtime 与实际 PID／载入文件已通过；Computer／resident／Codex child、enrollment 与 provider 仍须以部署后的实际输出验证，不能以制品 metadata 替代。
 3. 正常 Cindy onboarding、模型选择与实际执行、消息／Task／Computers／workspace／附件冷读和监督重启均使用同一已验证制品，在下述受限入口阶段完成。保留上游 Web、Computer 与 Node 各自正确来源，不把 Web 重标为 Swift 提交，也不把旧 stage 结果提升为最终验收。
 4. 显式维护屏障已在任何生产 Main 启动之前实际加载，并证明公共入口全部503；全新生产 PostgreSQL 17／Redis、初始空数据与 schema 初始化已验证。最终 Main private200 后又复查相同 gateway 与全部本机／Cloudflare公共路径503，现有 owner-bootstrap phase 已通过。真实 owner 已通过正常注册创建，durable 验证邮件获 Cloudflare 正向 recipient acceptance，仅一次发送尝试；实际到箱链接已由用户提供，经正常公共密码登录与 Web 消费后，公开 `me` 确认邮箱验证和 profile 完成。不迁入 stage 合成账号、业务数据或 Computer 凭据。
-5. 已加载审查后的新静态 restricted profile，实际浏览器登录页、Cloudflare peer/header 防伪、静态资源与缓存边界均已验证，现有 restricted-canary phase 通过。真实收件链接、正常公共密码登录和 profile 已完成，公开权威状态已确认。下一位先修复真实新账号的 server 空列表401及下方连接合同，跑公开回归和全部提交门禁，并从新干净提交重新资格化受影响制品；保留现有真实账号、邮件验证与生产数据。随后继续正常 enrollment、真实模型、实际 unit／PID、故障恢复和完整 Web canary，全部完成后才发布新的 full-static profile。provider 接受与实际到箱／链接消费的证据分别保留；完整公共入口仍未开放。
+5. 已加载审查后的新静态 restricted profile，实际浏览器登录页、Cloudflare peer/header 防伪、静态资源与缓存边界均已验证，现有 restricted-canary phase 通过。真实收件链接、正常公共密码登录和 profile 已完成，公开权威状态已确认。server 空列表401及连接合同已在源码修复并通过门禁；下一位从新干净提交重新资格化受影响 Main 制品并升级，保留现有真实账号、邮件验证、生产数据与 writer epoch。随后继续正常 first-server、enrollment、真实模型、实际 unit／PID、故障恢复和完整 Web canary，全部完成后才发布新的 full-static profile。完整公共入口仍未开放。
 
-**交接快照（2026-11-10）**：本次仅更新交接文档，不提交未修复的行为切片。Main／生产代码仍为 `1c40fe5b4b00f81b788f86222577dec2cd0700d5`；文档提交不改变运行制品身份。原完整门禁和九组 PG 只资格化该输入，不能证明下表的新修复已通过。公开 Before 构建成功，整次命令424.636秒、退出1：public directory 缺省／空目录两种配置下，正常密码登录和 refresh 后的空列表均返回401，共八个状态／字节断言失败；OAuth 优先及真实 legacy membership 回退目标通过。没有 After。红色测试全文、可恢复 patch、hash 与原始日志已留在仓库外数据盘交接目录，跟踪测试已恢复原字节。`BEHAVIOR` 与 parity 账本不增加未锁定行为或用例数。
+**批次快照（2026-11-10）**：交接矩阵的 coherent batch 已实现。公开 Before（归档红色回归，401 而非200 `[]`）已在原 Source 上重现，After 全部通过：canonical principal 的 server collection、setup 四路由（projection／transition／handoff／reset）的 pinned `requireServerMatchesParam` 前置作用域、新真实完成的 `normal` provenance、原 owner 的 postSetup 资格、PATCH me survey、`(serverId, originalOwnerId)` 首次 ack 与 account-global 首次 onboarding 事实、Auth AccountRow 与 Collaboration servers 两类严格 v1 快照。完整 `make test`、实进程 E2E、26 项 smoke、architecture、parity-check 均通过。新增 gated 真实 PG 验收（`RAFT_ONBOARDING_PG_ACCEPTANCE`）：全新 PG 上 register→verify→profile→200 `[]`（登录与 refresh）→survey→建 server→projection，经真实新可执行进程两次重启后字节一致。`scripts/upgrade-rehearsal.sh` 在一次性 PG／Redis 上以已部署 `1c40` 二进制写入真实账号与 server，再由新二进制读取：旧密码、旧 refresh、survey 字段为 null、server 列表、无 server 用户200 `[]`、重启保持，12 项全部 PASS。完成／handoff 在 PG 上没有受控 daemon peer 无法经公开路径到达，测试断言真实409 `OFFICIAL_ONBOARDING_AGENT_NOT_USABLE`，不伪造完成。
 
-下一位应先恢复已归档的 Before 草稿，补齐同一合同家族的公开与 codec 回归，再实现下表这一批；不要先建 server 隐藏空列表错误，也不要逐个 UI 字段试错。
+已知边界：上游 handoff 后的 Cindy briefing 服务在本移植中不存在，只保留 durable ack 之后的 no-op 钩子，不伪造送达；mobile OAuth completion 的 `user` 仍为既有缩减投影（仅追加两项 survey 成员）。其余57个 `/api/servers/:id/...` 路由尚未接入 pinned 前置作用域（非 UUID／缺 header／错 header 的状态与上游不同），各 handler 自身仍校验 membership，正常 Web 路径不受影响，留作后续切片。新二进制在 SIGTERM 恰逢事务邮件投递时偶发 `_MultiHandle` 释放 SIGABRT（134），与本批次无源码差异，须在生产升级前单独修复并验证。
 
 | 连接合同 | 实际消费者／生产位置 | 下一批必须保留或补齐的事实与边界 |
 | --- | --- | --- |

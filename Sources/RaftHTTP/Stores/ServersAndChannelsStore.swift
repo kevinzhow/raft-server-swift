@@ -33,8 +33,18 @@ final class ServersAndChannelsStore: Sendable {
         /// beside the per-server rows so one patch updates both in a single
         /// critical section.
         var userOnboardingSettings: [String: UserOnboarding] = [:]
+        /// Per-member setup phase, keyed `serverId\nuserId`.
         var setupPhases: [String: String] = [:]
+        /// Legacy subjectless handoff markers. Retained for snapshot compatibility
+        /// only: an old marker must never become a new owner/time receipt.
         var setupHandoffs: Set<String> = []
+        /// Per-member completion provenance, keyed `serverId\nuserId`. Absent means
+        /// unknown (a legacy `complete` written before a reason was recorded); an
+        /// unknown reason never grows a personal survey/handoff task.
+        var setupCompletionReasons: [String: String] = [:]
+        /// Real owner handoff receipts keyed `serverId\noriginalOwnerId`. Written
+        /// once by `POST .../setup-handoff` and retained on retry.
+        var setupHandoffReceipts: [String: SetupHandoffReceipt] = [:]
         var guestRoleServers: Set<String> = []
         var proSeats: [String: Int] = [:]
         var joinLinks: [String: JoinLinkRecord] = [:]

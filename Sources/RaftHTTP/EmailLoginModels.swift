@@ -280,6 +280,35 @@ struct UserOnboarding: Sendable {
         var currentStep: String?
     }
 
+/// How one member's setup row reached `complete`, copied from the upstream
+/// `ServerSetupCompletionReason` (services/serverSetupStateService.ts:48-52).
+/// `normal` is the only reason a NEW completion writes; `complete_after_defer`
+/// is read for compatibility, and `grandfathered`/`admin_override` stay
+/// terminal facts that never owe the personal post-setup screens.
+enum ServerSetupCompletionReason: String, Sendable, Equatable {
+    case normal
+    case grandfathered
+    case completeAfterDefer = "complete_after_defer"
+    case adminOverride = "admin_override"
+
+    /// The two reasons that mean the owner actually walked the real flow
+    /// (`projectServerSetup`'s `flowCompleted`).
+    var isFreshFlowCompletion: Bool {
+        self == .normal || self == .completeAfterDefer
+    }
+}
+
+/// The real "Let's Go" acknowledgment: the first time the server's primary
+/// owner accepted the handoff (upstream `serverMembers.setup_handoff_acknowledged_at`,
+/// services/serverService.ts:1530-1571). The pair
+/// `(serverId, originalOwnerId)` is the identity; `acknowledgedAt` is the
+/// FIRST time and never moves on a retry.
+struct SetupHandoffReceipt: Sendable, Equatable {
+    var serverId: String
+    var originalOwnerId: String
+    var acknowledgedAt: Date
+}
+
 struct HostedConnectionStatusRecord {
         var connected: Bool
         var account: String?
@@ -494,6 +523,17 @@ struct Account: Sendable {
         var referralSource: String? = nil
         var referralSourceOther: String? = nil
         var referralSourceSkippedAt: Date? = nil
+        /// Signup survey role, one of the upstream `SIGNUP_ROLES` ids. `nil` is
+        /// a legal stored value; the completion stamp below is the gate.
+        var signupRole: String? = nil
+        /// The request time that answered the survey. Account-global and
+        /// monotonic in practice: every present `signupRole` re-stamps it.
+        var signupSurveyCompletedAt: Date? = nil
+        /// The first final onboarding handoff on this account. Both facts are
+        /// written only while the time is absent
+        /// (upstream `users.first_onboarding_completed_at`).
+        var firstOnboardingCompletedAt: Date? = nil
+        var firstOnboardingCompletedSessionFamilyId: String? = nil
     }
 
 struct LinkedIdentity: Sendable {

@@ -101,6 +101,13 @@ extension AuthProfileStore {
                 return nil
             }
             var changed = false
+            // The survey role and its completion time are one fact: a present
+            // role (JSON null included) always stamps this request's time.
+            if let role = update.signupRole {
+                account.signupRole = role
+                account.signupSurveyCompletedAt = now
+                changed = true
+            }
             if let value = update.referralSource {
                 account.referralSource = value
                 account.referralSourceSkippedAt = nil

@@ -131,7 +131,7 @@ private func render(_ error: AuthIdentitiesError) -> String {
         userId: userId, email: "identity-03@slock.test", password: "password123", completedAt: fixedDate
     )
     let gravatar = AuthTokenCodec.sha256("identity-03@slock.test")
-    let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","name":"identity-03","emailVerified":true,"displayName":"identity-03","gravatarHash":"\#(gravatar)","displayLanguage":"en","profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","profileSetupProvider":"google","avatarUrl":"/api/avatars/users/x.webp","shareUsageData":true,"preferredLanguage":null,"preferredTimezone":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null"#
+    let user = #"{"id":"\#(userId)","email":"identity-03@slock.test","name":"identity-03","emailVerified":true,"displayName":"identity-03","gravatarHash":"\#(gravatar)","displayLanguage":"en","profileSetupCompletedAt":"2023-11-14T22:13:20.000Z","profileSetupSuggestedHandle":"ident","profileSetupProvider":"google","avatarUrl":"/api/avatars/users/x.webp","shareUsageData":true,"preferredLanguage":null,"preferredTimezone":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"signupSurveyCompletedAt":null,"signupRole":null"#
 
     #expect(try service.me(authorization: "Bearer \(bearer)").jsonBody.render() == user + "}")
     // The standalone user payload other domains embed renders the same bytes.
@@ -228,8 +228,139 @@ private func render(_ error: AuthIdentitiesError) -> String {
     #expect(throws: AuthIdentitiesError.invalidCredentials) {
         try service.login(LoginRequest(email: "identity-05@slock.test", password: "password123"))
     }
-    #expect((try? service.login(LoginRequest(email: "identity-05@slock.test", password: "longenough1"))) != nil)
+    let relogin = try #require(try? service.login(LoginRequest(
+        email: "identity-05@slock.test", password: "longenough1"
+    )))
+    let freshAuth = "Bearer \(relogin.accessToken)"
+    // Survey validation is later than the password write too: the second change
+    // is committed even though the request answers its published 400.
+    #expect(throws: AuthIdentitiesError.invalidProfile("Invalid signupRole")) {
+        _ = try service.updateProfile(
+            authorization: freshAuth,
+            try? JSONDecoder().decode(UpdateProfileRequest.self,
+                                      from: Data(#"{"currentPassword":"longenough1","newPassword":"longenough2","signupRole":"Bad"}"#.utf8))
+        )
+    }
+    #expect(throws: AuthIdentitiesError.invalidCredentials) {
+        try service.login(LoginRequest(email: "identity-05@slock.test", password: "longenough1"))
+    }
+    #expect((try? service.login(LoginRequest(email: "identity-05@slock.test", password: "longenough2"))) != nil)
 }
+
+// MARK: - Signup survey
+
+@Test func authIdentitiesPatchStampsTheSignupSurveyAndPublishesIt() throws {
+    let (scene, userId, bearer) = makeFixture("09")
+    let service = scene.makeIdentitiesService(now: { fixedDate })
+    let auth = "Bearer \(bearer)"
+    func patch(_ json: String) throws -> AuthProfileUserResponse {
+        try service.updateProfile(
+            authorization: auth,
+            try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(json.utf8))
+        )
+    }
+    func me() throws -> AuthUserDTO {
+        try service.me(authorization: auth).user
+    }
+
+    // A verified email and a completed profile do not answer the survey.
+    #expect(scene.account(userId: userId)?.emailVerified == true)
+    #expect(scene.account(userId: userId)?.profileSetupCompletedAt != nil)
+    #expect(try me().signupRole == nil)
+    #expect(try me().signupSurveyCompletedAt == nil)
+
+    // The referral half does not stamp the survey either.
+    _ = try patch(#"{"referralSource":"search"}"#)
+    #expect(try me().signupSurveyCompletedAt == nil)
+
+    // The role alone is legal; it stamps the one request time and is published
+    // on both the PATCH reply and the following `me`.
+    let recorded = try patch(#"{"signupRole":"engineering_leader"}"#)
+    #expect(recorded.user.signupRole == "engineering_leader")
+    #expect(recorded.user.signupSurveyCompletedAt == "2023-11-14T22:13:20.000Z")
+    #expect(recorded.user.referralSource == "search")
+    #expect(try me().signupRole == "engineering_leader")
+    #expect(try me().signupSurveyCompletedAt == "2023-11-14T22:13:20.000Z")
+
+    // The exact upstream id set is accepted as-is.
+    for role in [
+        "software_engineer", "engineering_leader", "founder", "product", "design",
+        "data_ml", "devops_it", "student", "other",
+    ] {
+        #expect(try patch("{\"signupRole\":\"\(role)\"}").user.signupRole == role)
+    }
+
+    // An absent key leaves both facts alone, including on a later request with a
+    // different clock. Explicit null is legal and stamps the new request time.
+    let later = scene.makeIdentitiesService(now: { fixedDate.addingTimeInterval(120) })
+    let untouched = try later.updateProfile(
+        authorization: auth,
+        try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(#"{"referralSourceSkipped":true}"#.utf8))
+    )
+    #expect(untouched.user.signupRole == "other")
+    #expect(untouched.user.signupSurveyCompletedAt == "2023-11-14T22:13:20.000Z")
+    let cleared = try later.updateProfile(
+        authorization: auth,
+        try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(#"{"signupRole":null}"#.utf8))
+    )
+    #expect(cleared.user.signupRole == nil)
+    #expect(cleared.user.signupSurveyCompletedAt == "2023-11-14T22:15:20.000Z")
+}
+
+@Test func authIdentitiesPatchRejectsInvalidSignupRolesBeforeAnySurveyOrReferralWrite() throws {
+    let (scene, userId, bearer) = makeFixture("10")
+    let service = scene.makeIdentitiesService(now: { fixedDate })
+    let auth = "Bearer \(bearer)"
+    func patch(_ json: String) throws -> AuthProfileUserResponse {
+        try service.updateProfile(
+            authorization: auth,
+            try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(json.utf8))
+        )
+    }
+
+    #expect(render(.invalidProfile("Invalid signupRole")) == #"{"error":"Invalid signupRole"}"#)
+    for body in [
+        #"{"signupRole":"Software_Engineer"}"#,
+        #"{"signupRole":" software_engineer"}"#,
+        #"{"signupRole":"software_engineer "}"#,
+        #"{"signupRole":"student_or_learner"}"#,
+        #"{"signupRole":""}"#,
+        #"{"signupRole":1}"#,
+        #"{"signupRole":true}"#,
+        #"{"signupRole":{}}"#,
+        #"{"signupRole":[]}"#,
+    ] {
+        #expect(throws: AuthIdentitiesError.invalidProfile("Invalid signupRole"), Comment(rawValue: body)) {
+            try patch(body)
+        }
+    }
+
+    // A rejected role leaves the valid referral in the same request unwritten.
+    #expect(throws: AuthIdentitiesError.invalidProfile("Invalid signupRole")) {
+        try patch(#"{"signupRole":"intern","referralSource":"search"}"#)
+    }
+    var account = try #require(scene.account(userId: userId))
+    #expect(account.referralSource == nil)
+    #expect(account.referralSourceSkippedAt == nil)
+    #expect(account.signupRole == nil)
+    #expect(account.signupSurveyCompletedAt == nil)
+
+    // A rejected referral leaves the valid role in the same request unwritten.
+    #expect(throws: AuthIdentitiesError.invalidProfile("Invalid referralSource")) {
+        try patch(#"{"signupRole":"founder","referralSource":"wechat"}"#)
+    }
+    account = try #require(scene.account(userId: userId))
+    #expect(account.referralSource == nil)
+    #expect(account.signupRole == nil)
+    #expect(account.signupSurveyCompletedAt == nil)
+
+    // The API does not require the referral and the role together.
+    let roleOnly = try patch(#"{"signupRole":"founder"}"#)
+    #expect(roleOnly.user.signupRole == "founder")
+    #expect(roleOnly.user.referralSource == nil)
+    #expect(roleOnly.user.signupSurveyCompletedAt == "2023-11-14T22:13:20.000Z")
+}
+
 
 // MARK: - App login atomic sections
 

@@ -1,7 +1,9 @@
 import Foundation
 
 // Separate persistence DTOs avoid changing the domain records or their conformances.
-// Every key is required, including nullable fields; nil is encoded as JSON null.
+// Every pre-existing key is required, including nullable fields; nil is encoded
+// as JSON null. The one new field group (signup survey + first onboarding) is
+// all-or-none so the previous version-1 row keeps restoring.
 extension AuthProfilePersistence {
     struct AccountRow: Codable, Sendable {
         let id: String
@@ -30,6 +32,14 @@ extension AuthProfilePersistence {
         let referralSource: String?
         let referralSourceOther: String?
         let referralSourceSkippedAt: Date?
+        /// The signup survey and the account-global first-onboarding pair. These
+        /// four keys are one field group: the pre-batch version-1 writer did not
+        /// know them at all, so a row without any of them is the old shape and
+        /// decodes them as nil. A row with only some of them is corrupt.
+        let signupRole: String?
+        let signupSurveyCompletedAt: Date?
+        let firstOnboardingCompletedAt: Date?
+        let firstOnboardingCompletedSessionFamilyId: String?
 
         init(_ record: Account) {
             id = record.id
@@ -58,6 +68,10 @@ extension AuthProfilePersistence {
             referralSource = record.referralSource
             referralSourceOther = record.referralSourceOther
             referralSourceSkippedAt = record.referralSourceSkippedAt
+            signupRole = record.signupRole
+            signupSurveyCompletedAt = record.signupSurveyCompletedAt
+            firstOnboardingCompletedAt = record.firstOnboardingCompletedAt
+            firstOnboardingCompletedSessionFamilyId = record.firstOnboardingCompletedSessionFamilyId
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -87,6 +101,10 @@ extension AuthProfilePersistence {
             case referralSource
             case referralSourceOther
             case referralSourceSkippedAt
+            case signupRole
+            case signupSurveyCompletedAt
+            case firstOnboardingCompletedAt
+            case firstOnboardingCompletedSessionFamilyId
         }
 
         init(from decoder: any Decoder) throws {
@@ -117,6 +135,32 @@ extension AuthProfilePersistence {
             referralSource = try values.decode(String?.self, forKey: .referralSource)
             referralSourceOther = try values.decode(String?.self, forKey: .referralSourceOther)
             referralSourceSkippedAt = try values.decode(Date?.self, forKey: .referralSourceSkippedAt)
+            // The new facts are one all-or-none group. None present is the old
+            // version-1 row this codec must keep restoring; a partial group is a
+            // different row shape and rejects the whole snapshot before install.
+            let onboardingKeys: [CodingKeys] = [
+                .signupRole, .signupSurveyCompletedAt,
+                .firstOnboardingCompletedAt, .firstOnboardingCompletedSessionFamilyId,
+            ]
+            let present = onboardingKeys.filter { values.contains($0) }
+            if present.isEmpty {
+                signupRole = nil
+                signupSurveyCompletedAt = nil
+                firstOnboardingCompletedAt = nil
+                firstOnboardingCompletedSessionFamilyId = nil
+            } else if present.count == onboardingKeys.count {
+                signupRole = try values.decode(String?.self, forKey: .signupRole)
+                signupSurveyCompletedAt = try values.decode(Date?.self, forKey: .signupSurveyCompletedAt)
+                firstOnboardingCompletedAt = try values.decode(Date?.self, forKey: .firstOnboardingCompletedAt)
+                firstOnboardingCompletedSessionFamilyId = try values.decode(
+                    String?.self, forKey: .firstOnboardingCompletedSessionFamilyId
+                )
+            } else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: values.codingPath,
+                    debugDescription: "Signup survey and first-onboarding facts are only partly present"
+                ))
+            }
         }
 
         func encode(to encoder: any Encoder) throws {
@@ -147,6 +191,10 @@ extension AuthProfilePersistence {
             try values.encode(referralSource, forKey: .referralSource)
             try values.encode(referralSourceOther, forKey: .referralSourceOther)
             try values.encode(referralSourceSkippedAt, forKey: .referralSourceSkippedAt)
+            try values.encode(signupRole, forKey: .signupRole)
+            try values.encode(signupSurveyCompletedAt, forKey: .signupSurveyCompletedAt)
+            try values.encode(firstOnboardingCompletedAt, forKey: .firstOnboardingCompletedAt)
+            try values.encode(firstOnboardingCompletedSessionFamilyId, forKey: .firstOnboardingCompletedSessionFamilyId)
         }
 
         var record: Account {
@@ -176,7 +224,11 @@ extension AuthProfilePersistence {
                 preferredMessageBodyFontSize: preferredMessageBodyFontSize,
                 referralSource: referralSource,
                 referralSourceOther: referralSourceOther,
-                referralSourceSkippedAt: referralSourceSkippedAt
+                referralSourceSkippedAt: referralSourceSkippedAt,
+                signupRole: signupRole,
+                signupSurveyCompletedAt: signupSurveyCompletedAt,
+                firstOnboardingCompletedAt: firstOnboardingCompletedAt,
+                firstOnboardingCompletedSessionFamilyId: firstOnboardingCompletedSessionFamilyId
             )
         }
     }
