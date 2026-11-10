@@ -7,6 +7,8 @@ extension OAuthFlowsService {
         public var nativeAppleClientId: String
         public var nativeAppleClientSecret: String
         public var nativeAppleStateSecret: String
+        public var socialAuthStateSecret: String
+        public var nativeAppleTrustedJWKS: String?
         public var serverURL: String
         public var appURL: String
         public var mobileOAuthReturnURI: String?
@@ -18,6 +20,8 @@ extension OAuthFlowsService {
             nativeAppleClientId: String = "",
             nativeAppleClientSecret: String = "",
             nativeAppleStateSecret: String = "",
+            socialAuthStateSecret: String = "",
+            nativeAppleTrustedJWKS: String? = nil,
             serverURL: String = "http://localhost:3001",
             appURL: String = "http://localhost:3000",
             mobileOAuthReturnURI: String? = nil,
@@ -28,6 +32,8 @@ extension OAuthFlowsService {
             self.nativeAppleClientId = nativeAppleClientId
             self.nativeAppleClientSecret = nativeAppleClientSecret
             self.nativeAppleStateSecret = nativeAppleStateSecret
+            self.socialAuthStateSecret = socialAuthStateSecret
+            self.nativeAppleTrustedJWKS = nativeAppleTrustedJWKS
             self.serverURL = serverURL
             self.appURL = appURL
             self.mobileOAuthReturnURI = mobileOAuthReturnURI

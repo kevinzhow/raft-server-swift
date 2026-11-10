@@ -130,13 +130,17 @@ public struct AgentTasksListResponse: JSONBodyConvertible, Sendable, Equatable {
         public var id: String
         public var channelId: String
         public var title: String
+        /// Canonical task text, independent from the host message's title.
+        /// Explicit nil serializes as JSON null, not an omitted field.
+        public var description: String?
         public var status: String
         public var taskNumber: Int
 
-        public init(id: String, channelId: String, title: String, status: String, taskNumber: Int) {
+        public init(id: String, channelId: String, title: String, status: String, taskNumber: Int, description: String? = nil) {
             self.id = id
             self.channelId = channelId
             self.title = title
+            self.description = description
             self.status = status
             self.taskNumber = taskNumber
         }
@@ -155,6 +159,7 @@ public struct AgentTasksListResponse: JSONBodyConvertible, Sendable, Equatable {
                     OrderedJSONField("id", task.id),
                     OrderedJSONField("channelId", task.channelId),
                     OrderedJSONField("title", task.title),
+                    OrderedJSONField("description", optional: task.description),
                     OrderedJSONField("status", task.status),
                     OrderedJSONField("taskNumber", task.taskNumber),
                 ])

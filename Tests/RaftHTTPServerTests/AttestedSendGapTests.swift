@@ -260,7 +260,7 @@ struct AttestedSendGapTests {
 
     // MARK: - 3. E1 mention exemption
 
-    @Test func e1FormalMentionExemptsStaleHoldAndRecordsEvent() async throws {
+    @Test func credentialFormalMentionStaysHeldAndDoesNotRecordLegacyExemption() async throws {
         let fixture = makeFixture("003")
         try await withApp { app in
             configure(app, services: FallbackServices(
@@ -273,6 +273,10 @@ struct AttestedSendGapTests {
                 let baseline = try await postHuman(client, fixture, "baseline")
                 fixture.accounts.markAgentLegacyReadForTesting(agentId: fixture.agentId, channelId: fixture.channelId, seq: baseline.seq)
                 let mention = try await postHuman(client, fixture, "please review this @\(fixture.agentName)")
+                #expect(mention.seq > baseline.seq)
+                #expect(fixture.accounts.messageMentionRows(messageId: mention.id).map(\.targetId) == [fixture.agentId])
+                #expect(fixture.accounts.messageMentionRows(messageId: mention.id).allSatisfy { $0.targetType == "agent" && $0.notifiableAtSend })
+                let countBefore = fixture.accounts.humanMessageCount
 
                 let response = try await sendAgent(
                     client,
@@ -280,14 +284,80 @@ struct AttestedSendGapTests {
                     body: sendBody(target: "#\(fixture.channelName)", content: "bot reply after mention", extra: ",\"seenUpToSeq\":\(baseline.seq)")
                 )
                 #expect(response.status == .ok)
-                #expect(json(response)["state"] as? String == "sent")
+                #expect(json(response)["state"] as? String == "held")
 
-                let exempt = events(fixture, type: "e1_exempt")
-                #expect(exempt.count == 1)
-                #expect(exempt.first?["messageId"] as? String == mention.id)
-                let metadata = exempt.first?["metadata"] as? [String: Any] ?? [:]
-                #expect(metadata["mentioned_handle"] as? String == fixture.agentName)
-                #expect(activity(fixture, title: "Send freshness check passed by mention", text: "reason: direct @\(fixture.agentName) mention"))
+                let body = json(response)
+                #expect(body["newMessageCount"] as? Int == 1)
+                #expect((body["heldMessages"] as? [[String: Any]])?.compactMap { $0["id"] as? String } == [mention.id])
+                #expect((body["mentionAnnotation"] as? [String: Any])?["formalMentionCount"] as? Int == 1)
+                #expect(body["pendingMentionActions"] == nil)
+                #expect(events(fixture, type: "e1_exempt").isEmpty)
+                #expect(!activity(fixture, title: "Send freshness check passed by mention", text: "reason: direct @\(fixture.agentName) mention"))
+                #expect(fixture.accounts.humanMessageCount == countBefore)
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func credentialFormalCountUsesEligibilityOrActualAddClaim(_ addThroughAction: Bool) async throws {
+        let fixture = makeFixture(addThroughAction ? "014" : "013")
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts
+            ))
+            try await app.testing { client in
+                let baseline = try await postHuman(client, fixture, "eligibility baseline")
+                fixture.accounts.markAgentLegacyReadForTesting(agentId: fixture.agentId, channelId: fixture.channelId, seq: baseline.seq)
+                fixture.accounts.oauth.removeChannelAgent(channelId: fixture.channelId, agentId: fixture.agentId)
+                #expect(!fixture.accounts.oauth.channelAgentIds(channelId: fixture.channelId).contains(fixture.agentId))
+                let content = "pending @\(fixture.agentName)"
+                let human = try await client.send(.post, headers: humanHeaders(fixture), to: "/api/messages") { request in
+                    request.body = .init(string: "{\"channelId\":\"\(fixture.channelId)\",\"content\":\(jsonStringTest(content))}")
+                }
+                try #require(human.status == .ok)
+                let humanBody = json(human)
+                let host = try #require(humanBody["message"] as? [String: Any])
+                let messageId = try #require(host["id"] as? String)
+                let pending = try #require((humanBody["pendingMentionActions"] as? [[String: Any]])?.first)
+                let resolutionId = try #require(pending["resolutionId"] as? String)
+                #expect(pending["targetHandle"] as? String == fixture.agentName)
+                let original = try #require(fixture.accounts.messageMentionRows(messageId: messageId).first)
+                #expect(original.targetType == "agent" && original.targetId == fixture.agentId)
+                #expect(!original.notifiableAtSend && !original.notified)
+                if addThroughAction {
+                    // This public ADD proves retained membership/claim only, not agent execution.
+                    let action = try await client.send(.post, headers: humanHeaders(fixture), to: "/api/messages/mention-actions/execute") { request in
+                        request.body = .init(string: "{\"action\":\"add\",\"resolutionIds\":[\"\(resolutionId)\"]}")
+                    }
+                    try #require(action.status == .ok)
+                    let result = try #require((json(action)["results"] as? [[String: Any]])?.first)
+                    #expect(result["status"] as? String == "delivered")
+                    #expect(result["resolutionId"] as? String == resolutionId)
+                    #expect(result["targetType"] as? String == "agent")
+                    #expect(result["targetId"] as? String == fixture.agentId)
+                    let claim = fixture.accounts.mentionActionRecord(id: resolutionId)
+                    #expect(claim?.notified == true)
+                    #expect(claim?.notifiedByType == "user" && claim?.notifiedById == fixture.ownerId)
+                    #expect(claim?.notifiedAction == "add")
+                } else {
+                    fixture.accounts.oauth.addChannelAgent(channelId: fixture.channelId, agentId: fixture.agentId)
+                }
+                #expect(fixture.accounts.oauth.channelAgentIds(channelId: fixture.channelId).contains(fixture.agentId))
+                let retained = try #require(fixture.accounts.messageMentionRows(messageId: messageId).first)
+                #expect(!retained.notifiableAtSend)
+                #expect(retained.notified == addThroughAction)
+                let countBefore = fixture.accounts.humanMessageCount
+                let held = try await sendAgent(client, key: fixture.agentKey,
+                    body: sendBody(target: "#\(fixture.channelName)", content: "credential eligibility check", extra: ",\"seenUpToSeq\":\(baseline.seq)"))
+                #expect(held.status == .ok)
+                let body = json(held)
+                #expect(body["state"] as? String == "held")
+                #expect(body["newMessageCount"] as? Int == 1)
+                #expect((body["heldMessages"] as? [[String: Any]])?.compactMap { $0["id"] as? String } == [messageId])
+                #expect((body["mentionAnnotation"] as? [String: Any])?["formalMentionCount"] as? Int == (addThroughAction ? 1 : 0))
+                #expect(body["pendingMentionActions"] == nil)
+                #expect(events(fixture, type: "e1_exempt").isEmpty)
+                #expect(fixture.accounts.humanMessageCount == countBefore)
             }
         }
     }

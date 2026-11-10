@@ -48,7 +48,7 @@ public struct OAuthFeature: RouteCollection, Sendable {
 
         oauth.put("installations", ":installationId", "setup") { request async throws -> Response in
             let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
-            return try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
                 try apps.reportInstallationSetup(
                     authorization: request.headers[.authorization],
                     installationId: request.parameters.get("installationId") ?? "",

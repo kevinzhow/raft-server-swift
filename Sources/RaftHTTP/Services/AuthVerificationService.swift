@@ -63,17 +63,24 @@ public struct AuthVerificationService: Sendable {
     private let now: @Sendable () -> Date
     private let makeToken: @Sendable () -> String
     private let hashToken: @Sendable (String) -> String
+    private let transactionalEmail: TransactionalEmailIntentPort
 
     init(
         store: AuthProfileStore,
         now: @escaping @Sendable () -> Date = { Date() },
         makeToken: @escaping @Sendable () -> String = { AuthTokenCodec.randomHex(32) },
-        hashToken: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) }
+        hashToken: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) },
+        transactionalEmail: TransactionalEmailIntentPort = .developmentOnly
     ) {
         self.store = store
         self.now = now
         self.makeToken = makeToken
         self.hashToken = hashToken
+        self.transactionalEmail = transactionalEmail
+    }
+
+    public func bindingTransactionalEmail(_ port: TransactionalEmailIntentPort) -> Self {
+        Self(store: store, now: now, makeToken: makeToken, hashToken: hashToken, transactionalEmail: port)
     }
 
     /// `POST /api/auth/verify-email`. Spends a token and marks its owner verified.
@@ -100,8 +107,9 @@ public struct AuthVerificationService: Sendable {
         guard let userId = store.userId(forAccessToken: accessToken) else {
             throw AuthVerificationError.invalidAccessToken
         }
-        guard store.accountExists(userId: userId) else { throw AuthVerificationError.userNotFound }
+        guard let account = store.account(userId: userId) else { throw AuthVerificationError.userNotFound }
         if store.isEmailVerified(userId: userId) { throw AuthVerificationError.alreadyVerified }
+        try transactionalEmail.requireReady(in: store.state.domain)
 
         let current = now()
         let token = makeToken()
@@ -115,6 +123,11 @@ public struct AuthVerificationService: Sendable {
             cooldown: Self.cooldown
         ) {
         case .issued:
+            try transactionalEmail.verification(
+                recipientEmail: account.email,
+                name: account.profileSetupCompletedAt == nil ? "there" : account.name,
+                rawToken: token, issuedAt: current
+            )
             return OkResponse()
         case .tooManyRequests:
             throw AuthVerificationError.tooManyRequests

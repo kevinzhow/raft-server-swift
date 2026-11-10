@@ -18,12 +18,12 @@ struct SearchMentionsDependencies: Sendable {
     var machineIdForCredential: @Sendable (String?) -> String?
     var agentCredential: @Sendable (String?) -> SearchMentionsAgentCredential?
     var canMachineServeAgent: @Sendable (String, OAuthLedger.AgentRuntimeInfo) -> Bool
+    var readFacts: @Sendable (_ message: StoredHumanMessage, _ channelId: String, _ commentsVisible: Bool, _ serverId: String?, _ userId: String?) -> MessageReadFactsDTO
     var attachmentCommentsEnabled: @Sendable (_ serverId: String, _ userId: String) -> Bool
-    var attachmentChips: @Sendable (_ ids: [String], _ commentsVisible: Bool) -> [InboxAttachmentChipDTO]
     var commentRef: @Sendable (_ messageId: String) -> InboxCommentRefDTO?
     var forwardMetadata: @Sendable (_ messageId: String, _ userId: String, _ serverId: String?) -> OrderedJSON?
     var actionCardMetadataJSON: @Sendable (_ messageId: String) -> String?
-    var threadSummaries: @Sendable (_ parentChannelId: String, _ parentIds: [String]) -> OrderedJSON
+    var threadSummaries: @Sendable (_ parentChannelId: String, _ parentIds: [String], _ userId: String?, _ serverId: String?) -> OrderedJSON
     var now: @Sendable () -> Date
 
 }
@@ -47,12 +47,12 @@ extension SearchMentionsDependencies {
                 }
             },
             canMachineServeAgent: canMachineServeAgent,
+            readFacts: { projection.readFacts($0, channelId: $1, commentsVisible: $2, serverId: $3, userId: $4) },
             attachmentCommentsEnabled: { projection.commentsEnabled(serverId: $0, userId: $1) },
-            attachmentChips: { projection.attachments($0, commentsVisible: $1) },
             commentRef: { projection.comment(messageId: $0) },
             forwardMetadata: { projection.forward(messageId: $0, userId: $1, serverId: $2) },
             actionCardMetadataJSON: { cards.metadata(messageId: $0) },
-            threadSummaries: { projection.threadSummaries(parentChannelId: $0, parentIds: $1) },
+            threadSummaries: { projection.threadSummaries(parentChannelId: $0, parentIds: $1, userId: $2, serverId: $3) },
             now: now
         )
     }

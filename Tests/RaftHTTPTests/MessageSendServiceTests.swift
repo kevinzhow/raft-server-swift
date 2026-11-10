@@ -563,3 +563,48 @@ private func makeService(
     #expect(rows.first?.content.contains("migration REF-1") == true)
     #expect(fixture.accounts.messagesAndThreadsStore.humanMessageRows.count == before + 1)
 }
+
+
+@Test func threadFollowerUndoTransitionsTheRealFollowAndRejectsSupersededTokens() throws {
+    let fixture = makeMessageSendFixture()
+    let tokens = Mutex(0)
+    let service = makeService(fixture.accounts) {
+        let next = tokens.withLock { value -> Int in value += 1; return value }
+        return "canonical-undo-\(next)"
+    }
+    let messages = fixture.accounts.messagesAndThreadsStore
+    let key = "\(fixture.serverId)\n\(fixture.agentId)\n\(fixture.threadId)"
+    messages.applyThreadFollow(serverId: fixture.serverId, userId: fixture.agentId,
+        threadChannelId: fixture.threadId, parentMessageId: fixture.parentMessageId, follow: true, now: fixedNow)
+    func remove() throws -> ThreadFollowerRemovalResponse {
+        try service.removeThreadFollower(authorization: fixture.memberAuthorization, serverId: fixture.serverId,
+            threadId: fixture.threadId, agentId: fixture.agentId)
+    }
+    func restore(_ token: String) throws -> ThreadFollowerRestoreResponse {
+        try service.restoreThreadFollower(authorization: fixture.memberAuthorization, serverId: fixture.serverId,
+            threadId: fixture.threadId, agentId: fixture.agentId, undoToken: token)
+    }
+    let first = try remove()
+    #expect(!messages.threadFollowSnapshot().follows.contains(key))
+    #expect(messages.threadFollowSnapshot().unfollows.contains(key))
+    #expect(try remove().undoToken == first.undoToken)
+    #expect(try restore(first.undoToken).restored == true)
+    #expect(messages.threadFollowSnapshot().follows.contains(key))
+    #expect(!messages.threadFollowSnapshot().unfollows.contains(key))
+    #expect(try restore(first.undoToken).restored == false)
+    let second = try remove()
+    #expect(second.undoToken != first.undoToken)
+    messages.applyThreadReplyFollows(serverId: fixture.serverId, threadChannelId: fixture.threadId,
+        parentMessageId: fixture.parentMessageId, senderId: fixture.memberId,
+        mentioned: [ThreadMentionFollowTarget(userId: fixture.agentId, isParentMember: true)])
+    #expect(messages.threadFollowSnapshot().follows.contains(key))
+    #expect(!messages.threadFollowSnapshot().unfollows.contains(key))
+    #expect(try restore(second.undoToken).restored == false)
+    let third = try remove()
+    #expect(third.undoToken != second.undoToken)
+    #expect(try restore(second.undoToken).restored == false)
+    #expect(!messages.threadFollowSnapshot().follows.contains(key))
+    #expect(messages.threadFollowSnapshot().unfollows.contains(key))
+    #expect(try restore(third.undoToken).restored == true)
+    #expect(messages.threadFollowSnapshot().follows.contains(key))
+}

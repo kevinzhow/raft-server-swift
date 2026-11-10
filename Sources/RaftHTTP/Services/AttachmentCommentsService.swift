@@ -119,7 +119,10 @@ struct AttachmentCommentsDependencies: Sendable {
     var agentCredential: @Sendable (String?) -> (agentId: String, scopes: [String])?
     var agentVisibleAttachment: @Sendable (_ agentId: String, _ serverId: String, _ attachmentId: String) -> ChannelAttachment?
     var agentHistoryThread: @Sendable (_ parentId: String, _ anchorMessageId: String) -> String?
-    var recordMemberMentionRows: @Sendable (_ messageId: String, _ channelId: String, _ mentions: [MentionInput]) -> Void
+    var resolveMentions: @Sendable (_ serverId: String, _ channelId: String, _ senderId: String,
+        _ content: String, _ mentions: [MentionInput], _ warnUnresolved: Bool,
+        _ surface: MessageMentionSurface) throws -> ResolvedMentions
+    var recordMemberMentionRows: @Sendable (_ messageId: String, _ channelId: String, _ resolution: ResolvedMentions) -> Void
 }
 
 // MARK: - Service
@@ -305,6 +308,7 @@ public struct AttachmentCommentsService: Sendable {
         }
         // A comment is a normal message in the attachment host message's thread;
         // siblings under the same host share that thread.
+        let mentionSurface = try MessageMentionMarkdown.parse(content)
         let hostChannelId = attachment.channelId
         let hostMessageId = attachment.messageId ?? ""
         let hostChannel = channels.postableChannel(id: hostChannelId)
@@ -323,6 +327,8 @@ public struct AttachmentCommentsService: Sendable {
         let anchor = Self.canonicalAnchor(body.value("anchor"))
         if let code = anchor.code { throw AttachmentCommentsError.invalidAnchor(code: code) }
 
+        let resolution = try dependencies.resolveMentions(hostServerId, threadChannelId, userId,
+            content, mentions, false, mentionSurface)
         let now = Date()
         let id = UUID().uuidString.lowercased()
         messages.appendAttachmentComment(
@@ -346,13 +352,12 @@ public struct AttachmentCommentsService: Sendable {
                 randomId: nil,
                 messageType: "comment",
                 senderType: "user",
-                createdAt: now
+                createdAt: now,
+                mentions: resolution.mentions.map { StoredMessageMention(type: $0.type, id: $0.id, name: $0.name) }
             ),
             ledger: MessageLedgerPort(oauth: oauth)
         )
-        if !mentions.isEmpty {
-            dependencies.recordMemberMentionRows(id, threadChannelId, mentions)
-        }
+        dependencies.recordMemberMentionRows(id, threadChannelId, resolution)
         return AttachmentCommentCreatedResponse(
             id: id,
             attachmentId: attachmentId,

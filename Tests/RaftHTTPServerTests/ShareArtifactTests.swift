@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import TestSupport
 import Testing
 import Vapor
 import VaporTesting
@@ -18,6 +19,7 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "share", name: "Share Server", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "general", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: accounts.oauth.channelInfo(id: channelId)?.name)
 
     let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=") ?? Data()
     let boundary = "share-boundary"

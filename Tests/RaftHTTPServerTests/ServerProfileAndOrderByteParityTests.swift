@@ -9,8 +9,8 @@ import VaporTesting
 
 /// Byte-level locks for the server profile, switcher order, agreement,
 /// translation-settings, member-directory and share-artifact routes: the
-/// published member order, the header sets, the two 401 envelopes and the raw
-/// fallbacks the retired handlers accepted.
+/// published member order, complete-mount auth/cache headers and the raw
+/// fallbacks accepted by the routed services.
 @Test func serverProfileAndOrderSurfacePublishesTheLegacyBytes() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-000001170001"
@@ -91,16 +91,16 @@ import VaporTesting
                 assertStandard(refused, body: "{\"error\":\"Invalid server order\"}")
             }
 
-            // Both 401 flavours: plain `Unauthorized`, and `auth_required` + no-store.
+            // Both anonymous user-scoped reads stop at the same outer auth mount.
             let anonymousSummary = try await client.send(.get, headers: HTTPFields(), to: "/api/servers/unread-summary")
             #expect(anonymousSummary.status == .unauthorized)
-            assertStandard(anonymousSummary, body: "{\"error\":\"Unauthorized\"}")
+            assertStandard(anonymousSummary, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}", extra: ["Cache-Control": "private, no-store"])
             let anonymousOrder = try await client.send(.get, headers: HTTPFields(), to: "/api/servers/order")
             #expect(anonymousOrder.status == .unauthorized)
             assertStandard(
                 anonymousOrder,
                 body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}",
-                extra: ["Cache-Control": "no-store"]
+                extra: ["Cache-Control": "private, no-store"]
             )
 
             // Unread summary: `serverId`, `unreadCount`, `serverPushMuted`,

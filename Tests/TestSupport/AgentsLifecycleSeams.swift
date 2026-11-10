@@ -28,9 +28,10 @@ extension EmailLoginDirectory {
         }
     }
 
-    public func addChannelAttachmentForTesting(channelId: String, id: String, uploaderId: String, filename: String) {
+    public func addChannelAttachmentForTesting(channelId: String, id: String, uploaderId: String, filename: String, bytes: Data? = nil) {
         messagesAndThreadsStore.withState { state in
-            state.channelAttachments[id] = ChannelAttachment(id: id, channelId: channelId, uploaderId: uploaderId, filename: filename, messageId: nil, messagePosition: nil)
+            state.channelAttachments[id] = ChannelAttachment(id: id, channelId: channelId, uploaderId: uploaderId, filename: filename, messageId: nil, messagePosition: nil, sizeBytes: bytes?.count)
+            if let bytes { state.developmentAttachmentBytes[id] = bytes }
         }
     }
 

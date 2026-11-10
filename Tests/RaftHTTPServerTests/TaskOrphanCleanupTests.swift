@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -128,20 +128,30 @@ private func orphanObject(_ response: ClientResponse) throws -> [String: Any] {
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
         try await app.testing { client in
+            let retained = try #require(accounts.tasksAndRemindersStore.task(id: task))
+            #expect(retained.status == "in_review")
+            #expect(retained.channelId == f.channelId)
+            // Deleted-channel public reads cloak the row. Compare the real owner
+            // snapshot, whose codec includes every task field and event family.
+            let retainedBefore = try accounts.tasksAndRemindersStore.exportPersistenceData()
             let before = try await client.get(URI(string: "/api/tasks/channel/\(f.channelId)"), headers: orphanHeaders(f.ownerToken, f.serverId))
-            #expect(before.status == .ok)
+            #expect(before.status == .notFound)
+            #expect(before.body.string == #"{"error":"Channel not found"}"#)
             let reject = try await client.send(.patch, headers: orphanHeaders(f.ownerToken, f.serverId), to: URI(string: "/api/tasks/\(task)/status")) { request in
                 request.body = .init(string: "{\"status\":\"in_progress\"}")
             }
             #expect(reject.status == .conflict)
             #expect(reject.body.string == #"{"error":"This channel was deleted; only terminal task statuses are allowed","code":"channel_deleted_terminal_only"}"#)
+            #expect(try accounts.tasksAndRemindersStore.exportPersistenceData() == retainedBefore, "rejected status transition preserves retained task state")
 
             let claim = try await client.send(.patch, headers: orphanHeaders(f.ownerToken, f.serverId), to: URI(string: "/api/tasks/\(task)/claim"))
             #expect(claim.status == .conflict)
             #expect(claim.body.string == #"{"error":"This channel was deleted; the task can only be closed","code":"channel_deleted_terminal_only"}"#)
+            #expect(try accounts.tasksAndRemindersStore.exportPersistenceData() == retainedBefore, "rejected claim preserves retained task state")
             let after = try await client.get(URI(string: "/api/tasks/channel/\(f.channelId)"), headers: orphanHeaders(f.ownerToken, f.serverId))
-            #expect(after.status == .ok)
-            #expect(after.body.string == before.body.string, "both refusals preserve the public task row including revision and claim stamps")
+            #expect(after.status == .notFound)
+            #expect(after.body.string == #"{"error":"Channel not found"}"#)
+            #expect(try accounts.tasksAndRemindersStore.exportPersistenceData() == retainedBefore, "both refusals and cloaked reads preserve task rows, revisions, claim stamps, and events")
         }
     }
 }

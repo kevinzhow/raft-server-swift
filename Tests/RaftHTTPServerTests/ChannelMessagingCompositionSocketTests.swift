@@ -77,7 +77,13 @@ private func channelCompositionFrames(_ sockets: [ChannelCompositionSocket], hub
         _ = try #require(await socket.client.waitForText { $0 == fence })
         let frames = socket.client.textFrames
         let end = try #require(frames.indices.first { $0 >= socket.start && frames[$0] == fence })
-        result.append(frames[socket.start..<end].filter { $0.hasPrefix("42") })
+        result.append(try frames[socket.start..<end].filter { $0.hasPrefix("42") }.map { frame in
+            if frame.hasPrefix(#"42["message:new""#) || frame.hasPrefix(#"42["task:created""#) {
+                let json = try JSONSerialization.jsonObject(with: Data(frame.dropFirst(2).utf8))
+                return "42" + String(decoding: try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]), as: UTF8.self)
+            }
+            return frame
+        })
     }
     return result
 }
@@ -87,16 +93,74 @@ private func channelCompositionObject(_ body: String) throws -> [String: Any] {
 }
 
 private func channelCompositionTaskIDs(_ body: String) throws -> [String] {
-    let ids = try #require(channelCompositionObject(body)["taskIds"] as? [String])
-    #expect(body == "{\"taskIds\":[\(ids.map { "\"\($0)\"" }.joined(separator: ","))]}")
-    return ids
+    let response = try channelCompositionObject(body)
+    #expect(Set(response.keys) == ["tasks"])
+    return try #require(response["tasks"] as? [[String: Any]]).map { try #require($0["id"] as? String) }
 }
 
-private func channelCompositionCreatedFrame(channelId: String, ids: [String], titles: [String]) -> String {
-    let rows = zip(ids, titles).map { id, title in
-        "{\"channelId\":\"\(channelId)\",\"id\":\"\(id)\",\"status\":\"todo\",\"title\":\"\(title)\"}"
-    }.joined(separator: ",")
-    return "42[\"task:created\",{\"channelId\":\"\(channelId)\",\"tasks\":[\(rows)]}]"
+/// Node emits plain host messages, a canonical task-board batch and the
+/// persisted system summary. IDs/timestamps are checked against public history.
+private func channelCompositionCreationFrames(_ client: any Client, channelId: String, body: String, headers: HTTPFields) async throws -> [String] {
+    let tasks = try #require(channelCompositionObject(body)["tasks"] as? [[String: Any]])
+    let history = try await client.get(URI(string: "/api/messages/channel/\(channelId)?limit=50"), headers: headers)
+    #expect(history.status == .ok)
+    let messages = try #require(channelCompositionObject(history.body.string ?? "")["messages"] as? [[String: Any]])
+    func frame(_ event: String, _ payload: [String: Any]) throws -> String {
+        "42" + String(decoding: try JSONSerialization.data(withJSONObject: [event, payload], options: [.sortedKeys]), as: UTF8.self)
+    }
+    func messageFrame(_ row: [String: Any], content: String, senderName: String, system: Bool = false) throws -> String {
+        let id = try #require(row["id"] as? String)
+        let seq = try #require(row["seq"] as? Int)
+        #expect(seq > 0)
+        let senderId = try #require(row["senderId"] as? String)
+        let senderType = try #require(row["senderType"] as? String)
+        let type = try #require(row["messageType"] as? String)
+        let at = try #require(row["createdAt"] as? String)
+        var payload: [String: Any] = [
+            "id": id, "seq": seq, "channelId": channelId, "senderType": senderType, "senderId": senderId,
+            "randomId": NSNull(), "messageType": type, "content": content,
+            "actionMetadata": NSNull(), "threadId": NSNull(), "taskStatus": NSNull(), "taskNumber": NSNull(),
+            "taskAssigneeType": NSNull(), "taskAssigneeId": NSNull(), "taskClaimedAt": NSNull(), "taskCompletedAt": NSNull(),
+            "createdAt": at, "updatedAt": at, "senderName": senderName,
+        ]
+        if system {
+            #expect(senderId == "system")
+            #expect(senderType == "user")
+            #expect(row["senderMembershipStatus"] is NSNull)
+            payload["senderDescription"] = NSNull()
+            payload["senderMembershipStatus"] = NSNull()
+            payload["attachments"] = [Any]()
+            payload["mentions"] = [Any]()
+            payload["reactions"] = [Any]()
+            payload["commentRef"] = NSNull()
+            payload["externalAuthor"] = NSNull()
+            payload["causalActorType"] = "user"
+            payload["causalActorId"] = try #require(tasks.first?["createdById"] as? String)
+            payload["systemSubtype"] = "task.created_summary"
+            payload["conversationContext"] = ["channelType": try #require(tasks.first?["channelType"] as? String)]
+        }
+        return try frame("message:new", payload)
+    }
+    var result: [String] = []
+    for task in tasks {
+        let id = try #require(task["messageId"] as? String)
+        let message = try #require(messages.first { $0["id"] as? String == id })
+        let title = try #require(task["title"] as? String)
+        #expect(message["content"] as? String == title)
+        result.append(try messageFrame(message, content: title, senderName: try #require(task["createdByName"] as? String)))
+    }
+    let eventKeys: Set<String> = ["id", "messageId", "channelId", "channelName", "channelType", "taskNumber", "title", "description", "status", "claimedByType", "claimedById", "claimedByName", "claimedAt", "completedAt", "createdByType", "createdById", "createdByName", "createdAt", "updatedAt", "revision", "taskCurrentProjection", "isLegacy"]
+    let eventTasks = tasks.map { $0.filter { eventKeys.contains($0.key) } }
+    #expect(eventTasks.allSatisfy { Set($0.keys) == eventKeys })
+    result.append(try frame("task:created", ["channelId": channelId, "tasks": eventTasks]))
+    let list = try tasks.map { task in
+        "#\(try #require(task["taskNumber"] as? Int)) \"\(try #require(task["title"] as? String))\""
+    }.joined(separator: ", ")
+    let summaryText = "📋 \(tasks.count) new task\(tasks.count > 1 ? "s" : "") created: \(list)"
+    let summary = try #require(messages.last { $0["content"] as? String == summaryText })
+    #expect(summary["messageType"] as? String == "system")
+    result.append(try messageFrame(summary, content: summaryText, senderName: "System", system: true))
+    return result
 }
 
 @Suite(.serialized)
@@ -149,8 +213,8 @@ struct ChannelMessagingCompositionSocketTests {
                 #expect(tasks.status == .ok)
                 let ids = try channelCompositionTaskIDs(tasks.body.string ?? "")
                 try #require(ids.count == 2)
-                let expectedCreated = channelCompositionCreatedFrame(channelId: channelId, ids: ids, titles: ["first", "second"])
-                #expect(try await channelCompositionFrames(fixedSockets, hub: fixed.hub) == [hasFallbackHub ? [expectedCreated] : [], hasFallbackHub ? [expectedCreated] : []])
+                let expectedCreated = try await channelCompositionCreationFrames(client, channelId: channelId, body: tasks.body.string ?? "", headers: headers)
+                #expect(try await channelCompositionFrames(fixedSockets, hub: fixed.hub) == [hasFallbackHub ? expectedCreated : [], hasFallbackHub ? expectedCreated : []])
                 #expect(try await channelCompositionFrames(replacementSockets, hub: replacement.hub) == [[], []])
                 for (index, title) in ["first", "second"].enumerated() {
                     let numbered = try await client.get(URI(string: "/api/tasks/channel/\(channelId)/number/\(index + 1)"), headers: headers)
@@ -158,7 +222,7 @@ struct ChannelMessagingCompositionSocketTests {
                     let row = try #require(channelCompositionObject(numbered.body.string ?? "")["task"] as? [String: Any])
                     #expect(row["id"] as? String == ids[index])
                     #expect(row["title"] as? String == title)
-                    #expect(row["description"] == nil)
+                    #expect(row["description"] as? String == "\(title) detail")
                 }
 
                 fixedSockets = fixedSockets.map(\.reset)
@@ -168,8 +232,12 @@ struct ChannelMessagingCompositionSocketTests {
                 }
                 let claimed = try await client.send(.patch, headers: headers, to: URI(string: "/api/tasks/\(ids[0])/claim"))
                 #expect(claimed.status == .ok)
-                let canonicalTask = claimed.body.string ?? ""
-                let task = try channelCompositionObject(canonicalTask)
+                let envelopeJSON = try #require(claimed.body.string)
+                let envelope = try channelCompositionObject(envelopeJSON)
+                #expect(Set(envelope.keys) == ["task"])
+                let task = try #require(envelope["task"] as? [String: Any])
+                #expect(envelopeJSON.hasPrefix("{\"task\":"))
+                let canonicalTask = String(envelopeJSON.dropFirst(8).dropLast())
                 #expect(task["id"] as? String == ids[0])
                 #expect(task["status"] as? String == "in_progress")
                 let expectedUpdated = "42[\"task:updated\",{\"channelId\":\"\(channelId)\",\"task\":\(canonicalTask)}]"
@@ -215,7 +283,7 @@ struct ChannelMessagingCompositionSocketTests {
                 let path = URI(string: "/api/tasks/channel/\(channelId)")
                 let readOnly = try await client.send(.post, headers: headers, to: path) { $0.body = .init(string: "{}") }
                 #expect(readOnly.status == .forbidden)
-                #expect(readOnly.body.string == "{\"error\":\"Join the channel to change tasks\"}")
+                #expect(readOnly.body.string == "{\"error\":\"You must join this channel to modify tasks\"}")
                 #expect(try await channelCompositionFrames(sockets, hub: hub) == [[]])
 
                 sockets = sockets.map(\.reset)
@@ -224,7 +292,8 @@ struct ChannelMessagingCompositionSocketTests {
                 let allowed = try await client.send(.post, headers: headers, to: path) { $0.body = .init(string: "{\"tasks\":[{\"title\":\"allowed\"}]}") }
                 #expect(allowed.status == .ok)
                 let allowedIds = try channelCompositionTaskIDs(allowed.body.string ?? "")
-                #expect(try await channelCompositionFrames(sockets, hub: hub) == [[channelCompositionCreatedFrame(channelId: channelId, ids: allowedIds, titles: ["allowed"])]])
+                let allowedFrames = try await channelCompositionCreationFrames(client, channelId: channelId, body: allowed.body.string ?? "", headers: headers)
+                #expect(try await channelCompositionFrames(sockets, hub: hub) == [allowedFrames])
 
                 sockets = sockets.map(\.reset)
                 fixture.accounts.oauth.setChannelArchived(id: channelId, archivedAt: Date())
@@ -246,7 +315,8 @@ struct ChannelMessagingCompositionSocketTests {
                 let rawRole = try await client.send(.post, headers: headers, to: path) { $0.body = .init(string: "{\"tasks\":[{\"title\":\"raw role\"}]}") }
                 #expect(rawRole.status == .ok)
                 let rawIds = try channelCompositionTaskIDs(rawRole.body.string ?? "")
-                #expect(try await channelCompositionFrames(sockets, hub: hub) == [[channelCompositionCreatedFrame(channelId: channelId, ids: rawIds, titles: ["raw role"])]])
+                let rawFrames = try await channelCompositionCreationFrames(client, channelId: channelId, body: rawRole.body.string ?? "", headers: headers)
+                #expect(try await channelCompositionFrames(sockets, hub: hub) == [rawFrames])
 
                 sockets = sockets.map(\.reset)
                 let logout = try await client.send(.post, headers: jsonHeaders, to: "/api/auth/logout") {
@@ -255,7 +325,7 @@ struct ChannelMessagingCompositionSocketTests {
                 #expect(logout.status == .ok)
                 let revoked = try await client.send(.post, headers: headers, to: path) { $0.body = .init(string: "{}") }
                 #expect(revoked.status == .unauthorized)
-                #expect(revoked.body.string == "{\"error\":\"Unauthorized\"}")
+                #expect(revoked.body.string == "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
                 #expect(try await channelCompositionFrames(sockets, hub: hub) == [[]])
                 let ownerHeaders = fixture.headers(token: fixture.accounts.mintAccessTokenForTesting(userId: fixture.ownerId))
                 let list = try await client.get(path, headers: ownerHeaders)

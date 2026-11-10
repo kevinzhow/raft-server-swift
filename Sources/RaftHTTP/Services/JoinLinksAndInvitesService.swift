@@ -47,6 +47,7 @@ public enum JoinLinksAndInvitesError: DomainError, Equatable {
     case insufficientPermission
     case serverNotFound
     case invalidSetupAction
+    case officialOnboardingAgentNotUsable
     case serverAlreadySetUp
     case invalidProfileUpdate
     case profileNotFound
@@ -71,7 +72,7 @@ public enum JoinLinksAndInvitesError: DomainError, Equatable {
              .invalidInviteRole, .guestAccessDisabled, .ownerCannotLeave, .invalidSetupAction,
              .invalidProfileUpdate:
             400
-        case .serverAlreadySetUp, .agreementRequired, .agreementChanged:
+        case .serverAlreadySetUp, .agreementRequired, .agreementChanged, .officialOnboardingAgentNotUsable:
             409
         }
     }
@@ -129,6 +130,8 @@ public enum JoinLinksAndInvitesError: DomainError, Equatable {
             "Server not found"
         case .invalidSetupAction:
             "INVALID_SETUP_ACTION"
+        case .officialOnboardingAgentNotUsable:
+            "OFFICIAL_ONBOARDING_AGENT_NOT_USABLE"
         case .serverAlreadySetUp:
             "SERVER_ALREADY_SET_UP"
         case .invalidProfileUpdate:
@@ -526,10 +529,8 @@ public struct JoinLinksAndInvitesService: Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             throw JoinLinksAndInvitesError.notAMember
         }
-        return SetupProjectionResponseDTO(
-            phase: store.setupPhase(serverId: serverId, userId: userId),
-            isOwnerOrAdmin: role == "owner" || role == "admin"
-        )
+        return ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+            .project(serverId: serverId, userId: userId, role: role)
     }
 
     public func serverSetupTransition(
@@ -543,23 +544,24 @@ public struct JoinLinksAndInvitesService: Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             throw JoinLinksAndInvitesError.notAMember
         }
-        guard role == "owner" || role == "admin" else {
-            throw JoinLinksAndInvitesError.insufficientPermission
-        }
-        guard let body, let action = body.action,
-              action == "start" || action == "reset" || action == "return_to_server"
-        else {
+        guard let body, let action = body.action, action == "start" || action == "complete" else {
             throw JoinLinksAndInvitesError.invalidSetupAction
         }
-        let phase: String
-        if action == "start" {
-            phase = store.setSetupPhase(serverId: serverId, userId: userId, phase: "in_progress")
-        } else if action == "reset" {
-            phase = store.setSetupPhase(serverId: serverId, userId: userId, phase: "not_started")
+        guard role == "owner" else { throw JoinLinksAndInvitesError.insufficientPermission }
+        let projection = ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+        // A completion by any owner is terminal for the whole server. Neither a
+        // late start nor a repeated complete may rewind it or recheck liveness.
+        let current = projection.project(serverId: serverId, userId: userId, role: role)
+        if current.phase == "complete" { return current }
+        if action == "complete" {
+            guard projection.canComplete(serverId: serverId) else {
+                throw JoinLinksAndInvitesError.officialOnboardingAgentNotUsable
+            }
+            _ = store.setSetupPhase(serverId: serverId, userId: userId, phase: "complete")
         } else {
-            phase = store.setupPhase(serverId: serverId, userId: userId)
+            _ = store.setSetupPhase(serverId: serverId, userId: userId, phase: "in_progress")
         }
-        return SetupProjectionResponseDTO(phase: phase, isOwnerOrAdmin: true)
+        return projection.project(serverId: serverId, userId: userId, role: role)
     }
 
     public func serverSetupReset(
@@ -579,11 +581,8 @@ public struct JoinLinksAndInvitesService: Sendable {
         }
         let revokedComputers = computers.revokeComputers(serverId: serverId, now: now())
         store.clearSetupState(serverId: serverId)
-        return SetupProjectionResponseDTO(
-            phase: store.setupPhase(serverId: serverId, userId: userId),
-            isOwnerOrAdmin: true,
-            revokedComputers: revokedComputers
-        )
+        return ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+            .project(serverId: serverId, userId: userId, role: role, revokedComputers: revokedComputers)
     }
 
     public func serverSetupHandoff(
@@ -600,10 +599,8 @@ public struct JoinLinksAndInvitesService: Sendable {
             throw JoinLinksAndInvitesError.insufficientPermission
         }
         store.setSetupHandoff(serverId: serverId)
-        return SetupProjectionResponseDTO(
-            phase: store.setupPhase(serverId: serverId, userId: userId),
-            isOwnerOrAdmin: true
-        )
+        return ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+            .project(serverId: serverId, userId: userId, role: "owner")
     }
 
     // MARK: - Agent profile

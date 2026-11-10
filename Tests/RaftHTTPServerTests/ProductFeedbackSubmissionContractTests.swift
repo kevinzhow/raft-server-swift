@@ -72,8 +72,10 @@ private func submit(
             #expect(response.status == .forbidden)
             #expect(
                 response.body.string
-                    == #"{"error":"Email verification required","code":"account_unverified"}"#
+                    == #"{"error":"Email verification required"}"#
             )
+            #expect(response.headers[.cacheControl] == "private, no-store")
+            #expect(response.headers[.contentLength] == "39")
             #expect(response.headers[.contentType] == "application/json; charset=utf-8")
             #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
             #expect(

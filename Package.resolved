@@ -1,5 +1,5 @@
 {
-  "originHash" : "d5cf48d29670942648aafa22f050846f5856e722b84ea1c630ab385c80d7da36",
+  "originHash" : "8f754632d484b554fc81f3a20bad8b026bbe7f1b194c97a638a9bbe61a734054",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -29,6 +29,15 @@
       }
     },
     {
+      "identity" : "jwt-kit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vapor/jwt-kit.git",
+      "state" : {
+        "revision" : "8bda2e7fe7d0e48f98b9d33d5e0b360fe9a5368d",
+        "version" : "5.8.0"
+      }
+    },
+    {
       "identity" : "multipart-kit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/vapor/multipart-kit.git",
@@ -43,6 +52,15 @@
       "location" : "https://github.com/vapor/postgres-nio.git",
       "state" : {
         "revision" : "1025d0a10ea9f5dd110f13e9b62aa42dc4358841"
+      }
+    },
+    {
+      "identity" : "redistack",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swift-server/RediStack.git",
+      "state" : {
+        "revision" : "8c4ce10883e405cdbde52855f97f1ec9468c889b",
+        "version" : "1.6.3"
       }
     },
     {
@@ -151,6 +169,15 @@
       "state" : {
         "revision" : "cc504a45f6ce73ce6067837d7ac19fa67b229a56",
         "version" : "1.5.0"
+      }
+    },
+    {
+      "identity" : "swift-extras-base64",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swift-extras/swift-extras-base64",
+      "state" : {
+        "revision" : "c803790ffc55c4b4f297f52ee6fbd5b0b3d046ef",
+        "version" : "1.2.0"
       }
     },
     {

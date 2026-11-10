@@ -3,8 +3,19 @@ import Synchronization
 import NIOCore
 import NIOPosix
 import RaftConnectAuth
+import RaftShared
+
+public struct RealtimeSessionIdentity: Sendable, Equatable {
+    public let userId: String
+    public let familyId: String?
+    public init(userId: String, familyId: String?) {
+        self.userId = userId
+        self.familyId = familyId
+    }
+}
 
 public protocol RealtimeAuthorizing: Sendable {
+    func sessionIdentity(forAccessToken token: String) -> RealtimeSessionIdentity?
     func userId(forAccessToken token: String) -> String?
     func sessionFamilyId(forAccessToken token: String) -> String?
     func serverRole(serverId: String, userId: String) -> String?
@@ -15,6 +26,13 @@ public protocol RealtimeAuthorizing: Sendable {
 }
 
 public extension RealtimeAuthorizing {
+    /// Compatibility for existing transport fixtures. Actual ledger/production
+    /// adapters override this requirement with one atomic principal read.
+    func sessionIdentity(forAccessToken token: String) -> RealtimeSessionIdentity? {
+        guard let userId = userId(forAccessToken: token) else { return nil }
+        return RealtimeSessionIdentity(userId: userId, familyId: sessionFamilyId(forAccessToken: token))
+    }
+
     /// Providers that do not implement reconnect replay keep the socket quiet
     /// instead of failing the event handler.
     func syncResumePayload(serverId: String, userId: String, lastSeq: Int, limit: Int) -> String? {
@@ -34,10 +52,12 @@ public final class RealtimeHub: Sendable {
     }
 
     public func emit(room: String, event: String, payloadJSON: String? = nil) {
-        // Session locks and channel callbacks never run under the hub mutex.
-        let targets = snapshot().filter { $0.hasRoom(room) }
-        let frame = socketIOEventFrame(event, payloadJSON: payloadJSON)
-        for session in targets { session.send(frame) }
+        DeferredEffects.emit { [self] in
+            // Session locks and channel callbacks never run under the hub mutex.
+            let targets = snapshot().filter { $0.hasRoom(room) }
+            let frame = socketIOEventFrame(event, payloadJSON: payloadJSON)
+            for session in targets { session.send(frame) }
+        }
     }
 
     func register(_ session: SocketIOSession) {
@@ -50,26 +70,58 @@ public final class RealtimeHub: Sendable {
 
     /// Close every socket that belongs to one user session family.
     public func revokeFamily(userId: String, familyId: String) {
-        let targets = snapshot().filter { session in
-            session.userId == userId && (session.familyId == nil || session.familyId == familyId)
+        revokeFamilies(userId: userId, familyIds: [familyId])
+    }
+
+    /// Revoke exactly the committed families, including legacy sockets without
+    /// a family even when the persisted credential had no family metadata.
+    /// A new authenticated family is not in this revocation snapshot.
+    public func revokeFamilies(userId: String, familyIds: [String]) {
+        let revoked = Set(familyIds)
+        DeferredEffects.emit { [self] in
+            let targets = snapshot().filter { session in
+                guard session.userId == userId else { return false }
+                guard let family = session.familyId else { return true }
+                return revoked.contains(family)
+            }
+            for session in targets { session.close() }
         }
-        for session in targets { session.close() }
+    }
+
+    /// Node user-scope eviction: every family and server, including legacy
+    /// familyless sessions. Used by account retirement and role writers.
+    public func revokeUserAccess(userId: String) {
+        DeferredEffects.emit { [self] in
+            for session in snapshot() where session.userId == userId { session.close() }
+        }
+    }
+
+    /// Logout's exact family scope differs from the legacy push-family close
+    /// rule above: unrelated families and familyless sockets stay connected.
+    public func revokeSessionAccess(userId: String, familyId: String) {
+        DeferredEffects.emit { [self] in
+            for session in snapshot() where session.userId == userId && session.familyId == familyId { session.close() }
+        }
     }
 
     /// Channel creation and membership grants add the room to every live
     /// session of that user so later channel-room events are delivered.
     public func joinUserSessions(userId: String, room: String) {
-        let targets = snapshot().filter { $0.userId == userId }
-        for session in targets { session.join([room]) }
+        DeferredEffects.emit { [self] in
+            let targets = snapshot().filter { $0.userId == userId }
+            for session in targets { session.join([room]) }
+        }
     }
 
     /// `server:membership-removed` is the last packet before the close, and
     /// only connections attached to that server are affected.
     public func removeServerMembership(serverId: String, userId: String) {
-        let targets = snapshot().filter { $0.serverId == serverId && $0.userId == userId }
-        let payload = "{\"serverId\":\(quotedJSON(serverId))}"
-        let frame = socketIOEventFrame("server:membership-removed", payloadJSON: payload)
-        for session in targets { session.sendAndClose(frame) }
+        DeferredEffects.emit { [self] in
+            let targets = snapshot().filter { $0.serverId == serverId && $0.userId == userId }
+            let payload = "{\"serverId\":\(quotedJSON(serverId))}"
+            let frame = socketIOEventFrame("server:membership-removed", payloadJSON: payload)
+            for session in targets { session.sendAndClose(frame) }
+        }
     }
 
     /// Drop one user's subscriptions to the given rooms (a channel plus its
@@ -77,10 +129,12 @@ public final class RealtimeHub: Sendable {
     /// the same server are touched.
     public func leaveUserRooms(userId: String, serverId: String?, rooms: [String]) {
         guard !rooms.isEmpty else { return }
-        let targets = snapshot().filter { session in
-            session.userId == userId && (serverId == nil || session.serverId == serverId)
+        DeferredEffects.emit { [self] in
+            let targets = snapshot().filter { session in
+                session.userId == userId && (serverId == nil || session.serverId == serverId)
+            }
+            for session in targets { session.leave(rooms) }
         }
-        for session in targets { session.leave(rooms) }
     }
 
     /// One shared `channel:<id>` frame with the agent's new watermark.
@@ -108,10 +162,10 @@ public final class RealtimeServer: Sendable {
     public static func start(
         auth: any RealtimeAuthorizing,
         host: String = "127.0.0.1",
-        port: Int = 0
+        port: Int = 0,
+        hub: RealtimeHub = RealtimeHub()
     ) async throws -> RealtimeServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        let hub = RealtimeHub()
         let desktopAttention = DesktopAttentionRegistry()
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -272,19 +326,28 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         let parsed = parseSocketHandshakeAuth(Data(payload.utf8))
         let handshake: SocketHandshakeAuth
         switch parsed {
-        case .success(let value):
-            handshake = value
+        case .success(let value): handshake = value
         case .failure:
             send(text: socketIOErrorFrame("Authentication required"), context: context)
             context.close(promise: nil)
             return
         }
-        guard let userId = auth.userId(forAccessToken: handshake.token) else {
+        guard let identity = auth.sessionIdentity(forAccessToken: handshake.token) else {
             send(text: socketIOErrorFrame("Invalid or expired token"), context: context)
             context.close(promise: nil)
             return
         }
+        let userId = identity.userId
+        // Register before ALL role/visibility reads: revocation before this
+        // point is reflected by those reads; after it the hub sees the pending
+        // connection just as Node's pendingHandshakes set does.
+        let session = SocketIOSession(id: socketIOGeneratedID(), userId: userId,
+            serverId: handshake.serverId, clientKind: handshake.clientKind,
+            familyId: identity.familyId, channel: context.channel, pending: true)
+        self.session = session
+        hub.register(session)
         let role: String?
+        let channelIds: [String]
         if let serverId = handshake.serverId {
             role = auth.serverRole(serverId: serverId, userId: userId)
             guard role != nil else {
@@ -292,34 +355,26 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
                 context.close(promise: nil)
                 return
             }
+            channelIds = auth.visibleChannelIds(serverId: serverId, userId: userId)
         } else {
             role = nil
+            channelIds = []
         }
-        let session = SocketIOSession(
-            id: socketIOGeneratedID(),
-            userId: userId,
-            serverId: handshake.serverId,
-            clientKind: handshake.clientKind,
-            familyId: auth.sessionFamilyId(forAccessToken: handshake.token),
-            channel: context.channel
-        )
-        self.session = session
-        hub.register(session)
-        desktopAttentionHandler = DesktopAttentionHandler(
-            userId: userId,
-            clientKind: handshake.clientKind,
-            recorder: desktopAttention
-        )
+        // A profile/family revoke before registration cannot be reinterpreted
+        // as a legacy familyless identity. After registration any user/family
+        // revoke closes this pending session; no new error/frame is invented.
+        guard auth.sessionIdentity(forAccessToken: handshake.token) == identity, session.admit() else {
+            session.close()
+            return
+        }
+        desktopAttentionHandler = DesktopAttentionHandler(userId: userId,
+            clientKind: handshake.clientKind, recorder: desktopAttention)
         send(text: socketIOConnectFrame(sid: session.id), context: context)
         session.join(["user:\(userId)", socketClientKindRoom(userId: userId, clientKind: handshake.clientKind)])
         if let serverId = handshake.serverId {
-            if role == "guest" {
-                session.join([socketServerGuestsRoom(serverId: serverId)])
-            } else {
-                session.join(["server:\(serverId)"])
-            }
+            if role == "guest" { session.join([socketServerGuestsRoom(serverId: serverId)]) }
+            else { session.join(["server:\(serverId)"]) }
             session.join([socketUserServerRoom(userId: userId, serverId: serverId)])
-            let channelIds = auth.visibleChannelIds(serverId: serverId, userId: userId)
             session.join(channelIds.map { "channel:\($0)" })
             send(text: socketIOEventFrame("rooms:joined"), context: context)
         }
@@ -418,6 +473,7 @@ final class SocketIOSession: Sendable {
 
     private struct State: Sendable {
         var rooms: Set<String> = []
+        var admitted = true
         var closed = false
         var pending = CircularBuffer<Write>(initialCapacity: 64)
         var draining = false
@@ -431,7 +487,8 @@ final class SocketIOSession: Sendable {
         serverId: String?,
         clientKind: SocketClientKind,
         familyId: String?,
-        channel: any Channel
+        channel: any Channel,
+        pending: Bool = false
     ) {
         self.id = id
         self.userId = userId
@@ -439,11 +496,21 @@ final class SocketIOSession: Sendable {
         self.clientKind = clientKind
         self.familyId = familyId
         self.channel = channel
+        if pending { state.withLock { $0.admitted = false } }
+    }
+
+    /// Transport phase only; the actual auth and visibility reads already ran.
+    func admit() -> Bool {
+        state.withLock { state in
+            guard !state.closed else { return false }
+            state.admitted = true
+            return true
+        }
     }
 
     var isClosed: Bool { state.withLock { $0.closed } }
 
-    func hasRoom(_ room: String) -> Bool { state.withLock { $0.rooms.contains(room) } }
+    func hasRoom(_ room: String) -> Bool { state.withLock { $0.admitted && $0.rooms.contains(room) } }
 
     func join(_ newRooms: [String]) { state.withLock { $0.rooms.formUnion(newRooms) } }
 
@@ -470,8 +537,16 @@ final class SocketIOSession: Sendable {
     private func enqueue(_ write: Write, terminal: Bool) {
         let shouldDrain = state.withLock { state in
             guard !state.closed else { return false }
+            let queued: Write
+            switch write {
+            case .frame:
+                guard state.admitted else { return false }
+                queued = write
+            case .finalFrame: queued = state.admitted ? write : .close
+            case .close: queued = write
+            }
             if terminal { state.closed = true }
-            state.pending.append(write)
+            state.pending.append(queued)
             guard !state.draining else { return false }
             state.draining = true
             return true

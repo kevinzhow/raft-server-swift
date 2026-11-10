@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -583,7 +584,8 @@ private func countedDirectory() -> PublicVisitDirectory {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicVisits: directory
+            publicVisits: directory,
+            emailAccounts: publicServerAuthAccounts([("sharing", "sharing-token"), ("noconsent", "noconsent-token"), ("silent", "silent-token")])
         ))
         try await app.testing { client in
             let sharing = try await postVisit(
@@ -661,7 +663,8 @@ private func countedDirectory() -> PublicVisitDirectory {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicVisits: directory
+            publicVisits: directory,
+            emailAccounts: publicServerAuthAccounts([(visitorId, "visitor-token")])
         ))
         try await app.testing { client in
             let anonymous = try await postVisit(
@@ -731,7 +734,8 @@ private func countedDirectory() -> PublicVisitDirectory {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicVisits: directory
+            publicVisits: directory,
+            emailAccounts: publicServerAuthAccounts([(visitorId, "visitor-token")])
         ))
         try await app.testing { client in
             let missing = try await postVisit(

@@ -111,7 +111,11 @@ private func sendThreadInfo(
 
 @Test func agentApiSendCreatesAFreshChannelThreadAndReportsSent() async throws {
     let f = makeSendThreadFixture("001")
-    let parent = f.accounts.oauth.createMessageRecord(channelId: f.channelId, content: "fresh thread parent", senderId: f.ownerId)
+    let parentId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "fresh thread parent")
+    let parent = try #require(f.accounts.oauth.historyMessages(channelId: f.channelId).first { $0.id == parentId })
+    #expect(parent.senderId == f.ownerId)
+    #expect(parent.senderType == "user")
+    #expect(f.accounts.messageChannelIdForTesting(messageId: parent.id) == f.channelId)
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in
@@ -138,6 +142,7 @@ private func sendThreadInfo(
                 URI(string: "/api/messages/channel/\(threadId)"),
                 headers: sendThreadHumanHeaders(f.ownerToken, f.serverId)
             )
+            #expect(threadHistory.status == .ok)
             let rows = (try sendThreadJSON(threadHistory)["messages"] as? [[String: Any]]) ?? []
             #expect(rows.contains { $0["id"] as? String == messageId && $0["content"] as? String == "agent-api first thread reply" })
         }
@@ -146,7 +151,11 @@ private func sendThreadInfo(
 
 @Test func agentApiSendThreadIDPrefixLandsOnTheNamedThread() async throws {
     let f = makeSendThreadFixture("002")
-    let parent = f.accounts.oauth.createMessageRecord(channelId: f.channelId, content: "threadId-target parent", senderId: f.ownerId)
+    let parentId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "threadId-target parent")
+    let parent = try #require(f.accounts.oauth.historyMessages(channelId: f.channelId).first { $0.id == parentId })
+    #expect(parent.senderId == f.ownerId)
+    #expect(parent.senderType == "user")
+    #expect(f.accounts.messageChannelIdForTesting(messageId: parent.id) == f.channelId)
     let threadId = f.accounts.oauth.createThreadChannel(parentChannelId: f.channelId, parentMessageId: parent.id)
     f.accounts.addPostableChannel(
         serverId: f.serverId,
@@ -178,7 +187,11 @@ private func sendThreadInfo(
 
 @Test func agentApiSendReusesAnExistingEmptyThreadChannel() async throws {
     let f = makeSendThreadFixture("003")
-    let parent = f.accounts.oauth.createMessageRecord(channelId: f.channelId, content: "opened thread parent", senderId: f.ownerId)
+    let parentId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "opened thread parent")
+    let parent = try #require(f.accounts.oauth.historyMessages(channelId: f.channelId).first { $0.id == parentId })
+    #expect(parent.senderId == f.ownerId)
+    #expect(parent.senderType == "user")
+    #expect(f.accounts.messageChannelIdForTesting(messageId: parent.id) == f.channelId)
     let threadId = f.accounts.oauth.createThreadChannel(parentChannelId: f.channelId, parentMessageId: parent.id)
     f.accounts.addPostableChannel(
         serverId: f.serverId,
@@ -208,7 +221,11 @@ private func sendThreadInfo(
 
 @Test func agentApiThreadTargetRequiresParentChannelMembership() async throws {
     let f = makeSendThreadFixture("004")
-    let parent = f.accounts.oauth.createMessageRecord(channelId: f.channelId, content: "members only thread parent", senderId: f.ownerId)
+    let parentId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "members only thread parent")
+    let parent = try #require(f.accounts.oauth.historyMessages(channelId: f.channelId).first { $0.id == parentId })
+    #expect(parent.senderId == f.ownerId)
+    #expect(parent.senderType == "user")
+    #expect(f.accounts.messageChannelIdForTesting(messageId: parent.id) == f.channelId)
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in
@@ -226,7 +243,11 @@ private func sendThreadInfo(
 
 @Test func agentApiThreadTargetCloaksAHiddenPrivateParent() async throws {
     let f = makeSendThreadFixture("005")
-    let parent = f.accounts.oauth.createMessageRecord(channelId: f.privateChannelId, content: "hidden private parent", senderId: f.ownerId)
+    let parentId = f.accounts.addHumanMessageForTesting(channelId: f.privateChannelId, senderId: f.ownerId, content: "hidden private parent")
+    let parent = try #require(f.accounts.oauth.historyMessages(channelId: f.privateChannelId).first { $0.id == parentId })
+    #expect(parent.senderId == f.ownerId)
+    #expect(parent.senderType == "user")
+    #expect(f.accounts.messageChannelIdForTesting(messageId: parent.id) == f.privateChannelId)
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in
@@ -267,8 +288,15 @@ private func sendThreadInfo(
     f.accounts.addPostableChannel(serverId: f.serverId, channelId: dm, memberId: f.ownerId, kind: "dm", name: "dm")
     f.accounts.addPostableChannel(serverId: f.serverId, channelId: dm, memberId: f.agentId, kind: "dm", name: "dm")
     f.accounts.oauth.addChannelHuman(channelId: dm, userId: f.ownerId)
+    f.accounts.oauth.removeChannelHuman(channelId: dm, userId: f.agentId)
     f.accounts.oauth.addChannelAgent(channelId: dm, agentId: f.agentId)
-    let parent = f.accounts.oauth.createMessageRecord(channelId: dm, content: "fresh DM thread parent", senderId: f.ownerId)
+    #expect(f.accounts.oauth.channelHumanIds(channelId: dm) == [f.ownerId])
+    #expect(f.accounts.oauth.channelAgentIds(channelId: dm) == [f.agentId])
+    let parentId = f.accounts.addHumanMessageForTesting(channelId: dm, senderId: f.ownerId, content: "fresh DM thread parent")
+    let parent = try #require(f.accounts.oauth.historyMessages(channelId: dm).first { $0.id == parentId })
+    #expect(parent.senderId == f.ownerId)
+    #expect(parent.senderType == "user")
+    #expect(f.accounts.messageChannelIdForTesting(messageId: parent.id) == dm)
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in

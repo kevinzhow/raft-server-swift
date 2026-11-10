@@ -139,6 +139,25 @@ private func makeApp(_ accounts: EmailLoginDirectory) -> FallbackServices {
             #expect(profile.response.status == .ok)
             #expect(profile.payload["emailVerified"] as? Bool == true)
 
+            let pendingProfile = try await postJSON(
+                client,
+                "/api/messages",
+                body: "{\"channelId\":\"\(channelId)\",\"content\":\"after verification\"}",
+                authorization: "Bearer \(registered.token)",
+                serverId: serverId
+            )
+            #expect(pendingProfile.status == .forbidden)
+            #expect(bodyText(pendingProfile) == "{\"error\":\"Profile setup required\",\"code\":\"PROFILE_SETUP_REQUIRED\"}")
+            #expect(accounts.humanMessageCount == 0)
+
+            let completedProfile = try await postJSON(
+                client,
+                "/api/auth/me/complete-profile",
+                body: "{\"name\":\"verified-human\",\"displayName\":\"Verified Human\"}",
+                authorization: "Bearer \(registered.token)"
+            )
+            #expect(completedProfile.status == .ok)
+
             let sent = try await postJSON(
                 client,
                 "/api/messages",

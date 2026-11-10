@@ -243,10 +243,16 @@ public struct ServerMachineEntry: Sendable, Equatable {
     public var computerAttachedByCurrentUser: Bool
     public var agentCount: Int
     public var creator: ServerMachineCreator?
+    public var status: String
+    public var statusVersion: Int
     public var runtimes: [String]
     /// `nil` publishes JSON `null` (the machine is not a Computer).
     public var computerUpgradeAvailable: Bool?
     public var computerBroadcastPolicy: OrderedJSON
+    public var runtimeVersions: [String: String] = [:]
+    public var runtimeDetection: MachineRuntimeDetectionFact? = nil
+    public var hostname: String? = nil
+    public var lastHeartbeat: String? = nil
 
     var jsonBody: OrderedJSON {
         .object([
@@ -258,7 +264,13 @@ public struct ServerMachineEntry: Sendable, Equatable {
             OrderedJSONField("computerAttachedByCurrentUser", computerAttachedByCurrentUser),
             OrderedJSONField("agentCount", agentCount),
             OrderedJSONField("creator", creator?.jsonBody ?? .null),
+            OrderedJSONField("status", status),
+            OrderedJSONField("statusVersion", statusVersion),
             OrderedJSONField("runtimes", .array(runtimes.map(OrderedJSON.string))),
+            OrderedJSONField("runtimeVersions", .object(runtimeVersions.sorted { $0.key < $1.key }.map { .init($0.key, $0.value) })),
+            OrderedJSONField("runtimeDetection", runtimeDetection?.jsonBody ?? .null),
+            OrderedJSONField("hostname", optional: hostname),
+            OrderedJSONField("lastHeartbeat", optional: lastHeartbeat),
             OrderedJSONField("computerUpgradeAvailable", optional: computerUpgradeAvailable),
             OrderedJSONField("computerBroadcastPolicy", computerBroadcastPolicy),
         ])

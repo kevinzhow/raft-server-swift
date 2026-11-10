@@ -424,6 +424,7 @@ private func forwardObject(_ response: ClientResponse) throws -> [String: Any] {
     let guestProjection = accounts.oauth.createChannel(serverId: guestId, name: "forward-joint-room-991", creatorUserId: guestOwner, type: "joint")
     for (channel, server, member) in [(hostProjection, hostId, hostOwner), (guestProjection, guestId, guestOwner), (guestProjection, guestId, hostOwner)] {
         accounts.addPostableChannel(serverId: server, channelId: channel, memberId: member, kind: "joint", name: "forward-joint-room-991")
+        accounts.oauth.addChannelHuman(channelId: channel, userId: member)
     }
     accounts.addJointChannelProjection(localChannelId: hostProjection, canonicalChannelId: canonical, serverId: hostId)
     accounts.addJointChannelProjection(localChannelId: guestProjection, canonicalChannelId: canonical, serverId: guestId)
@@ -519,6 +520,7 @@ private func forwardObject(_ response: ClientResponse) throws -> [String: Any] {
     accounts.addPostableChannel(serverId: serverId, channelId: canonical, memberId: ownerId, name: "forward-matrix-storage")
     let jointDestination = accounts.oauth.createChannel(serverId: serverId, name: "forward-matrix-joint", creatorUserId: ownerId, type: "joint")
     accounts.addPostableChannel(serverId: serverId, channelId: jointDestination, memberId: ownerId, kind: "joint", name: "forward-matrix-joint")
+    accounts.oauth.addChannelHuman(channelId: jointDestination, userId: ownerId)
     accounts.addJointChannelProjection(localChannelId: jointDestination, canonicalChannelId: canonical, serverId: serverId)
 
     let sources: [(type: String, message: String, content: String, visibility: String)] = [

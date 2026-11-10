@@ -38,6 +38,9 @@ public enum ChannelMessagingError: DomainError, Equatable {
     case channelReadOnly
     case channelArchived
     case invalidTaskList
+    case tooManyTasks
+    case emptyTaskTitle
+    case threadTasksUnsupported
 
     public var status: UInt {
         switch self {
@@ -47,9 +50,9 @@ public enum ChannelMessagingError: DomainError, Equatable {
             403
         case .channelNotFound:
             404
-        case .channelArchived:
+        case .channelArchived, .threadTasksUnsupported:
             409
-        case .invalidTaskList:
+        case .invalidTaskList, .tooManyTasks, .emptyTaskTitle:
             400
         }
     }
@@ -63,11 +66,17 @@ public enum ChannelMessagingError: DomainError, Equatable {
         case .channelNotFound:
             "Channel not found"
         case .channelReadOnly:
-            "Join the channel to change tasks"
+            "You must join this channel to modify tasks"
         case .channelArchived:
             "This channel is archived"
         case .invalidTaskList:
-            "Invalid task list"
+            "tasks array is required"
+        case .tooManyTasks:
+            "Cannot create more than 50 tasks at once"
+        case .emptyTaskTitle:
+            "Each task must have a non-empty title"
+        case .threadTasksUnsupported:
+            "Thread messages cannot become tasks"
         }
     }
 
@@ -76,7 +85,7 @@ public enum ChannelMessagingError: DomainError, Equatable {
         switch self {
         case .channelArchived:
             "channel_archived"
-        case .unauthorized, .notServerMember, .channelNotFound, .channelReadOnly, .invalidTaskList:
+        case .unauthorized, .notServerMember, .channelNotFound, .channelReadOnly, .invalidTaskList, .tooManyTasks, .emptyTaskTitle, .threadTasksUnsupported:
             nil
         }
     }
@@ -102,39 +111,17 @@ public struct ChannelMessagingDependencies: Sendable {
         _ userId: String
     ) -> ChannelTaskAccess
     public var isChannelArchived: @Sendable (_ channelId: String) -> Bool
-    public var addTasks: @Sendable (
-        _ channelId: String,
-        _ titles: [String],
-        _ descriptions: [String?]?,
-        _ creatorId: String?
-    ) -> [String]
+    var isThread: @Sendable (String) -> Bool
+    var createCanonicalTasks: @Sendable (String, String, String, [TaskDraft]) throws -> TaskExecutionCreatedBatch
 
-    /// Bind live owner operations without taking an authorization, membership or
-    /// archive snapshot. The catalog keeps its existing task policy and allocator.
+    /// Retain the concrete catalog's operations and its original owners.
     public init(auth: AuthCoreService, oauth: OAuthLedger, catalog: TaskCatalogService) {
-        self.init(
-            sessionUserId: { try? auth.authenticate($0) },
-            memberRole: { oauth.memberRole(serverId: $0, userId: $1) },
-            taskChannelAccess: { catalog.channelTaskAccess(serverId: $0, channelId: $1, userId: $2) },
-            isChannelArchived: { oauth.channelArchivedAt(id: $0) != nil },
-            addTasks: { channelId, titles, descriptions, creatorId in
-                catalog.addTasks(channelId: channelId, titles: titles, descriptions: descriptions, creatorId: creatorId)
-            }
-        )
-    }
-
-    public init(
-        sessionUserId: @escaping @Sendable (String?) -> String?,
-        memberRole: @escaping @Sendable (String, String) -> String?,
-        taskChannelAccess: @escaping @Sendable (String, String, String) -> ChannelTaskAccess,
-        isChannelArchived: @escaping @Sendable (String) -> Bool,
-        addTasks: @escaping @Sendable (String, [String], [String?]?, String?) -> [String]
-    ) {
-        self.sessionUserId = sessionUserId
-        self.memberRole = memberRole
-        self.taskChannelAccess = taskChannelAccess
-        self.isChannelArchived = isChannelArchived
-        self.addTasks = addTasks
+        sessionUserId = { try? auth.authenticate($0) }
+        memberRole = { oauth.activeRegularServerMember(serverId: $0, userId: $1) ? oauth.memberRole(serverId: $0, userId: $1) : nil }
+        taskChannelAccess = { catalog.channelTaskAccess(serverId: $0, channelId: $1, userId: $2) }
+        isChannelArchived = { oauth.channelArchivedAt(id: $0) != nil }
+        isThread = { catalog.isThread(channelId: $0) }
+        createCanonicalTasks = { try catalog.createCanonicalTasks(serverId: $0, channelId: $1, creatorId: $2, drafts: $3) }
     }
 }
 
@@ -179,23 +166,22 @@ public struct ChannelMessagingService: Sendable {
 
     // MARK: - POST /api/tasks/channel/:channelId
 
-    /// Creates the posted task batch and publishes `task:created`.
-    ///
-    /// The reply is `{"taskIds":[…]}`; every refusal is a typed
-    /// `ChannelMessagingError` that `respond` renders with the bytes the old
-    /// `Self.json` helper produced.
+    /// Create canonical tasks, their host messages and the persisted summary.
+    /// The public response is the Node `{tasks}` projection.
     public func createChannelTasks(
         authorization: String?,
         serverId: String,
         channelId: String,
         body: String
-    ) throws -> TaskIDsResponse {
+    ) throws -> ChannelTasksCreatedResponse {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw ChannelMessagingError.unauthorized
         }
+        guard !serverId.isEmpty else { throw MessageSendError.missingServerId }
         guard dependencies.memberRole(serverId, userId) != nil else {
             throw ChannelMessagingError.notServerMember
         }
+        if dependencies.isThread(channelId) { throw ChannelMessagingError.threadTasksUnsupported }
         switch dependencies.taskChannelAccess(serverId, channelId, userId) {
         case .missing:
             throw ChannelMessagingError.channelNotFound
@@ -210,11 +196,34 @@ public struct ChannelMessagingService: Sendable {
         guard let request = Self.decode(CreateChannelTasksRequest.self, from: body), !request.tasks.isEmpty else {
             throw ChannelMessagingError.invalidTaskList
         }
-        let titles = request.tasks.compactMap(\.title).filter { !$0.isEmpty }
-        let descriptions = request.tasks.map(\.description)
-        let taskIds = dependencies.addTasks(channelId, titles, descriptions, userId)
-        publishTaskCreated(taskIds: taskIds, requestBody: body, channelId: channelId)
-        return TaskIDsResponse(taskIds: taskIds)
+        guard request.tasks.count <= 50 else { throw ChannelMessagingError.tooManyTasks }
+        guard request.tasks.allSatisfy({ !($0.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+            throw ChannelMessagingError.emptyTaskTitle
+        }
+        let drafts = request.tasks.map { TaskDraft(title: $0.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                   description: $0.description?.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let batch = try dependencies.createCanonicalTasks(serverId, channelId, userId, drafts)
+        for surface in batch.surfaces {
+            for stored in batch.messages where stored.messageType != "system" {
+                var projected = stored
+                projected.channelId = surface.channelId
+                try AgentExecutionPublication.publish(room: "channel:\(surface.channelId)", event: "message:new", identity: stored.id,
+                    payloadJSON: AgentExecutionPublication.messagePayload(projected, senderName: batch.creatorName), emit: sink.emit)
+            }
+            let taskPayload = OrderedJSON.object([.init("channelId", surface.channelId),
+                                                  .init("tasks", .array(batch.project(to: surface).map(\.createdEventBody)))])
+            try AgentExecutionPublication.publish(room: "channel:\(surface.channelId)", event: "task:created",
+                identity: batch.tasks.map(\.id).joined(separator: ","), payloadJSON: taskPayload.render(), emit: sink.emit)
+            for stored in batch.messages where stored.messageType == "system" {
+                var projected = stored
+                projected.channelId = surface.channelId
+                try AgentExecutionPublication.publish(room: "channel:\(surface.channelId)", event: "message:new", identity: stored.id,
+                    payloadJSON: AgentExecutionPublication.systemMessagePayload(projected, channelType: surface.type), emit: sink.emit)
+            }
+        }
+        let local = batch.surfaces.first { $0.channelId == channelId }
+            ?? TaskExecutionSurface(channelId: channelId, serverId: serverId, name: nil, type: "channel")
+        return ChannelTasksCreatedResponse(tasks: batch.project(to: local))
     }
 
     // MARK: - Realtime publication for routes that keep their HTTP reply

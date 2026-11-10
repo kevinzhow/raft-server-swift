@@ -8,6 +8,7 @@ import RaftShared
 struct AgentPrivateSurfaceDependencies: Sendable {
     var sessionUserId: @Sendable (String?) -> String?
     var emitRealtime: @Sendable (String, String, String?) -> Void
+    var execution: AgentExecutionService?
     var oauth: OAuthLedger
     var agents: AgentsRuntimeStore
     var credentialUse: AgentCredentialUseService
@@ -59,11 +60,13 @@ public struct AgentPrivateSurfaceService: Sendable {
         realtime: RealtimeRelayService,
         prepare: ActionCardPrepareService,
         reactions: ReactionsRealtimeService,
-        notices: AgentRoleNoticeService
+        notices: AgentRoleNoticeService,
+        execution: AgentExecutionService? = nil
     ) {
         self.init(dependencies: AgentPrivateSurfaceDependencies(
             sessionUserId: { try? auth.authenticate($0) },
             emitRealtime: { room, event, payload in realtime.emit(room, event, payload) },
+            execution: execution,
             oauth: oauth,
             agents: agents,
             credentialUse: credentialUse,
@@ -79,7 +82,7 @@ public struct AgentPrivateSurfaceService: Sendable {
                     }
             },
             directChannelId: { serverId, agentId, peerId in
-                prepare.dmChannelId(serverId: serverId, agentId: agentId, peerId: peerId)
+                prepare.dmChannelId(serverId: serverId, agentId: agentId, peerId: peerId, peerKind: "human")
             },
             postAgentRoleNotice: { serverId, actorUserId, agentId, agentName, from, to in
                 notices.post(
@@ -94,6 +97,12 @@ public struct AgentPrivateSurfaceService: Sendable {
         self.dependencies = dependencies
     }
 
+    public func bindingExecution(_ execution: AgentExecutionService?) -> Self {
+        var bound = dependencies
+        bound.execution = execution
+        return Self(dependencies: bound)
+    }
+
     private var oauth: OAuthLedger { dependencies.oauth }
 
     private static let reservedHandles: Set<String> = [
@@ -103,6 +112,217 @@ public struct AgentPrivateSurfaceService: Sendable {
 
     private static func fractionalISO(_ date: Date) -> String {
         DateText.isoString(date)
+    }
+
+    /// The body UUID boundary mirrors Node's truthy optional machine field. The
+    /// returned key is canonical; authority still comes from the actual row.
+    private static func createMachineId(_ value: JSONValue?) throws -> String? {
+        guard let value else { return nil }
+        switch value {
+        case .null, .bool(false), .integer(0), .number(0): return nil
+        case .string(let raw):
+            if raw.isEmpty { return nil }
+            guard ServerScope.isUUID(raw), let uuid = UUID(uuidString: raw) else {
+                throw AgentPrivateSurfaceError.invalidMachineId
+            }
+            return uuid.uuidString.lowercased()
+        default: throw AgentPrivateSurfaceError.invalidMachineId
+        }
+    }
+
+    /// Structured config takes precedence. Legacy request columns hydrate only
+    /// when it is absent/null; these are metadata defaults from the pinned Node
+    /// registry, not detected model availability or provider acceptance.
+    static func requestRuntimeConfig(
+        _ fields: [String: JSONValue], env: [String: String]?, stored: AgentRuntimeConfigDocument? = nil,
+        coercionFailureMessage: String = "Failed to create agent"
+    ) throws -> AgentRuntimeConfigDocument {
+        var structured = fields["runtimeConfig"] == nil ? stored : nil
+        if let value = fields["runtimeConfig"], value != .null {
+            guard let supplied = AgentRuntimeConfigDocument(request: value) else {
+                throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig must be an object")
+            }
+            structured = supplied
+        }
+        if var config = structured {
+            guard let rawRuntime = config.runtime else {
+                throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.runtime is required")
+            }
+            let runtime = rawRuntime.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !runtime.isEmpty else {
+                throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.runtime is required")
+            }
+            config.setRuntime(runtime)
+            return config
+        }
+        let rawRuntime = fields["runtime"]?.legacyString?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let runtime = rawRuntime.isEmpty ? "claude" : rawRuntime
+        if runtime == "builtin" {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.provider is required for runtime: builtin")
+        }
+        let defaults = [
+            "claude": "opus", "codex": "gpt-6.1-sol", "grok": "grok-4.5",
+            "cursor": "composer-2-fast", "opencode": "default", "pi": "default",
+            "kimi-sdk": "kimi-code/kimi-for-coding", "external": "external",
+        ]
+        let rawModel = fields["model"]?.legacyString?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let model = rawModel.isEmpty ? (defaults[runtime] ?? "sonnet") : rawModel
+        let presets: [String: Set<String>] = [
+            "claude": ["opus", "fable", "sonnet", "haiku", "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5", "claude-haiku-4-5"],
+            "codex": ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex", "gpt-5-codex", "gpt-5"],
+            "grok": Set(RuntimeFormsAndProbesService.grokBundledModels.map(\.id)),
+            "cursor": ["composer-2-fast", "composer-2", "auto"],
+            "opencode": ["default", "deepseek/deepseek-v4-pro", "openrouter/anthropic/claude-opus-4.5", "fusecode/opus[1m]"],
+            "pi": ["default"], "kimi-sdk": ["kimi-code/kimi-for-coding"], "external": ["external"],
+        ]
+        let modelValue: JSONValue = presets[runtime]?.contains(model) == true
+            ? .object(["kind": .string("preset"), "id": .string(model)])
+            : .object(["kind": .string("custom"), "name": .string(model)])
+        var config: [String: JSONValue] = [
+            "version": .integer(1), "runtime": .string(runtime), "model": modelValue,
+            "mode": .object(["kind": .string("default")]),
+            "reasoningEffort": fields["reasoningEffort"] ?? .null,
+            "envVars": .object((env ?? [:]).mapValues(JSONValue.string)),
+        ]
+        if runtime == "claude" {
+            if let url = env?["ANTHROPIC_BASE_URL"], !url.isEmpty,
+               let key = env?["ANTHROPIC_API_KEY"], !key.isEmpty {
+                try Self.validateLegacyProvider(url: url, key: key)
+                config["provider"] = .object(["kind": .string("custom"), "apiUrl": .string(url), "apiKey": .string(key)])
+            } else { config["provider"] = .object(["kind": .string("default")]) }
+        }
+        try Self.validateLegacyReasoningEffort(runtime: runtime, value: fields["reasoningEffort"],
+            coercionFailureMessage: coercionFailureMessage)
+        // The known object constructor cannot fail its sole object-shape check.
+        return AgentRuntimeConfigDocument(request: .object(config))!
+    }
+
+    private static let knownReasoningEfforts: Set<String> = ["low", "medium", "high", "xhigh", "max", "ultra"]
+
+    /// PATCH validates raw hints before restart/role/config resolution. A supplied
+    /// structured config does not suppress an invalid shadowed top-level hint.
+    static func validatePatchRuntimeHints(_ fields: [String: JSONValue], currentRuntime: String) throws {
+        let supported: Set<String> = ["claude", "codex", "grok", "builtin", "antigravity", "kimi-sdk", "kimi", "copilot", "cursor", "gemini", "opencode", "pi"]
+        var targetRuntime = currentRuntime
+        if let value = fields["runtime"] {
+            guard case .string(let runtime) = value else {
+                throw AgentPrivateSurfaceError.invalidRuntimeConfig("Runtime must be a string")
+            }
+            guard supported.contains(runtime) else {
+                throw AgentPrivateSurfaceError.invalidRuntimeConfig("Invalid runtime: \(runtime)")
+            }
+            targetRuntime = runtime
+        }
+        if let value = fields["reasoningEffort"], value != .null, targetRuntime != "kimi-sdk" {
+            guard case .string(let effort) = value, knownReasoningEfforts.contains(effort) else {
+                throw AgentPrivateSurfaceError.invalidRuntimeConfig("Invalid reasoning effort: \(try Self.nodeValueDescription(value, failureMessage: "Failed to update agent"))")
+            }
+        }
+    }
+
+    /// Only the newly hydrated legacy branch uses this strict value check.
+    private static func validateLegacyReasoningEffort(
+        runtime: String, value: JSONValue?, coercionFailureMessage: String
+    ) throws {
+        guard let value, value != .null else { return }
+        let supported: Set<String> = ["builtin", "claude", "codex", "grok", "copilot", "pi", "kimi-sdk"]
+        guard supported.contains(runtime) else {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.reasoningEffort is not supported for runtime: \(runtime)")
+        }
+        guard case .string(let effort) = value, !effort.isEmpty,
+              effort.trimmingCharacters(in: .whitespacesAndNewlines) == effort,
+              !effort.contains("\u{0}"), runtime == "kimi-sdk" || knownReasoningEfforts.contains(effort) else {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("Invalid reasoning effort: \(try Self.nodeValueDescription(value, failureMessage: coercionFailureMessage))")
+        }
+    }
+
+    private static func validateLegacyProvider(url: String, key: String) throws {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.provider.apiUrl is required")
+        }
+        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.provider.apiKey is required")
+        }
+        // URL's special schemes treat backslashes as slashes and accept the
+        // scheme:host form. Normalize that syntax before the Foundation parse so
+        // credentials cannot hide in a path that Node parses as an authority.
+        let c0 = CharacterSet(charactersIn: "\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}\u{6}\u{7}\u{8}\u{9}\u{a}\u{b}\u{c}\u{d}\u{e}\u{f}\u{10}\u{11}\u{12}\u{13}\u{14}\u{15}\u{16}\u{17}\u{18}\u{19}\u{1a}\u{1b}\u{1c}\u{1d}\u{1e}\u{1f}\u{20}")
+        var source = url.trimmingCharacters(in: c0).replacingOccurrences(of: "\t", with: "").replacingOccurrences(of: "\n", with: "").replacingOccurrences(of: "\r", with: "")
+        let networkSchemes: Set<String> = ["ftp", "http", "https", "ws", "wss"]
+        if let colon = source.firstIndex(of: ":"), networkSchemes.contains(String(source[..<colon]).lowercased()) {
+            let scheme = String(source[..<colon])
+            let tail = source[source.index(after: colon)...].replacingOccurrences(of: "\\", with: "/").drop(while: { $0 == "/" })
+            source = scheme + "://" + String(tail)
+        }
+        guard let parsed = URLComponents(string: source), let scheme = parsed.scheme, !scheme.isEmpty,
+              parsed.url != nil,
+              !networkSchemes.contains(scheme.lowercased()) || !(parsed.host ?? "").isEmpty,
+              parsed.port.map({ (0...65535).contains($0) }) ?? true,
+              scheme.lowercased() != "file" || ((parsed.user ?? "").isEmpty && (parsed.password ?? "").isEmpty) else {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.provider.apiUrl must be a valid URL")
+        }
+        guard (parsed.user ?? "").isEmpty, (parsed.password ?? "").isEmpty else {
+            throw AgentPrivateSurfaceError.invalidRuntimeConfig("runtimeConfig.provider.apiUrl must not contain credentials")
+        }
+    }
+
+    /// JavaScript interpolation used by the pinned raw-value error bodies.
+    static func nodeValueDescription(_ value: JSONValue, failureMessage: String) throws -> String {
+        switch value {
+        case .string(let text): return text
+        case .null: return "null"
+        case .bool(let flag): return flag ? "true" : "false"
+        case .integer(let number): return Self.nodeNumberDescription(Double(number))
+        case .number(let number): return Self.nodeNumberDescription(number)
+        case .object(let members):
+            // JSON cannot carry callable properties. An own toString shadows
+            // Object.prototype.toString; valueOf cannot produce a primitive.
+            guard members["toString"] == nil else {
+                throw AgentValueCoercionFailure(errorMessage: failureMessage)
+            }
+            return "[object Object]"
+        case .array(let values):
+            return try values.map { value in
+                if value == .null { return "" }
+                return try Self.nodeValueDescription(value, failureMessage: failureMessage)
+            }.joined(separator: ",")
+        }
+    }
+
+    /// JSON numbers enter Node as Doubles. Reuse Swift's shortest-roundtrip
+    /// digits, adapting only JavaScript's decimal/exponent presentation.
+    private static func nodeNumberDescription(_ number: Double) -> String {
+        guard number.isFinite else { return String(number) }
+        if number == 0 { return "0" }
+        let sign = number < 0 ? "-" : ""
+        let parts = String(abs(number)).lowercased().split(separator: "e")
+        let coefficient = parts[0]
+        let integerDigits = coefficient.firstIndex(of: ".").map {
+            coefficient.distance(from: coefficient.startIndex, to: $0)
+        } ?? coefficient.count
+        let exponent = parts.count == 2 ? (Int(parts[1]) ?? 0) : 0
+        var digits = Array(coefficient.filter { $0 != "." })
+        var decimalPosition = integerDigits + exponent
+        while digits.first == "0" {
+            digits.removeFirst()
+            decimalPosition -= 1
+        }
+        while digits.last == "0" {
+            digits.removeLast()
+        }
+        let scientificExponent = decimalPosition - 1
+        if scientificExponent >= -6 && scientificExponent < 21 {
+            if decimalPosition <= 0 {
+                return sign + "0." + String(repeating: "0", count: -decimalPosition) + String(digits)
+            }
+            if decimalPosition >= digits.count {
+                return sign + String(digits) + String(repeating: "0", count: decimalPosition - digits.count)
+            }
+            return sign + String(digits.prefix(decimalPosition)) + "." + String(digits.dropFirst(decimalPosition))
+        }
+        let mantissa = String(digits.prefix(1)) + (digits.count > 1 ? "." + String(digits.dropFirst()) : "")
+        return sign + mantissa + "e" + (scientificExponent >= 0 ? "+" : "") + String(scientificExponent)
     }
 
     // MARK: - POST /api/agents
@@ -134,6 +354,23 @@ public struct AgentPrivateSurfaceService: Sendable {
             guard role == "owner" || role == "admin" else {
                 throw AgentPrivateSurfaceError.onboardingRequiresAdmin
             }
+        }
+        let external = fields["external"]?.castBool ?? false
+        if external, let supplied = fields["machineId"], supplied != .null, supplied != .string("") {
+            throw AgentPrivateSurfaceError.externalWithMachine
+        }
+        let hostedProvider = try validatedHostedProvider(fields["provider"], serverId: serverId, external: external)
+        let envValidation = external ? (env: nil as [String: String]?, error: nil as String?)
+            : AgentRuntimeConfigDocument.validatedEnvVars(fields["envVars"])
+        if let error = envValidation.error { throw AgentPrivateSurfaceError.invalidEnvVars(error) }
+        // Supplied machine authority precedes config normalization and Grok policy.
+        let suppliedMachineId = try Self.createMachineId(external ? nil : fields["machineId"])
+        let assignedMachine = suppliedMachineId.flatMap { dependencies.machines.machine(id: $0, serverId: serverId) }
+        if suppliedMachineId != nil, assignedMachine == nil {
+            throw AgentPrivateSurfaceError.machineNotInServer
+        }
+        let machineId = assignedMachine?.id
+        if onboardingRequest {
             if let existing = dependencies.channels.serverOnboardingSettings[serverId]?.agentId {
                 throw AgentPrivateSurfaceError.onboardingAgentExists(agentId: existing)
             }
@@ -143,21 +380,10 @@ public struct AgentPrivateSurfaceService: Sendable {
                 throw AgentPrivateSurfaceError.cindyExists
             }
         }
-        let duplicate = oauth.serverAgents(serverId: serverId).contains {
-            !$0.deleted && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
-        }
-        guard !duplicate else { throw AgentPrivateSurfaceError.nameTaken }
-        let external = fields["external"]?.castBool ?? false
-        if external, fields["machineId"] != nil {
-            throw AgentPrivateSurfaceError.externalWithMachine
-        }
-        let hostedProvider = try validatedHostedProvider(fields["provider"], serverId: serverId, external: external)
-        let rawConfig = AgentRuntimeConfigDocument(request: fields["runtimeConfig"]) ?? AgentRuntimeConfigDocument()
+        let canonicalFields = try adoptingBuiltinForm(fields, serverId: serverId, external: external)
+        let rawConfig = external ? AgentRuntimeConfigDocument.external
+            : try Self.requestRuntimeConfig(canonicalFields, env: envValidation.env)
         try validateFormValues(fields, serverId: serverId)
-        if let legacyRuntime = fields["runtime"]?.legacyString,
-           MachineMigrationPolicy.deprecatedAgentRuntimes.contains(legacyRuntime) {
-            throw AgentPrivateSurfaceError.deprecatedRuntime(legacyRuntime)
-        }
         if let configRuntime = rawConfig.runtime,
            MachineMigrationPolicy.deprecatedAgentRuntimes.contains(configRuntime) {
             throw AgentPrivateSurfaceError.deprecatedRuntime(configRuntime)
@@ -168,9 +394,7 @@ public struct AgentPrivateSurfaceService: Sendable {
         if external {
             config = .external
         } else if fields["envVars"] != nil {
-            let validation = AgentRuntimeConfigDocument.validatedEnvVars(fields["envVars"])
-            if let error = validation.error { throw AgentPrivateSurfaceError.invalidEnvVars(error) }
-            if let env = validation.env { config.setEnv(env) }
+            config.setUserEnv(envValidation.env ?? [:])
         }
         if !external {
             if let unsupported = config.unsupportedCommandRuntime {
@@ -186,8 +410,20 @@ public struct AgentPrivateSurfaceService: Sendable {
         }
         let effectiveName = onboardingRequest ? "Cindy" : name
         let runtime = external ? "external" : (config.runtime ?? "managed")
-        let machineId = fields["machineId"]?.legacyString
+        if runtime == "grok", !dependencies.agents.evaluateFeatureFlag(
+            key: "grok_runtime_v0", userId: userId, serverId: serverId, platform: nil,
+            client: .init(os: nil, buildNumber: nil, buildType: nil)
+        ).enabled {
+            throw AgentPrivateSurfaceError.grokRuntimeDisabled
+        }
+        if runtime == "grok", let assignedMachine, !assignedMachine.runtimes.contains("grok") {
+            throw AgentPrivateSurfaceError.grokCapabilityUnavailable
+        }
         try checkBuiltinCatalog(machineId: machineId, config: config)
+        let duplicate = oauth.serverAgents(serverId: serverId).contains {
+            !$0.deleted && $0.name.caseInsensitiveCompare(trimmedName) == .orderedSame
+        }
+        guard !duplicate else { throw AgentPrivateSurfaceError.nameTaken }
         let configJSON = config.serialized()
         let envJSON = external ? "null" : AgentRuntimeConfigDocument.serializedEnv(envVars)
         let agentId = oauth.createAgent(
@@ -215,13 +451,21 @@ public struct AgentPrivateSurfaceService: Sendable {
         if let hostedProvider {
             dependencies.agents.beginHostedProvisioning(agentId: agentId, provider: hostedProvider, now: Date())
         }
-        let creatorDm = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
+        let creatorDm = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId, secondKind: .agent)
         oauth.addChannelAgent(channelId: creatorDm, agentId: agentId)
+        // Publish a DM only after both existing owners hold its real facts.
+        dependencies.channels.upsertDirectChannel(serverId: serverId, channelId: creatorDm, memberIds: [userId, agentId])
         let dmPayload = OrderedJSON.object([OrderedJSONField("channelId", creatorDm)]).render()
         dependencies.emitRealtime("channel:\(creatorDm)", "dm:new", dmPayload)
         dependencies.emitRealtime("user:\(userId)", "dm:new", dmPayload)
+        if let machineId, !machineId.isEmpty, let execution = dependencies.execution {
+            // Node creation retains the agent if automatic startup is not ready.
+            // A staged command failure still aborts this business transaction.
+            _ = try execution.requestAutomaticStartIfReady(.init(serverId: serverId, agentId: agentId, control: .automatic))
+        }
         let responseConfigJSON = AgentRuntimeConfigDocument.redactedConfigJSON(configJSON) ?? configJSON
         let model = AgentRuntimeConfigDocument.agentModel(from: responseConfigJSON, external: external)
+        let created = oauth.agentRuntimeInfo(id: agentId)
         let projection = AgentRuntimeProjection(
             id: agentId,
             name: effectiveName,
@@ -229,16 +473,13 @@ public struct AgentPrivateSurfaceService: Sendable {
             model: model,
             external: external,
             envVarsJSON: envJSON,
-            runtimeConfigJSON: responseConfigJSON
+            runtimeConfigJSON: responseConfigJSON,
+            serverId: serverId,
+            status: created?.status,
+            machineId: dependencies.agents.agentMachineIds[agentId],
+            reasoningEffort: config.reasoningEffort
         )
-        var broadcast = projection
-        broadcast.name = name
-        dependencies.emitRealtime(
-            "server:\(serverId)", "agent:created",
-            OrderedJSON.object([OrderedJSONField("agent", .raw(broadcast.broadcastJSON))]).render()
-        )
-        let created = oauth.agentRuntimeInfo(id: agentId)
-        return CreatedAgentResponse(
+        let response = CreatedAgentResponse(
             agent: projection,
             creatorId: userId,
             displayName: created?.displayName ?? effectiveName,
@@ -247,6 +488,11 @@ public struct AgentPrivateSurfaceService: Sendable {
             serverRole: oauth.agentRole(serverId: serverId, agentId: agentId) ?? "member",
             hostedProvider: hostedProvider
         )
+        dependencies.emitRealtime(
+            "server:\(serverId)", "agent:created",
+            OrderedJSON.object([OrderedJSONField("agent", .raw(response.broadcastJSON))]).render()
+        )
+        return response
     }
 
     /// The hosted runtime provider an external agent may select: only
@@ -339,6 +585,7 @@ public struct AgentPrivateSurfaceService: Sendable {
             includesLastSeen = true
             lastSeenAt = lastSeen[agent.id].map(Self.fractionalISO)
         }
+        let facts = dependencies.agents.runtimeFacts(agentId: agent.id)
         return AgentSummary(
             id: agent.id,
             name: agent.name,
@@ -356,16 +603,48 @@ public struct AgentPrivateSurfaceService: Sendable {
                     runtimeConfigJSON: AgentRuntimeConfigDocument.redactedConfigJSON(agent.runtimeConfigJSON) ?? "null",
                     envVarsJSON: agent.envVarsJSON ?? "null"
                 )
-                : nil
+                : nil,
+            serverId: agent.serverId,
+            status: agent.status,
+            machineId: facts.machineId,
+            reasoningEffort: AgentRuntimeConfigProjection.parse(agent.runtimeConfigJSON).reasoningEffort,
+            avatarUrl: agent.avatarUrl,
+            activity: facts.activity,
+            activityDetail: facts.detail
         )
+    }
+
+    private func guestSummary(_ agent: OAuthLedger.AgentRuntimeInfo) -> GuestAgentSummary {
+        .init(id: agent.id, serverId: agent.serverId, name: agent.name, displayName: agent.displayName,
+              avatarUrl: agent.avatarUrl, description: agent.description, status: agent.status,
+              activity: dependencies.agents.runtimeFacts(agentId: agent.id).activity)
+    }
+
+    /// Node listChannels(archived:include) -> channelAgents, with #all's implicit
+    /// membership. The shared query owns the real guest/parent/joint read rules.
+    private func guestVisibleAgentIds(serverId: String, userId: String) -> Set<String> {
+        let readable = HumanChannelReadAccessQuery(channels: dependencies.channels,
+            messages: dependencies.messages, oauth: oauth, flags: dependencies.agents).readableLocalChannelIds(serverId: serverId, userId: userId)
+        let listable = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: true)
+            .filter { readable.contains($0.id) && ["channel", "private", "joint"].contains($0.type) }
+        let live = oauth.serverAgents(serverId: serverId)
+        if listable.contains(where: { $0.name == "all" && $0.type == "channel" }) { return Set(live.map(\.id)) }
+        let related = Set(listable.flatMap { oauth.channelAgentIds(channelId: $0.id) })
+        return Set(live.lazy.filter { related.contains($0.id) }.map(\.id))
     }
 
     public func listServerAgents(authorization: String?, serverId: String) throws -> AgentListResponse {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw AgentPrivateSurfaceError.unauthorized
         }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId),
+              let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             throw AgentPrivateSurfaceError.notAMember
+        }
+        if role == "guest" {
+            let visible = guestVisibleAgentIds(serverId: serverId, userId: userId)
+            return AgentListResponse(guests: oauth.serverAgents(serverId: serverId)
+                .filter { visible.contains($0.id) }.map { guestSummary($0) })
         }
         let seen = dependencies.agents.lastSeenSnapshot()
         return AgentListResponse(agents: oauth.serverAgents(serverId: serverId).map {
@@ -395,17 +674,31 @@ public struct AgentPrivateSurfaceService: Sendable {
     public func agentRuntimeOptions(
         authorization: String?,
         serverId: String,
-        agentId: String
+        agentId: String,
+        includeRuntimeFormV2: Bool = false
     ) throws -> AgentRuntimeOptionsResponse {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw AgentPrivateSurfaceError.unauthorized
         }
-        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId,
-              oauth.memberRole(serverId: serverId, userId: userId) != nil
-        else {
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId),
+              let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw AgentPrivateSurfaceError.notAMember
+        }
+        guard role != "guest" else { throw AgentRuntimeOptionsReadDenied() }
+        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
             throw AgentPrivateSurfaceError.agentMissing
         }
-        return AgentRuntimeOptionsResponse(agentId: agentId)
+        let machine = dependencies.agents.agentMachineIds[agentId].flatMap { id in
+            dependencies.machines.machine(id: id, serverId: serverId)
+        }
+        return AgentRuntimeOptionsResponse(machineId: machine?.id,
+            options: RuntimeFormsAndProbesService.admissionOptions(
+                installedRuntimeIds: machine?.runtimes ?? [], currentRuntime: agent.runtime,
+                grokEnabled: dependencies.agents.evaluateFeatureFlag(
+                    key: "grok_runtime_v0", userId: userId, serverId: serverId, platform: nil,
+                    client: .init(os: nil, buildNumber: nil, buildType: nil)
+                ).enabled,
+                includeRuntimeFormV2: includeRuntimeFormV2))
     }
 
     public func getAgent(
@@ -424,11 +717,15 @@ public struct AgentPrivateSurfaceService: Sendable {
         else {
             throw AgentPrivateSurfaceError.agentNotFound
         }
-        guard let role = oauth.memberRole(serverId: agent.serverId, userId: userId) else {
+        guard oauth.activeRegularServerMember(serverId: agent.serverId, userId: userId),
+              let role = oauth.memberRole(serverId: agent.serverId, userId: userId) else {
             throw AgentPrivateSurfaceError.notAMember
         }
         if role == "guest" {
-            return .guest(id: agent.id, name: agent.name, displayName: agent.displayName, description: agent.description)
+            guard guestVisibleAgentIds(serverId: agent.serverId, userId: userId).contains(agent.id) else {
+                throw AgentPrivateSurfaceError.agentNotFound
+            }
+            return .guest(guestSummary(agent))
         }
         return .full(summary(agent, role: role, userId: userId, lastSeen: nil))
     }
@@ -610,4 +907,9 @@ public struct AgentPrivateSurfaceService: Sendable {
         dependencies.agents.setPushWebhook(agentId: credential.agentId, url: rawURL, secret: secret)
         return OkResponse()
     }
+}
+
+private struct AgentRuntimeOptionsReadDenied: DomainError {
+    var status: UInt { 403 }
+    var errorMessage: String { "The `viewAgents` capability is required to inspect runtime options" }
 }

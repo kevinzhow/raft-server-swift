@@ -18,6 +18,8 @@ import VaporTesting
     accounts.markEmailVerified(userId: guestId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "card-guest", name: "Card Guest", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
+    accounts.createFeatureFlagForTesting(key: "server_guest_v0", enabled: true, killSwitch: false)
+    accounts.addFeatureFlagRuleForTesting(key: "server_guest_v0", stage: "server", decision: "allow", values: [serverId])
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "card-guest-agent", runtime: "codex")
     let carrier = accounts.oauth.createChannel(serverId: serverId, name: "card-guest-carrier", creatorUserId: ownerId)
     for member in [ownerId, agent] {

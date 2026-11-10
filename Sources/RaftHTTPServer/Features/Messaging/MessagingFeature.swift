@@ -34,7 +34,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         let attachments = routes.grouped("api", "attachments")
         let actions = routes.grouped("api", "actions")
         let tasks = routes.grouped("api", "tasks")
-        let humanMessageCreate = services.emailAccounts.humanMessageCreate
+        let humanMessageCreate = services.humanMessageCreate
         // The claim publishes `task:updated` through the channel-messaging
         // domain; the service hands it the claimed task's published JSON.
         let assignments = services.emailAccounts.channelAssignments(
@@ -90,6 +90,14 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
+        messages.get("attachment-preview", "enabled") { request async throws -> Response in
+            try await respond {
+                try humanMessageCreate.attachmentPreviewAvailability(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
+                )
+            }
+        }
         messages.get("forward", "enabled") { request async throws -> Response in
             try await respond {
                 try humanMessageCreate.messageForwardEnabled(
@@ -98,20 +106,50 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 )
             }
         }
-        attachments.get(":id", "url") { request async throws -> Response in
-            if desktopQuery(request.url.query, "previewToken") != nil {
-                return respond(status: 401, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Unauthorized")]).render())
+        attachments.post("urls") { request async throws -> Response in
+            let body = await jsonRequestBody(AttachmentURLBatchRequest.self, request)
+            func scalar(_ name: String) -> String? {
+                guard let query = request.url.query,
+                      let items = URLComponents(string: "http://localhost/?" + query)?.queryItems else { return nil }
+                let matches = items.filter { $0.name == name }
+                return matches.count == 1 ? matches.first?.value : nil
             }
-            let queryToken = desktopQuery(request.url.query, "token")
-            let authorization = request.headers[.authorization] ?? queryToken.map { "Bearer \($0)" }
+            let proxy = AttachmentURLProxyContext(
+                authorization: request.headers[.authorization], queryToken: scalar("token"),
+                configuredServerURL: services.releaseEnvironment["SERVER_URL"],
+                deploymentEnvironment: services.releaseEnvironment["DEPLOYMENT_ENV"],
+                requestScheme: request.url.scheme ?? "http",
+                requestHost: attachmentRequestHost(request),
+                forwardedProto: request.headers[HTTPField.Name("X-Forwarded-Proto")!],
+                forwardedHost: request.headers[HTTPField.Name("X-Forwarded-Host")!]
+            )
             return try await respond {
-                try services.emailAccounts.messageSend.attachmentDownloadURL(
+                try services.emailAccounts.agentsLifecycle.attachmentBatchURLs(admission: try requireAttachmentFlexContext(request), body: body, proxy: proxy)
+            }
+        }
+        attachments.get(":id", "url") { request async throws -> Response in
+            return try await respond {
+                guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                return try services.emailAccounts.messageSend.attachmentDownloadURL(
                     attachmentId: request.parameters.get("id") ?? "",
-                    authorization: authorization,
-                    serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!],
-                    disposition: desktopQuery(request.url.query, "disposition"),
-                    download: desktopQuery(request.url.query, "download"),
-                    propagateQueryToken: queryToken
+                    authorization: request.headers[.authorization],
+                    serverId: admission.serverId,
+                    disposition: AttachmentQueryScalars.value(request.url.query, named: "disposition"),
+                    download: AttachmentQueryScalars.value(request.url.query, named: "download"),
+                    propagateQueryToken: AttachmentQueryScalars.value(request.url.query, named: "token"),
+                    admission: admission,
+                    proxy: AttachmentURLProxyContext(
+                        authorization: request.headers[.authorization],
+                        queryToken: AttachmentQueryScalars.value(request.url.query, named: "token"),
+                        configuredServerURL: services.releaseEnvironment["SERVER_URL"],
+                        deploymentEnvironment: services.releaseEnvironment["DEPLOYMENT_ENV"],
+                        requestScheme: request.url.scheme ?? "http",
+                        requestHost: attachmentRequestHost(request),
+                        forwardedProto: request.headers[HTTPField.Name("X-Forwarded-Proto")!],
+                        forwardedHost: request.headers[HTTPField.Name("X-Forwarded-Host")!]
+                    )
                 )
             }
         }
@@ -279,46 +317,55 @@ public struct MessagingFeature: RouteCollection, Sendable {
             let channelId = desktopQuery(request.url.query, "channelId")
             let authorization = request.headers[.authorization]
             let serverId = request.headers[HTTPField.Name("X-Server-Id")!]
-            let reply = MessageContext.reply(
-                messageId: messageId,
-                channelId: channelId,
-                catalog: services.messageContext,
-                callerId: services.emailAccounts.sessionUserId(authorization: authorization),
-                serverId: serverId
-            )
-            if reply.status == 404,
-               let stored = services.emailAccounts.searchMentions.humanMessageContext(
-                   messageId: messageId,
-                   channelId: channelId,
-                   authorization: authorization,
-                   serverId: serverId,
-                   before: desktopQuery(request.url.query, "before"),
-                   after: desktopQuery(request.url.query, "after")
-               ) {
-                return try await respond { stored }
+            do {
+                try services.emailAccounts.searchMentions.authorizeHumanContextRead(
+                    messageId: messageId, channelId: channelId, authorization: authorization,
+                    serverId: serverId, catalog: services.messageContext
+                )
+                let reply = MessageContext.reply(
+                    messageId: messageId,
+                    channelId: channelId,
+                    catalog: services.messageContext,
+                    callerId: services.emailAccounts.sessionUserId(authorization: authorization),
+                    serverId: serverId
+                )
+                if reply.status == 404,
+                   let stored = services.emailAccounts.searchMentions.humanMessageContext(
+                       messageId: messageId,
+                       channelId: channelId,
+                       authorization: authorization,
+                       serverId: serverId,
+                       before: desktopQuery(request.url.query, "before"),
+                       after: desktopQuery(request.url.query, "after")
+                   ) {
+                    return try await respond { stored }
+                }
+                return routeResponse(reply)
+            } catch {
+                return try await respond { () throws -> StoredMessageContextResponse in throw error }
             }
-            return routeResponse(reply)
         }
         attachments.post("upload") { request async throws -> Response in
-            guard let contentType = request.headers[.contentType],
-                  let boundary = contentType.components(separatedBy: "boundary=").dropFirst().first?
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
-                  !boundary.isEmpty
-            else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
-            }
-            let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
-            guard let buffer, let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary) else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
-            }
-            return try await respond {
-                try services.emailAccounts.agentsLifecycle.uploadAttachments(
+            try await respond {
+                let lifecycle = services.emailAccounts.agentsLifecycle
+                let serverId = try lifecycle.authorizeHumanAttachmentUpload(
                     authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                    channelId: parsed.channelId,
-                    files: parsed.files.map {
-                        AttachmentUploadFile(filename: $0.filename, mimeType: $0.mimeType, sizeBytes: $0.sizeBytes)
-                    }
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    flexAdmission: try requireAttachmentFlexContext(request)
+                )
+                let parsed = try await AttachmentMultipartDecoder.decode(request)
+                return try await lifecycle.uploadAttachmentContents(
+                    authorization: request.headers[.authorization], serverId: serverId,
+                    channelId: parsed.channelId, files: parsed.files
+                )
+            }
+        }
+        attachments.get("upload-sessions", ":uploadId", "active") { request async throws -> Response in
+            try await respond {
+                try humanMessageCreate.absentAttachmentUploadRecovery(
+                    channelId: request.parameters.get("uploadId") ?? "",
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!]
                 )
             }
         }
@@ -363,55 +410,47 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         attachments.get(":id") { request async throws -> Response in
-            if desktopQuery(request.url.query, "previewToken") != nil {
-                return respond(status: 401, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Unauthorized")]).render())
-            }
-            if request.headers[.authorization] == nil, desktopQuery(request.url.query, "token") != nil {
-                return try await respond(headers: { (stream: AttachmentStreamBody) in stream.headers }) {
-                    try services.emailAccounts.agentsLifecycle.attachmentQueryTokenStream(
-                        attachmentId: request.parameters.get("id") ?? "",
-                        token: desktopQuery(request.url.query, "token") ?? "",
-                        serverId: desktopQuery(request.url.query, "serverId")
-                    )
-                }
-            }
-            return try await respond {
-                try services.emailAccounts.agentsLifecycle.readAttachment(
-                    authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                    attachmentId: request.parameters.get("id") ?? "",
-                    kind: .metadata
-                )
-            }
-        }
-        attachments.get(":id", "html-preview") { request async throws -> Response in
-            let preview: AttachmentHTMLPreview
+            let queryToken = desktopQuery(request.url.query, "token")
+            let authorization = request.headers[.authorization] ?? queryToken.map { "Bearer \($0)" }
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "serverId")
             do {
-                preview = try services.emailAccounts.agentsLifecycle.attachmentHTMLPreview(
+                let content = try await services.emailAccounts.agentsLifecycle.attachmentContent(
+                    authorization: authorization, serverId: serverId,
                     attachmentId: request.parameters.get("id") ?? "",
-                    serverId: desktopQuery(request.url.query, "serverId") ?? request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                    previewToken: desktopQuery(request.url.query, "previewToken"),
-                    bearerQuery: desktopQuery(request.url.query, "token")
+                    admission: try requireAttachmentFlexContext(request)
+                )
+                return AttachmentContentResponse.make(
+                    content, request: request,
+                    frameAncestors: services.corsOrigins + [services.releaseEnvironment["APP_URL"]].compactMap { $0 }
                 )
             } catch let error as any DomainError {
                 return respond(status: error.status, headers: error.errorHeaders, rawJSON: error.publishedErrorBody.render())
             }
-            // Feature-local on purpose: the preview streams the stored document
-            // plus the appended bridge, so it must not carry a Content-Length
-            // (`respond` always writes one).
-            return streamingResponse(preview)
+        }
+        attachments.get(":id", "html-preview") { request async throws -> Response in
+            do {
+                guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                let content = try await services.emailAccounts.agentsLifecycle.attachmentHTMLPreview(
+                    attachmentId: request.parameters.get("id") ?? "",
+                    admission: admission,
+                    previewToken: AttachmentQueryScalars.value(request.url.query, named: "previewToken"),
+                    bearerQuery: AttachmentQueryScalars.value(request.url.query, named: "token")
+                )
+                return try AttachmentHTMLPreviewResponse.make(content,
+                    frameAncestors: services.corsOrigins + [services.releaseEnvironment["APP_URL"]].compactMap { $0 })
+            } catch let error as any DomainError {
+                return respond(status: error.status, headers: error.errorHeaders, rawJSON: error.publishedErrorBody.render())
+            }
         }
         attachments.get(":id", "html-preview-url") { request async throws -> Response in
-            if desktopQuery(request.url.query, "previewToken") != nil {
-                return respond(status: 401, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Unauthorized")]).render())
-            }
             return try await respond {
-                try services.emailAccounts.agentsLifecycle.readAttachment(
-                    authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!],
-                    attachmentId: request.parameters.get("id") ?? "",
-                    kind: .htmlPreviewURL
-                )
+                guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                return try await services.emailAccounts.agentsLifecycle.attachmentHTMLPreviewURL(
+                    attachmentId: request.parameters.get("id") ?? "", admission: admission)
             }
         }
         tasks.get("server", "snapshot-metrics") { request async throws -> Response in
@@ -434,7 +473,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         tasks.get("channel", ":channelId") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.tasksAndLabs.listChannelTasks(
+                try services.tasksAndLabs.listChannelTasks(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -444,7 +483,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         }
         tasks.get("channel", ":channelId", "number", ":taskNumber") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.tasksAndLabs.getChannelTaskByNumber(
+                try services.tasksAndLabs.getChannelTaskByNumber(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
@@ -477,7 +516,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             // missing or non-object body stays `nil` (the service's 400).
             let body = await jsonRequestBody(TaskAssigneePatchRequest.self, request)
             return try await respond {
-                try services.emailAccounts.tasksAndLabs.assignTask(
+                try services.tasksAndLabs.assignTask(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     taskId: request.parameters.get("taskId") ?? "",
@@ -538,85 +577,24 @@ public struct MessagingFeature: RouteCollection, Sendable {
 }
 
 }
-// MARK: - File-private helpers copied verbatim from `FallbackApplication.swift`
 
-private struct MultipartPart {
-    var name: String?
-    var filename: String?
-    var mimeType: String?
-    var data: Data
+/// Vapor's pinned HTTPTypes bridge does not retain HTTP/1 Host as a field.
+/// The native listener address supplies its actual origin when no configured
+/// server URL or forwarded development origin applies.
+private func attachmentRequestHost(_ request: Request) -> String? {
+    if let host = request.headers[HTTPField.Name("Host")!], !host.isEmpty { return host }
+    guard let address = request.localAddress, let ip = address.host, let port = address.port else { return nil }
+    var origin = URLComponents()
+    origin.host = ip
+    origin.port = port
+    guard let authority = origin.string, authority.hasPrefix("//") else { return nil }
+    return String(authority.dropFirst(2))
 }
 
-private func multipartParts(data: Data, boundary: String) -> [MultipartPart] {
-    let separator = Data("\r\n--\(boundary)".utf8)
-    var chunks: [Data] = []
-    var splitCursor = data.startIndex
-    while let range = data.range(of: separator, in: splitCursor..<data.endIndex) {
-        chunks.append(data[splitCursor..<range.lowerBound])
-        splitCursor = range.upperBound
+/// The prefix gate is the sole producer; missing wiring fails closed.
+private func requireAttachmentFlexContext(_ request: Request) throws -> AttachmentFlexAdmission {
+    guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+        throw AttachmentFlexAdmissionError.authenticationRequired
     }
-    chunks.append(data[splitCursor..<data.endIndex])
-    let firstPrefix = Data("--\(boundary)\r\n".utf8)
-    if var first = chunks.first, first.starts(with: firstPrefix) {
-        first = first.dropFirst(firstPrefix.count)
-        chunks[0] = first
-    }
-    var parts: [MultipartPart] = []
-    for chunk in chunks {
-        var part = chunk
-        if part.starts(with: Data("\r\n".utf8)) { part = part.dropFirst(2) }
-        if part.starts(with: Data("--".utf8)) { continue }
-        guard let headerEnd = part.range(of: Data("\r\n\r\n".utf8)) else { continue }
-        let headerData = part[part.startIndex..<headerEnd.lowerBound]
-        let body = part[headerEnd.upperBound..<part.endIndex]
-        let headers = String(decoding: headerData, as: UTF8.self)
-        var name: String?
-        var filename: String?
-        var mimeType: String?
-        for line in headers.components(separatedBy: "\r\n") {
-            let lower = line.lowercased()
-            if lower.hasPrefix("content-disposition:") {
-                for component in line.components(separatedBy: ";") {
-                    let trimmed = component.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("name=") {
-                        name = trimmed.dropFirst(5).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    } else if trimmed.hasPrefix("filename=") {
-                        filename = trimmed.dropFirst(9).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    }
-                }
-            } else if lower.hasPrefix("content-type:") {
-                mimeType = line.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces)
-            }
-        }
-        parts.append(MultipartPart(name: name, filename: filename, mimeType: mimeType, data: Data(body)))
-    }
-    return parts
-}
-
-private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelId: String, files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)])? {
-    var channelId: String?
-    var files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)] = []
-    for part in multipartParts(data: data, boundary: boundary) {
-        if part.name == "channelId" {
-            channelId = String(decoding: part.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let filename = part.filename, !filename.isEmpty {
-            files.append((filename: filename, mimeType: part.mimeType, sizeBytes: part.data.count, data: part.data))
-        }
-    }
-    guard let channelId, !channelId.isEmpty else { return nil }
-    return (channelId, files)
-}
-
-private func streamingResponse(_ preview: AttachmentHTMLPreview) -> Response {
-    var headers = HTTPFields()
-    for (name, value) in preview.headers {
-        guard let field = HTTPField.Name(name) else { continue }
-        headers[field] = value
-    }
-    var response = Response(status: .ok, headers: headers)
-    let body = preview.body
-    response.body = Response.Body { writer in
-        try await writer.write(body)
-    }
-    return response
+    return admission
 }

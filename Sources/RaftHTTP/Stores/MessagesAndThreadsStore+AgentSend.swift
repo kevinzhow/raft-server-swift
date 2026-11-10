@@ -24,7 +24,11 @@ extension MessagesAndThreadsStore {
     ) {
         withState { state in
             for row in rows {
-                state.threadFollows["\(row.serverId)\n\(row.userId)\n\(row.threadChannelId)"] = row
+                let key = "\(row.serverId)\n\(row.userId)\n\(row.threadChannelId)"
+                // Ordinary parent-author auto-follow never reactivates an
+                // explicit unfollow. Reply/mention reactivation has its own gate.
+                guard state.threadUnfollows[key] == nil else { continue }
+                state.threadFollows[key] = row
             }
         }
     }

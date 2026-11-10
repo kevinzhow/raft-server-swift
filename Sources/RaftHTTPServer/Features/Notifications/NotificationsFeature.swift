@@ -373,7 +373,7 @@ public struct NotificationsFeature: RouteCollection, Sendable {
         v2.post("messages") { request async throws -> Response in
             let body = await jsonRequestBody(HumanMessageCreateRequest.self, request)
             return try await respond {
-                try services.emailAccounts.humanMessageCreate.createHumanMessage(
+                try services.humanMessageCreate.createHumanMessage(
                     body,
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!],

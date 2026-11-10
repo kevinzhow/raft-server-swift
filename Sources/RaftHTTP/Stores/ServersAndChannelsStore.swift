@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Owns the server-membership, sidebar and channel-authority rows that used to be stored inline on
 /// `EmailLoginDirectory`.
@@ -52,7 +53,7 @@ final class ServersAndChannelsStore: Sendable {
         var installedServerApps: [String: Set<String>] = [:]
     }
 
-    let mutex = Mutex(State())
+    let mutex = TransactionalState(State())
 
     /// A value snapshot; transaction methods hold the Mutex for their whole decision.
     var state: State {

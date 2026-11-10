@@ -33,9 +33,22 @@ private let wireServer = "33333333-3333-4333-8333-333333333821"
 
             let list = try await client.send(.get, headers: json, to: "/api/servers/\(wireServer)/machines")
             #expect(list.status == .ok)
-            #expect(list.body.string == #"{"machines":[{"id":"\#(machineId)","name":"ghost-box","userId":"\#(ghostCreator)","description":null,"isComputer":false,"computerAttachedByCurrentUser":false,"agentCount":0,"creator":null,"runtimes":[],"computerUpgradeAvailable":null,"computerBroadcastPolicy":null}],"latestComputerVersion":null,"latestComputerReleaseNotes":null}"#)
+            #expect(list.body.string == #"{"machines":[{"id":"\#(machineId)","name":"ghost-box","userId":"\#(ghostCreator)","description":null,"isComputer":false,"computerAttachedByCurrentUser":false,"agentCount":0,"creator":null,"status":"offline","statusVersion":0,"runtimes":[],"runtimeVersions":{},"runtimeDetection":null,"hostname":null,"lastHeartbeat":null,"computerUpgradeAvailable":null,"computerBroadcastPolicy":null}],"latestComputerVersion":null,"latestComputerReleaseNotes":null}"#)
             #expect(list.headers[.contentType] == "application/json; charset=utf-8" || list.headers[.contentType] != nil)
             #expect(list.headers[HTTPField.Name("X-Robots-Tag")!] != nil)
+
+            // A legacy Bool cannot grant real connection presence. The published
+            // logical version must still be the actual existing owner counter.
+            accounts.setMachineOnline(machineId: machineId, online: true)
+            let bumped = accounts.bumpMachineStatusVersion(machineId: machineId)
+            let legacy = try await client.send(.get, headers: json, to: "/api/servers/\(wireServer)/machines")
+            #expect(legacy.status == .ok)
+            let legacyBody = try JSONSerialization.jsonObject(with: Data((legacy.body.string ?? "").utf8)) as? [String: Any]
+            let row = try #require((legacyBody?["machines"] as? [[String: Any]])?.first)
+            #expect(row["status"] as? String == "offline")
+            #expect(row["statusVersion"] as? Int == bumped)
+            #expect(row["hostname"] is NSNull)
+            #expect(row["lastHeartbeat"] is NSNull)
 
             // A body without a JSON Content-Type is still read (the legacy raw parse).
             let patched = try await client.send(.patch, headers: bare, to: "/api/servers/\(wireServer)/machines/\(machineId)") { request in

@@ -5,7 +5,12 @@ import Foundation
 /// owning Mutex for the full change; no whole-state snapshot is written back.
 extension EmailLoginDirectory {
     public func configureOAuthForTesting(_ update: (inout OAuthFlowsService.DeploymentConfiguration) -> Void) {
-        authProfileStore.state.withLock { update(&$0.configSurface.oauthDeployment) }
+        authProfileStore.state.withLock { state in
+            if state.configSurface.oauthDeployment.socialAuthStateSecret.isEmpty {
+                state.configSurface.oauthDeployment.socialAuthStateSecret = AuthJWTFixture.socialSigningSecret
+            }
+            update(&state.configSurface.oauthDeployment)
+        }
     }
 
     public func configureAuthCoreForTesting(_ update: (inout AuthCoreService.DeploymentConfiguration) -> Void) {

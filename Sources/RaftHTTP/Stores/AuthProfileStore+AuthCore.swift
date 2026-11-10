@@ -36,6 +36,7 @@ struct SocialCompletionAttempt: Sendable {
     var userAgentHash: String?
     var locale: String?
     var now: Date
+    var passwordPlaceholder: String? = nil
 }
 
 enum SocialCompletionOutcome: Sendable, Equatable {
@@ -66,13 +67,18 @@ struct RegistrationAttempt: Sendable {
     var now: Date
 }
 
-struct RegisteredAccount: Sendable, Equatable {
+struct RegisteredAccount: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     var id: String
     var email: String
     var name: String
     var suggestedHandle: String
     var emailVerified: Bool
     var tokens: IssuedSessionTokens
+    /// Internal delivery fact, never included in RegisterResponse or snapshots.
+    var verificationToken: String
+
+    var description: String { "RegisteredAccount(confidential)" }
+    var debugDescription: String { description }
 }
 
 enum RegistrationOutcome: Sendable, Equatable {
@@ -120,6 +126,23 @@ extension AuthProfileStore {
         }
     }
 
+    /// Account, token and optional family are validated in one owner borrow.
+    /// No expiry or email-verification policy is added to native access rows.
+    func activeSessionPrincipal(accessToken token: String) -> (userId: String, familyId: String?)? {
+        state.withLock { state in
+            guard let userId = state.accountSurface.accessTokens[token],
+                  state.accountSurface.accounts.values.contains(where: { $0.id == userId && $0.retiredAt == nil })
+            else { return nil }
+            let familyId = state.accountSurface.accessTokenFamilies[token]
+            if let familyId {
+                guard !state.accountSurface.revokedFamilies.contains(familyId),
+                      let family = state.accountSurface.sessionFamilies[familyId],
+                      family.userId == userId, family.revokedAt == nil else { return nil }
+            }
+            return (userId, familyId)
+        }
+    }
+
     /// Opens one session family for `userId` (one critical section).
     func openSession(userId: String) -> IssuedSessionTokens {
         return state.withLock { state in
@@ -133,6 +156,16 @@ extension AuthProfileStore {
     /// checks, the legal gate, the completion consume, the account insert and
     /// the session open are one critical section: two concurrent requests with
     /// one code cannot both spend it.
+    func socialPasswordPlaceholderNeeded(provider: String, code: String) -> Bool {
+        state.withLock { state in
+            guard let completion = state.accountSurface.socialCompletions.first(where: {
+                $0.provider == provider && $0.code == code
+            }) else { return false }
+            return completion.userId == nil && completion.mode != "link"
+                && state.accountSurface.accounts[completion.email] == nil
+        }
+    }
+
     func completeSocial(_ attempt: SocialCompletionAttempt) -> SocialCompletionOutcome {
         return state.withLock { state in
             guard let index = state.accountSurface.socialCompletions.firstIndex(where: {
@@ -216,6 +249,8 @@ extension AuthProfileStore {
                     return .termsChanged
                 }
             }
+            if completion.userId == nil, state.accountSurface.accounts[completion.email] == nil,
+               attempt.passwordPlaceholder == nil { return .invalidCompletion }
             state.accountSurface.socialCompletions.remove(at: index)
             let id = completion.userId ?? UUID().uuidString.lowercased()
             let taken = Set(state.accountSurface.accounts.values.map(\.name))
@@ -231,7 +266,7 @@ extension AuthProfileStore {
                 state.accountSurface.accounts[completion.email] = Account(
                     id: id,
                     email: completion.email,
-                    passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
+                    passwordHash: attempt.passwordPlaceholder!,
                     displayLanguage: nil,
                     name: pendingName,
                     profileSetupSuggestedHandle: suggested
@@ -262,6 +297,17 @@ extension AuthProfileStore {
         state.accountSurface.sessions[refreshToken] = LiveSession(userId: userId, familyId: UUID().uuidString.lowercased())
         state.accountSurface.accessTokens[accessToken] = userId
         return IssuedSessionTokens(accessToken: accessToken, refreshToken: refreshToken)
+    }
+
+    // MARK: - Transactional email recipient
+
+    /// Address and greeting facts only. Reset-token inserts and consumes keep
+    /// their existing store operations and expiry/hash behavior.
+    func transactionalEmailRecipient(email: String) -> TransactionalEmailRecipient? {
+        state.withLock { state in
+            guard let account = state.accountSurface.accounts[AccountNaming.normalize(email)] else { return nil }
+            return TransactionalEmailRecipient(email: account.email, name: account.name)
+        }
     }
 
     // MARK: - Register
@@ -320,7 +366,8 @@ extension AuthProfileStore {
                 name: pendingName,
                 suggestedHandle: suggested,
                 emailVerified: attempt.autoVerify,
-                tokens: tokens
+                tokens: tokens,
+                verificationToken: verificationToken
             ))
         }
     }
@@ -462,7 +509,7 @@ extension AuthProfileStore {
                 )
             }
             guard let live = state.accountSurface.sessions[refreshToken],
-                  !state.accountSurface.revokedFamilies.contains(live.familyId)
+                  Self.ensureRefreshFamilyLocked(state: &state, userId: live.userId, familyId: live.familyId)
             else { return nil }
             state.accountSurface.sessions.removeValue(forKey: refreshToken)
             state.accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] = live.familyId
@@ -475,6 +522,17 @@ extension AuthProfileStore {
         }
     }
 
+    /// A real legacy refresh upgrades its own current family facts. Never
+    /// overwrite an existing foreign or revoked family, or invent issue times.
+    private static func ensureRefreshFamilyLocked(state: inout State, userId: String, familyId: String) -> Bool {
+        guard !state.accountSurface.revokedFamilies.contains(familyId) else { return false }
+        if let family = state.accountSurface.sessionFamilies[familyId] {
+            return family.userId == userId && family.revokedAt == nil
+        }
+        state.accountSurface.sessionFamilies[familyId] = SessionFamily(userId: userId, revokedAt: nil)
+        return true
+    }
+
     private static func durableRotationLocked(
         state: inout State,
         refreshToken: String,
@@ -484,7 +542,7 @@ extension AuthProfileStore {
     ) -> RefreshRotation? {
         let hash = AuthTokenCodec.sha256(refreshToken)
         if let live = state.accountSurface.sessions.removeValue(forKey: refreshToken) {
-            if state.accountSurface.revokedFamilies.contains(live.familyId) { return nil }
+            guard Self.ensureRefreshFamilyLocked(state: &state, userId: live.userId, familyId: live.familyId) else { return nil }
             let successor = AuthTokenCodec.token()
             state.accountSurface.sessions[successor] = live
             state.accountSurface.rotationReceipts[hash] = RotationReceipt(
@@ -503,7 +561,8 @@ extension AuthProfileStore {
         }
         guard let receipt = state.accountSurface.rotationReceipts[hash] else { return nil }
         if receipt.attemptId != attemptId || receipt.installationId != installationId { return nil }
-        if receipt.expiresAt <= now || state.accountSurface.revokedFamilies.contains(receipt.familyId) { return nil }
+        guard receipt.expiresAt > now,
+              Self.ensureRefreshFamilyLocked(state: &state, userId: receipt.userId, familyId: receipt.familyId) else { return nil }
         let accessToken = AuthTokenCodec.token()
         state.accountSurface.accessTokens[accessToken] = receipt.userId
         state.accountSurface.accessTokenFamilies[accessToken] = receipt.familyId
@@ -512,16 +571,39 @@ extension AuthProfileStore {
 
     /// Revokes the family behind one refresh token (live, predecessor or
     /// replay receipt) in one critical section.
-    func revokeRefreshFamily(refreshToken: String, now: Date) {
-        return state.withLock { state in
+    @discardableResult
+    func revokeRefreshFamily(refreshToken: String, now: Date) -> SessionAccessRevocation? {
+        state.withLock { state in
             let retainUntil = now.addingTimeInterval(30 * 24 * 60 * 60)
+            let hash = AuthTokenCodec.sha256(refreshToken)
+            let revoked: SessionAccessRevocation?
+            let familyId: String
+            let dropSessions: Bool
             if let live = state.accountSurface.sessions.removeValue(forKey: refreshToken) {
-                Self.revokeFamilyLocked(state: &state, live.familyId, now: now, retainUntil: retainUntil, dropSessions: true)
-            } else if let predecessorFamily = state.accountSurface.predecessorFamilies[AuthTokenCodec.sha256(refreshToken)] {
-                Self.revokeFamilyLocked(state: &state, predecessorFamily, now: now, retainUntil: retainUntil, dropSessions: true)
-            } else if let receipt = state.accountSurface.rotationReceipts[AuthTokenCodec.sha256(refreshToken)] {
-                Self.revokeFamilyLocked(state: &state, receipt.familyId, now: now, retainUntil: retainUntil, dropSessions: false)
-            }
+                familyId = live.familyId
+                dropSessions = true
+                let bound = state.accountSurface.sessionFamilies[familyId] != nil
+                    || state.accountSurface.accessTokenFamilies.values.contains(familyId)
+                revoked = bound ? .family(userId: live.userId, familyId: familyId) : .user(userId: live.userId)
+                // Retain existing hash-only logout lineage for a retry's real
+                // family identity, as well as for refresh predecessors.
+                state.accountSurface.predecessorFamilies[hash] = familyId
+            } else if let predecessor = state.accountSurface.predecessorFamilies[hash] {
+                familyId = predecessor
+                dropSessions = true
+                var users = Set(state.accountSurface.sessions.values.filter { $0.familyId == familyId }.map { $0.userId })
+                if let family = state.accountSurface.sessionFamilies[familyId] { users.insert(family.userId) }
+                let user = users.count == 1 ? users.first : nil
+                // Missing historical user facts cannot authorize a guessed
+                // all-user close. The real family is still revoked below.
+                revoked = user.map { .family(userId: $0, familyId: familyId) }
+            } else if let receipt = state.accountSurface.rotationReceipts[hash] {
+                familyId = receipt.familyId
+                dropSessions = false
+                revoked = .family(userId: receipt.userId, familyId: familyId)
+            } else { return nil }
+            Self.revokeFamilyLocked(state: &state, familyId, now: now, retainUntil: retainUntil, dropSessions: dropSessions)
+            return revoked
         }
     }
 

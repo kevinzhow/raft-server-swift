@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -31,6 +31,7 @@ private func makeAttachmentCommentsFixture() -> AttachmentCommentsFixture {
         accounts.addAccount(id: id, email: email, password: "password123")
         accounts.markEmailVerified(userId: id)
     }
+    accounts.setAccountProfileForTesting(id: ownerId, name: "owner")
     accounts.oauth.addOwnedServer(id: serverId, slug: "attachment-comments", name: "Attachment Comments", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: reviewerId, role: "member")
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "ac-public", creatorUserId: ownerId)
@@ -71,7 +72,7 @@ private func commentsRequest(
     path: String,
     body: String? = nil,
     serverId: String? = nil
-) async throws -> (status: HTTPResponse.Status, body: [String: Any]) {
+) async throws -> (status: HTTPResponse.Status, body: [String: Any], rawBody: String) {
     var headers = HTTPFields()
     headers[.authorization] = "Bearer \(f.reviewerToken)"
     if body != nil { headers[.contentType] = "application/json" }
@@ -80,7 +81,7 @@ private func commentsRequest(
         if let body { request.body = .init(string: body) }
     }
     let json = (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-    return (response.status, json)
+    return (response.status, json, response.body.string ?? "")
 }
 
 @Test func attachmentCommentsGateAnswersBeforeBodyValidation() async throws {
@@ -156,11 +157,25 @@ private func commentsRequest(
             #expect(unlinked.status == .unprocessableContent)
             #expect(unlinked.body["code"] as? String == "attachment_not_linked")
 
+            let otherServerId = "33333333-3333-4333-8333-333333333685"
+            // The prefix membership gate answers before the comments leaf.
+            let nonMember = try await commentsRequest(
+                client, f, method: .get, path: "/api/attachments/\(f.linked)/comments", serverId: otherServerId
+            )
+            #expect(nonMember.status == .forbidden)
+            #expect(nonMember.rawBody == #"{"error":"Not a member of this server"}"#)
+
+            // Establish a real other regular server and current membership in
+            // the same root before asserting attachment visibility there.
+            f.accounts.oauth.addOwnedServer(id: otherServerId, slug: "attachment-comments-other",
+                name: "Attachment Comments Other", ownerId: f.ownerId)
+            f.accounts.oauth.addMember(serverId: otherServerId, userId: f.reviewerId, role: "member")
             // Another server's attachment id is indistinguishable from missing.
             let crossServer = try await commentsRequest(
-                client, f, method: .get, path: "/api/attachments/\(f.linked)/comments", serverId: "33333333-3333-4333-8333-333333333685"
+                client, f, method: .get, path: "/api/attachments/\(f.linked)/comments", serverId: otherServerId
             )
             #expect(crossServer.status == .notFound)
+            #expect(crossServer.rawBody == #"{"error":"Attachment not found"}"#)
 
             // Private-channel attachments are cloaked for non-members.
             let cloaked = try await commentsRequest(
@@ -305,7 +320,7 @@ private func commentsRequest(
             // Structured mentions persist through the shared pipeline.
             let mentioned = try await commentsRequest(
                 client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
-                body: "{\"content\":\"@\(f.ownerId) look\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(f.ownerId)\",\"name\":\"owner\"}]}"
+                body: "{\"content\":\"@owner look\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(f.ownerId)\",\"name\":\"owner\"}]}"
             )
             #expect(mentioned.status == .ok)
             let mentionedId = try #require(((mentioned.body["message"] as? [String: Any])?["id"]) as? String)
@@ -449,6 +464,56 @@ private func commentsRequest(
             let deniedParentReaction = try await react(f.parentMessageId, "memo", .post)
             #expect(parentCommentCount(deniedParentReaction) == 0)
             _ = try await react(f.parentMessageId, "memo", .delete)
+        }
+    }
+}
+
+@Test func attachmentCommentMentionsUseActualCommenterAndTheSharedCanonicalScope() async throws {
+    let f = makeAttachmentCommentsFixture()
+    let outsider = UUID().uuidString.lowercased()
+    f.accounts.addAccount(id: outsider, email: "comment-outsider@test.invalid", password: "password123")
+    f.accounts.setAccountProfileForTesting(id: outsider, name: "comment_outsider")
+    f.accounts.markEmailVerified(userId: outsider)
+    f.accounts.oauth.addMember(serverId: f.serverId, userId: outsider, role: "member")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            for (content, name) in [("missing token", "owner"), ("@ac-owner wrong canonical", "ac-owner"), ("`@owner` code", "owner")] {
+                let bad = try await commentsRequest(client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                    body: "{\"content\":\"\(content)\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(f.ownerId)\",\"name\":\"\(name)\"}]}")
+                #expect(bad.status == .ok)
+                let id = try #require((bad.body["message"] as? [String: Any])?["id"] as? String)
+                #expect(f.accounts.messageMentionRows(messageId: id).isEmpty)
+            }
+            let created = try await commentsRequest(client, f, method: .post, path: "/api/attachments/\(f.linked)/comments",
+                body: "{\"content\":\"review @comment_outsider\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(outsider)\",\"name\":\"comment_outsider\"}]}")
+            #expect(created.status == .ok)
+            let message = try #require(created.body["message"] as? [String: Any])
+            let messageId = try #require(message["id"] as? String)
+            let thread = try #require(created.body["threadChannelId"] as? String)
+            let retained = try #require(f.accounts.messagesAndThreadsStore.state.storedMentions.first { $0.messageId == messageId })
+            #expect(retained.senderId == f.reviewerId)
+            #expect(retained.channelId == thread)
+            #expect(retained.targetId == outsider)
+            #expect(retained.handle == "comment_outsider")
+            #expect(!retained.notifiableAtSend)
+            #expect(retained.notifiedAt == nil)
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(f.reviewerToken)"
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("X-Server-Id")!] = f.serverId
+            let executed = try await client.send(.post, headers: headers, to: "/api/messages/mention-actions/execute") { request in
+                request.body = .init(string: "{\"action\":\"notify\",\"resolutionIds\":[\"\(retained.id)\"]}")
+            }
+            #expect(executed.status == .ok)
+            let resultBody = try #require(try JSONSerialization.jsonObject(with: Data((executed.body.string ?? "").utf8)) as? [String: Any])
+            let result = try #require((resultBody["results"] as? [[String: Any]])?.first)
+            #expect(result["status"] as? String == "queued")
+            #expect(result["messageId"] as? String == messageId)
+            #expect(result["channelId"] as? String == thread)
+            #expect(result["dedupedResolutionIds"] as? [String] == [retained.id])
+            #expect(f.accounts.mentionActionRecord(id: retained.id)?.notifiedById == f.reviewerId)
+            #expect(!f.accounts.oauth.isChannelParticipant(channelId: f.channelId, userId: outsider))
         }
     }
 }

@@ -65,6 +65,14 @@ struct MachineMigrationCancelAck: Sendable {
     let outcome: String
 }
 
+enum AgentMachineAssignmentOutcome: Sendable, Equatable {
+    case assigned
+    case activeMigration
+    case executionRequiresRecovery
+}
+
+enum AgentMigrationAdmissionOutcome: Sendable, Equatable { case inserted, activeMigration, activeReset }
+
 extension AgentsRuntimeStore {
     private static let terminalMachineMigrationStates: Set<String> = [
         "canceled_pre_flip", "completed", "aborted", "failed",
@@ -90,27 +98,65 @@ extension AgentsRuntimeStore {
         }
     }
 
-    /// The assignment write guarded by the active-migration check, one critical
-    /// section. `false` when an active migration owns the agent.
+    /// Legacy callers have no target-owner proof. They share the same gate and
+    /// cannot use this Bool API to move a tracked execution context.
     func assignMachine(agentId: String, machineId: String?) -> Bool {
-        return withState { state in
-            if Self.hasActiveMigrationLocked(state: &state, agentId: agentId) { return false }
+        assignMachineFenced(agentId: agentId, machineId: machineId, serverId: nil, targetServerId: nil) == .assigned
+    }
+
+    func assignMachineWithExecutionFence(serverId: String, agentId: String, machineId: String?,
+                                         targetServerId: String?) -> AgentMachineAssignmentOutcome {
+        assignMachineFenced(agentId: agentId, machineId: machineId, serverId: serverId, targetServerId: targetServerId)
+    }
+
+    /// Migration admission, bounded execution coordination, and the binding
+    /// change publish from one owner borrow; refusal writes neither half.
+    private func assignMachineFenced(agentId: String, machineId: String?, serverId: String?,
+                                     targetServerId: String?) -> AgentMachineAssignmentOutcome {
+        withState { state in
+            if Self.hasActiveMigrationLocked(state: &state, agentId: agentId) { return .activeMigration }
+            if (state.execution.resetIntents ?? [:]).values.contains(where: { $0.agentId == agentId && $0.phase.isActive }) {
+                return .executionRequiresRecovery
+            }
+            let changed = state.agentMachineIds[agentId] != machineId
+            guard state.execution.prepareNeverLaunchedAssignment(agentId: agentId, serverId: serverId,
+                machineId: machineId, targetServerId: targetServerId, bindingChanged: changed) else {
+                return .executionRequiresRecovery
+            }
             if let machineId {
                 state.agentMachineIds[agentId] = machineId
             } else {
                 state.agentMachineIds.removeValue(forKey: agentId)
             }
+            return .assigned
+        }
+    }
+
+    /// Read-only precheck before synchronous provisioner/lease side effects.
+    /// Final admission still checks reset under the insertion's owner borrow.
+    func hasActiveReset(agentId: String) -> Bool {
+        withState { state in (state.execution.resetIntents ?? [:]).values.contains { $0.agentId == agentId && $0.phase.isActive } }
+    }
+
+    /// Reciprocal reset admission and insertion share this retained owner lock.
+    func mutateExecutionIfMigrationIdle(agentId: String, _ update: (inout AgentExecutionState) -> Void) -> Bool {
+        withState { state in
+            guard !Self.hasActiveMigrationLocked(state: &state, agentId: agentId) else { return false }
+            update(&state.execution)
             return true
         }
     }
 
-    /// Inserts a freshly provisioned Computer migration unless one became
-    /// active since the caller's early check. One critical section.
     func insertMachineMigrationIfIdle(_ record: MachineMigrationRecord) -> Bool {
-        return withState { state in
-            if Self.hasActiveMigrationLocked(state: &state, agentId: record.agentId) { return false }
+        admitMachineMigrationIfIdle(record) == .inserted
+    }
+
+    func admitMachineMigrationIfIdle(_ record: MachineMigrationRecord) -> AgentMigrationAdmissionOutcome {
+        withState { state in
+            if Self.hasActiveMigrationLocked(state: &state, agentId: record.agentId) { return .activeMigration }
+            if (state.execution.resetIntents ?? [:]).values.contains(where: { $0.agentId == record.agentId && $0.phase.isActive }) { return .activeReset }
             state.machineMigrations[record.supportRef] = record
-            return true
+            return .inserted
         }
     }
 

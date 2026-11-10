@@ -61,7 +61,7 @@ private func headers(_ fixture: AssigneeFixture, _ userId: String) -> HTTPFields
             }
             #expect(created.status == .ok || created.status == .created, Comment(rawValue: created.body.string ?? ""))
             let createdBody = try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any] ?? [:]
-            let taskId = try #require((createdBody["taskIds"] as? [String])?.first)
+            let taskId = try #require((createdBody["tasks"] as? [[String: Any]])?.first?["id"] as? String)
             #expect(fixture.accounts.taskStatusForTesting(taskId: taskId) == "todo")
             let initialRevision = try #require(fixture.accounts.taskRevisionForTesting(taskId: taskId))
 
@@ -148,7 +148,7 @@ private func headers(_ fixture: AssigneeFixture, _ userId: String) -> HTTPFields
                     request.body = .init(string: "{\"tasks\":[{\"title\":\"flow task\"}]}")
                 }
                 let body = try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any] ?? [:]
-                return try #require((body["taskIds"] as? [String])?.first)
+                return try #require((body["tasks"] as? [[String: Any]])?.first?["id"] as? String)
             }
             func assign(_ taskId: String, _ body: String) async throws -> HTTPResponse.Status {
                 let response = try await client.send(.patch, headers: memberHeaders, to: URI(string: "/api/tasks/\(taskId)/assignee")) { request in

@@ -7,7 +7,7 @@ import Foundation
 /// outcome to a DTO or an `OAuthFlowsError`.
 extension OAuthFlowsService {
     /// `POST /api/auth/mobile/oauth/start`. The desktop nonce is taken from the loopback return URI.
-    public func startMobileOAuth(_ body: MobileOAuthStartRequest) throws -> MobileOAuthStarted {
+    public func startMobileOAuth(_ body: MobileOAuthStartRequest) async throws -> MobileOAuthStarted {
         guard body.isObject else { throw OAuthFlowsError.invalidMobileStart }
         let config = store.config()
         guard let returnUri = body.returnUri, Self.returnURIAllowed(returnUri, config) else {
@@ -24,7 +24,7 @@ extension OAuthFlowsService {
         if provider == "apple", !Self.mobileAppleAvailable(config) {
             throw OAuthFlowsError.appleNotConfigured
         }
-        return openedMobileOAuth(
+        return try await openedMobileOAuth(
             provider: provider, mode: mode, returnUri: returnUri, challenge: challenge, userId: nil,
             linkOnConflict: body.linkOnConflict
         )
@@ -35,7 +35,7 @@ extension OAuthFlowsService {
         provider: String,
         body: MobileOAuthStartRequest,
         authorization: String?
-    ) throws -> MobileOAuthStarted {
+    ) async throws -> MobileOAuthStarted {
         guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
@@ -48,7 +48,7 @@ extension OAuthFlowsService {
         guard let challenge = body.codeChallenge, Self.isPKCEChallenge(challenge) else {
             throw OAuthFlowsError.invalidMobileStart
         }
-        return openedMobileOAuth(
+        return try await openedMobileOAuth(
             provider: provider, mode: "link", returnUri: returnUri, challenge: challenge, userId: userId
         )
     }
@@ -60,11 +60,19 @@ extension OAuthFlowsService {
         challenge: String,
         userId: String?,
         linkOnConflict: Bool = false
-    ) -> MobileOAuthStarted {
+    ) async throws -> MobileOAuthStarted {
         let id = UUID().uuidString.lowercased()
         let nonce = AuthTokenCodec.randomHex(16)
         let desktopNonce = AuthRedirects.desktopNonce(from: returnUri)
         let expiresAt = now().addingTimeInterval(600)
+        let state = try await AuthTokenCodec.signSocialAuthState(SocialAuthState(
+            provider: provider,
+            mode: mode,
+            nonce: nonce,
+            kind: "mobile",
+            mobileRequestId: id,
+            desktopNonce: desktopNonce
+        ), secret: store.config().socialAuthStateSecret)
         store.insertMobileRequest(MobileOAuthRequest(
             id: id,
             provider: provider,
@@ -76,14 +84,6 @@ extension OAuthFlowsService {
             expiresAt: expiresAt,
             userId: userId,
             linkOnConflict: linkOnConflict
-        ))
-        let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
-            provider: provider,
-            mode: mode,
-            nonce: nonce,
-            kind: "mobile",
-            mobileRequestId: id,
-            desktopNonce: desktopNonce
         ))
         return MobileOAuthStarted(
             requestId: id,
@@ -99,13 +99,13 @@ extension OAuthFlowsService {
         code: String?,
         state: String?,
         providerError: String? = nil
-    ) throws -> OAuthRedirect {
-        guard let state, let parsed = AuthTokenCodec.verifySocialAuthState(state),
+    ) async throws -> OAuthRedirect {
+        let config = store.config()
+        guard let state, let parsed = await AuthTokenCodec.verifySocialAuthState(state, secret: config.socialAuthStateSecret),
               parsed.kind == "mobile", parsed.provider == provider
         else {
             throw OAuthFlowsError.invalidMobileRequest
         }
-        let config = store.config()
         let handoff = AuthTokenCodec.randomHex(32)
         switch store.mobileCallback(
             requestId: parsed.mobileRequestId,
@@ -132,6 +132,20 @@ extension OAuthFlowsService {
 
     /// `POST /api/auth/mobile/oauth/complete`. The handoff code is spent only after the PKCE verifier matches.
     public func completeMobileOAuth(_ body: MobileOAuthCompleteRequest) throws -> MobileOAuthCompleted {
+        guard let code = body.code, !code.isEmpty else { throw OAuthFlowsError.invalidMobileCompletion }
+        let needed = store.mobilePasswordPlaceholderNeeded(code: code)
+        let placeholder = needed ? try PasswordCredential.hash(AuthTokenCodec.randomHex(32)) : nil
+        return try finishMobileOAuth(body, passwordPlaceholder: placeholder)
+    }
+
+    public func completeMobileOAuthAsync(_ body: MobileOAuthCompleteRequest) async throws -> MobileOAuthCompleted {
+        guard let code = body.code, !code.isEmpty else { throw OAuthFlowsError.invalidMobileCompletion }
+        let needed = store.mobilePasswordPlaceholderNeeded(code: code)
+        let placeholder = needed ? try await PasswordWork.hash(AuthTokenCodec.randomHex(32)) : nil
+        return try finishMobileOAuth(body, passwordPlaceholder: placeholder)
+    }
+
+    private func finishMobileOAuth(_ body: MobileOAuthCompleteRequest, passwordPlaceholder: String?) throws -> MobileOAuthCompleted {
         guard let code = body.code, !code.isEmpty else {
             throw OAuthFlowsError.invalidMobileCompletion
         }
@@ -142,7 +156,8 @@ extension OAuthFlowsService {
             acceptTerms: body.acceptTerms == true,
             termsVersion: body.termsVersion,
             privacyVersion: body.privacyVersion,
-            now: now()
+            now: now(),
+            passwordPlaceholder: passwordPlaceholder
         )
         switch outcome {
         case .refused(let refusal):

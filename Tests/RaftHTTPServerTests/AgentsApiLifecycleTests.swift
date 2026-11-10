@@ -150,7 +150,7 @@ private func lifecycleDelete(
     }
 }
 
-@Test func agentStartClassifiesAnOfflineComputerAndAcknowledgesAnOnlineOne() async throws {
+@Test func agentStartClassifiesOfflineAndRefusesUnboundOnlineMetadata() async throws {
     let f = makeAgentLifecycleFixture("004")
     let agent = f.accounts.oauth.createAgent(serverId: f.serverId, name: "assigned-agent-004", creatorUserId: f.ownerId, runtime: "codex")
     let machine = f.accounts.registerMachine(serverId: f.serverId, userId: f.ownerId, name: "lifecycle-machine-004")
@@ -167,14 +167,15 @@ private func lifecycleDelete(
 
             f.accounts.setMachineOnline(machineId: machine, online: true)
             let online = try await lifecyclePost(client, "/api/agents/\(agent)/start", token: f.ownerToken, serverId: f.serverId)
-            #expect(online.status == .ok)
-            #expect(try lifecycleObject(online).count == 1)
-            #expect(try lifecycleObject(online)["ok"] as? Bool == true)
+            // Presence metadata cannot substitute for the actual retained BPR
+            // and connected/ready transport. Real200 is locked by the PG test.
+            #expect(online.status == .internalServerError)
+            #expect(online.body.string == #"{"error":"Failed to start agent","code":"internal_error"}"#)
         }
     }
 }
 
-@Test func agentStartServesMembersAndRefusesGuests() async throws {
+@Test func agentStartAuthorizesMembersButRejectsGuestsBeforeExecution() async throws {
     let f = makeAgentLifecycleFixture("005")
     let agent = f.accounts.oauth.createAgent(serverId: f.serverId, name: "member-start-agent-005", creatorUserId: f.ownerId, runtime: "codex")
     let machine = f.accounts.registerMachine(serverId: f.serverId, userId: f.ownerId, name: "lifecycle-machine-005")
@@ -184,7 +185,10 @@ private func lifecycleDelete(
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in
             let member = try await lifecyclePost(client, "/api/agents/\(agent)/start", token: f.memberToken, serverId: f.serverId)
-            #expect(member.status == .ok)
+            // Authority passes; an unbound root still cannot claim execution.
+            // The same member200 scene is retained in the PG/NIO acceptance.
+            #expect(member.status == .internalServerError)
+            #expect(member.body.string == #"{"error":"Failed to start agent","code":"internal_error"}"#)
 
             let guest = try await lifecyclePost(client, "/api/agents/\(agent)/start", token: f.guestToken, serverId: f.serverId)
             #expect(guest.status == .forbidden)
@@ -303,7 +307,7 @@ private func lifecycleDelete(
     }
 }
 
-@Test func agentResetUsesLegacyWorkspaceModeAndFallsBackToSession() async throws {
+@Test func agentResetLegacyAuthorityPrecedesUnavailableDurableExecution() async throws {
     let f = makeAgentLifecycleFixture("010")
     let agent = f.accounts.oauth.createAgent(serverId: f.serverId, name: "reset-mode-agent-010", creatorUserId: f.ownerId, runtime: "codex")
     try await withApp { app in
@@ -316,8 +320,10 @@ private func lifecycleDelete(
                 serverId: f.serverId,
                 body: "{\"mode\":\"bogus\"}"
             )
-            #expect(unknown.status.code == 202)
-            #expect(try lifecycleObject(unknown)["status"] as? String == "accepted")
+            // Actual mode normalization and accepted202 are retained in the
+            // real PG test; this root can only prove the explicit refusal.
+            #expect(unknown.status == .internalServerError)
+            #expect(unknown.body.string == #"{"error":"Failed to reset agent"}"#)
 
             let legacyFull = try await lifecyclePost(
                 client,
@@ -336,7 +342,8 @@ private func lifecycleDelete(
                 serverId: f.serverId,
                 body: "{\"clearWorkspace\":true}"
             )
-            #expect(ownerLegacyFull.status.code == 202)
+            #expect(ownerLegacyFull.status == .internalServerError)
+            #expect(ownerLegacyFull.body.string == #"{"error":"Failed to reset agent"}"#)
 
             let unauthenticated = try await lifecyclePost(
                 client,

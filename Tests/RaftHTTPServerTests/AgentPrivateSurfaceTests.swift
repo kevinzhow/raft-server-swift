@@ -67,8 +67,19 @@ import VaporTesting
                 let uri = URI(string: route)
                 #expect(try await client.send(.get, headers: headers(viewerToken), to: uri).status == .forbidden)
                 for token in [creatorToken, adminToken, ownerToken] {
-                    let status = try await client.send(.get, headers: headers(token), to: uri).status.code
-                    #expect(status == 200 || status == 503)
+                    let response = try await client.send(.get, headers: headers(token), to: uri)
+                    if route.hasSuffix("/workspace-files") {
+                        // Node agents.ts rejects an unassigned workspace with 409.
+                        // This is authority-before-refusal coverage; accepted owner,
+                        // creator and admin RPC reads live in the real PG/NIO scene
+                        // postgresPublishedInventoryAndMachineQueries.
+                        #expect(response.status == .conflict)
+                        let body = try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any]
+                        #expect(body?["code"] as? String == "machine_unassigned")
+                    } else {
+                        let status = response.status.code
+                        #expect(status == 200 || status == 503)
+                    }
                 }
             }
         }

@@ -84,7 +84,8 @@ private func headerPairs(_ response: ClientResponse) -> [String: String] {
         let pairs = headerPairs(response)
         #expect(pairs["x-robots-tag"] == AppFallback.robotsTag)
         #expect(pairs["content-type"] == AppFallback.jsonContentType)
-        #expect(pairs["cache-control"] == nil)
+        #expect(pairs["cache-control"] == "private, no-store")
+        #expect(pairs["content-length"] == "131")
     }
 }
 

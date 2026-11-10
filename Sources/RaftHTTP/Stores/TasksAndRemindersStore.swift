@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Owns the task, reminder and assignee-change rows that used to be stored inline on
 /// `EmailLoginDirectory`.
@@ -22,7 +23,7 @@ final class TasksAndRemindersStore: Sendable {
         var assigneeChangeEvents: [(taskId: String, assigneeId: String?, assigneeType: String?, previousAssigneeId: String?, previousAssigneeType: String?, actorType: String, actorId: String)] = []
     }
 
-    let mutex = Mutex(State())
+    let mutex = TransactionalState(State())
 
     /// A value snapshot; transaction methods hold the Mutex for their whole decision.
     var state: State {
@@ -124,6 +125,30 @@ final class TasksAndRemindersStore: Sendable {
             record.creatorId = creatorId
             storage.taskRecords.append(record)
             return .created(record)
+        }
+    }
+
+    /// Canonical creation accepts the already allocated host IDs; task facts do
+    /// not write a second task representation into message rows.
+    func appendCanonicalTasks(
+        channelId: String, drafts: [TaskDraft], hostMessageIds: [String],
+        creatorId: String, legacyMessageMaxNumber: Int, now: Date
+    ) -> [TaskRecord] {
+        precondition(drafts.count == hostMessageIds.count)
+        return mutex.withLock { storage in
+            var number = max(legacyMessageMaxNumber, storage.taskRecords.filter { $0.channelId == channelId }.map(\.taskNumber).max() ?? 0)
+            var created: [TaskRecord] = []
+            for (draft, hostId) in zip(drafts, hostMessageIds) {
+                number += 1
+                let task = TaskRecord(
+                    id: UUID().uuidString.lowercased(), channelId: channelId,
+                    title: draft.title ?? "", description: draft.description, status: "todo",
+                    taskNumber: number, messageId: hostId, createdAt: now, updatedAt: now, creatorId: creatorId)
+                storage.taskRecords.append(task)
+                storage.taskEvents.append((taskId: task.id, eventType: "created", actorType: "user"))
+                created.append(task)
+            }
+            return created
         }
     }
 
@@ -602,6 +627,8 @@ extension TasksAndRemindersStore {
     enum HumanClaimOutcome: Sendable {
         case notFound
         case channelDeleted
+        case rejected(String)
+        case alreadyAssigned(TaskRecord)
         case claimed(TaskRecord)
     }
 
@@ -611,6 +638,15 @@ extension TasksAndRemindersStore {
         mutex.withLock { storage in
             guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
             guard !channelDeletion.isDeleted(channelId: storage.taskRecords[index].channelId) else { return .channelDeleted }
+            let current = storage.taskRecords[index]
+            if current.status == "closed" { return .rejected("task is closed; reopen it before claiming") }
+            if let assignee = current.assigneeId {
+                let selfAssigned = current.assigneeType == "user" && assignee == userId
+                if !(selfAssigned && current.status == "todo" && current.claimedAt == nil) {
+                    return selfAssigned ? .rejected("already claimed by you") : .alreadyAssigned(current)
+                }
+            } else if current.status == "done" { return .rejected("task is done") }
+            storage.taskRecords[index].updatedAt = now
             storage.taskRecords[index].assigneeId = userId
             storage.taskRecords[index].assigneeType = "user"
             storage.taskRecords[index].claimedAt = now
@@ -622,85 +658,54 @@ extension TasksAndRemindersStore {
 
     /// `PATCH /api/tasks/:taskId/unclaim`: the assignee clear, the revision
     /// bump and the assignee-change event are one critical section.
-    func unclaimForUser(taskId: String, userId: String) -> TaskRecord? {
+    enum HumanUnclaimOutcome: Sendable {
+        case notFound
+        case done
+        case unassigned
+        case unclaimed(TaskRecord)
+    }
+
+    func unclaimForUser(taskId: String, userId: String, now: Date = Date()) -> HumanUnclaimOutcome {
         mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return nil }
+            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
+            guard storage.taskRecords[index].status != "done" else { return .done }
+            guard storage.taskRecords[index].assigneeId != nil else { return .unassigned }
             let previousAssigneeId = storage.taskRecords[index].assigneeId
             let previousAssigneeType = storage.taskRecords[index].assigneeType
             storage.taskRecords[index].assigneeId = nil
             storage.taskRecords[index].assigneeType = nil
             storage.taskRecords[index].claimedAt = nil
+            storage.taskRecords[index].updatedAt = now
             storage.taskRecords[index].revision += 1
             storage.assigneeChangeEvents.append((
                 taskId: taskId, assigneeId: nil, assigneeType: nil,
                 previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
                 actorType: "user", actorId: userId
             ))
-            return storage.taskRecords[index]
+            return .unclaimed(storage.taskRecords[index])
         }
     }
 
-    enum HumanStatusOutcome: Sendable {
-        case notFound
-        case channelDeletedTerminalOnly
-        case onlyAssigneeCanReturnToTodo
-        case updated(TaskRecord)
+    enum ConvertedMessageTaskOutcome: Sendable {
+        case alreadyConverted
+        case created(TaskRecord)
     }
 
-    /// `PATCH /api/tasks/:taskId/status`: the refusals and the status write
-    /// (with its completion, close and claim stamps) are one critical section.
-    func applyHumanStatus(
-        taskId: String,
-        status: String,
-        userId: String,
-        channelDeletion: TaskChannelDeletionQuery,
-        now: Date
-    ) -> HumanStatusOutcome {
+    /// Preserve the actual immutable host text. Link uniqueness and max-number
+    /// allocation are one task-owner critical section; duplicate conversion is a
+    /// refusal, not a second task or a successful replay.
+    func appendConvertedMessageTask(channelId: String, messageId: String, title: String, creatorId: String,
+        legacyMessageMaxNumber: Int, now: Date) -> ConvertedMessageTaskOutcome {
         mutex.withLock { storage in
-            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else { return .notFound }
-            let current = storage.taskRecords[index]
-            if channelDeletion.isDeleted(channelId: current.channelId), !["done", "closed", "cancelled"].contains(status) {
-                return .channelDeletedTerminalOnly
-            }
-            if status == "todo", current.status == "in_progress", current.assigneeId != userId {
-                return .onlyAssigneeCanReturnToTodo
-            }
-            storage.taskRecords[index].status = status
-            if status == "done", storage.taskRecords[index].completedAt == nil {
-                storage.taskRecords[index].completedAt = now
-            }
-            if status == "closed" || status == "cancelled" {
-                storage.taskRecords[index].closedAt = now
-            }
-            if status == "in_progress", storage.taskRecords[index].claimedAt == nil {
-                storage.taskRecords[index].claimedAt = now
-            }
-            if status == "todo" {
-                storage.taskRecords[index].claimedAt = nil
-            }
-            storage.taskRecords[index].revision += 1
-            return .updated(storage.taskRecords[index])
-        }
-    }
-
-    /// `POST /api/tasks/convert-message`: one `Converted message` task whose
-    /// host message is the converted one. The task-number scan, the append and
-    /// the message link are one critical section.
-    func appendConvertedMessageTask(channelId: String, messageId: String, creatorId: String) -> String {
-        mutex.withLock { storage in
-            let id = UUID().uuidString.lowercased()
-            storage.taskRecords.append(TaskRecord(
-                id: id,
-                channelId: channelId,
-                title: "Converted message",
-                description: nil,
-                status: "todo",
-                taskNumber: storage.taskRecords.filter { $0.channelId == channelId }.count + 1,
-                messageId: messageId,
-                createdAt: Date(),
-                creatorId: creatorId
-            ))
-            return id
+            guard !storage.taskRecords.contains(where: { $0.messageId == messageId }) else { return .alreadyConverted }
+            let next = max(legacyMessageMaxNumber,
+                storage.taskRecords.filter { $0.channelId == channelId }.map(\.taskNumber).max() ?? 0) + 1
+            let task = TaskRecord(id: UUID().uuidString.lowercased(), channelId: channelId,
+                title: title, description: nil, status: "todo", taskNumber: next, messageId: messageId,
+                createdAt: now, updatedAt: now, creatorId: creatorId)
+            storage.taskRecords.append(task)
+            storage.taskEvents.append((taskId: task.id, eventType: "created", actorType: "user"))
+            return .created(task)
         }
     }
 
@@ -748,7 +753,8 @@ extension TasksAndRemindersStore {
         assigneeId: String?,
         assigneeType: String?,
         expectedRevision: Int?,
-        actorId: String
+        actorId: String,
+        now: Date = Date()
     ) -> ReassignOutcome {
         mutex.withLock { storage in
             guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else {
@@ -768,6 +774,7 @@ extension TasksAndRemindersStore {
             storage.taskRecords[index].assigneeId = assigneeId
             storage.taskRecords[index].assigneeType = assigneeType
             storage.taskRecords[index].claimedAt = nil
+            storage.taskRecords[index].updatedAt = now
             storage.taskRecords[index].revision += 1
             storage.assigneeChangeEvents.append((
                 taskId: taskId, assigneeId: assigneeId, assigneeType: assigneeType,

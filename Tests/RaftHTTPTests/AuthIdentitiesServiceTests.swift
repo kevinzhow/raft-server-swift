@@ -115,7 +115,11 @@ private func render(_ error: AuthIdentitiesError) -> String {
 
     let response = try service.login(LoginRequest(email: " IDENTITY-02@slock.test ", password: "password123"))
     let body = response.jsonBody.render()
-    #expect(body.hasPrefix(#"{"user":{"id":"\#(userId)","email":"identity-02@slock.test"},"accessToken":""#))
+    let expectedUser = try service.me(authorization: "Bearer \(response.accessToken)").user.jsonBody.render()
+    #expect(body.hasPrefix("{\"user\":\(expectedUser),\"accessToken\":\""))
+    #expect(response.user.emailVerified)
+    #expect(response.user.name == "identity-02")
+    #expect(response.user.profileSetupCompletedAt != nil)
     #expect(body.hasSuffix(#","linkedProvider":null}"#))
     #expect(scene.sessionUserId(authorization: "Bearer \(response.accessToken)") == userId)
 }
@@ -386,11 +390,14 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
     )
     let service = scene.identities
 
-    #expect(throws: AuthIdentitiesError.pendingLinkAccountMismatch) {
+    #expect(throws: AuthIdentitiesError.invalidCredentials) {
         try service.login(LoginRequest(email: "other@slock.test", password: "x", pendingLinkToken: "pending-token"))
     }
-    #expect(throws: AuthIdentitiesError.pendingLinkExpired) {
+    #expect(throws: AuthIdentitiesError.invalidCredentials) {
         try service.login(LoginRequest(email: "identity-12@slock.test", password: "x", pendingLinkToken: "unknown"))
+    }
+    #expect(throws: AuthIdentitiesError.pendingLinkExpired) {
+        try service.login(LoginRequest(email: "identity-12@slock.test", password: "password123", pendingLinkToken: "unknown"))
     }
     let linked = await withTaskGroup(of: String?.self) { group in
         for _ in 0..<6 {
@@ -469,9 +476,10 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
     let ownerId = "11111111-1111-4111-8111-111111111646"
     let serverId = "33333333-3333-4333-8333-333333333672"
     let email = "composed-protocol-646@test.invalid"
+    let passwordHash = AuthFixturePassword.encoded("password123")
     profiles.state.withLock { owned in
         owned.accountSurface.accounts[email] = Account(
-            id: ownerId, email: email, passwordHash: AuthTokenCodec.sha256("password123"),
+            id: ownerId, email: email, passwordHash: passwordHash,
             displayLanguage: nil, name: "Before snapshot", profileSetupSuggestedHandle: nil
         )
     }

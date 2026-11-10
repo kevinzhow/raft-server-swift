@@ -21,6 +21,10 @@ public struct AgentRuntimeProjection: Sendable, Equatable {
     /// The stored env text; `null` for an external agent.
     public var envVarsJSON: String
     public var runtimeConfigJSON: String
+    public var serverId: String?
+    public var status: String?
+    public var machineId: String?
+    public var reasoningEffort: String?
 
     public init(
         id: String,
@@ -29,7 +33,11 @@ public struct AgentRuntimeProjection: Sendable, Equatable {
         model: String,
         external: Bool,
         envVarsJSON: String,
-        runtimeConfigJSON: String
+        runtimeConfigJSON: String,
+        serverId: String? = nil,
+        status: String? = nil,
+        machineId: String? = nil,
+        reasoningEffort: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -38,22 +46,30 @@ public struct AgentRuntimeProjection: Sendable, Equatable {
         self.external = external
         self.envVarsJSON = envVarsJSON
         self.runtimeConfigJSON = runtimeConfigJSON
+        self.serverId = serverId
+        self.status = status
+        self.machineId = machineId
+        self.reasoningEffort = reasoningEffort
     }
 
     func fields(includeEnvVars: Bool) -> [OrderedJSONField] {
-        [
+        var fields = [
             OrderedJSONField("id", id),
             OrderedJSONField("name", name),
             OrderedJSONField("runtime", runtime),
             OrderedJSONField("model", model),
             OrderedJSONField("external", external),
-            OrderedJSONField("machineId", .null),
-            OrderedJSONField("reasoningEffort", .null),
-            OrderedJSONField("envVars", includeEnvVars
-                ? .raw(envVarsJSON.isEmpty ? "{}" : envVarsJSON)
-                : .null),
-            OrderedJSONField("runtimeConfig", .raw(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)),
+            OrderedJSONField("machineId", optional: machineId),
+            OrderedJSONField("reasoningEffort", optional: reasoningEffort),
         ]
+        // Node stripEnvVars removes BOTH secret-bearing members from events.
+        if includeEnvVars {
+            fields.append(OrderedJSONField("envVars", .raw(envVarsJSON.isEmpty ? "{}" : envVarsJSON)))
+            fields.append(OrderedJSONField("runtimeConfig", .raw(runtimeConfigJSON.isEmpty ? "{}" : runtimeConfigJSON)))
+        }
+        if let serverId { fields.append(OrderedJSONField("serverId", serverId)) }
+        if let status { fields.append(OrderedJSONField("status", status)) }
+        return fields
     }
 
     /// The `agent:created` broadcast: the agent without its env.
@@ -90,8 +106,13 @@ public struct CreatedAgentResponse: JSONBodyConvertible, Equatable {
         self.hostedProvider = hostedProvider
     }
 
-    public var jsonBody: OrderedJSON {
-        var fields = agent.fields(includeEnvVars: true)
+    public var jsonBody: OrderedJSON { body(includeEnvVars: true) }
+
+    /// Same current identity/assignment as the create receipt, without secrets.
+    public var broadcastJSON: String { body(includeEnvVars: false).render() }
+
+    private func body(includeEnvVars: Bool) -> OrderedJSON {
+        var fields = agent.fields(includeEnvVars: includeEnvVars)
         fields.append(OrderedJSONField("creator", AgentHumanRef(id: creatorId).json))
         fields.append(OrderedJSONField("displayName", displayName))
         fields.append(OrderedJSONField("description", optional: description))
@@ -132,6 +153,13 @@ public struct AgentSummary: Sendable, Equatable {
     /// Present when the caller may see the config (redacted config text and env
     /// text, both raw).
     public var config: Config?
+    public var serverId: String?
+    public var status: String?
+    public var machineId: String?
+    public var reasoningEffort: String?
+    public var avatarUrl: String?
+    public var activity: String?
+    public var activityDetail: String?
 
     public struct Config: Sendable, Equatable {
         public var runtimeConfigJSON: String
@@ -155,7 +183,14 @@ public struct AgentSummary: Sendable, Equatable {
         description: String?,
         includesLastSeen: Bool,
         lastSeenAt: String?,
-        config: Config?
+        config: Config?,
+        serverId: String? = nil,
+        status: String? = nil,
+        machineId: String? = nil,
+        reasoningEffort: String? = nil,
+        avatarUrl: String? = nil,
+        activity: String? = nil,
+        activityDetail: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -169,6 +204,13 @@ public struct AgentSummary: Sendable, Equatable {
         self.includesLastSeen = includesLastSeen
         self.lastSeenAt = lastSeenAt
         self.config = config
+        self.serverId = serverId
+        self.status = status
+        self.machineId = machineId
+        self.reasoningEffort = reasoningEffort
+        self.avatarUrl = avatarUrl
+        self.activity = activity
+        self.activityDetail = activityDetail
     }
 
     var json: OrderedJSON {
@@ -183,6 +225,15 @@ public struct AgentSummary: Sendable, Equatable {
             OrderedJSONField("creator", creatorId.map { AgentHumanRef(id: $0).json } ?? .null),
             OrderedJSONField("description", optional: description),
         ]
+        if let serverId {
+            fields.append(OrderedJSONField("serverId", serverId))
+            fields.append(OrderedJSONField("status", optional: status))
+            fields.append(OrderedJSONField("machineId", optional: machineId))
+            fields.append(OrderedJSONField("reasoningEffort", optional: reasoningEffort))
+            fields.append(OrderedJSONField("avatarUrl", optional: avatarUrl))
+        }
+        if let activity { fields.append(OrderedJSONField("activity", activity)) }
+        if let activityDetail { fields.append(OrderedJSONField("activityDetail", activityDetail)) }
         if includesLastSeen {
             fields.append(OrderedJSONField("lastSeenAt", optional: lastSeenAt))
         }
@@ -194,35 +245,58 @@ public struct AgentSummary: Sendable, Equatable {
     }
 }
 
-/// `GET /api/agents`.
-public struct AgentListResponse: JSONBodyConvertible, Equatable {
-    public var agents: [AgentSummary]
+/// Relation-scoped public facts shared by the guest list and detail. The owning
+/// read policy decides visibility; this DTO cannot carry runtime/config authority.
+public struct GuestAgentSummary: Sendable, Equatable {
+    public var id: String
+    public var serverId: String
+    public var name: String
+    public var displayName: String
+    public var avatarUrl: String?
+    public var description: String?
+    public var status: String
+    public var activity: String
 
-    public init(agents: [AgentSummary]) {
-        self.agents = agents
+    var json: OrderedJSON {
+        .object([
+            OrderedJSONField("id", id),
+            OrderedJSONField("serverId", serverId),
+            OrderedJSONField("name", name),
+            OrderedJSONField("displayName", displayName),
+            OrderedJSONField("avatarUrl", optional: avatarUrl),
+            OrderedJSONField("description", optional: description),
+            OrderedJSONField("status", status),
+            OrderedJSONField("deletedAt", .null),
+            OrderedJSONField("activity", activity),
+            OrderedJSONField("activityDetail", ""),
+            OrderedJSONField("profileProjection", "channel_summary"),
+        ])
     }
-
-    public var jsonBody: OrderedJSON { .array(agents.map(\.json)) }
 }
 
-/// `GET /api/agents/:id`: the full agent, or the channel summary a guest sees.
+/// `GET /api/agents` uses the same guest projection as the detail route.
+public struct AgentListResponse: JSONBodyConvertible, Equatable {
+    public var agents: [AgentSummary]
+    public var guests: [GuestAgentSummary]?
+
+    public init(agents: [AgentSummary]) { self.agents = agents; self.guests = nil }
+    public init(guests: [GuestAgentSummary]) { self.agents = []; self.guests = guests }
+
+    public var jsonBody: OrderedJSON {
+        if let guests { return .array(guests.map(\.json)) }
+        return .array(agents.map(\.json))
+    }
+}
+
+/// `GET /api/agents/:id`: the full agent, or its bounded readable-channel summary.
 public enum AgentDetailResponse: JSONBodyConvertible, Equatable {
     case full(AgentSummary)
-    case guest(id: String, name: String, displayName: String, description: String?)
+    case guest(GuestAgentSummary)
 
     public var jsonBody: OrderedJSON {
         switch self {
-        case .full(let summary):
-            summary.json
-        case .guest(let id, let name, let displayName, let description):
-            .object([
-                OrderedJSONField("id", id),
-                OrderedJSONField("name", name),
-                OrderedJSONField("displayName", displayName),
-                OrderedJSONField("avatarUrl", .null),
-                OrderedJSONField("description", optional: description),
-                OrderedJSONField("profileProjection", "channel_summary"),
-            ])
+        case .full(let summary): summary.json
+        case .guest(let summary): summary.json
         }
     }
 }
@@ -260,19 +334,22 @@ public struct ArchivedAgentsResponse: JSONBodyConvertible, Equatable {
     }
 }
 
-/// `GET /api/agents/:id/runtime-options`.
+/// Contextual admission catalog for an existing agent, including grandfathered
+/// current runtimes. These options use the same typed row contract as creation.
 public struct AgentRuntimeOptionsResponse: JSONBodyConvertible, Equatable {
-    public var agentId: String
+    public var machineId: String?
+    public var options: [MachineRuntimeOptionsResponse.Option]
 
-    public init(agentId: String) {
-        self.agentId = agentId
+    public init(machineId: String?, options: [MachineRuntimeOptionsResponse.Option]) {
+        self.machineId = machineId
+        self.options = options
     }
 
     public var jsonBody: OrderedJSON {
         .object([
-            OrderedJSONField("agentId", agentId),
-            OrderedJSONField("runtimes", .array([])),
-            OrderedJSONField("models", .array([])),
+            OrderedJSONField("context", "existing_agent"),
+            OrderedJSONField("machineId", optional: machineId),
+            OrderedJSONField("options", .array(options.map(\.jsonBody))),
         ])
     }
 }

@@ -245,7 +245,7 @@ public struct IntegrationsAndAppAccessService: Sendable {
         return IntegrationSetupStateResponse(
             status: state.status.rawValue,
             url: canConfigure ? state.url : nil,
-            description: canConfigure ? state.description : nil,
+            description: state.description,
             revision: state.revision,
             completedAt: state.completedAt,
             canConfigure: canConfigure

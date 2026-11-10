@@ -148,12 +148,9 @@ public struct ServerMembersAndSidebarService: Sendable {
 
     // MARK: - DELETE /api/servers/:id
 
-    /// Deletes a server. A second delete is the idempotent `{"ok":true}` before
-    /// any authorization check, exactly as the retired handler answered.
+    /// Deletes a server after resolving the current session and owner role.
+    /// The retained owner may retry a deleted server without repeating effects.
     public func deleteServer(authorization: String?, serverId: String) throws -> OkResponse {
-        guard !dependencies.channels.isServerDeleted(serverId) else {
-            return OkResponse()
-        }
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw ServerMembersAndSidebarError.authRequired(
                 bearerPresent: authorization?.hasPrefix("Bearer ") == true
@@ -162,9 +159,12 @@ public struct ServerMembersAndSidebarService: Sendable {
         guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
             throw ServerMembersAndSidebarError.notAMember
         }
+        let deleted = dependencies.channels.isServerDeleted(serverId)
         guard role == "owner" else {
-            throw ServerMembersAndSidebarError.forbidden
+            if deleted { throw ServerMembersAndSidebarError.notAMember }
+            throw ServerMembersAndSidebarError.onlyOwnerCanDeleteServer
         }
+        if deleted { return OkResponse() }
         let memberIds = dependencies.oauth.memberIdsWithRoles(serverId: serverId).map(\.id)
         let agentIds = dependencies.oauth.serverAgents(serverId: serverId).map(\.id)
         var events: [ServerMemberEvent] = []

@@ -80,7 +80,6 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
 
 @Test func machineRuntimeOptionsAndModelsRespectAuthority() async throws {
     let fixture = makeRuntimeFixture(suffix: "996")
-    fixture.accounts.setMachineRuntimeModels(machineId: fixture.machineId, runtime: "codex", models: [("gpt-5.4", "GPT 5.4")])
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -93,24 +92,15 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
             let member = try await runtimeLogin(client, email: fixture.memberEmail)
             let bystander = try await runtimeLogin(client, email: fixture.bystanderEmail)
             let optionsPath = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtime-options"
-            let ownerOptions = try await client.get(URI(string: optionsPath), headers: runtimeHeaders(owner, fixture.serverId))
-            #expect(ownerOptions.status == .ok)
-            let ownerBody = try runtimeObject(ownerOptions)
-            #expect(ownerBody["context"] as? String == "new_agent")
-            let options = ownerBody["options"] as? [[String: Any]] ?? []
-            #expect(options.contains { $0["runtimeId"] as? String == "codex" })
+            // Accepted inventory/live-model assertions moved to the single
+            // PG/NIO production-bridge scene; no cache is treated as a reply.
             #expect(try await client.get(URI(string: optionsPath), headers: runtimeHeaders(member, fixture.serverId)).status == .forbidden)
             #expect(try await client.get(URI(string: optionsPath), headers: runtimeHeaders(bystander, fixture.serverId)).status == .forbidden)
 
             let modelsPath = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtime-models/codex"
             let models = try await client.get(URI(string: modelsPath), headers: runtimeHeaders(owner, fixture.serverId))
             #expect(models.status == .ok)
-            #expect(try runtimeObject(models) as NSDictionary == [
-                "kind": "live",
-                "value": ["models": [["id": "gpt-5.4", "label": "GPT 5.4"]], "default": "gpt-5.4"],
-                "models": [["id": "gpt-5.4", "label": "GPT 5.4"]],
-                "default": "gpt-5.4",
-            ] as NSDictionary)
+            #expect(try runtimeObject(models) as NSDictionary == ["kind": "error", "retryable": true, "code": "computer_offline"] as NSDictionary)
             #expect(try await client.get(URI(string: modelsPath), headers: runtimeHeaders(bystander, fixture.serverId)).status == .forbidden)
 
             let rescanPath = "/api/servers/\(fixture.serverId)/machines/\(fixture.machineId)/runtimes/rescan"
@@ -247,7 +237,6 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
 
 @Test func runtimeFormsServeV2OnlyRuntimesAndRejectV1() async throws {
     let fixture = makeRuntimeFixture(suffix: "999")
-    fixture.accounts.setMachineRuntimeModels(machineId: fixture.machineId, runtime: "codex", models: [("gpt-5.4", "GPT 5.4")])
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
@@ -281,10 +270,15 @@ private func runtimeObject(_ response: ClientResponse) throws -> [String: Any] {
             }
             let codexModels = try await client.get(URI(string: "\(base)/runtime-forms/v2/codex/option-sources/model"), headers: headers)
             #expect(codexModels.status == .ok)
-            #expect(try runtimeObject(codexModels)["status"] as? String == "live")
+            #expect(try runtimeObject(codexModels)["status"] as? String == "fallback")
+            #expect(try runtimeObject(codexModels)["reason"] as? String == "machine_offline")
+            #expect(try runtimeObject(codexModels)["retryable"] as? Bool == true)
             #expect(try runtimeObject(codexModels)["customValueAllowed"] as? Bool == true)
             let options = try runtimeObject(codexModels)["options"] as? [[String: Any]] ?? []
-            #expect(options.first?["value"] as? String == "gpt-5.4")
+            // The old live gpt-5.4 case now uses an actual machine query in
+            // postgresRuntimeFormSourcesUseActualMachineQueries.
+            #expect(options.count == 17)
+            #expect(try runtimeObject(codexModels)["defaultValue"] as? String == "gpt-6.1-sol")
         }
     }
 }

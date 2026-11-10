@@ -1,4 +1,5 @@
 import Foundation
+import TestSupport
 @testable import RaftHTTP
 
 /// Local test-target subjects over the same owners used by the actual composer.
@@ -11,6 +12,7 @@ struct OAuthFlowsUnitFixture: Sendable {
 
     init() {
         let profiles = AuthProfileStore()
+        profiles.state.withLock { $0.configSurface.oauthDeployment.socialAuthStateSecret = AuthJWTFixture.socialSigningSecret }
         let notifications = NotificationsStore()
         let productEvents = ProductEventStore()
         let inboxFacts = InboxFactStore()
@@ -57,11 +59,12 @@ struct OAuthFlowsUnitFixture: Sendable {
 
     func addAccount(id: String, email: String, password: String) {
         let normalized = AccountNaming.normalize(email)
+        let passwordHash = AuthFixturePassword.encoded(password)
         profiles.state.withLock { owned in
             owned.accountSurface.accounts[normalized] = Account(
                 id: id,
                 email: normalized,
-                passwordHash: AuthTokenCodec.sha256(password),
+                passwordHash: passwordHash,
                 passwordCredentialEstablishedAt: Date(),
                 displayLanguage: nil,
                 name: String(normalized.split(separator: "@").first ?? "user"),

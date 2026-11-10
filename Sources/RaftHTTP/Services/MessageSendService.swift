@@ -138,9 +138,10 @@ public struct MessageSendService: Sendable {
 
     // MARK: - GET /api/attachments/:id/url
 
-    /// A presigned download URL, or the unauthenticated `/api/attachments/<id>`
-    /// fallback. The published order is `url` then `expiresAt`; the
-    /// query-token propagation path publishes `"expiresAt":null`.
+    /// HTTP callers supply flex admission plus the original proxy transport facts.
+    /// The encrypted production port always resolves to an authenticated API URL
+    /// with null expiry. The no-context direct-unit compatibility below is not a
+    /// production serving path or a claim of real plaintext presign support.
     ///
     /// The legacy order is authorization (401), verification (403), retirement
     /// (401), missing server header (400), attachment id shape (400), server
@@ -151,30 +152,76 @@ public struct MessageSendService: Sendable {
         serverId: String?,
         disposition: String? = nil,
         download: String? = nil,
-        propagateQueryToken: String? = nil
+        propagateQueryToken: String? = nil,
+        admission: AttachmentFlexAdmission? = nil,
+        proxy: AttachmentURLProxyContext? = nil
     ) throws -> AttachmentDownloadURLResponse {
-        let userId = try authenticatedUserId(authorization)
-        guard profiles.isEmailVerified(userId: userId) else {
-            throw MessageSendError.emailVerificationRequired
+        let userId: String?
+        if let admission {
+            guard serverId == admission.serverId else { throw MessageSendError.attachmentNotFound }
+            switch admission.actor {
+            case .user(let id):
+                guard (try? AuthCoreService(store: profiles).authenticate(admission.credential)) == id,
+                      let account = profiles.account(userId: id), account.retiredAt == nil else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                guard oauth.activeRegularServerMember(serverId: admission.serverId, userId: id) else {
+                    throw MessageSendError.attachmentNotFound
+                }
+                userId = id
+            case .machine: userId = nil
+            }
+        } else {
+            let id = try authenticatedUserId(authorization)
+            guard profiles.isEmailVerified(userId: id) else { throw MessageSendError.emailVerificationRequired }
+            guard profiles.account(userId: id)?.retiredAt == nil else { throw MessageSendError.unauthorized }
+            userId = id
         }
-        guard profiles.account(userId: userId)?.retiredAt == nil else {
-            throw MessageSendError.unauthorized
-        }
-        guard let serverId, !serverId.isEmpty else {
-            throw MessageSendError.missingServerId
-        }
-        guard ServerScope.isUUID(attachmentId) else {
-            throw MessageSendError.invalidAttachmentId
-        }
-        if !oauth.memberIds(serverId: serverId).isEmpty,
+        guard let serverId, !serverId.isEmpty else { throw MessageSendError.missingServerId }
+        guard ServerScope.isUUID(attachmentId) else { throw MessageSendError.invalidAttachmentId }
+        if let userId, !oauth.memberIds(serverId: serverId).isEmpty,
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
             throw MessageSendError.notServerMember
         }
-        guard let record = messages.attachmentDownloadRecord(attachmentId: attachmentId),
-              visibleAttachment(userId, serverId, record.attachment)
-        else {
+        guard let record = messages.attachmentDownloadRecord(attachmentId: attachmentId) else {
             throw MessageSendError.attachmentNotFound
         }
+        if let userId {
+            guard visibleAttachment(userId, serverId, record.attachment) else {
+                throw MessageSendError.attachmentNotFound
+            }
+        } else {
+            // Machine authority follows the message's real channel or the
+            // authenticated server's active local joint projection.
+            let authority: String
+            if let messageId = record.attachment.messageId {
+                guard let message = messages.humanMessageRows.first(where: { $0.id == messageId }) else {
+                    throw MessageSendError.attachmentNotFound
+                }
+                authority = message.channelId
+            } else { authority = record.attachment.channelId }
+            guard AttachmentMachineReadAccessQuery(channels: channels).canRead(
+                authorityChannelId: authority, serverId: serverId,
+                messageLinked: record.attachment.messageId != nil
+            ) else { throw MessageSendError.attachmentNotFound }
+        }
+        if let admission {
+            guard let proxy else { throw AttachmentSingleURLResolutionError() }
+            guard messages.withState({ $0.attachmentObjectStorage != nil }) else {
+                throw AttachmentContentError.downloadsNotConfigured
+            }
+            let selected = AttachmentProxyURLPolicy.singleDisposition(filename: record.attachment.filename,
+                mimeType: record.attachment.mimeType, disposition: disposition, download: download)
+            do {
+                let url = try AttachmentProxyURLPolicy.makeURL(attachmentId: record.attachment.id,
+                    serverId: admission.serverId, context: proxy, disposition: selected)
+                return AttachmentDownloadURLResponse(url: url, expiresAt: nil)
+            } catch { throw AttachmentSingleURLResolutionError() }
+        }
+        guard proxy == nil else { throw AttachmentSingleURLResolutionError() }
+        // TEMPORARY direct-unit compatibility only: callers without flex admission
+        // and proxy retain the old helper. No production HTTP enters this branch;
+        // its callback/relative URL/dated expiry are not Node HTTP or presign proof.
         let mimeType = record.attachment.mimeType
         let isMedia = mimeType?.hasPrefix("video/") == true || mimeType?.hasPrefix("audio/") == true
         let inline = disposition == "inline" && download != "1"
@@ -215,7 +262,8 @@ public struct MessageSendService: Sendable {
             serverId: serverId,
             threadId: threadId,
             agentId: agentId,
-            undoToken: makeToken()
+            undoToken: makeToken(),
+            now: now()
         ) {
         case .replay(let undoToken):
             return ThreadFollowerRemovalResponse(removed: true, undoToken: undoToken, ok: true)
@@ -250,7 +298,8 @@ public struct MessageSendService: Sendable {
         guard case .restored = messages.restoreThreadFollower(
             threadId: threadId,
             agentId: agentId,
-            undoToken: undoToken
+            undoToken: undoToken,
+            now: now()
         ) else {
             return ThreadFollowerRestoreResponse(restored: false)
         }
@@ -347,4 +396,11 @@ public struct MessageSendService: Sendable {
             throw MessageSendError.forbidden
         }
     }
+}
+
+private struct AttachmentSingleURLResolutionError: DomainError {
+    var status: UInt { 500 }
+    var errorMessage: String { "Failed to get attachment URL" }
+    var errorCode: String? { nil }
+    var errorBody: OrderedJSON? { nil }
 }

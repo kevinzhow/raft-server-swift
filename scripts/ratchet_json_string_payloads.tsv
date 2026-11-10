@@ -29,7 +29,7 @@ Sources/RaftHTTP/Services/AgentHistoryError.swift	3
 Sources/RaftHTTP/Services/AgentHistoryService.swift	1
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	5
 Sources/RaftHTTP/Services/AgentMessageLookupService.swift	2
-Sources/RaftHTTP/Services/AgentPrivateSurfaceError.swift	2
+Sources/RaftHTTP/Services/AgentPrivateSurfaceError.swift	1
 Sources/RaftHTTP/Services/AgentsLifecycleService.swift	1
 Sources/RaftHTTP/Services/ChannelMessagingService.swift	1
 Sources/RaftHTTP/Services/FeedbackLocatorService.swift	2

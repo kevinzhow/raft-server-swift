@@ -1,6 +1,7 @@
 import Foundation
 import HTTPTypes
 import RaftHTTP
+import RaftRealtime
 import Vapor
 
 /// `/api/auth/...` routes extracted from `FallbackApplication.configure`.
@@ -20,6 +21,7 @@ public struct AuthFeature: RouteCollection, Sendable {
     private let invites: JoinLinksAndInvitesService
     private let managedLifecycle: ManagedMCPLifecycleService
     private let publicServerDirectory: PublicServerDirectory?
+    private let realtime: RealtimeHub?
 
     public init(
         core: AuthCoreService,
@@ -29,7 +31,8 @@ public struct AuthFeature: RouteCollection, Sendable {
         profile: AuthProfileService,
         invites: JoinLinksAndInvitesService,
         managedLifecycle: ManagedMCPLifecycleService,
-        publicServerDirectory: PublicServerDirectory? = nil
+        publicServerDirectory: PublicServerDirectory? = nil,
+        realtime: RealtimeHub? = nil
     ) {
         self.core = core
         self.identities = identities
@@ -39,8 +42,20 @@ public struct AuthFeature: RouteCollection, Sendable {
         self.invites = invites
         self.managedLifecycle = managedLifecycle
         self.publicServerDirectory = publicServerDirectory
+        self.realtime = realtime
     }
 
+
+    private func closePasswordSessions(_ target: PasswordSessionRevocation) {
+        realtime?.revokeFamilies(userId: target.userId, familyIds: target.familyIds)
+    }
+
+    private func closeSessionAccess(_ target: SessionAccessRevocation) {
+        switch target {
+        case .user(let userId): realtime?.revokeUserAccess(userId: userId)
+        case .family(let userId, let familyId): realtime?.revokeSessionAccess(userId: userId, familyId: familyId)
+        }
+    }
 
     public func boot(routes: any RoutesBuilder) async throws {
         register(routes: routes)
@@ -88,7 +103,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         mobileAppleNative.post("start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(NativeAppleStartRequest.self, request, decoding: .json)) ?? NativeAppleStartRequest()
             return try await respond(status: 201) {
-                try self.oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
+                try await self.oauthFlows.startNativeApple(body, authorization: request.headers[.authorization])
             }
         }
         mobileAppleNative.post("authorize") { request async throws -> Response in
@@ -99,12 +114,12 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         mobileOAuth.post("start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthStartRequest.self, request, decoding: .json)) ?? MobileOAuthStartRequest()
-            return try await respond(status: 201) { try self.oauthFlows.startMobileOAuth(body) }
+            return try await respond(status: 201) { try await self.oauthFlows.startMobileOAuth(body) }
         }
         mobileProvider.post("link", "start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthStartRequest.self, request, decoding: .json)) ?? MobileOAuthStartRequest()
             return try await respond(status: 201) {
-                try self.oauthFlows.startMobileOAuthLink(
+                try await self.oauthFlows.startMobileOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     authorization: request.headers[.authorization]
@@ -123,7 +138,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         provider.get("start") { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try self.oauthFlows.startWebOAuth(
+                try await self.oauthFlows.startWebOAuth(
                     provider: request.parameters.get("provider") ?? "",
                     returnTo: desktopQuery(request.url.query, "returnTo"),
                     linkOnConflict: desktopQuery(request.url.query, "linkOnConflict") == "1"
@@ -133,7 +148,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         provider.post("link", "start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(WebOAuthLinkStartRequest.self, request, decoding: .json)) ?? WebOAuthLinkStartRequest()
             return try await respond(headers: { $0.headers }) {
-                try self.oauthFlows.startWebOAuthLink(
+                try await self.oauthFlows.startWebOAuthLink(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     authorization: request.headers[.authorization]
@@ -145,7 +160,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // service parses the raw text with the legacy field parser.
             let body = try await request.bodyText()
             return try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try self.oauthFlows.webOAuthCallback(
+                try await self.oauthFlows.webOAuthCallback(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     cookie: request.headers[.cookie]
@@ -154,7 +169,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         provider.get("callback") { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
-                try self.oauthFlows.mobileOAuthCallback(
+                try await self.oauthFlows.mobileOAuthCallback(
                     provider: request.parameters.get("provider") ?? "",
                     code: desktopQuery(request.url.query, "code"),
                     state: desktopQuery(request.url.query, "state"),
@@ -164,14 +179,14 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         mobileOAuth.post("complete") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
-            return try await respond { try self.oauthFlows.completeMobileOAuth(body) }
+            return try await respond { try await self.oauthFlows.completeMobileOAuthAsync(body) }
         }
         provider.post("complete") { request async throws -> Response in
             // A body that is not a JSON object reads as an empty request, so the
             // service answers the published "code is required" 400.
             let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
             return try await respond {
-                try self.core.completeSocial(
+                try await self.core.completeSocialAsync(
                     provider: request.parameters.get("provider") ?? "",
                     body: body,
                     userAgent: request.headers[.userAgent],
@@ -197,7 +212,8 @@ public struct AuthFeature: RouteCollection, Sendable {
         auth.post("staging-self-account", "retire") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(RetireStagingRequest.self, request, decoding: .json)) ?? RetireStagingRequest()
             return try await respond {
-                try self.core.retireStagingSelfAccount(body, authorization: request.headers[.authorization])
+                try self.core.retireStagingSelfAccount(body, authorization: request.headers[.authorization],
+                    onSessionsRevoked: self.closeSessionAccess)
             }
         }
         auth.post("register") { request async throws -> Response in
@@ -205,7 +221,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // the published `Expected object` issue list.
             let body = try await decodeJSONRequestBody(RegisterRequest.self, request, decoding: .json)
             return try await respond {
-                try self.core.register(
+                try await self.core.registerAsync(
                     body,
                     userAgent: request.headers[.userAgent],
                     acceptLanguage: request.headers[.acceptLanguage]
@@ -222,7 +238,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         }
         auth.post("logout") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(RefreshTokenRequest.self, request, decoding: .json)) ?? RefreshTokenRequest()
-            return try await respond { self.core.logout(body) }
+            return try await respond { self.core.logout(body, onSessionsRevoked: self.closeSessionAccess) }
         }
         identities.get { request async throws -> Response in
             try await respond { try self.identities.identities(authorization: request.headers[.authorization]) }
@@ -240,7 +256,9 @@ public struct AuthFeature: RouteCollection, Sendable {
             // JSON Content-Type goes through the same byte decode so the
             // published validation replies do not depend on the header.
             let body = (try await decodeJSONRequestBody(ResetPasswordRequest.self, request)) ?? ResetPasswordRequest()
-            return try await respond { try self.profile.resetPassword(body) }
+            return try await respond {
+                try await self.profile.resetPasswordAsync(body, onSessionsRevoked: self.closePasswordSessions)
+            }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
             // An empty or malformed body still answers 204, so cancel stays
@@ -253,7 +271,7 @@ public struct AuthFeature: RouteCollection, Sendable {
             // The lenient decoder keeps every wrong-typed field so the service
             // can publish the upstream `issues` list; a non-object body is nil.
             let body = try await decodeJSONRequestBody(LoginRequest.self, request, decoding: .json)
-            return try await respond { try self.identities.login(body) }
+            return try await respond { try await self.identities.loginAsync(body) }
         }
         appLogin.post("start") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AppLoginStartRequest.self, request, decoding: .json)) ?? AppLoginStartRequest()
@@ -329,7 +347,10 @@ public struct AuthFeature: RouteCollection, Sendable {
             // published 400 after the session check, as before.
             let body = try await decodeJSONRequestBody(UpdateProfileRequest.self, request, decoding: .json)
             return try await respond {
-                try self.identities.updateProfile(authorization: request.headers[.authorization], body)
+                try await self.identities.updateProfileAsync(
+                    authorization: request.headers[.authorization], body,
+                    onSessionsRevoked: self.closePasswordSessions
+                )
             }
         }
         auth.post("accept-invite") { request async throws -> Response in

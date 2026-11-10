@@ -45,12 +45,25 @@ private func publisherBindingFrames(_ socket: PublisherBindingSocket) async thro
     return Array(frames[socket.start..<end].filter { $0.hasPrefix("42") })
 }
 
-private func publisherBindingTaskJSON(_ task: ActionCardTaskPayload, fact: PublisherBindingTask, fixture: PublisherBindingFixture) throws -> String {
+private func publisherBindingTaskJSON(_ response: ChannelTaskResponse, fact: PublisherBindingTask, fixture: PublisherBindingFixture) throws -> String {
+    let task = response.task
     let claimedAt = try #require(task.claimedAt)
-    let expected = "{\"id\":\"\(fact.id)\",\"channelId\":\"\(fixture.channelId)\",\"messageId\":\"\(fact.messageId)\",\"title\":\"\(fact.title)\",\"status\":\"in_progress\",\"taskNumber\":\(fact.number),\"claimedById\":\"\(fixture.userId)\",\"claimedByType\":\"user\",\"claimedAt\":\"\(claimedAt)\",\"revision\":1}"
-    #expect(task.jsonBody.render() == expected)
+    #expect(task.id == fact.id)
+    #expect(task.channelId == fixture.channelId)
+    #expect(task.messageId == fact.messageId)
+    #expect(task.title == fact.title)
+    #expect(task.status == "in_progress")
+    #expect(task.taskNumber == fact.number)
+    #expect(task.claimedById == fixture.userId)
+    #expect(task.claimedByType == "user")
+    #expect(task.revision == 1)
     #expect(!claimedAt.isEmpty)
-    return expected
+    #expect(task.createdById == fixture.userId)
+    #expect(task.createdByType == "user")
+    #expect(task.createdByMembershipStatus == "active")
+    let envelope = try #require(try JSONSerialization.jsonObject(with: Data(response.jsonBody.render().utf8)) as? [String: Any])
+    #expect(Set(envelope.keys) == ["task"])
+    return task.jsonBody.render()
 }
 
 private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String) throws -> [String: Any] {
@@ -133,7 +146,7 @@ private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String
         let customUnfollow = try customThreads.setThreadFollow(named, authorization: fixture.authorization, serverId: fixture.serverId, follow: false)
         #expect(customUnfollow.jsonBody.render() == "{\"ok\":true,\"following\":false}")
         let customClaim = try customAssignments.claimTask(authorization: fixture.authorization, serverId: fixture.serverId, taskId: fixture.taskFacts[2].id)
-        #expect(customClaim.claimedAt == "1970-01-01T00:20:34Z")
+        #expect(customClaim.task.claimedAt == "1970-01-01T00:20:34.000Z")
         let customJSON = try publisherBindingTaskJSON(customClaim, fact: fixture.taskFacts[2], fixture: fixture)
         let customFrame = "42[\"task:updated\",{\"channelId\":\"\(fixture.channelId)\",\"task\":\(customJSON)}]"
         let unfollowed = try publishedThreads.unfollowedInbox(authorization: fixture.authorization, serverId: fixture.serverId, limit: nil, query: nil)

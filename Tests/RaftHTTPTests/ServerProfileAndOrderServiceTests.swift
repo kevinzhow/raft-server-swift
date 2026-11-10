@@ -214,6 +214,7 @@ private func attestationService(directory: EmailLoginDirectory) -> ServerProfile
         "feedbackTranscriptWindowToleranceMs": 250,
     ]
     let expectedClaims: [String: Any] = [
+        "v": 1, "typ": "scope-attestation",
         "sub": "machine:\(machineId)", "actorType": "machine", "machineId": machineId,
         "serverId": serverId, "serverSlug": "attest-bytes", "scope": "daemon-trace-bundle:create",
         "aud": "trace-ingest-worker",
@@ -221,12 +222,20 @@ private func attestationService(directory: EmailLoginDirectory) -> ServerProfile
         "jti": "00000000-0000-4000-8000-00000000abcd", "nonce": "00000000-0000-4000-8000-00000000abcd",
         "exp": 1_700_000_120, "metadata": expectedMetadata,
     ]
+    // Node scopeAttestation.ts:50–55 and worker auth.ts:27–33 authenticate
+    // only base64url(payload), using the configured secret's raw UTF-8 bytes.
+    let expectedPayload = Data(sortedJSON(expectedClaims).utf8).base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    let expectedMAC = hmac(expectedPayload, secret: "top-secret")
+    let expectedAttestation = "\(expectedPayload).\(expectedMAC)"
     let parts = response.attestation.split(separator: ".", omittingEmptySubsequences: false)
-    #expect(parts.count == 3)
-    #expect(decodeSegment(parts[0]) == "{\"alg\":\"HS256\",\"typ\":\"JWT\"}")
-    #expect(decodeSegment(parts[1]) == sortedJSON(expectedClaims))
-    #expect(String(parts[2]) == hmac("\(parts[0]).\(parts[1])", secret: "top-secret"))
-    #expect(response.jsonBody.render() == "{\"attestation\":\(jsonString(response.attestation)),\"scope\":\"daemon-trace-bundle:create\",\"audience\":\"trace-ingest-worker\",\"resource\":\"servers/\(serverId)/machines/\(machineId)/trace-bundles\",\"expiresAt\":\"2023-11-14T22:15:20.000Z\",\"metadata\":\(sortedJSON(expectedMetadata))}")
+    try #require(parts.count == 2)
+    #expect(decodeSegment(parts[0]) == sortedJSON(expectedClaims))
+    #expect(String(parts[0]) == expectedPayload)
+    #expect(String(parts[1]) == expectedMAC)
+    #expect(response.attestation == expectedAttestation)
+    #expect(response.jsonBody.render() == "{\"attestation\":\(jsonString(expectedAttestation)),\"scope\":\"daemon-trace-bundle:create\",\"audience\":\"trace-ingest-worker\",\"resource\":\"servers/\(serverId)/machines/\(machineId)/trace-bundles\",\"expiresAt\":\"2023-11-14T22:15:20.000Z\",\"metadata\":\(sortedJSON(expectedMetadata))}")
 }
 
 @Test func machineAttestationRefusalsKeepTheirPublishedOrder() throws {
@@ -279,6 +288,8 @@ private func attestationService(directory: EmailLoginDirectory) -> ServerProfile
     let ownerId = "11111111-1111-4111-8111-000001170203"
     let serverId = "33333333-3333-4333-8333-000001170203"
     let directory = profileFixture(ownerId: ownerId, serverId: serverId, slug: "attest-server")
+    // The production scope protocol has no implicit signing-secret fallback.
+    directory.setScopeAttestationSecretForTesting("scope-attestation-default-secret")
     let token = directory.mintAccessTokenForTesting(userId: ownerId)
     let service = attestationService(directory: directory)
 
@@ -288,13 +299,24 @@ private func attestationService(directory: EmailLoginDirectory) -> ServerProfile
         body: ServerScopeAttestationRequest(scope: "feedback-report:create")
     )
     let claims: [String: Any] = [
+        "v": 1, "typ": "scope-attestation", "traceUserId": NSNull(),
+        "email": "attest-server@slock.test", "serverSlug": "attest-server",
+        "nonce": "00000000-0000-4000-8000-00000000abcd",
         "scope": "feedback-report:create", "actorType": "user", "sub": ownerId, "serverId": serverId,
         "aud": "feedback-worker", "resource": "servers/\(serverId)/feedback-reports", "exp": 1_700_000_300,
     ]
+    let expectedPayload = Data(sortedJSON(claims).utf8).base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+    let expectedMAC = hmac(expectedPayload, secret: "scope-attestation-default-secret")
+    let expectedAttestation = "\(expectedPayload).\(expectedMAC)"
     let parts = response.attestation.split(separator: ".", omittingEmptySubsequences: false)
-    #expect(decodeSegment(parts[1]) == sortedJSON(claims))
-    #expect(String(parts[2]) == hmac("\(parts[0]).\(parts[1])", secret: "scope-attestation-default-secret"))
-    #expect(response.jsonBody.render() == "{\"attestation\":\(jsonString(response.attestation)),\"scope\":\"feedback-report:create\",\"audience\":\"feedback-worker\",\"resource\":\"servers/\(serverId)/feedback-reports\",\"expiresAt\":\"2023-11-14T22:18:20.750Z\"}")
+    try #require(parts.count == 2)
+    #expect(decodeSegment(parts[0]) == sortedJSON(claims))
+    #expect(String(parts[0]) == expectedPayload)
+    #expect(String(parts[1]) == expectedMAC)
+    #expect(response.attestation == expectedAttestation)
+    #expect(response.jsonBody.render() == "{\"attestation\":\(jsonString(expectedAttestation)),\"scope\":\"feedback-report:create\",\"audience\":\"feedback-worker\",\"resource\":\"servers/\(serverId)/feedback-reports\",\"expiresAt\":\"2023-11-14T22:18:20.750Z\"}")
 
     #expect(throws: ServerProfileAndOrderError.unknownScope) {
         _ = try service.serverScopeAttestation(

@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 import Synchronization
 
 /// One validated `system.cleaner` app-config override.
@@ -60,11 +61,13 @@ final class ManagedMCPAndCardsStore: Sendable {
         var agentIntegrationLogins: [String: AgentIntegrationLoginRecord] = [:]
         var providerConnectionsEnabledServers: Set<String> = []
         var providerConnections: [ProviderConnection] = []
+        /// Encrypted business facts, keyed by globally unique connection ID; never live configuration.
+        var providerCredentials: [String: ProviderCredentialEnvelope] = [:]
         var providerAssignments: [ProviderAssignment] = []
         var agentApiIdempotencyKeys: [AgentApiIdempotencyRecord] = []
     }
 
-    let storage = Mutex(State())
+    let storage = TransactionalState(State())
 
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {
@@ -514,8 +517,8 @@ struct ProviderConnectionPatch: Sendable, Equatable {
     var name: String?
     var endpointUrl: String?
     var supportsImageInput: Bool?
-    /// A non-empty replacement API key (the credential rotates).
-    var rotatesCredential: Bool
+    /// A prepared encrypted replacement. `nil` leaves credential and version untouched.
+    var credential: ProviderCredentialEnvelope?
 }
 
 extension ManagedMCPAndCardsStore {
@@ -533,9 +536,33 @@ extension ManagedMCPAndCardsStore {
         }
     }
 
-    func insertProviderConnection(_ connection: ProviderConnection) {
-        storage.withLock { ledgerState in
+    /// The metadata and actual sealed credential become visible in one owner transaction.
+    func insertProviderConnection(_ connection: ProviderConnection, credential: ProviderCredentialEnvelope) throws {
+        guard connection.hasCredential, credential.hasSupportedFormat else {
+            throw ProviderCredentialError.invalidPersistedCredentials
+        }
+        try storage.withLock { ledgerState in
+            guard !ledgerState.providerConnections.contains(where: { $0.id == connection.id }) else {
+                throw ProviderCredentialError.invalidPersistedCredentials
+            }
             ledgerState.providerConnections.append(connection)
+            ledgerState.providerCredentials[connection.id] = credential
+        }
+    }
+
+    func containsProviderConnection(id: String, serverId: String) -> Bool {
+        storage.withLock { ledgerState in
+            ledgerState.providerConnections.contains { $0.id == id && $0.serverId == serverId }
+        }
+    }
+
+    /// One scoped snapshot; decryption happens after the owner borrow is released.
+    func providerCredential(id: String, serverId: String) -> ProviderCredentialEnvelope? {
+        storage.withLock { ledgerState in
+            guard ledgerState.providerConnections.contains(where: {
+                $0.id == id && $0.serverId == serverId && $0.hasCredential
+            }) else { return nil }
+            return ledgerState.providerCredentials[id]
         }
     }
 
@@ -546,15 +573,22 @@ extension ManagedMCPAndCardsStore {
         serverId: String,
         patch: ProviderConnectionPatch,
         now: Date
-    ) -> ProviderConnection? {
-        return storage.withLock { ledgerState in
+    ) throws -> ProviderConnection? {
+        return try storage.withLock { ledgerState in
             guard let index = ledgerState.providerConnections.firstIndex(where: { $0.id == id && $0.serverId == serverId }) else {
                 return nil
+            }
+            if let credential = patch.credential {
+                guard credential.hasSupportedFormat,
+                      ledgerState.providerConnections[index].credentialVersion < Int.max else {
+                    throw ProviderCredentialError.invalidPersistedCredentials
+                }
             }
             if let name = patch.name { ledgerState.providerConnections[index].name = name }
             if let endpoint = patch.endpointUrl { ledgerState.providerConnections[index].endpointUrl = endpoint }
             if let supports = patch.supportsImageInput { ledgerState.providerConnections[index].supportsImageInput = supports }
-            if patch.rotatesCredential {
+            if let credential = patch.credential {
+                ledgerState.providerCredentials[id] = credential
                 ledgerState.providerConnections[index].credentialVersion += 1
                 ledgerState.providerConnections[index].status = "unchecked"
                 ledgerState.providerConnections[index].hasCredential = true
@@ -566,11 +600,13 @@ extension ManagedMCPAndCardsStore {
 
     /// Rotates the credential in one critical section and answers the stored
     /// row, or `nil` when the connection is not the server's.
-    func rotateProviderCredential(id: String, serverId: String, now: Date) -> ProviderConnection? {
-        patchProviderConnection(
+    func rotateProviderCredential(
+        id: String, serverId: String, credential: ProviderCredentialEnvelope, now: Date
+    ) throws -> ProviderConnection? {
+        try patchProviderConnection(
             id: id,
             serverId: serverId,
-            patch: ProviderConnectionPatch(rotatesCredential: true),
+            patch: ProviderConnectionPatch(credential: credential),
             now: now
         )
     }

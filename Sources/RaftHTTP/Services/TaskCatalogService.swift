@@ -1,18 +1,62 @@
 import Foundation
+import RaftShared
 
 public struct TaskCatalogService: Sendable {
     private let tasks: TasksAndRemindersStore
     private let profiles: AuthProfileStore
     private let oauth: OAuthLedger
+    private let producer: AgentExecutionTaskProducer
 
-    init(tasks: TasksAndRemindersStore, profiles: AuthProfileStore, oauth: OAuthLedger) {
+    init(tasks: TasksAndRemindersStore, profiles: AuthProfileStore, oauth: OAuthLedger,
+         messages: MessagesAndThreadsStore, channels: ServersAndChannelsStore, flags: AgentsRuntimeStore, execution: AgentExecutionService? = nil) {
         self.tasks = tasks
         self.profiles = profiles
         self.oauth = oauth
+        self.producer = AgentExecutionTaskProducer(messages: messages, channels: channels, profiles: profiles, oauth: oauth, flags: flags, execution: execution)
+    }
+
+    public func bindingExecution(_ execution: AgentExecutionService?) -> Self {
+        Self(tasks: tasks, profiles: profiles, oauth: oauth, messages: producer.messages,
+             channels: producer.channels, flags: producer.flags, execution: execution)
+    }
+
+    func isThread(channelId: String) -> Bool { oauth.channelType(id: channelId) == "thread" }
+
+    func createCanonicalTasks(serverId: String, channelId: String, creatorId: String, drafts: [TaskDraft]) throws -> TaskExecutionCreatedBatch {
+        let surfaces = producer.surfaces(for: channelId)
+        try producer.requireDeliveryTransaction(surfaces: surfaces)
+        let storageId = producer.storageChannelId(channelId)
+        let now = Date()
+        let hosts = drafts.map { draft in
+            StoredHumanMessage(id: UUID().uuidString.lowercased(), channelId: storageId,
+                               senderId: creatorId, content: draft.title ?? "", randomId: nil, createdAt: now)
+        }
+        let legacyMax = producer.messages.humanMessageRows.filter { $0.channelId == storageId }.compactMap(\.taskNumber).max() ?? 0
+        let created = tasks.appendCanonicalTasks(channelId: storageId, drafts: drafts, hostMessageIds: hosts.map(\.id),
+                                                creatorId: creatorId, legacyMessageMaxNumber: legacyMax, now: now)
+        do {
+            var committed = hosts.map { producer.append($0) }
+            let list = created.map { "#\($0.taskNumber) \"\(AgentExecutionTaskProducer.summarize($0.title))\"" }.joined(separator: ", ")
+            let content = "📋 \(created.count) new task\(created.count > 1 ? "s" : "") created: \(list)"
+            let summary = producer.append(StoredHumanMessage(
+                id: UUID().uuidString.lowercased(), channelId: storageId, senderId: "system", content: content,
+                randomId: nil, messageType: "system", senderType: "user", createdAt: now,
+                systemSubtype: "task.created_summary", causalActorType: "user", causalActorId: creatorId))
+            committed.append(summary)
+            for message in committed { try producer.deliver(message, surfaces: surfaces) }
+            return TaskExecutionCreatedBatch(tasks: created, messages: committed, surfaces: surfaces, creatorName: producer.userName(creatorId))
+        } catch {
+            DeferredEffects.markRollbackOnly()
+            if let failure = error as? AgentExecutionError {
+                throw AgentExecutionProducerError(operation: "create tasks", underlying: failure)
+            }
+            throw error
+        }
     }
 
     func taskChannelAccess(serverId: String, channelId: String, userId: String) -> TaskChannelAccess {
-        TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId)
+        TasksAndLabsService.channelAccess(oauth: oauth, channels: producer.channels, messages: producer.messages, flags: producer.flags,
+            serverId: serverId, channelId: channelId, userId: userId)
     }
 
     func canReadChannel(serverId: String, channelId: String, userId: String) -> Bool {
@@ -24,12 +68,9 @@ public struct TaskCatalogService: Sendable {
 
     public func channelTaskAccess(serverId: String, channelId: String, userId: String) -> ChannelTaskAccess {
         switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing:
-            .missing
-        case .readOnly:
-            .readOnly
-        case .write:
-            .write
+        case .missing: .missing
+        case .readOnly: .readOnly
+        case .write: .write
         }
     }
 
@@ -37,107 +78,86 @@ public struct TaskCatalogService: Sendable {
         channelId: String, titles: [String], descriptions: [String?]? = nil,
         creatorId: String? = nil, creatorType: String = "user"
     ) -> [String] {
-        // Number allocation and the batch append are one Tasks transaction.
-        // `creatorType` remains accepted without a corresponding row column.
-        return tasks.appendTasks(
-            channelId: channelId,
-            titles: titles,
-            descriptions: descriptions,
-            creatorId: creatorId
-        )
+        // This legacy writer has no retained creator-type column/history proof.
+        tasks.appendTasks(channelId: channelId, titles: titles, descriptions: descriptions, creatorId: creatorId)
     }
 
-    func orderedTasks(
-        serverId: String,
-        userId: String,
-        status: String?
-    ) -> [(task: TaskRecord, channelName: String, channelType: String)] {
+    func orderedTasks(serverId: String, userId: String, status: String?)
+        -> [(task: TaskRecord, channelId: String, channelName: String, channelType: String)] {
+        let reads = HumanChannelReadAccessQuery(channels: producer.channels, messages: producer.messages, oauth: oauth, flags: producer.flags)
         let visible = oauth.channelsForServer(serverId: serverId, userId: userId).filter {
-            $0.joined && ($0.type == "channel" || $0.type == "joint")
-                && oauth.channelArchivedAt(id: $0.id) == nil
+            ($0.type == "channel" || $0.type == "joint") && oauth.channelArchivedAt(id: $0.id) == nil
+                && reads.authority(channelId: $0.id, serverId: serverId, userId: userId) != nil
         }
-        let names = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.name) })
-        let types = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0.type) })
-        let rows = tasks.taskRecords.filter {
-            names[$0.channelId] != nil && (status == nil || $0.status == status)
-        }
-        return rows
-            .map { (task: $0, channelName: names[$0.channelId] ?? "", channelType: types[$0.channelId] ?? "channel") }
-            .sorted {
-                if $0.channelName != $1.channelName { return $0.channelName < $1.channelName }
-                if $0.task.taskNumber != $1.task.taskNumber { return $0.task.taskNumber < $1.task.taskNumber }
-                return $0.task.id < $1.task.id
+        return visible.flatMap { channel in
+            tasks.tasks(channelId: producer.storageChannelId(channel.id), status: status).map {
+                (task: $0, channelId: channel.id, channelName: channel.name, channelType: channel.type)
             }
+        }.sorted {
+            if $0.channelName != $1.channelName { return $0.channelName < $1.channelName }
+            if $0.channelId != $1.channelId { return $0.channelId < $1.channelId }
+            if $0.task.taskNumber != $1.task.taskNumber { return $0.task.taskNumber < $1.task.taskNumber }
+            return $0.task.id < $1.task.id
+        }
     }
 
-    func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
-        OrderedJSON.object([
-            OrderedJSONField("id", task.id), OrderedJSONField("channelId", task.channelId),
-            OrderedJSONField("channelName", channelName), OrderedJSONField("channelType", channelType),
-            OrderedJSONField("title", task.title), OrderedJSONField("description", optional: task.description),
-            OrderedJSONField("status", task.status), OrderedJSONField("taskNumber", task.taskNumber),
-            OrderedJSONField("messageId", task.messageId), OrderedJSONField("revision", task.revision),
-        ]).render()
+    func taskSurface(_ task: TaskRecord, serverId: String, userId: String) -> TaskExecutionSurface? {
+        producer.readableTaskSurface(task, serverId: serverId, userId: userId)
     }
 
-    func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String) -> String {
-        let descriptionBytes = task.description.map { Data($0.utf8).count } ?? 0
-        let hasDescription = task.description != nil && !(task.description ?? "").isEmpty
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let claimed = task.claimedAt.map(formatter.string(from:))
-        let completed = task.completedAt.map(formatter.string(from:))
-        let updated = task.updatedAt.map(formatter.string(from:))
-        let createdAt = formatter.string(from: task.createdAt)
-        let assignee = task.assigneeId
-        let assigneeType = task.assigneeType
-        var claimedByName: String?
-        if let assigneeId = task.assigneeId {
-            if task.assigneeType == "agent", let agent = oauth.agentRuntimeInfo(id: assigneeId) {
-                claimedByName = agent.name
-            } else if let name = profiles.account(userId: assigneeId)?.name {
-                claimedByName = name
-            }
+    func conversionSurface(channelId: String, serverId: String, userId: String) -> TaskExecutionSurface? {
+        guard let local = producer.surfaces(for: channelId).first(where: { $0.serverId == serverId }),
+              HumanChannelReadAccessQuery(channels: producer.channels, messages: producer.messages, oauth: oauth, flags: producer.flags)
+                .authority(channelId: local.channelId, serverId: serverId, userId: userId) != nil else { return nil }
+        return local
+    }
+
+    func taskUpdateProjections(_ task: TaskRecord) -> [TaskReadProjection] {
+        producer.activeTaskSurfaces(for: task.channelId).map { producer.project(task, to: $0).projection }
+    }
+
+    func publishConvertedTask(_ task: TaskRecord, surface: TaskExecutionSurface) throws {
+        let relay = RealtimeRelayService(messages: producer.messages)
+        for target in producer.surfaces(for: task.channelId) {
+            let payload = producer.project(task, to: target)
+            try AgentExecutionPublication.publish(room: "channel:\(target.channelId)", event: "task:created",
+                identity: task.id, payloadJSON: OrderedJSON.object([.init("channelId", target.channelId),
+                    .init("tasks", .array([payload.jsonBody]))]).render(), emit: { relay.emit($0, $1, $2) })
         }
-        var createdById: String?
-        var createdByName: String?
-        var createdByType: String?
-        if let creatorId = task.creatorId {
-            if let agent = oauth.agentRuntimeInfo(id: creatorId) {
-                createdById = creatorId
-                createdByName = agent.name
-                createdByType = "agent"
-            } else if let name = profiles.account(userId: creatorId)?.name {
-                createdById = creatorId
-                createdByName = name
-                createdByType = "user"
-            }
+    }
+
+    /// The projection surface is retained OAuth/channel state, never the request
+    /// header substituted for an absent resource. Admission remains with callers.
+    func readProjection(_ task: TaskRecord, channelId: String? = nil) throws -> TaskReadProjection {
+        let localId = channelId ?? task.channelId
+        guard let surface = producer.surfaces(for: task.channelId).first(where: { $0.channelId == localId }) else {
+            throw ManagedMCPAssignmentsError.taskNotFound
         }
+        return producer.project(task, to: surface).projection
+    }
+
+    func fullTaskJSON(_ task: TaskRecord, channelName: String, channelType: String, channelId: String? = nil) throws -> String {
+        let projection = try readProjection(task, channelId: channelId)
+        // Node's server-wide list intentionally omits the duplicate current-text
+        // projection. Channel/number/mutation bodies retain it.
+        guard case .object(let fields) = projection.jsonBody else { return projection.jsonBody.render() }
+        return OrderedJSON.object(fields.filter { $0.key != "taskCurrentProjection" }).render()
+    }
+
+    func summaryTaskJSON(_ task: TaskRecord, channelName: String, channelType: String, channelId: String? = nil) throws -> String {
+        let p = try readProjection(task, channelId: channelId)
         return OrderedJSON.object([
-            OrderedJSONField("channelId", task.channelId),
-            OrderedJSONField("channelName", channelName),
-            OrderedJSONField("channelType", channelType),
-            OrderedJSONField("claimedAt", optional: claimed),
-            OrderedJSONField("claimedById", optional: assignee),
-            OrderedJSONField("claimedByName", optional: claimedByName),
-            OrderedJSONField("claimedByType", optional: assigneeType),
-            OrderedJSONField("completedAt", optional: completed),
-            OrderedJSONField("createdAt", createdAt),
-            OrderedJSONField("createdById", optional: createdById),
-            OrderedJSONField("createdByName", optional: createdByName),
-            OrderedJSONField("createdByType", optional: createdByType),
-            OrderedJSONField("descriptionBytes", descriptionBytes),
-            OrderedJSONField("hasDescription", hasDescription),
-            OrderedJSONField("id", task.id),
-            OrderedJSONField("isLegacy", false),
-            OrderedJSONField("messageId", task.messageId),
-            OrderedJSONField("readOnlyReason", .null),
-            OrderedJSONField("revision", task.revision),
-            OrderedJSONField("source", "tasks"),
-            OrderedJSONField("status", task.status),
-            OrderedJSONField("taskNumber", task.taskNumber),
-            OrderedJSONField("title", task.title),
-            OrderedJSONField("updatedAt", optional: updated),
+            .init("channelId", p.channelId), .init("channelName", optional: p.channelName),
+            .init("channelType", optional: p.channelType), .init("claimedAt", optional: p.claimedAt),
+            .init("claimedById", optional: p.claimedById), .init("claimedByName", optional: p.claimedByName),
+            .init("claimedByType", optional: p.claimedByType), .init("completedAt", optional: p.completedAt),
+            .init("createdAt", p.createdAt), .init("createdById", optional: p.createdById),
+            .init("createdByName", optional: p.createdByName), .init("createdByType", optional: p.createdByType),
+            .init("descriptionBytes", task.description.map { Data($0.utf8).count } ?? 0),
+            .init("hasDescription", !(task.description ?? "").isEmpty), .init("id", p.id), .init("isLegacy", p.isLegacy),
+            .init("messageId", optional: p.messageId), .init("readOnlyReason", .null), .init("revision", p.revision),
+            .init("source", "tasks"), .init("status", p.status), .init("taskNumber", p.taskNumber),
+            .init("title", p.title), .init("updatedAt", optional: p.updatedAt),
         ]).render()
     }
 }

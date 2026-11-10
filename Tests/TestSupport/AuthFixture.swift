@@ -1,5 +1,22 @@
 import Foundation
+import Synchronization
 @testable import RaftHTTP
+
+/// Immutable real PHCs reused by fixture setup. CPU work stays outside every
+/// account/store/cache lock. Production credential paths never use this cache.
+public enum AuthFixturePassword {
+    private static let hashes = Mutex<[String: String]>([:])
+
+    public static func encoded(_ password: String) -> String {
+        if let existing = hashes.withLock({ $0[password] }) { return existing }
+        let encoded = try! PasswordCredential.hash(password)
+        return hashes.withLock { cache in
+            if let existing = cache[password] { return existing }
+            cache[password] = encoded
+            return encoded
+        }
+    }
+}
 
 /// Direct auth seeds and readbacks over the same profile owner as the services.
 /// These operations preserve the legacy fixture semantics; they do not use HTTP.
@@ -15,11 +32,12 @@ public struct AuthFixture: Sendable {
         passwordCredentialEstablished: Bool = true
     ) {
         let normalized = AccountNaming.normalize(email)
+        let passwordHash = AuthFixturePassword.encoded(password)
         profiles.state.withLock { owned in
             owned.accountSurface.accounts[normalized] = Account(
                 id: id,
                 email: normalized,
-                passwordHash: AuthTokenCodec.sha256(password),
+                passwordHash: passwordHash,
                 passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
                 displayLanguage: nil,
                 name: String(normalized.split(separator: "@").first ?? "user"),
@@ -165,7 +183,12 @@ public struct AuthFixture: Sendable {
     }
 
     public func configureOAuthForTesting(_ update: (inout OAuthFlowsService.DeploymentConfiguration) -> Void) {
-        profiles.state.withLock { update(&$0.configSurface.oauthDeployment) }
+        profiles.state.withLock { state in
+            if state.configSurface.oauthDeployment.socialAuthStateSecret.isEmpty {
+                state.configSurface.oauthDeployment.socialAuthStateSecret = AuthJWTFixture.socialSigningSecret
+            }
+            update(&state.configSurface.oauthDeployment)
+        }
     }
 
     public func configureAuthCoreForTesting(_ update: (inout AuthCoreService.DeploymentConfiguration) -> Void) {

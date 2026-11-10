@@ -991,16 +991,16 @@ private func refreshBound(
             let authorizationUrl = startBody?["authorizationUrl"] as? String ?? ""
             #expect(requestId.isEmpty == false)
             let state = URLComponents(string: authorizationUrl)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            let original = AuthTokenCodec.verifySocialAuthState(state)
+            let original = await AuthTokenCodec.verifySocialAuthState(state, secret: AuthJWTFixture.socialSigningSecret)
             #expect(original?.desktopNonce == "desktop_nonce_0123456789abcdef")
-            let tampered = AuthTokenCodec.signSocialAuthState(SocialAuthState(
+            let tampered = try await AuthTokenCodec.signSocialAuthState(SocialAuthState(
                 provider: original?.provider ?? "",
                 mode: original?.mode ?? "",
                 nonce: original?.nonce ?? "",
                 kind: original?.kind ?? "",
                 mobileRequestId: original?.mobileRequestId ?? "",
                 desktopNonce: "different_nonce_0123456789abcdef"
-            ))
+            ), secret: AuthJWTFixture.socialSigningSecret)
             let encoded = tampered.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? tampered
             let callback = try await client.get(URI(string: "/api/auth/google/callback?code=provider-code&state=\(encoded)"))
             #expect(callback.status == .badRequest)
@@ -1038,7 +1038,7 @@ private func refreshBound(
             let authorizationUrl = startBody?["authorizationUrl"] as? String ?? ""
             #expect(URL(string: authorizationUrl)?.host == "accounts.google.com")
             let state = URLComponents(string: authorizationUrl)?.queryItems?.first { $0.name == "state" }?.value ?? ""
-            #expect(AuthTokenCodec.verifySocialAuthState(state)?.desktopNonce == desktopState)
+            #expect(await AuthTokenCodec.verifySocialAuthState(state, secret: AuthJWTFixture.socialSigningSecret)?.desktopNonce == desktopState)
 
             let encoded = state.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? state
             let callback = try await client.get(URI(string: "/api/auth/google/callback?code=provider-code&state=\(encoded)"))
@@ -1355,14 +1355,14 @@ private func refreshBound(
 
 @Test func mobileOAuthInvalidMobileStateFailsClosedWithoutWebCallbackRedirect() async throws {
     let scene = AuthScene()
-    let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
+    let state = try await AuthTokenCodec.signSocialAuthState(SocialAuthState(
         provider: "google",
         mode: "login",
         nonce: "nonce",
         kind: "mobile",
         mobileRequestId: UUID().uuidString.lowercased(),
         desktopNonce: nil
-    ))
+    ), secret: AuthJWTFixture.socialSigningSecret)
     try await withApp { app in
         registerAuthScene(app, scene: scene)
         try await app.testing { client in
@@ -2012,20 +2012,9 @@ private func jwtNumericClaim(_ token: String, name: String) -> Double? {
     return nil
 }
 
-private func appleIdentityToken(subject: String, nonce: String, email: String? = nil, emailVerified: Any = true, audience: String = "build.raft.app") -> String {
-    let header = base64urlJSON(["alg": "RS256", "typ": "JWT"])
-    var claims: [String: Any] = [
-        "sub": subject,
-        "nonce": nonce,
-        "iss": "https://appleid.apple.com",
-        "aud": audience,
-        "exp": Int(Date().timeIntervalSince1970) + 300,
-    ]
-    if let email {
-        claims["email"] = email
-        claims["email_verified"] = emailVerified
-    }
-    return "\(header).\(base64urlJSON(claims)).sig"
+private func appleIdentityToken(subject: String, nonce: String, email: String? = nil, emailVerified: AuthAppleEmailVerificationClaim = true, audience: String = "build.raft.app") async -> String {
+    try! await AuthAppleJWTFixture().token(subject: subject, nonce: nonce, email: email,
+                                         emailVerified: emailVerified, audience: audience)
 }
 
 @Test func nativeAppleIOSLoginVerifiesBothCredentialsAndPreservesTheLegalHandoff() async throws {
@@ -2086,7 +2075,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
             #expect(scene.mobile.oauthRequestCodeChallenge(id: requestId) == loginChallenge)
 
-            let expiredToken = AuthTokenCodec.signNativeAppleRequestToken(
+            let expiredToken = try await AuthTokenCodec.signNativeAppleRequestToken(
                 secret: secret,
                 requestId: requestId,
                 mode: "login",
@@ -2132,13 +2121,13 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             #expect(scene.mobile.oauthRequestStatus(id: requestId) == "pending_provider")
             #expect(crossBody?["handoffCode"] == nil)
 
-            let supplied = appleIdentityToken(
+            let supplied = await appleIdentityToken(
                 subject: "native-apple-login-subject",
                 nonce: loginChallenge,
                 email: "native-apple-login@slock.test",
                 emailVerified: true
             )
-            let exchangedLoginToken = appleIdentityToken(
+            let exchangedLoginToken = await appleIdentityToken(
                 subject: "native-apple-login-subject",
                 nonce: loginChallenge,
                 email: "native-apple-login@slock.test",
@@ -2221,7 +2210,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
     let email = "native-apple-concurrent@slock.test"
     scene.mobile.setNativeAppleCodeResponses(
         ["native-apple-concurrent-code": {
-            appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
+            await appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
         }],
         clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
     )
@@ -2237,7 +2226,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             let started = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
             let requestId = started?["requestId"] as? String ?? ""
             let requestToken = started?["requestToken"] as? String ?? ""
-            let supplied = appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
+            let supplied = await appleIdentityToken(subject: subject, nonce: challenge, email: email, emailVerified: true)
             let authorizeBody = "{\"requestId\":\"\(requestId)\",\"requestToken\":\"\(requestToken)\",\"authorizationCode\":\"native-apple-concurrent-code\",\"identityToken\":\"\(supplied)\"}"
 
             func attempt() async throws -> ClientResponse {
@@ -2373,8 +2362,8 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             let started = try JSONSerialization.jsonObject(with: Data(bodyText(linkStart).utf8)) as? [String: Any]
             let requestId = started?["requestId"] as? String ?? ""
             let requestToken = started?["requestToken"] as? String ?? ""
-            let supplied = appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
-            let exchangedLinkToken = appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
+            let supplied = await appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
+            let exchangedLinkToken = await appleIdentityToken(subject: subject, nonce: ownerChallenge, email: ownerEmail, emailVerified: true)
             scene.mobile.setNativeAppleCodeResponses(
                 ["native-apple-link-code": { exchangedLinkToken }],
                 clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
@@ -2440,8 +2429,8 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             let laterStarted = try JSONSerialization.jsonObject(with: Data(bodyText(laterStart).utf8)) as? [String: Any]
             let laterId = laterStarted?["requestId"] as? String ?? ""
             let laterToken = laterStarted?["requestToken"] as? String ?? ""
-            let laterSupplied = appleIdentityToken(subject: subject, nonce: laterChallenge)
-            let exchangedLaterToken = appleIdentityToken(subject: subject, nonce: laterChallenge)
+            let laterSupplied = await appleIdentityToken(subject: subject, nonce: laterChallenge)
+            let exchangedLaterToken = await appleIdentityToken(subject: subject, nonce: laterChallenge)
             scene.mobile.setNativeAppleCodeResponses(
                 ["native-apple-later-code": { exchangedLaterToken }],
                 clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
@@ -2472,8 +2461,8 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             let firstStarted = try JSONSerialization.jsonObject(with: Data(bodyText(firstStart).utf8)) as? [String: Any]
             let firstId = firstStarted?["requestId"] as? String ?? ""
             let firstToken = firstStarted?["requestToken"] as? String ?? ""
-            let firstSupplied = appleIdentityToken(subject: "native-apple-new-missing-email-subject", nonce: missingChallenge)
-            let exchangedMissingEmailToken = appleIdentityToken(
+            let firstSupplied = await appleIdentityToken(subject: "native-apple-new-missing-email-subject", nonce: missingChallenge)
+            let exchangedMissingEmailToken = await appleIdentityToken(
                 subject: "native-apple-new-missing-email-subject",
                 nonce: missingChallenge
             )
@@ -2504,19 +2493,19 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
     scene.mobile.setNativeAppleCodeResponses(
         [:], clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
     )
-    let cases: [(name: String, challenge: String, supplied: (String) -> String, exchanged: (String) -> String)] = [
+    let cases: [(name: String, challenge: String, supplied: (String) async -> String, exchanged: (String) async -> String)] = [
         (
             "nonce",
             "native-apple-nonce-challenge-0123456789abcd",
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-invalid-nonce",
                     nonce: String(challenge.dropLast()) + "x",
                     email: "native-apple-invalid-nonce@slock.test"
                 )
             },
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-invalid-nonce",
                     nonce: challenge,
                     email: "native-apple-invalid-nonce@slock.test"
@@ -2527,7 +2516,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             "audience",
             "native-apple-audience-challenge-0123456789ab",
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-invalid-audience",
                     nonce: challenge,
                     email: "native-apple-invalid-audience@slock.test",
@@ -2535,7 +2524,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
                 )
             },
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-invalid-audience",
                     nonce: challenge,
                     email: "native-apple-invalid-audience@slock.test"
@@ -2546,14 +2535,14 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             "subject",
             "native-apple-subject-challenge-0123456789abcd",
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-subject-a",
                     nonce: challenge,
                     email: "native-apple-invalid-subject@slock.test"
                 )
             },
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-subject-b",
                     nonce: challenge,
                     email: "native-apple-invalid-subject@slock.test"
@@ -2564,14 +2553,14 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             "email",
             "native-apple-email-challenge-0123456789abcdef",
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-invalid-email",
                     nonce: challenge,
                     email: "native-apple-email-a@slock.test"
                 )
             },
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-invalid-email",
                     nonce: challenge,
                     email: "native-apple-email-b@slock.test"
@@ -2582,7 +2571,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
             "email-verification",
             "native-apple-unverified-challenge-0123456789ab",
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-unverified-email",
                     nonce: challenge,
                     email: "native-apple-unverified-email@slock.test",
@@ -2590,7 +2579,7 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
                 )
             },
             { challenge in
-                appleIdentityToken(
+                await appleIdentityToken(
                     subject: "native-apple-unverified-email",
                     nonce: challenge,
                     email: "native-apple-unverified-email@slock.test"
@@ -2612,12 +2601,12 @@ private func appleIdentityToken(subject: String, nonce: String, email: String? =
                 let requestId = started?["requestId"] as? String ?? ""
                 let requestToken = started?["requestToken"] as? String ?? ""
                 let authorizationCode = "native-apple-invalid-\(invalid.name)-code"
-                let exchangedToken = invalid.exchanged(invalid.challenge)
+                let exchangedToken = await invalid.exchanged(invalid.challenge)
                 scene.mobile.setNativeAppleCodeResponses(
                     [authorizationCode: { exchangedToken }],
                     clientId: "build.raft.app", clientSecret: "native-apple-client-secret"
                 )
-                let body = "{\"requestId\":\"\(requestId)\",\"requestToken\":\"\(requestToken)\",\"authorizationCode\":\"\(authorizationCode)\",\"identityToken\":\"\(invalid.supplied(invalid.challenge))\"}"
+                let body = "{\"requestId\":\"\(requestId)\",\"requestToken\":\"\(requestToken)\",\"authorizationCode\":\"\(authorizationCode)\",\"identityToken\":\"\(await invalid.supplied(invalid.challenge))\"}"
                 let authorize = try await postJSON(client, "/api/auth/mobile/oauth/apple/native/authorize", body: body)
                 #expect(authorize.status == .badRequest)
                 let authorizeBody = try JSONSerialization.jsonObject(with: Data(bodyText(authorize).utf8)) as? [String: Any]

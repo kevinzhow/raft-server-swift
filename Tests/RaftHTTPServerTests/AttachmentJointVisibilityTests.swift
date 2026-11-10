@@ -1,7 +1,8 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
+import RaftObjectStorage
 import Testing
 import TestSupport
 import Vapor
@@ -23,7 +24,41 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
     return ("multipart/form-data; boundary=\(boundary)", data)
 }
 
-@Test func linkedJointAttachmentsResolveThroughSiblingProjectionsOnly() async throws {
+/// Assert the real cold message carriers, after the existing physical download
+/// assertions established that these IDs refer to actual retained file bodies.
+private func expectColdLinkedAttachment(
+    _ client: any TestClient, headers: HTTPFields, channel: String, message: String,
+    attachment: String, filename: String, size: Int, aggregate: Bool = false,
+    opaqueIDs: [String] = []
+) async throws {
+    var paths = ["/api/messages/channel/\(channel)",
+                 "/api/messages/context/\(message)?channelId=\(channel)",
+                 "/api/messages/sync?channel_id=\(channel)&since_seq=0"]
+    if aggregate { paths.append("/api/messages/sync?since_seq=0") }
+    for path in paths {
+        let response = try await client.get(URI(string: path), headers: headers)
+        #expect(response.status == .ok)
+        let body = try JSONSerialization.jsonObject(with: try await attachmentPreviewBody(response))
+        let rows = (body as? [[String: Any]]) ?? ((body as? [String: Any])?["messages"] as? [[String: Any]]) ?? []
+        let row = try #require(rows.first { $0["id"] as? String == message })
+        let chips = try #require(row["attachments"] as? [[String: Any]])
+        let linked = try #require(chips.first { $0["id"] as? String == attachment })
+        #expect(linked["filename"] as? String == filename)
+        #expect(linked["mimeType"] as? String == "text/plain")
+        #expect(linked["sizeBytes"] as? Int == size)
+        #expect(chips.allSatisfy { $0["storageKey"] == nil && $0["objectKey"] == nil })
+        if !opaqueIDs.isEmpty {
+            #expect(Array(chips.prefix(opaqueIDs.count)).compactMap { $0["id"] as? String } == opaqueIDs)
+            for id in opaqueIDs {
+                let opaque = try #require(chips.first { $0["id"] as? String == id })
+                #expect(opaque["filename"] == nil && opaque["mimeType"] == nil && opaque["sizeBytes"] == nil)
+            }
+        }
+    }
+}
+
+@Test(.timeLimit(.minutes(1))) func linkedJointAttachmentsResolveThroughSiblingProjectionsOnly() async throws {
+    try await withSingleURLStorage { storage in
     let accounts = EmailLoginDirectory()
     let hostServer = "33333333-3333-4333-8333-000001019001"
     let peerServer = "33333333-3333-4333-8333-000001019002"
@@ -50,21 +85,33 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
     accounts.addJointChannelProjection(localChannelId: peerProjection, canonicalChannelId: canonical, serverId: peerServer)
 
     let message = accounts.addChannelMessageForTesting(channelId: canonical, content: "joint attachment message", senderId: hostOwner)
+    let linkedBytes = Data("joint linked attachment\n".utf8)
+    let draftBytes = Data("joint draft attachment\n".utf8)
     let linked = accounts.addChannelAttachment(
         channelId: hostProjection,
         uploaderId: hostOwner,
         filename: "joint-linked.txt",
         mimeType: "text/plain",
-        sizeBytes: 24,
-        messageId: message
+        sizeBytes: linkedBytes.count,
+        messageId: message,
+        bytes: linkedBytes
     )
     let draft = accounts.addChannelAttachment(
         channelId: hostProjection,
         uploaderId: hostOwner,
         filename: "joint-draft.txt",
         mimeType: "text/plain",
-        sizeBytes: 23
+        sizeBytes: draftBytes.count,
+        bytes: draftBytes
     )
+    accounts.configureAttachmentStorage(storage.storage)
+    for (id, bytes) in [(linked, linkedBytes), (draft, draftBytes)] {
+        let reference = try await storage.storage.put(attachmentID: id, bytes: bytes)
+        accounts.messagesAndThreadsStore.withState { state in
+            state.attachmentObjectReferences[id] = reference
+            state.developmentAttachmentBytes.removeValue(forKey: id)
+        }
+    }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -83,12 +130,27 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
             headers[HTTPField.Name("X-Server-Id")!] = peerServer
+            headers[HTTPField.Name("Host")!] = "localhost"
             let linkedResponse = try await client.get(URI(string: "/api/attachments/\(linked)/url"), headers: headers)
             #expect(linkedResponse.status == .ok)
+            let wire = try await singleURLWire(linkedResponse)
+            let fetched = try await client.get(URI(string: wire.url))
+            #expect(fetched.status == .ok)
+            let plaintext = try await attachmentPreviewBody(fetched)
+            #expect(plaintext == linkedBytes)
+            try await expectColdLinkedAttachment(client, headers: headers, channel: peerProjection,
+                message: message, attachment: linked, filename: "joint-linked.txt", size: linkedBytes.count)
+            // A stale unbound ID is an opaque reference; the real linked host
+            // still authorizes physical metadata across sibling projections.
+            accounts.setMessageAttachmentIdsForTesting(messageId: message, attachmentIds: [draft, linked])
+            try await expectColdLinkedAttachment(client, headers: headers, channel: peerProjection,
+                message: message, attachment: linked, filename: "joint-linked.txt", size: linkedBytes.count,
+                opaqueIDs: [draft])
             let draftResponse = try await client.get(URI(string: "/api/attachments/\(draft)/url"), headers: headers)
             #expect(draftResponse.status == .notFound)
             #expect((try JSONSerialization.jsonObject(with: Data((draftResponse.body.string ?? "").utf8)) as? [String: Any])?["error"] as? String == "Attachment not found")
         }
+    }
     }
 }
 
@@ -113,21 +175,25 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
     accounts.oauth.addChannelHuman(channelId: privateChannel, userId: ownerId)
     let publicMessage = accounts.addChannelMessageForTesting(channelId: publicChannel, content: "public body", senderId: ownerId)
     let privateMessage = accounts.addChannelMessageForTesting(channelId: privateChannel, content: "private body", senderId: ownerId)
+    let movedPublicBytes = Data("message-visible attachment\n".utf8)
+    let movedPrivateBytes = Data("message-private attachment\n".utf8)
     let movedToPublic = accounts.addChannelAttachment(
         channelId: privateChannel,
         uploaderId: ownerId,
         filename: "moved.txt",
         mimeType: "text/plain",
-        sizeBytes: 10,
-        messageId: publicMessage
+        sizeBytes: movedPublicBytes.count,
+        messageId: publicMessage,
+        bytes: movedPublicBytes
     )
     let movedToPrivate = accounts.addChannelAttachment(
         channelId: publicChannel,
         uploaderId: ownerId,
         filename: "hidden.txt",
         mimeType: "text/plain",
-        sizeBytes: 10,
-        messageId: privateMessage
+        sizeBytes: movedPrivateBytes.count,
+        messageId: privateMessage,
+        bytes: movedPrivateBytes
     )
 
     try await withApp { app in
@@ -147,8 +213,17 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
             headers[HTTPField.Name("X-Server-Id")!] = serverId
-            #expect(try await client.get(URI(string: "/api/attachments/\(movedToPublic)"), headers: headers).status == .ok)
+            let visibleDownload = try await client.get(URI(string: "/api/attachments/\(movedToPublic)"), headers: headers)
+            #expect(visibleDownload.status == .ok)
+            #expect(visibleDownload.body.data == movedPublicBytes)
+            #expect(visibleDownload.headers[.contentType] == "text/plain; charset=utf-8")
+            #expect(visibleDownload.headers[.contentLength] == String(movedPublicBytes.count))
             #expect(try await client.get(URI(string: "/api/attachments/\(movedToPrivate)"), headers: headers).status == .notFound)
+            accounts.setMessageAttachmentIdsForTesting(messageId: publicMessage,
+                attachmentIds: [movedToPrivate, "unretained-review-id"])
+            try await expectColdLinkedAttachment(client, headers: headers, channel: publicChannel,
+                message: publicMessage, attachment: movedToPublic, filename: "moved.txt", size: movedPublicBytes.count,
+                aggregate: true, opaqueIDs: [movedToPrivate, "unretained-review-id"])
         }
     }
 }
@@ -225,7 +300,9 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
     accounts.oauth.addOwnedServer(id: serverId, slug: "attachment-revoked", name: "Attachment Revoked", ownerId: ownerId)
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "attachment-revoked-room", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "attachment-revoked-room")
-    let attachment = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "revoked.txt", mimeType: "text/plain", sizeBytes: 10)
+    let attachmentBytes = Data("revoked session attachment\n".utf8)
+    let attachment = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "revoked.txt",
+        mimeType: "text/plain", sizeBytes: attachmentBytes.count, bytes: attachmentBytes)
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -244,7 +321,11 @@ private func jointAttachmentMultipart(channelId: String, filename: String, conte
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
             headers[HTTPField.Name("X-Server-Id")!] = serverId
-            #expect(try await client.get(URI(string: "/api/attachments/\(attachment)"), headers: headers).status == .ok)
+            let beforeRevocation = try await client.get(URI(string: "/api/attachments/\(attachment)"), headers: headers)
+            #expect(beforeRevocation.status == .ok)
+            #expect(beforeRevocation.body.data == attachmentBytes)
+            #expect(beforeRevocation.headers[.contentType] == "text/plain; charset=utf-8")
+            #expect(beforeRevocation.headers[.contentLength] == String(attachmentBytes.count))
 
             accounts.revokeAccessTokenForTesting(token)
             #expect(try await client.get(URI(string: "/api/attachments/\(attachment)"), headers: headers).status == .unauthorized)

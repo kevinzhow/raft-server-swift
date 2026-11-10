@@ -71,15 +71,19 @@ extension AuthProfileStore {
 
     /// Replaces the password when the current one matches. The compare and the
     /// write are one critical section.
-    func changePassword(userId: String, currentHash: String, newHash: String) -> ChangePasswordOutcome {
+    func changePassword(userId: String, currentHash: String, newHash: String,
+                        authorizationToken: String, now: Date) -> ChangePasswordOutcome {
         return state.withLock { state in
-            guard var account = state.accountSurface.accounts.values.first(where: { $0.id == userId }) else {
-                return .accountMissing
-            }
+            guard var account = state.accountSurface.accounts.values.first(where: { $0.id == userId }),
+                  account.retiredAt == nil,
+                  state.accountSurface.accessTokens[authorizationToken] == userId else { return .accountMissing }
+            if let family = state.accountSurface.accessTokenFamilies[authorizationToken],
+               state.accountSurface.revokedFamilies.contains(family) { return .accountMissing }
             guard account.passwordHash == currentHash else { return .wrongPassword }
             account.passwordHash = newHash
+            account.passwordCredentialEstablishedAt = now
             state.accountSurface.accounts[account.email] = account
-            return .changed
+            return .changed(Self.revokePasswordSessionsLocked(state: &state, userId: userId, now: now, reason: "password_changed"))
         }
     }
 

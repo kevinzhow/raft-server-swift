@@ -15,6 +15,8 @@ struct HumanMessageWrite: Sendable {
 struct ResolvedMentions: Sendable {
     var mentions: [MentionInput]
     var unresolved: [String]
+    var registrations: [ResolvedMentionRegistration] = []
+    var bindingConflict: Bool = false
 }
 
 /// The v1/v2 contract the create route answers with.
@@ -32,12 +34,20 @@ public enum HumanMessageContract: Sendable, Equatable {
 /// it invokes no Service callback while State is borrowed. Routes decode the
 /// body and project the returned DTO or thrown DomainError.
 public struct HumanMessageCreateService: Sendable {
+    /// Required startup closure: load the packaged mature parser and execute it
+    /// before the server accepts message writes. This creates no business state.
+    public static func validateMessageParserRuntime() throws {
+        _ = try MessageMentionMarkdown.parse("")
+    }
+
     let channels: ServersAndChannelsStore
     let messages: MessagesAndThreadsStore
     let agents: AgentsRuntimeStore
     let profiles: AuthProfileStore
     let oauth: OAuthLedger
     let dependencies: HumanMessageCreateDependencies
+    let machines: MachinesAndComputersStore?
+    let execution: AgentExecutionService?
 
     init(
         channels: ServersAndChannelsStore,
@@ -45,7 +55,9 @@ public struct HumanMessageCreateService: Sendable {
         agents: AgentsRuntimeStore,
         profiles: AuthProfileStore,
         oauth: OAuthLedger,
-        dependencies: HumanMessageCreateDependencies
+        dependencies: HumanMessageCreateDependencies,
+        machines: MachinesAndComputersStore? = nil,
+        execution: AgentExecutionService? = nil
     ) {
         self.channels = channels
         self.messages = messages
@@ -53,6 +65,13 @@ public struct HumanMessageCreateService: Sendable {
         self.profiles = profiles
         self.oauth = oauth
         self.dependencies = dependencies
+        self.machines = machines
+        self.execution = execution
+    }
+
+    public func bindingExecution(_ execution: AgentExecutionService?) -> Self {
+        Self(channels: channels, messages: messages, agents: agents, profiles: profiles,
+             oauth: oauth, dependencies: dependencies, machines: machines, execution: execution)
     }
 
     // MARK: - Session helpers
@@ -132,6 +151,10 @@ public struct HumanMessageCreateService: Sendable {
             }
             throw HumanMessageCreateError.channelArchived
         }
+        let producer = execution.map {
+            AgentExecutionHumanMessageProducer(channels: channels, messages: messages, oauth: oauth, execution: $0)
+        }
+        try producer?.requireSupportedSurface(channelId: channelId)
         let appIds = Self.appReferenceIds(content)
         if !appIds.isEmpty {
             if !referencesEnabled { throw HumanMessageCreateError.referencesNotEnabled }
@@ -141,16 +164,15 @@ public struct HumanMessageCreateService: Sendable {
         }
         let attachmentIds = Self.strings(in: request.attachmentIds)
         let typedMentions = AgentSendMessageRequest.mentions(Self.array(request.mentions))
-        if dependencies.mentionBindingConflict(typedMentions) {
-            throw HumanMessageCreateError.mentionBindingConflict
-        }
-        let resolution = dependencies.resolveMentions(
+        let resolution = try dependencies.resolveMentions(
             serverId ?? "",
+            channelId,
             userId,
             content,
             typedMentions,
             contract == .v2
         )
+        if resolution.bindingConflict { throw HumanMessageCreateError.mentionBindingConflict }
         let mentions = resolution.mentions
         let senderTimezone = Self.optionalIanaTimezone(request.timezone)
         var randomId: String?
@@ -168,17 +190,11 @@ public struct HumanMessageCreateService: Sendable {
         }
         let messageId = Self.messageId(in: written.body)
         if written.created, let messageId {
-            dependencies.recordMemberMentionRows(messageId, channelId, mentions)
-        }
-        if channel.kind == "thread", let parentMessageId = channel.parentMessageId {
-            recordThreadReplyFollows(
-                channel: channel,
-                channelId: channelId,
-                parentMessageId: parentMessageId,
-                serverId: serverId ?? "",
-                userId: userId,
-                mentions: mentions
-            )
+            dependencies.recordMemberMentionRows(messageId, channelId, resolution)
+            if channel.kind == "thread", channel.parentMessageId != nil {
+                dependencies.recordThreadReplyFollows(messageId, channelId, serverId ?? "", userId, resolution)
+            }
+            try producer?.deliverCreated(messageId: messageId, channelId: channelId)
         }
         guard let messageId else {
             return HumanMessageCreatedResponse(
@@ -189,7 +205,7 @@ public struct HumanMessageCreateService: Sendable {
                 unresolvedMentionHandles: []
             )
         }
-        let pending = pendingMentionActions(channelId: channelId, messageId: messageId, mentions: mentions)
+        let pending = written.created ? pendingMentionActions(channelId: channelId, messageId: messageId) : []
         if contract == .v2 {
             return HumanMessageCreatedResponse(
                 messageJSON: written.body,
@@ -208,108 +224,20 @@ public struct HumanMessageCreateService: Sendable {
         )
     }
 
-    /// The sender follows the thread they reply in; a direct mention of a member
-    /// who may read the parent follows it too, and reactivates a suppressed
-    /// follow only for a parent member. Eligibility is decided from snapshots;
-    /// the follow and suppression rows change in one store critical section.
-    private func recordThreadReplyFollows(
-        channel: PostableChannel,
-        channelId: String,
-        parentMessageId: String,
-        serverId: String,
-        userId: String,
-        mentions: [MentionInput]
-    ) {
-        let postable = channels.state.postableChannels
-        let agentMembers = agents.channelAgentMembers
-        let parent = channel.parentChannelId.flatMap { postable[$0] }
-        var mentioned: [ThreadMentionFollowTarget] = []
-        for mention in mentions where mention.type == "user" || mention.type == "agent" {
-            guard ServerScope.isUUID(mention.id), mention.id != userId else { continue }
-            let parentAllowsHuman = parent?.kind == "channel" || parent?.memberIds.contains(mention.id) == true
-            let parentAllowsAgent = parent?.kind == "channel"
-                || parent?.agentId == mention.id
-                || channel.parentChannelId.flatMap { agentMembers[$0]?.contains(mention.id) } == true
-            let valid: Bool
-            if mention.type == "user" {
-                valid = parentAllowsHuman
-                    && profiles.account(userId: mention.id) != nil
-                    && oauth.memberRole(serverId: serverId, userId: mention.id) != nil
-            } else {
-                valid = parentAllowsAgent
-                    && oauth.agentRuntimeInfo(id: mention.id)?.serverId == serverId
-            }
-            if valid {
-                mentioned.append(ThreadMentionFollowTarget(
-                    userId: mention.id,
-                    isParentMember: parent?.memberIds.contains(mention.id) == true
-                ))
-            }
-        }
-        messages.applyThreadReplyFollows(
-            serverId: serverId,
-            threadChannelId: channelId,
-            parentMessageId: parentMessageId,
-            senderId: userId,
-            mentioned: mentioned
-        )
-    }
-
     /// Outsider mentions on a new human send are returned beside the message,
     /// not inside it. The resolution rows are written in one store critical
     /// section.
-    private func pendingMentionActions(
-        channelId: String,
-        messageId: String,
-        mentions: [MentionInput]
-    ) -> [PendingMentionAction] {
-        let channel = channels.state.postableChannels[channelId]
-        let members = channel?.memberIds ?? []
-        let serverId = channel?.serverId
-        let directMessage = channel?.kind == "dm"
-        let serverAgents = agents.serverAgents
-        let channelAgents = Set(oauth.channelAgentIds(channelId: channelId))
-        var candidates: [PendingMentionCandidate] = []
-        var avatars: [String?] = []
-        for mention in mentions {
-            guard mention.type == "user" || mention.type == "agent",
-                  ServerScope.isUUID(mention.id),
-                  !mention.name.isEmpty
-            else { continue }
-            let avatar: String?
-            if mention.type == "user" {
-                guard let account = profiles.account(userId: mention.id), !members.contains(mention.id) else { continue }
-                avatar = account.avatarUrl
-            } else {
-                if channelAgents.contains(mention.id) { continue }
-                if let agent = serverAgents[mention.id], agent.serverId == serverId {
-                    avatar = agent.avatarUrl
-                } else if let agent = oauth.agentRuntimeInfo(id: mention.id), agent.serverId == serverId, !agent.deleted {
-                    avatar = agent.avatarUrl
-                } else {
-                    continue
-                }
-            }
-            candidates.append(PendingMentionCandidate(type: mention.type, id: mention.id, name: mention.name))
-            avatars.append(avatar)
-        }
-        guard !candidates.isEmpty else { return [] }
-        let resolutionIds = messages.resolvePendingMentionRows(
-            messageId: messageId,
-            channelId: channelId,
-            candidates: candidates
-        )
-        guard !directMessage else { return [] }
-        let expiresAt = Self.pendingMentionExpiry(from: dependencies.now())
-        return zip(zip(candidates, avatars), resolutionIds).map { pair, resolutionId in
-            PendingMentionAction(
-                resolutionId: resolutionId,
-                messageId: messageId,
-                targetType: pair.0.type,
-                targetHandle: pair.0.name,
-                targetAvatarUrl: pair.1,
-                expiresAt: expiresAt
-            )
+    private func pendingMentionActions(channelId: String, messageId: String) -> [PendingMentionAction] {
+        guard let channel = channels.postableChannel(id: channelId),
+              channel.kind == "channel" || channel.kind == "thread" else { return [] }
+        return messages.state.storedMentions.filter {
+            $0.messageId == messageId && $0.channelId == channelId && !$0.notifiableAtSend && $0.notifiedAt == nil
+        }.map { mention in
+            PendingMentionAction(resolutionId: mention.id, messageId: mention.messageId,
+                targetType: mention.targetType, targetHandle: mention.handle,
+                targetAvatarUrl: mention.targetType == "user" ? profiles.account(userId: mention.targetId)?.avatarUrl
+                    : oauth.agentRuntimeInfo(id: mention.targetId)?.avatarUrl,
+                expiresAt: MessageMentionRules.expiry(mention.createdAt))
         }
     }
 
@@ -340,86 +268,34 @@ public struct HumanMessageCreateService: Sendable {
         }
         var seen = Set<String>()
         var resolutionIds: [String] = []
-        for id in Self.strings(in: request.resolutionIds) where !seen.contains(id) {
-            seen.insert(id)
+        for raw in Self.strings(in: request.resolutionIds) + Self.strings(in: request.ids) {
+            let id = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
+            guard !id.isEmpty, seen.insert(id).inserted else { continue }
             resolutionIds.append(id)
             if resolutionIds.count == 100 { break }
         }
         if resolutionIds.isEmpty { throw HumanMessageCreateError.resolutionIdsRequired }
-        let postable = channels.state.postableChannels
-        let agentMembers = agents.channelAgentMembers
-        let steps = messages.applyUserMentionActions(
-            ids: resolutionIds,
-            action: action,
-            userId: userId,
-            now: dependencies.now(),
-            inScope: { postable[$0.channelId]?.serverId == serverId },
-            targetCanRead: {
-                Self.targetCanRead(
-                    channels: postable,
-                    agentMembers: agentMembers,
-                    channelId: $0.channelId,
-                    targetType: $0.targetType,
-                    targetId: $0.targetId
-                )
-            },
-            senderStillInChannel: {
-                Self.userStillInChannel(channels: postable, channelId: $0.channelId, userId: userId)
-            }
-        )
-        for step in steps {
-            for effect in step.effects {
-                switch effect {
-                case .deliver(let agentId, let messageId):
-                    agents.recordMentionDelivery(agentId: agentId, messageId: messageId, joiningChannelId: nil)
-                case .addAgent(let channelId, let agentId, let messageId):
-                    agents.recordMentionDelivery(agentId: agentId, messageId: messageId, joiningChannelId: channelId)
-                case .addMember(let channelId, let memberId):
-                    channels.addChannelMember(channelId: channelId, userId: memberId)
-                }
-            }
-        }
-        return MentionActionsResponse(action: action, results: steps.map(\.result))
+        guard let serverId, !serverId.isEmpty else { throw MessageSendError.missingServerId }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else { throw MessageSendError.notServerMember }
+        return MentionActionsResponse(action: action, results: try mentionActions.execute(
+            ids: resolutionIds, action: action, serverId: serverId, actorType: "user", actorId: userId))
+    }
+
+    private var mentionActions: MessageMentionActionsService {
+        MessageMentionActionsService(channels: channels, messages: messages, agents: agents,
+            profiles: profiles, oauth: oauth, machines: machines, execution: execution, now: dependencies.now)
     }
 
     // MARK: - GET /internal/agent-api/mention-actions/pending
 
     /// Sender-side outsider mentions authored by the bound agent whose delivery
     /// was withheld.
-    public func agentMentionActionsPending(authorization: String?) throws -> AgentPendingMentionActionsResponse {
+    public func agentMentionActionsPending(authorization: String?, limit: String? = nil) throws -> AgentPendingMentionActionsResponse {
         let agentId = try requireAgent(authorization)
         guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted else {
             throw HumanMessageCreateError.invalidToken
         }
-        let postable = channels.state.postableChannels
-        let messageState = messages.state
-        let messageIds = Set(messageState.humanMessageRows.map(\.id))
-        let now = dependencies.now()
-        var rows = messageState.storedMentions.filter { mention in
-            guard mention.senderId == agentId,
-                  mention.notifiedAt == nil,
-                  !mention.notifiableAtSend,
-                  now.timeIntervalSince(mention.createdAt) < 7 * 24 * 60 * 60,
-                  let channel = postable[mention.channelId],
-                  channel.serverId == agent.serverId,
-                  messageIds.contains(mention.messageId)
-            else { return false }
-            return true
-        }
-        rows.sort { $0.createdAt > $1.createdAt }
-        let limit = 50
-        let page = rows.prefix(limit).map { mention in
-            AgentPendingMentionAction(
-                resolutionId: mention.id,
-                messageId: mention.messageId,
-                channelId: mention.channelId,
-                channelName: postable[mention.channelId]?.name ?? "",
-                targetType: mention.targetType,
-                targetId: mention.targetId,
-                targetHandle: mention.handle
-            )
-        }
-        return AgentPendingMentionActionsResponse(pendingMentionActions: page, hasMore: rows.count > limit)
+        return mentionActions.pending(serverId: agent.serverId, agentId: agentId, limit: limit)
     }
 
     // MARK: - POST /internal/agent-api/mention-actions/execute
@@ -443,40 +319,15 @@ public struct HumanMessageCreateService: Sendable {
         let rawIds = Self.array(request.resolutionIds) ?? Self.array(request.ids) ?? []
         for raw in rawIds {
             guard case .string(let text) = raw else { continue }
-            let id = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let id = MessageMentionRules.trimmingJavaScriptWhitespace(text)
             guard !id.isEmpty, !seen.contains(id) else { continue }
             seen.insert(id)
             ids.append(id)
             if ids.count == 100 { break }
         }
         guard !ids.isEmpty else { throw HumanMessageCreateError.resolutionIdsRequired }
-        let postable = channels.state.postableChannels
-        let agentMembers = agents.channelAgentMembers
-        let requestedMentions = messages.state.storedMentions.filter { ids.contains($0.id) }
-        let rosterChannels = Set(requestedMentions.map(\.channelId).filter {
-            oauth.channelAgentIds(channelId: $0).contains(agentId)
-        })
-        let results = messages.applyAgentMentionActions(
-            ids: ids,
-            action: action,
-            agentId: agentId,
-            now: dependencies.now(),
-            inScope: { postable[$0.channelId]?.serverId == agent.serverId },
-            targetCanRead: {
-                Self.targetCanRead(
-                    channels: postable,
-                    agentMembers: agentMembers,
-                    channelId: $0.channelId,
-                    targetType: $0.targetType,
-                    targetId: $0.targetId
-                )
-            },
-            senderStillInChannel: { mention in
-                guard let channel = postable[mention.channelId] else { return false }
-                return channel.memberIds.contains(agentId) || rosterChannels.contains(mention.channelId)
-            }
-        )
-        return MentionActionsResponse(action: action, results: results)
+        return MentionActionsResponse(action: action, results: try mentionActions.execute(
+            ids: ids, action: action, serverId: agent.serverId, actorType: "agent", actorId: agentId))
     }
 
     private func requireAgent(_ authorization: String?) throws -> String {
@@ -487,6 +338,8 @@ public struct HumanMessageCreateService: Sendable {
             throw HumanMessageCreateError.missingAuthorization
         case .invalidCredential:
             throw HumanMessageCreateError.invalidToken
+        case .capabilityNotAuthorized:
+            throw FeedbackLocatorError.capabilityNotAuthorized(capability: "mentions")
         }
     }
 

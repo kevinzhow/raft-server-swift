@@ -198,9 +198,11 @@ extension EmailLoginDirectory {
         filename: String,
         mimeType: String? = nil,
         sizeBytes: Int? = nil,
-        messageId: String? = nil
+        messageId: String? = nil,
+        bytes: Data? = nil
     ) -> String {
-        messagesAndThreadsStore.withState { state in
+        if let bytes, let sizeBytes { precondition(bytes.count == sizeBytes) }
+        return messagesAndThreadsStore.withState { state in
             let id = UUID().uuidString.lowercased()
             state.channelAttachments[id] = ChannelAttachment(
                 id: id,
@@ -210,8 +212,9 @@ extension EmailLoginDirectory {
                 messageId: messageId,
                 messagePosition: nil,
                 mimeType: mimeType,
-                sizeBytes: sizeBytes
+                sizeBytes: bytes?.count ?? sizeBytes
             )
+            if let bytes { state.developmentAttachmentBytes[id] = bytes }
 
             return id
         }

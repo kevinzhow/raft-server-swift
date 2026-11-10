@@ -438,7 +438,7 @@ private func holdChannelMessages(
     for member in [f.ownerId, f.agentId] {
         f.accounts.addPostableChannel(serverId: f.serverId, channelId: dmId, memberId: member, kind: "dm", name: "dm")
     }
-    f.accounts.oauth.addChannelHuman(channelId: dmId, userId: f.agentId)
+    f.accounts.oauth.removeChannelHuman(channelId: dmId, userId: f.agentId)
     f.accounts.oauth.addChannelAgent(channelId: dmId, agentId: f.agentId)
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))

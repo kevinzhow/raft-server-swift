@@ -13,6 +13,8 @@ public enum InboxAndWakeError: DomainError, Equatable {
     case invalidAccessToken
     case emailVerificationRequired
     case forbidden
+    case channelPageForbidden
+    case channelSyncForbidden
     case invalidMessagePageCursor
     case channelNotFound
     case channelNotVisible
@@ -25,7 +27,7 @@ public enum InboxAndWakeError: DomainError, Equatable {
             400
         case .missingAuthorization, .invalidAccessToken, .unauthorized:
             401
-        case .emailVerificationRequired, .forbidden:
+        case .emailVerificationRequired, .forbidden, .channelPageForbidden, .channelSyncForbidden:
             403
         case .channelNotFound, .channelNotVisible, .notJoinable:
             404
@@ -46,6 +48,10 @@ public enum InboxAndWakeError: DomainError, Equatable {
             "Email verification required"
         case .forbidden:
             "Forbidden"
+        case .channelPageForbidden:
+            "You do not have access to this channel"
+        case .channelSyncForbidden:
+            "Access denied"
         case .invalidMessagePageCursor:
             "Invalid message page cursor"
         case .channelNotFound:
@@ -67,7 +73,7 @@ public enum InboxAndWakeError: DomainError, Equatable {
         case .invalidMessagePageCursor:
             "invalid_message_page_cursor"
         case .invalidChannelId, .invalidSyncCursor, .emailVerificationRequired,
-             .forbidden, .channelNotFound, .channelNotVisible, .notJoinable, .unauthorized:
+             .forbidden, .channelPageForbidden, .channelSyncForbidden, .channelNotFound, .channelNotVisible, .notJoinable, .unauthorized:
             nil
         }
     }
@@ -78,7 +84,7 @@ public enum InboxAndWakeError: DomainError, Equatable {
         case .notJoinable:
             .object([OrderedJSONField("status", "NOT_JOINABLE")])
         case .invalidChannelId, .invalidSyncCursor, .missingAuthorization,
-             .invalidAccessToken, .emailVerificationRequired, .forbidden,
+             .invalidAccessToken, .emailVerificationRequired, .forbidden, .channelPageForbidden, .channelSyncForbidden,
              .invalidMessagePageCursor, .channelNotFound, .channelNotVisible,
              .unauthorized:
             nil
@@ -99,17 +105,20 @@ public struct InboxAndWakeService: Sendable {
     private let messages: MessagesAndThreadsStore
     private let channels: ServersAndChannelsStore
     private let oauth: OAuthLedger
+    private let flags: AgentsRuntimeStore
     private let dependencies: InboxAndWakeDependencies
 
     init(
         messages: MessagesAndThreadsStore,
         channels: ServersAndChannelsStore,
         oauth: OAuthLedger,
+        flags: AgentsRuntimeStore,
         dependencies: InboxAndWakeDependencies
     ) {
         self.messages = messages
         self.channels = channels
         self.oauth = oauth
+        self.flags = flags
         self.dependencies = dependencies
     }
 
@@ -117,10 +126,10 @@ public struct InboxAndWakeService: Sendable {
 
     /// The channel message page and its sync cursor.
     ///
-    /// A non-UUID `channel_id` is the published 400 before any credential check;
+    /// Active server membership precedes the route's local cursor checks;
     /// `since_seq` accepts only an absent value, `"0"` or an integer. Without a
-    /// `channel_id` the page aggregates every visible channel of the server, and
-    /// a guest only sees channels they were added to.
+    /// `channel_id` the independent broadcast policy selects visible channels;
+    /// scoped reads instead require the current shared leaf authority.
     public func syncChannelMessages(
         channelId: String?,
         sinceSeq: String?,
@@ -128,6 +137,7 @@ public struct InboxAndWakeService: Sendable {
         serverId: String?,
         limit rawLimit: String? = nil
     ) throws -> InboxSyncPageDTO {
+        let scope = try requireActiveServerMember(authorization: authorization, serverId: serverId)
         if let channelId, !ServerScope.isUUID(channelId) {
             throw InboxAndWakeError.invalidChannelId
         }
@@ -143,7 +153,7 @@ public struct InboxAndWakeService: Sendable {
         let messageState = messages.state
         let channelState = channels.state
         if channelId == nil {
-            return InboxSyncPageDTO(messages: Self.broadcastRows(
+            return InboxSyncPageDTO(messages: broadcastRows(
                 userId: userId,
                 serverId: serverId,
                 sinceSeq: sinceSeq,
@@ -151,29 +161,18 @@ public struct InboxAndWakeService: Sendable {
                 commentsVisible: commentsVisible,
                 messageState: messageState,
                 channelState: channelState,
-                oauth: oauth
+                visibleChannelIds: HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: flags)
+                    .aggregateLocalChannelIds(serverId: scope.serverId, userId: userId)
             ))
         }
         guard let channelId else { throw InboxAndWakeError.invalidChannelId }
-        if let serverId,
-           dependencies.channelProbeAccess(channelId, serverId, userId) == .residue {
-            throw InboxAndWakeError.forbidden
+        let readAccess = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: flags)
+        guard let channel = channelState.postableChannels[channelId], channel.serverId == scope.serverId,
+              channel.deletedAt == nil else { throw InboxAndWakeError.channelNotVisible }
+        guard readAccess.authority(channelId: channelId, serverId: scope.serverId, userId: userId) != nil else {
+            throw readAccess.hasPriorRelationship(channelId: channelId, serverId: scope.serverId, userId: userId)
+                ? InboxAndWakeError.channelSyncForbidden : InboxAndWakeError.channelNotVisible
         }
-        let visible: Bool = {
-            guard let channel = channelState.postableChannels[channelId], channel.serverId == serverId else {
-                return false
-            }
-            if channel.kind == "channel" { return true }
-            let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
-            if channel.kind == "thread" {
-                if guest { return false }
-                if let parentId = channel.parentChannelId,
-                   let parent = channelState.postableChannels[parentId], parent.kind == "channel" {
-                    return true
-                }
-            }
-            return channel.memberIds.contains(userId)
-        }()
         let storageChannelId = channelState.jointProjections
             .first { $0.localChannelId == channelId }?
             .canonicalChannelId ?? channelId
@@ -184,22 +183,21 @@ public struct InboxAndWakeService: Sendable {
         let indexed = allRows.filter { $0.seq > cursor }
         let limited = Array(indexed.suffix(pageLimit))
         let rows = limited.map { message in
-            Self.syncRow(
+            syncRow(
                 message,
                 channelId: channelId,
                 commentsVisible: commentsVisible,
-                attachmentComments: messageState.attachmentCommentRecords,
+                serverId: serverId, userId: userId,
                 metadata: dependencies.forwardMetadata(message.id, userId, serverId)
                     ?? dependencies.actionCardMetadata(message.id)
             )
         }
-        guard visible else { throw InboxAndWakeError.channelNotVisible }
         return InboxSyncPageDTO(messages: rows)
     }
 
     /// The `channel_id`-less sync page: every visible channel of the server in
     /// store order, then the newest `pageLimit` rows.
-    private static func broadcastRows(
+    private func broadcastRows(
         userId: String,
         serverId: String?,
         sinceSeq: String?,
@@ -207,32 +205,19 @@ public struct InboxAndWakeService: Sendable {
         commentsVisible: Bool,
         messageState: MessagesAndThreadsStore.State,
         channelState: ServersAndChannelsStore.State,
-        oauth: OAuthLedger
+        visibleChannelIds: Set<String>
     ) -> [InboxSyncMessageDTO] {
         let cursor = Int(sinceSeq ?? "") ?? 0
-        let isGuest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
-        var guestJoined: Set<String> = []
-        if isGuest {
-            let candidateIds = Array(channelState.postableChannels.keys)
-            guestJoined = Set(candidateIds.filter { oauth.channelHumanIds(channelId: $0).contains(userId) })
-        }
-        var visibleChannels: [String] = []
-        for (id, channel) in channelState.postableChannels {
-            guard channel.serverId == serverId, channel.deletedAt == nil, !channel.archived else { continue }
-            if isGuest && !guestJoined.contains(id) { continue }
-            if channel.kind == "channel" || channel.memberIds.contains(userId) {
-                visibleChannels.append(id)
-            }
-        }
+        let visibleChannels = channelState.postableChannels.keys.filter { visibleChannelIds.contains($0) }
         var rows: [InboxSyncMessageDTO] = []
         for id in visibleChannels {
             let channelRows = messageState.humanMessageRows.filter { $0.channelId == id }
             for message in channelRows where message.seq > cursor {
-                rows.append(Self.syncRow(
+                rows.append(syncRow(
                     message,
                     channelId: id,
                     commentsVisible: commentsVisible,
-                    attachmentComments: messageState.attachmentCommentRecords,
+                    serverId: serverId, userId: userId,
                     metadata: nil
                 ))
             }
@@ -240,27 +225,19 @@ public struct InboxAndWakeService: Sendable {
         return Array(rows.suffix(pageLimit))
     }
 
-    private static func syncRow(
+    private func syncRow(
         _ message: StoredHumanMessage,
         channelId: String,
         commentsVisible: Bool,
-        attachmentComments: [String: [AttachmentCommentRecord]],
+        serverId: String?, userId: String,
         metadata: OrderedJSON?
     ) -> InboxSyncMessageDTO {
-        InboxSyncMessageDTO(
-            id: message.id,
-            channelId: channelId,
-            seq: message.seq,
-            content: message.content,
-            attachments: attachmentChips(
-                message.attachmentIds,
-                commentsVisible: commentsVisible,
-                records: attachmentComments
-            ),
-            commentRef: commentsVisible
-                ? commentRef(records: attachmentComments, messageId: message.id)
-                : nil,
-            actionMetadata: metadata
+        let facts = dependencies.readFacts(message, channelId, commentsVisible, serverId, userId)
+        return InboxSyncMessageDTO(
+            id: facts.id, channelId: facts.channelId, seq: facts.seq, content: facts.content,
+            attachments: facts.attachments,
+            commentRef: commentsVisible ? dependencies.commentRef(message.id) : nil,
+            actionMetadata: metadata, facts: facts
         )
     }
 
@@ -278,26 +255,21 @@ public struct InboxAndWakeService: Sendable {
         before rawBefore: String? = nil,
         after rawAfter: String? = nil
     ) throws -> ChannelMessagesPageDTO {
+        let scope = try requireActiveServerMember(authorization: authorization, serverId: serverId)
+        guard ServerScope.isUUID(channelId) else { throw InboxAndWakeError.channelNotFound }
         let channelState = channels.state
-        if let serverId, let userId = sessionUserId(authorization) {
-            let threadScope = channelState.postableChannels[channelId]?.kind == "thread"
-            let guestVisible = dependencies.guestCanSeeScope(channelId)
-            if oauth.memberRole(serverId: serverId, userId: userId) == "guest",
-               !oauth.channelHumanIds(channelId: channelId).contains(userId) {
-                throw InboxAndWakeError.forbidden
-            }
-            if threadScope, oauth.memberRole(serverId: serverId, userId: userId) == "guest", !guestVisible {
-                throw InboxAndWakeError.forbidden
-            }
+        guard let channel = channelState.postableChannels[channelId], channel.serverId == scope.serverId,
+              channel.deletedAt == nil else { throw InboxAndWakeError.channelNotVisible }
+        let readAccess = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: flags)
+        guard readAccess.authority(channelId: channelId, serverId: scope.serverId, userId: scope.userId) != nil else {
+            throw readAccess.hasPriorRelationship(channelId: channelId, serverId: scope.serverId, userId: scope.userId)
+                ? InboxAndWakeError.channelPageForbidden : InboxAndWakeError.channelNotVisible
         }
         let before = MessagePageCursor.parsePageCursor(rawBefore)
         let after = MessagePageCursor.parsePageCursor(rawAfter)
         if before == .invalid || after == .invalid
             || (before.value != nil && after.value != nil && rawBefore != nil && rawAfter != nil) {
             throw InboxAndWakeError.invalidMessagePageCursor
-        }
-        if !ServerScope.isUUID(channelId) {
-            throw InboxAndWakeError.channelNotFound
         }
         let userId: String?
         switch dependencies.authorize(authorization) {
@@ -307,28 +279,6 @@ public struct InboxAndWakeService: Sendable {
             userId = nil
         }
         let messageState = messages.state
-        if let userId, let serverId,
-           dependencies.channelProbeAccess(channelId, serverId, userId) == .residue {
-            throw InboxAndWakeError.forbidden
-        }
-        let visible: Bool = {
-            guard let channel = channelState.postableChannels[channelId],
-                  channel.serverId == serverId,
-                  channel.deletedAt == nil,
-                  let userId
-            else { return false }
-            if channel.kind == "channel" { return true }
-            let guest = serverId.flatMap { oauth.memberRole(serverId: $0, userId: userId) } == "guest"
-            if channel.kind == "thread" {
-                if guest { return false }
-                if let parentId = channel.parentChannelId, let parent = channelState.postableChannels[parentId] {
-                    if parent.kind == "channel" { return parent.deletedAt == nil }
-                    return channel.memberIds.contains(userId)
-                }
-                return channel.memberIds.contains(userId)
-            }
-            return channel.memberIds.contains(userId)
-        }()
         let storageChannelId = channelState.jointProjections
             .first { $0.localChannelId == channelId }?
             .canonicalChannelId ?? channelId
@@ -341,22 +291,6 @@ public struct InboxAndWakeService: Sendable {
             return true
         }
         let pageRows = Array(cursorRows.suffix(MessagePageCursor.messagePageLimit(rawLimit)))
-        let statusRequests = pageRows.map { (id: $0.id, senderId: $0.senderId, senderType: $0.senderType) }
-        let memberStatusSnapshot = channelState.serverMemberStatuses
-        var senderStatuses: [String: String] = [:]
-        for request in statusRequests {
-            if request.senderType == "agent" {
-                senderStatuses[request.id] = oauth.agentRuntimeInfo(id: request.senderId)?.deleted == true
-                    ? "removed"
-                    : "active"
-            } else if let serverId, oauth.memberRole(serverId: serverId, userId: request.senderId) != nil {
-                senderStatuses[request.id] = "active"
-            } else {
-                senderStatuses[request.id] = memberStatusSnapshot[
-                    "\(serverId ?? "")\n\(request.senderId)"
-                ] ?? "removed"
-            }
-        }
         let highWater = rows.map(\.seq).max() ?? 0
         let pageSeqs = pageRows.map(\.seq)
         let isTail = rawBefore == nil && rawAfter == nil
@@ -377,49 +311,28 @@ public struct InboxAndWakeService: Sendable {
         )
         let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", userId)
         let listed = pageRows.map { message -> InboxChannelMessageRowDTO in
-            let membershipStatus = senderStatuses[message.id] ?? "removed"
             var metadata = dependencies.actionCardMetadata(message.id)
             if let userId {
                 metadata = dependencies.forwardMetadata(message.id, userId, serverId) ?? metadata
             }
+            let facts = dependencies.readFacts(message, channelId, commentsVisible, serverId, userId)
             return InboxChannelMessageRowDTO(
-                id: message.id,
-                senderId: message.senderId,
-                senderType: message.senderType,
-                senderMembershipStatus: membershipStatus,
-                content: message.content,
-                attachments: Self.attachmentChips(
-                    message.attachmentIds,
-                    commentsVisible: commentsVisible,
-                    records: messageState.attachmentCommentRecords
-                ),
-                reactions: dependencies.reactions(message.id),
-                mentions: Self.visibleMentions(messageState.storedMentions, messageId: message.id),
-                commentRef: commentsVisible
-                    ? Self.commentRef(
-                        records: messageState.attachmentCommentRecords,
-                        messageId: message.id
-                    )
-                    : nil,
-                actionMetadata: metadata
+                id: facts.id, seq: facts.seq, messageType: facts.messageType,
+                createdAt: facts.createdAt, senderId: facts.senderId,
+                senderType: facts.senderType, senderMembershipStatus: facts.senderMembershipStatus,
+                content: facts.content, attachments: facts.attachments,
+                reactions: facts.reactions,
+                mentions: facts.mentions,
+                commentRef: commentsVisible ? dependencies.commentRef(message.id) : nil,
+                actionMetadata: metadata, facts: facts
             )
         }
-        let summaries = dependencies.threadSummaries(channelId, pageRows.map(\.id))
-        guard visible else { throw InboxAndWakeError.channelNotVisible }
+        let summaries = dependencies.threadSummaries(channelId, pageRows.map(\.id), userId, serverId)
         return ChannelMessagesPageDTO(
             messages: listed,
             messageWindow: window,
             threadSummariesByParentMessageId: summaries
         )
-    }
-
-    /// Mentions a reader can see: notifiable at send, or later notified.
-    private static func visibleMentions(_ rows: [StoredMention], messageId: String) -> [InboxMentionDTO] {
-        rows.filter { row in
-            row.messageId == messageId && (row.notifiableAtSend || row.notifiedAt != nil)
-        }.map { row in
-            InboxMentionDTO(type: row.targetType, id: row.targetId, name: row.handle)
-        }
     }
 
     // MARK: - GET /api/messages/:messageId/mention-deliveries
@@ -432,6 +345,7 @@ public struct InboxAndWakeService: Sendable {
         authorization: String?,
         serverId: String?
     ) throws -> MentionDeliveriesResponseDTO {
+        try requireActiveServerMember(authorization: authorization, serverId: serverId)
         let userId = try requireUser(authorization)
         guard dependencies.isEmailVerified(userId) else {
             throw InboxAndWakeError.emailVerificationRequired
@@ -473,6 +387,7 @@ public struct InboxAndWakeService: Sendable {
         serverId: String?,
         query: String? = nil
     ) throws -> InboxDonePageDTO {
+        try requireActiveServerMember(authorization: authorization, serverId: serverId)
         guard let userId = sessionUserId(authorization) else {
             throw InboxAndWakeError.unauthorized
         }
@@ -543,6 +458,13 @@ public struct InboxAndWakeService: Sendable {
 
     // MARK: - Helpers
 
+    @discardableResult
+    private func requireActiveServerMember(authorization: String?, serverId: String?) throws -> HumanChannelReadAccessQuery.ServerScope {
+        let userId = try requireUser(authorization)
+        return try HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: flags)
+            .requireServerScope(serverId: serverId, userId: userId)
+    }
+
     private func sessionUserId(_ authorization: String?) -> String? {
         if case .user(let id) = dependencies.authorize(authorization) { return id }
         return nil
@@ -559,40 +481,4 @@ public struct InboxAndWakeService: Sendable {
         }
     }
 
-    /// The attachment chips of one message: a viewer who cannot use attachment
-    /// comments observes count zero, never a hint.
-    private static func attachmentChips(
-        _ ids: [String],
-        commentsVisible: Bool,
-        records: [String: [AttachmentCommentRecord]]
-    ) -> [InboxAttachmentChipDTO] {
-        ids.map { id in
-            InboxAttachmentChipDTO(
-                id: id,
-                commentCount: commentsVisible ? (records[id]?.count ?? 0) : 0
-            )
-        }
-    }
-
-    /// The scoped comment chip of one message, in attachment-record order.
-    private static func commentRef(
-        records: [String: [AttachmentCommentRecord]],
-        messageId: String
-    ) -> InboxCommentRefDTO? {
-        for (attachmentId, rows) in records {
-            guard let record = rows.first(where: { $0.id == messageId }),
-                  let hostMessageId = record.hostMessageId,
-                  let hostChannelId = record.hostChannelId
-            else { continue }
-            return InboxCommentRefDTO(
-                attachmentId: attachmentId,
-                hostMessageId: hostMessageId,
-                hostSource: InboxCommentSourceDTO(
-                    channelId: hostChannelId,
-                    rootThreadChannelId: record.threadChannelId
-                )
-            )
-        }
-        return nil
-    }
 }

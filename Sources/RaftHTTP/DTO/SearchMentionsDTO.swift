@@ -11,14 +11,16 @@ import Foundation
 /// One human-search hit.
 ///
 /// Published order: `id`, `senderId`, `senderType`, `channelId`,
-/// `parentChannelId`, `content`, `snippet`, `channelArchivedAt`. The archive
+/// `channelType`, `parentChannelId`, `parentChannelType`, `content`, `snippet`, `channelArchivedAt`. The archive
 /// timestamp is always a member and prints `null` when the channel is live.
 public struct HumanMessageSearchRowDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var id: String
     public var senderId: String
     public var senderType: String
     public var channelId: String
+    public var channelType: String
     public var parentChannelId: String
+    public var parentChannelType: String
     public var content: String
     public var snippet: String
     public var channelArchivedAt: String?
@@ -28,7 +30,9 @@ public struct HumanMessageSearchRowDTO: Codable, Sendable, Equatable, JSONBodyCo
         senderId: String,
         senderType: String,
         channelId: String,
+        channelType: String,
         parentChannelId: String,
+        parentChannelType: String,
         content: String,
         snippet: String,
         channelArchivedAt: String?
@@ -37,7 +41,9 @@ public struct HumanMessageSearchRowDTO: Codable, Sendable, Equatable, JSONBodyCo
         self.senderId = senderId
         self.senderType = senderType
         self.channelId = channelId
+        self.channelType = channelType
         self.parentChannelId = parentChannelId
+        self.parentChannelType = parentChannelType
         self.content = content
         self.snippet = snippet
         self.channelArchivedAt = channelArchivedAt
@@ -49,7 +55,9 @@ public struct HumanMessageSearchRowDTO: Codable, Sendable, Equatable, JSONBodyCo
         body.append("senderId", senderId)
         body.append("senderType", senderType)
         body.append("channelId", channelId)
+        body.append("channelType", channelType)
         body.append("parentChannelId", parentChannelId)
+        body.append("parentChannelType", parentChannelType)
         body.append("content", content)
         body.append("snippet", snippet)
         body.append("channelArchivedAt", optional: channelArchivedAt)
@@ -392,6 +400,7 @@ public struct MessageContextCanonicalTargetDTO: Sendable, Equatable, JSONBodyCon
 /// projections. Action metadata retains its owner's ordered JSON tree.
 public struct MessageContextMessageDTO: Sendable, Equatable, JSONBodyConvertible {
     public var id: String
+    public var facts: MessageReadFactsDTO?
     public var channelId: String
     public var content: String
     public var seq: Int
@@ -406,9 +415,11 @@ public struct MessageContextMessageDTO: Sendable, Equatable, JSONBodyConvertible
         seq: Int,
         attachmentChips: [InboxAttachmentChipDTO]?,
         commentRef: InboxCommentRefDTO?,
-        actionMetadata: OrderedJSON?
+        actionMetadata: OrderedJSON?,
+        facts: MessageReadFactsDTO? = nil
     ) {
         self.id = id
+        self.facts = facts
         self.channelId = channelId
         self.content = content
         self.seq = seq
@@ -432,7 +443,7 @@ public struct MessageContextMessageDTO: Sendable, Equatable, JSONBodyConvertible
         if let actionMetadata {
             body.append("actionMetadata", actionMetadata)
         }
-        return body.json
+        return facts?.merging(into: body.json) ?? body.json
     }
 }
 

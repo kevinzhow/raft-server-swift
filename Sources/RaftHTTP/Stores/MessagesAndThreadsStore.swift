@@ -1,5 +1,7 @@
 import Foundation
+import RaftObjectStorage
 import Synchronization
+import RaftShared
 
 /// Owns the human-message, reaction, mention, read-frontier, thread-follow and
 /// attachment-comment rows that used to be stored inline on
@@ -17,6 +19,12 @@ final class MessagesAndThreadsStore: Sendable {
     struct State: Sendable {
         var humanMessageRows: [StoredHumanMessage] = []
         var channelAttachments: [String: ChannelAttachment] = [:]
+        var attachmentObjectReferences: [String: AttachmentObjectReference] = [:]
+        // Development bytes and live I/O configuration are transient. Production
+        // requires the configured object store and persists only its references.
+        var developmentAttachmentBytes: [String: Data] = [:]
+        var attachmentObjectStorage: (any AttachmentObjectStoring)? = nil
+        var requiresDurableAttachmentStorage = false
         var forwardedBundles: [String: [ForwardedSource]] = [:]
         var forwardRecords: [String: StoredForwardRecord] = [:]
         var messageReactions: [StoredReaction] = []
@@ -59,7 +67,7 @@ final class MessagesAndThreadsStore: Sendable {
         var realtimeEmitterStorage: (@Sendable (String, String, String?) -> Void)? = nil
     }
 
-    private let stateStorage = Mutex(State())
+    private let stateStorage = TransactionalState(State())
 
     /// A whole-store value snapshot. Mutations of several rows use `withState`.
     var state: State {

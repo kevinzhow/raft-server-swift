@@ -78,27 +78,86 @@ extension OAuthLedger {
             ledgerState.channelHumans.insert("\(channelId)\n\(userId)")
         }
     }
-    public func createDirectChannel(serverId: String, firstUserId: String, secondUserId: String) -> String {
-        return self.state.withLock { ledgerState in
-            if firstUserId != secondUserId, let existing = ledgerState.channelRecords.first(where: {
-                $0.serverId == serverId && $0.type == "dm"
-                    && ledgerState.channelHumans.contains("\($0.id)\n\(firstUserId)")
-                    && ledgerState.channelHumans.contains("\($0.id)\n\(secondUserId)")
-            }) {
-                return existing.id
+    /// Entity kinds are supplied by the authenticated actor and resolved peer.
+    /// UUIDs are unique within an entity table, not across human/agent tables.
+    public enum DirectChannelParticipantKind: Sendable, Equatable {
+        case human
+        case agent
+    }
+
+    public func directChannelId(serverId: String, firstUserId: String, secondUserId: String,
+        firstKind: DirectChannelParticipantKind = .human,
+        secondKind: DirectChannelParticipantKind = .human) -> String? {
+        state.withLock { ledgerState in
+            Self.directChannelIdLocked(serverId: serverId, firstUserId: firstUserId,
+                secondUserId: secondUserId, firstKind: firstKind, secondKind: secondKind, state: ledgerState)
+        }
+    }
+
+    public func createDirectChannel(serverId: String, firstUserId: String, secondUserId: String,
+        firstKind: DirectChannelParticipantKind = .human,
+        secondKind: DirectChannelParticipantKind = .human) -> String {
+        state.withLock { ledgerState in
+            if let existing = Self.directChannelIdLocked(serverId: serverId, firstUserId: firstUserId,
+                secondUserId: secondUserId, firstKind: firstKind, secondKind: secondKind, state: ledgerState) {
+                return existing
             }
             let id = UUID().uuidString.lowercased()
             ledgerState.channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: "", type: "dm"))
-            ledgerState.channelHumans.insert("\(id)\n\(firstUserId)")
-            ledgerState.channelHumans.insert("\(id)\n\(secondUserId)")
+            // Only the actual new identity acquires these verified typed facts.
+            // Existing namespaces are never repaired from projected member ids.
+            for (participantId, kind) in [(firstUserId, firstKind), (secondUserId, secondKind)] {
+                switch kind {
+                case .human: ledgerState.channelHumans.insert("\(id)\n\(participantId)")
+                case .agent: ledgerState.channelAgents.insert("\(id)\n\(participantId)")
+                }
+            }
             return id
         }
+    }
+
+    private static func directChannelIdLocked(serverId: String, firstUserId: String, secondUserId: String,
+        firstKind: DirectChannelParticipantKind, secondKind: DirectChannelParticipantKind, state: State) -> String? {
+        // Preserve the existing self-human creation behavior; different entity
+        // kinds remain distinct even when their UUID strings are identical.
+        guard firstUserId != secondUserId || firstKind != secondKind else { return nil }
+        let participants = [(firstUserId, firstKind), (secondUserId, secondKind)]
+        let humans = Set(participants.filter { $0.1 == .human }.map { $0.0 })
+        let agents = Set(participants.filter { $0.1 == .agent }.map { $0.0 })
+        let candidates = state.channelRecords.filter { channel in
+            channel.serverId == serverId && channel.type == "dm"
+                && humans.allSatisfy { state.channelHumans.contains("\(channel.id)\n\($0)") }
+                && agents.allSatisfy { state.channelAgents.contains("\(channel.id)\n\($0)") }
+        }
+        guard !candidates.isEmpty else { return nil }
+        let candidateIds = Set(candidates.map(\.id))
+        // One transient grouping per lookup, not a participant scan per DM.
+        // Exact kind cardinalities still reject extra or unknown participants.
+        func grouped(_ rows: Set<String>) -> [String: Set<String>] {
+            var result: [String: Set<String>] = [:]
+            for row in rows {
+                let parts = row.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2, candidateIds.contains(String(parts[0])) else { continue }
+                result[String(parts[0]), default: []].insert(String(parts[1]))
+            }
+            return result
+        }
+        let actualHumans = grouped(state.channelHumans)
+        let actualAgents = grouped(state.channelAgents)
+        return candidates.first { channel in
+            actualHumans[channel.id, default: []] == humans && actualAgents[channel.id, default: []] == agents
+        }?.id
     }
 
     public func channelReadCursor(channelId: String, userId: String) -> Int {
         return self.state.withLock { ledgerState in
             return ledgerState.channelReadCursors["\(channelId)\n\(userId)"] ?? 0
         }
+    }
+
+    /// Presence is a prior-read witness even when the retained frontier is zero.
+    func hasChannelReadCursor(channelId: String, userId: String) -> Bool {
+        state.withLock { $0.channelReadCursors["\(channelId)\n\(userId)"] != nil }
     }
 
     public func setChannelReadCursor(channelId: String, userId: String, seq: Int) {

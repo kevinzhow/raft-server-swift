@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -18,6 +19,13 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "guest-summary", name: "Guest Summary", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
     let agent = accounts.oauth.createAgent(serverId: serverId, name: "guest-visible-agent", description: "Objective channel-visible role description", creatorUserId: ownerId)
+    // This fixture must prove a real readable relation, rather than treating the
+    // server guest role itself as permission to enumerate every agent.
+    accounts.createFeatureFlagForTesting(key: "server_guest_v0", defaultEnabled: true)
+    let channel = accounts.oauth.createChannel(serverId: serverId, name: "guest-summary-readable", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "guest-summary-readable")
+    accounts.setChannelGuestVisibleForTesting(channelId: channel, visible: true)
+    accounts.oauth.addChannelAgent(channelId: channel, agentId: agent)
 
     try await withApp { app in
         configure(app, services: FallbackServices(

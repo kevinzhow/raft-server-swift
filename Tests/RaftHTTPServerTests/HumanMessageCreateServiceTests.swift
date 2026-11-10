@@ -1,7 +1,7 @@
 import Dispatch
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -127,7 +127,8 @@ private final class ResultBox<T: Sendable>: @unchecked Sendable {
         let anonymous = try await routeRequest(client, .post, "/api/messages", body: "{}", serverId: f.serverId)
         #expect(anonymous.status == .unauthorized)
         #expect(text(anonymous) == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        #expect(header(anonymous, "Cache-Control") == "no-store")
+        #expect(header(anonymous, "Cache-Control") == "private, no-store")
+        #expect(header(anonymous, "Content-Length") == "74")
         let revoked = try await routeRequest(client, .post, "/api/messages", body: "{}", token: "nope", serverId: f.serverId)
         #expect(text(revoked) == "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
         // Body refusals.
@@ -160,7 +161,7 @@ private func storedMessageId(_ body: String) -> String? {
 
 @Test func pendingMentionActionsPublishTheExactMemberOrder() async throws {
     let f = makeCreateFixture("create-pending", ownerSuffix: 52, serverSuffix: 52)
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa52"
+    let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "Outsider", avatarUrl: "pixel:random:Outsider", creatorUserId: f.ownerId)
     f.accounts.addServerAgent(serverId: f.serverId, id: agentId, name: "Outsider", avatarUrl: "pixel:random:Outsider")
     let created = try f.service.createHumanMessage(
         HumanMessageCreateRequest(
@@ -191,7 +192,9 @@ private func storedMessageId(_ body: String) -> String? {
         #expect(text(noServer) == "{\"error\":\"Missing X-Server-Id header\"}")
         let anonymous = try await routeRequest(client, .get, "/api/messages/forward/enabled", serverId: f.serverId)
         #expect(text(anonymous) == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-        #expect(header(anonymous, "Cache-Control") == nil)
+        #expect(header(anonymous, "Cache-Control") == "private, no-store")
+        #expect(anonymous.status == .unauthorized)
+        #expect(header(anonymous, "Content-Length") == "74")
         let empty = try await routeRequest(client, .get, "/api/messages/forward/targets/search?q=%20", token: f.token, serverId: f.serverId)
         #expect(text(empty) == "{\"targets\":[]}")
         let search = try await routeRequest(client, .get, "/api/messages/forward/targets/search?q=create-lookup", token: f.token, serverId: f.serverId)
@@ -251,90 +254,102 @@ private func storedMessageId(_ body: String) -> String? {
 
 // MARK: - Atomic sections
 
-/// `applyUserMentionActions`: the claim and the delivery decision are one
-/// critical section, so concurrent identical notifies queue one delivery.
-@Test func concurrentNotifyClaimsAMentionExactlyOnce() throws {
-    let f = makeCreateFixture("atomic-notify", ownerSuffix: 55, serverSuffix: 55)
-    let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "NotifyTarget", creatorUserId: f.ownerId)
-    let messageId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "mention")
-    let mentionId = f.accounts.addPendingAgentMentionForTesting(
-        messageId: messageId, channelId: f.channelId, senderAgentId: f.ownerId,
-        targetType: "agent", targetId: agentId, handle: "NotifyTarget"
-    )
-    let service = f.service
-    let token = f.token
-    let serverId = f.serverId
-    let results = concurrently { _ in
-        try? service.executeMentionActions(
-            MentionActionsRequest(action: "notify", resolutionIds: [mentionId]),
-            authorization: "Bearer \(token)",
-            serverId: serverId
-        )
-    }
-    #expect(results.allSatisfy { $0?.results.first?.status == "queued" })
-    #expect(f.accounts.agentDeliveryChannelTypes(agentId: agentId).count == 1)
+/// Public human sends supply the real author and unique retained resolution.
+private func atomicHumanOutsider(_ f: CreateFixture, name: String) -> String {
+    let id = UUID().uuidString.lowercased()
+    f.accounts.addAccount(id: id, email: "\(name)@slock.test", password: "password123")
+    f.accounts.setAccountProfileForTesting(id: id, name: name)
+    f.accounts.markEmailVerified(userId: id)
+    f.accounts.oauth.addMember(serverId: f.serverId, userId: id, role: "member")
+    return id
 }
 
-@Test func concurrentAddClaimsAMentionExactlyOnce() throws {
-    let f = makeCreateFixture("atomic-add", ownerSuffix: 56, serverSuffix: 56)
-    let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "AddTarget", creatorUserId: f.ownerId)
-    let messageId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "mention")
-    let mentionId = f.accounts.addPendingAgentMentionForTesting(
-        messageId: messageId, channelId: f.channelId, senderAgentId: f.ownerId,
-        targetType: "agent", targetId: agentId, handle: "AddTarget"
-    )
-    let service = f.service
-    let token = f.token
-    let serverId = f.serverId
+private func atomicHumanPending(_ f: CreateFixture, targetId: String, name: String) throws -> String {
+    let result = try f.service.createHumanMessage(
+        HumanMessageCreateRequest(channelId: .string(f.channelId), content: .string("hello @\(name)"),
+            mentions: .array([.object(["type": .string("user"), "id": .string(targetId), "name": .string(name)])])),
+        authorization: "Bearer \(f.token)", serverId: f.serverId)
+    return try #require(result.pendingMentionActions.first?.resolutionId)
+}
+
+/// The atomic notification claim has one first result and fifteen idempotent results.
+@Test func concurrentNotifyClaimsAMentionExactlyOnce() throws {
+    let f = makeCreateFixture("atomic-notify", ownerSuffix: 55, serverSuffix: 55)
+    let targetId = atomicHumanOutsider(f, name: "NotifyHuman")
+    let mentionId = try atomicHumanPending(f, targetId: targetId, name: "NotifyHuman")
     let results = concurrently { _ in
-        try? service.executeMentionActions(
-            MentionActionsRequest(action: "add", resolutionIds: [mentionId]),
-            authorization: "Bearer \(token)",
-            serverId: serverId
-        )
+        try? f.service.executeMentionActions(MentionActionsRequest(action: "notify", resolutionIds: [mentionId]),
+            authorization: "Bearer \(f.token)", serverId: f.serverId)
+    }
+    let rows = results.compactMap { $0?.results.first }
+    #expect(rows.count == 16)
+    #expect(rows.allSatisfy { $0.status == "queued" })
+    #expect(rows.filter { $0.reason == nil }.count == 1)
+    #expect(rows.filter { $0.reason == "already_queued" }.count == 15)
+    #expect(f.accounts.mentionActionRecord(id: mentionId)?.notified == true)
+    #expect(!f.accounts.oauth.isChannelParticipant(channelId: f.channelId, userId: targetId))
+}
+
+/// Serial memory-service retries lock idempotence and actual human membership.
+/// The original 16-way same-ID ADD oracle is mandatory in the real PG/public-BPR human-target axis.
+@Test func serialAddRetriesDeliverMembershipExactlyOnce() throws {
+    let f = makeCreateFixture("atomic-add", ownerSuffix: 56, serverSuffix: 56)
+    let targetId = atomicHumanOutsider(f, name: "AddHuman")
+    let mentionId = try atomicHumanPending(f, targetId: targetId, name: "AddHuman")
+    let results = (0..<16).map { _ in
+        try? f.service.executeMentionActions(MentionActionsRequest(action: "add", resolutionIds: [mentionId]),
+            authorization: "Bearer \(f.token)", serverId: f.serverId)
     }
     let rows = results.compactMap { $0?.results.first }
     #expect(rows.count == 16)
     #expect(rows.filter { $0.status == "delivered" && $0.reason == nil }.count == 1)
     #expect(rows.filter { $0.reason == "already_delivered" }.count == 15)
-    #expect(f.accounts.agentDeliveryChannelTypes(agentId: agentId).count == 1)
+    #expect(f.accounts.oauth.isChannelParticipant(channelId: f.channelId, userId: targetId))
+    #expect(f.accounts.channelMemberIds(channelId: f.channelId).filter { $0 == targetId }.count == 1)
 }
 
-/// `applyAgentMentionActions`: a notify marks every unnotified row of one
-/// `(message, target)` together, so exactly one concurrent call reports the
-/// deduplicated sibling.
-@Test func concurrentAgentNotifyDedupesSiblingRowsExactlyOnce() throws {
+/// Node permits two distinct actual messages in this group, never duplicate
+/// (message,target) rows. The external agent-target queue is a mandatory PG case.
+@Test func concurrentAgentNotifyDedupesSiblingRowsExactlyOnce() async throws {
     let f = makeCreateFixture("atomic-agent", ownerSuffix: 57, serverSuffix: 57)
+    let targetId = atomicHumanOutsider(f, name: "AtomicHuman")
     let senderId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "AtomicSender", creatorUserId: f.ownerId)
-    let targetId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "AtomicTarget", creatorUserId: f.ownerId)
-    let key = f.accounts.mintAgentCredential(agentId: senderId, scopes: ["read"], name: "atomic")
-    let messageId = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: senderId, content: "mention")
-    let first = f.accounts.addPendingAgentMentionForTesting(
-        messageId: messageId, channelId: f.channelId, senderAgentId: senderId,
-        targetType: "agent", targetId: targetId, handle: "AtomicTarget"
-    )
-    let second = f.accounts.addPendingAgentMentionForTesting(
-        messageId: messageId, channelId: f.channelId, senderAgentId: senderId,
-        targetType: "agent", targetId: targetId, handle: "AtomicTarget"
-    )
-    let service = f.service
-    let results = concurrently { _ in
-        try? service.agentMentionActionsExecute(
-            authorization: "Bearer \(key)",
-            MentionActionsRequest(action: "notify", resolutionIds: [first])
-        )
+    f.accounts.oauth.addChannelAgent(channelId: f.channelId, agentId: senderId)
+    f.accounts.addPostableChannel(serverId: f.serverId, channelId: f.channelId, memberId: senderId)
+    let key = f.accounts.mintAgentCredential(agentId: senderId, scopes: ["read", "send", "mentions"], name: "atomic")
+    try await withCreateApp(f.accounts) { client in
+        var pendingIds: [String] = []
+        var hostIds: [String] = []
+        for index in 0..<2 {
+            let response = try await routeRequest(client, .post, "/internal/agent-api/send",
+                body: "{\"target\":\"#atomic-agent\",\"content\":\"host \(index) @AtomicHuman\"}", token: key)
+            #expect(response.status == .ok)
+            let body = try #require(try JSONSerialization.jsonObject(with: Data(text(response).utf8)) as? [String: Any])
+            #expect(body["state"] as? String == "sent")
+            hostIds.append(try #require(body["messageId"] as? String))
+            pendingIds.append(try #require((body["pendingMentionActions"] as? [[String: Any]])?.first?["resolutionId"] as? String))
+        }
+        #expect(Set(hostIds).count == 2)
+        #expect(Set(pendingIds).count == 2)
+        let first = pendingIds[0]
+        let second = pendingIds[1]
+        let results = concurrently { _ in
+            try? f.service.agentMentionActionsExecute(authorization: "Bearer \(key)",
+                MentionActionsRequest(action: "notify", resolutionIds: [first]))
+        }
+        let deduped = results.compactMap { $0?.results.first?.deduped }
+        #expect(deduped.count == 16)
+        #expect(deduped.filter { $0.count == 2 && $0.contains(second) }.count == 1)
+        #expect(deduped.filter { $0 == [first] }.count == 15)
+        #expect(!f.accounts.oauth.isChannelParticipant(channelId: f.channelId, userId: targetId))
     }
-    let deduped = results.compactMap { $0?.results.first?.deduped }
-    #expect(deduped.count == 16)
-    #expect(deduped.filter { $0.count == 2 && $0.contains(second) }.count == 1)
-    #expect(deduped.filter { $0 == [first] }.count == 15)
 }
 
 /// `resolvePendingMentionRows`: concurrent identical sends of one `randomId`
 /// share one stored resolution row per outsider target.
 @Test func concurrentReplaysShareOnePendingMentionResolution() throws {
     let f = makeCreateFixture("atomic-pending", ownerSuffix: 58, serverSuffix: 58)
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa58"
+    let agentId = f.accounts.oauth.createAgent(serverId: f.serverId, name: "PendingOutsider", creatorUserId: f.ownerId)
     f.accounts.addServerAgent(serverId: f.serverId, id: agentId, name: "PendingOutsider", avatarUrl: nil)
     let service = f.service
     let token = f.token
@@ -344,7 +359,7 @@ private func storedMessageId(_ body: String) -> String? {
         try? service.createHumanMessage(
             HumanMessageCreateRequest(
                 channelId: .string(channelId),
-                content: .string("ping"),
+                content: .string("ping @PendingOutsider"),
                 mentions: .array([.object([
                     "type": .string("agent"), "id": .string(agentId), "name": .string("PendingOutsider"),
                 ])]),
@@ -397,6 +412,8 @@ private func storedMessageId(_ body: String) -> String? {
     let f = makeCreateFixture("atomic-thread", ownerSuffix: 60, serverSuffix: 60)
     let memberId = "11111111-1111-4111-8111-111111111761"
     f.accounts.addAccount(id: memberId, email: "atomic-thread-member@slock.test", password: "password123")
+    f.accounts.setAccountProfileForTesting(id: memberId, name: "member")
+    f.accounts.oauth.addChannelHuman(channelId: f.channelId, userId: memberId)
     f.accounts.oauth.addMember(serverId: f.serverId, userId: memberId, role: "member")
     let parentMessage = f.accounts.addHumanMessageForTesting(channelId: f.channelId, senderId: f.ownerId, content: "parent")
     let threadId = "22222222-2222-4222-8222-222222222261"
@@ -412,7 +429,7 @@ private func storedMessageId(_ body: String) -> String? {
     _ = try f.service.createHumanMessage(
         HumanMessageCreateRequest(
             channelId: .string(threadId),
-            content: .string("reply"),
+            content: .string("reply @member"),
             mentions: .array([.object([
                 "type": .string("user"), "id": .string(memberId), "name": .string("member"),
             ])])
@@ -425,4 +442,66 @@ private func storedMessageId(_ body: String) -> String? {
     // The mentioned member belongs to the parent channel, so the suppression lifts.
     #expect(followers.contains(memberId))
     #expect(!f.accounts.threadUnfollowSuppressedForTesting(serverId: f.serverId, userId: memberId, threadChannelId: threadId))
+}
+
+/// The production service already accepts this clock. All retained owners and
+/// collaborators are preserved; only observation time advances, never history.
+private func mentionServiceAt(_ original: HumanMessageCreateService, _ time: Date) -> HumanMessageCreateService {
+    var dependencies = original.dependencies
+    dependencies.now = { time }
+    return HumanMessageCreateService(channels: original.channels, messages: original.messages, agents: original.agents,
+        profiles: original.profiles, oauth: original.oauth, dependencies: dependencies, machines: original.machines, execution: original.execution)
+}
+
+@Test func actualMentionRowsExpireAfterSevenDaysWithoutRewritingTheirHistory() async throws {
+    let f = makeCreateFixture("mention-expiry", ownerSuffix: 62, serverSuffix: 62)
+    let humanId = atomicHumanOutsider(f, name: "ExpiryHuman")
+    let sender = f.accounts.oauth.createAgent(serverId: f.serverId, name: "ExpirySender", creatorUserId: f.ownerId)
+    f.accounts.oauth.addChannelAgent(channelId: f.channelId, agentId: sender)
+    f.accounts.addPostableChannel(serverId: f.serverId, channelId: f.channelId, memberId: sender)
+    let key = f.accounts.mintAgentCredential(agentId: sender, scopes: ["send", "read", "mentions"], name: "expiry")
+    try await withCreateApp(f.accounts) { client in
+        let human = try await routeRequest(client, .post, "/api/v2/messages",
+            body: "{\"channelId\":\"\(f.channelId)\",\"content\":\"hello @ExpiryHuman\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(humanId)\",\"name\":\"ExpiryHuman\"}]}",
+            token: f.token, serverId: f.serverId)
+        #expect(human.status == .ok)
+        let humanBody = try #require(try JSONSerialization.jsonObject(with: Data(text(human).utf8)) as? [String: Any])
+        let humanPending = try #require((humanBody["pendingMentionActions"] as? [[String: Any]])?.first)
+        let humanResolution = try #require(humanPending["resolutionId"] as? String)
+        let agent = try await routeRequest(client, .post, "/internal/agent-api/v2/send",
+            body: "{\"target\":\"#mention-expiry\",\"content\":\"hello @ExpiryHuman\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(humanId)\",\"name\":\"ExpiryHuman\"}]}", token: key)
+        #expect(agent.status == .ok)
+        let agentBody = try #require(try JSONSerialization.jsonObject(with: Data(text(agent).utf8)) as? [String: Any])
+        let agentPending = try #require((agentBody["pendingMentionActions"] as? [[String: Any]])?.first)
+        let agentResolution = try #require(agentPending["resolutionId"] as? String)
+        let stored = f.accounts.messagesAndThreadsStore.state.storedMentions
+        let humanRow = try #require(stored.first { $0.id == humanResolution })
+        let agentRow = try #require(stored.first { $0.id == agentResolution })
+        let format = ISO8601DateFormatter()
+        format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for (pending, createdAt) in [(humanPending, humanRow.createdAt), (agentPending, agentRow.createdAt)] {
+            let expiryText = try #require(pending["expiresAt"] as? String)
+            let expiry = try #require(format.date(from: expiryText))
+            #expect(abs(expiry.timeIntervalSince(createdAt) - 7 * 24 * 60 * 60) < 0.01)
+        }
+        let beforeExpiry = mentionServiceAt(f.service, agentRow.createdAt.addingTimeInterval(6 * 24 * 60 * 60))
+        let pending = try beforeExpiry.agentMentionActionsPending(authorization: "Bearer \(key)")
+        #expect(pending.pendingMentionActions.map(\.resolutionId) == [agentResolution], "agent TTL is seven days, not the old random report's24h")
+        let afterExpiry = mentionServiceAt(f.service, max(humanRow.createdAt, agentRow.createdAt).addingTimeInterval(8 * 24 * 60 * 60))
+        #expect(try afterExpiry.agentMentionActionsPending(authorization: "Bearer \(key)").pendingMentionActions.isEmpty)
+        let expiredHuman = try afterExpiry.executeMentionActions(MentionActionsRequest(action: "notify", resolutionIds: [humanResolution]),
+            authorization: "Bearer \(f.token)", serverId: f.serverId)
+        let expiredAgent = try afterExpiry.agentMentionActionsExecute(authorization: "Bearer \(key)",
+            MentionActionsRequest(action: "notify", resolutionIds: [agentResolution]))
+        #expect(expiredHuman.results.first?.status == "expired")
+        #expect(expiredAgent.results.first?.status == "expired")
+        #expect(expiredHuman.results.first?.deduped == nil)
+        #expect(expiredAgent.results.first?.deduped == nil)
+        let after = f.accounts.messagesAndThreadsStore.state.storedMentions
+        #expect(after.first { $0.id == humanResolution }?.createdAt == humanRow.createdAt)
+        #expect(after.first { $0.id == agentResolution }?.createdAt == agentRow.createdAt)
+        #expect(f.accounts.mentionActionRecord(id: humanResolution)?.notified == false)
+        #expect(f.accounts.mentionActionRecord(id: agentResolution)?.notified == false)
+        #expect(!f.accounts.oauth.isChannelParticipant(channelId: f.channelId, userId: humanId))
+    }
 }

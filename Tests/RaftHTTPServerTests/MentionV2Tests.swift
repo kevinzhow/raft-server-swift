@@ -164,8 +164,10 @@ private func mentionObject(_ response: ClientResponse) throws -> [String: Any] {
         accounts.addAccount(id: id, email: email, password: "password123")
         accounts.markEmailVerified(userId: id)
     }
+    accounts.setAccountProfileForTesting(id: ownerId, name: "hidden_mention_owner")
     accounts.setAccountProfileForTesting(id: hiddenId, name: "hidden_target")
-    accounts.oauth.addOwnedServer(id: serverId, slug: "community-972", name: "Community", ownerId: ownerId)
+    // Node's owner/admin exception applies only to the exact community slugs.
+    accounts.oauth.addOwnedServer(id: serverId, slug: "community", name: "Community", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: senderId, role: "member")
     accounts.oauth.addMember(serverId: serverId, userId: peerId, role: "member")
     accounts.oauth.addMember(serverId: serverId, userId: hiddenId, role: "member")
@@ -234,6 +236,9 @@ private func mentionObject(_ response: ClientResponse) throws -> [String: Any] {
             accounts.oauth.addOwnedServer(id: peerServerId, slug: "peer-972", name: "Peer", ownerId: peerId)
             let peerJoint = accounts.oauth.createChannel(serverId: peerServerId, name: "joint-peer-972", creatorUserId: peerId, type: "joint")
             accounts.addPostableChannel(serverId: serverId, channelId: localJoint, memberId: senderId, kind: "joint", name: "joint-local-972")
+            accounts.oauth.addMember(serverId: peerServerId, userId: hiddenId, role: "member")
+            accounts.oauth.addChannelHuman(channelId: localJoint, userId: senderId)
+            accounts.oauth.addChannelHuman(channelId: peerJoint, userId: hiddenId)
             accounts.addPostableChannel(serverId: peerServerId, channelId: peerJoint, memberId: hiddenId, kind: "joint", name: "joint-peer-972")
             accounts.addJointChannelProjection(localChannelId: localJoint, canonicalChannelId: canonical, serverId: serverId)
             accounts.addJointChannelProjection(localChannelId: peerJoint, canonicalChannelId: canonical, serverId: peerServerId)
@@ -242,22 +247,24 @@ private func mentionObject(_ response: ClientResponse) throws -> [String: Any] {
                 client,
                 headers: headers,
                 path: "/api/v2/messages",
-                body: "{\"channelId\":\"\(channel)\",\"content\":\"visible typed\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(hiddenId)\",\"name\":\"hidden_target\"},{\"type\":\"user\",\"id\":\"\(ownerId)\",\"name\":\"hidden_mention_owner\"},{\"type\":\"agent\",\"id\":\"\(outsiderAgent)\",\"name\":\"\(agentName)\"}]}"
+                body: "{\"channelId\":\"\(channel)\",\"content\":\"visible typed @hidden_target @hidden_mention_owner @\(agentName)\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(hiddenId)\",\"name\":\"hidden_target\"},{\"type\":\"user\",\"id\":\"\(ownerId)\",\"name\":\"hidden_mention_owner\"},{\"type\":\"agent\",\"id\":\"\(outsiderAgent)\",\"name\":\"\(agentName)\"}]}"
             )
             #expect(visible.status == .ok)
             let visibleBody = try mentionObject(visible)
             let visibleId = try #require((visibleBody["message"] as? [String: Any])?["id"] as? String)
             let actions = visibleBody["pendingMentionActions"] as? [[String: Any]] ?? []
             #expect(actions.compactMap { $0["targetType"] as? String }.sorted() == ["agent", "user", "user"])
+            #expect(actions.compactMap { $0["targetHandle"] as? String }.sorted() == [agentName, "hidden_mention_owner", "hidden_target"].sorted())
             let rows = accounts.messageMentionRows(messageId: visibleId)
             #expect(rows.count == 3)
+            #expect(rows.map(\.targetId).sorted() == [outsiderAgent, hiddenId, ownerId].sorted())
 
             accounts.setHideHumansFromMembers(serverId: serverId, hidden: false)
             let nonHidden = try await mentionSend(
                 client,
                 headers: headers,
                 path: "/api/v2/messages",
-                body: "{\"channelId\":\"\(channel)\",\"content\":\"non-hidden typed\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(hiddenId)\",\"name\":\"hidden_target\"}]}"
+                body: "{\"channelId\":\"\(channel)\",\"content\":\"non-hidden typed @hidden_target\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(hiddenId)\",\"name\":\"hidden_target\"}]}"
             )
             #expect(nonHidden.status == .ok)
             let nonHiddenBody = try mentionObject(nonHidden)

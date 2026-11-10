@@ -90,6 +90,8 @@ private func connectSocket(
     }
     accounts.oauth.addOwnedServer(id: serverId, slug: "socketmem", name: "Socket Membership", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
+    accounts.createFeatureFlagForTesting(key: "server_guest_v0", defaultEnabled: false, enabled: true, killSwitch: false)
+    accounts.addFeatureFlagRuleForTesting(key: "server_guest_v0", stage: "server", decision: "allow", values: [serverId], priority: 0)
 
     let hidden = accounts.oauth.createChannel(serverId: serverId, name: "audit-hidden", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: hidden, memberId: ownerId, name: "audit-hidden")

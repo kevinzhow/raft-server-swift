@@ -18,6 +18,9 @@ import VaporTesting
     accounts.markEmailVerified(userId: guestId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "guest-archive", name: "Guest Archive", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
+    accounts.enableGuestRoleTransitions(serverId: serverId)
+    accounts.createFeatureFlagForTesting(key: "server_guest_v0")
+    accounts.addFeatureFlagRuleForTesting(key: "server_guest_v0", stage: "server", decision: "allow", values: [serverId])
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "guest-archive-room", creatorUserId: ownerId)
     for member in [ownerId, guestId] {
         accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: member, name: "guest-archive-room")

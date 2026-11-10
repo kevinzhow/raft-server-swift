@@ -149,6 +149,8 @@ private func readRevokeReceipt(channelId: String, agentId: String, seq: Int) -> 
                 let registration = try readRevokeObject(registered)
                 let user = try #require(registration["user"] as? [String: Any])
                 let userId = try #require(user["id"] as? String)
+                accounts.markEmailVerified(userId: userId)
+                accounts.setAccountProfileForTesting(id: userId, name: "revokeWireUser")
                 let firstToken = try #require(registration["accessToken"] as? String)
                 let login = try await readRevokePost(
                     client, "/api/auth/login", body: "{\"email\":\"\(email)\",\"password\":\"password123\"}"

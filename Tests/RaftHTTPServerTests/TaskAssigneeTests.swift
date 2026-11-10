@@ -3,6 +3,7 @@ import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
 import Testing
+import TestSupport
 import Vapor
 import VaporTesting
 
@@ -25,6 +26,8 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: outsiderId, role: "member")
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "assign-channel", creatorUserId: ownerId)
     accounts.oauth.addChannelHuman(channelId: channelId, userId: memberId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "assign-channel")
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: memberId, name: "assign-channel")
     let taskId = accounts.taskCatalog.addTasks(channelId: channelId, titles: ["assign task"]).first ?? ""
 
     try await withApp { app in
@@ -85,7 +88,7 @@ import VaporTesting
             #expect((try await readTask())["revision"] as? Int == revisionAfterFirst)
 
             let outsider = try await assign(outsiderToken, "{\"assignee\":{\"type\":\"user\",\"id\":\"\(outsiderId)\"}}")
-            #expect(outsider.status == .conflict)
+            #expect(outsider.status == .forbidden, "the original regular member remains unjoined; Node rejects channel writes before assignee validation")
 
             let stale = try await assign(memberToken, "{\"assignee\":{\"type\":\"user\",\"id\":\"\(memberId)\"},\"expectedRevision\":0}")
             #expect(stale.status == .conflict)

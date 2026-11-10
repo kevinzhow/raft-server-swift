@@ -180,11 +180,11 @@ struct FeedbackMultiAppRouteTests {
         try await run(accounts) { client in
             let anonymous = try await client.get(URI(string: "/api/product-feedback/tickets"))
             #expect(anonymous.status == .unauthorized)
-            #expect(anonymous.body.string == "{\"error\":\"Unauthorized\"}")
+            #expect(anonymous.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
             #expect(anonymous.headers[name("X-Robots-Tag")] == "noindex, nofollow")
             #expect(anonymous.headers[.contentType] == "application/json; charset=utf-8")
-            #expect(anonymous.headers[.contentLength] == "24")
-            #expect(anonymous.headers[.cacheControl] == nil)
+            #expect(anonymous.headers[.contentLength] == "74")
+            #expect(anonymous.headers[.cacheControl] == "private, no-store")
 
             let notFound = try await client.get(
                 URI(string: "/api/product-feedback/tickets/not-a-uuid"),

@@ -75,9 +75,13 @@ private struct ObjectFixtureState: Sendable {
         try await store.delete(reference)
         let missing = await #expect(throws: AttachmentStorageError.self) { try await store.get(reference) }
         #expect(missing == .notFound)
+        // The final missing-object response ends processRaw. Join its task only
+        // after the client has consumed that response, but before either owner
+        // closes the socket/event loop: client completion alone does not join
+        // the test server's final response-write continuation.
+        try await serving.value
         try await store.shutdown()
         try server.stop()
-        try await serving.value
     } catch {
         try? await store.shutdown()
         try? server.stop()

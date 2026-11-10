@@ -230,6 +230,10 @@ public struct HumanMessageCreatedResponse: JSONBodyConvertible, Sendable, Equata
 public struct MentionActionResult: JSONBodyConvertible, Sendable, Equatable {
     public var resolutionId: String
     public var action: String
+    public var messageId: String?
+    public var channelId: String?
+    public var targetType: String?
+    public var targetId: String?
     public var status: String
     public var reason: String?
     public var deduped: [String]?
@@ -239,10 +243,18 @@ public struct MentionActionResult: JSONBodyConvertible, Sendable, Equatable {
         action: String,
         status: String,
         reason: String? = nil,
-        deduped: [String]? = nil
+        deduped: [String]? = nil,
+        messageId: String? = nil,
+        channelId: String? = nil,
+        targetType: String? = nil,
+        targetId: String? = nil
     ) {
         self.resolutionId = resolutionId
         self.action = action
+        self.messageId = messageId
+        self.channelId = channelId
+        self.targetType = targetType
+        self.targetId = targetId
         self.status = status
         self.reason = reason
         self.deduped = deduped
@@ -252,6 +264,10 @@ public struct MentionActionResult: JSONBodyConvertible, Sendable, Equatable {
         var body = OrderedJSONObject()
         body.append("resolutionId", resolutionId)
         body.append("action", action)
+        body.append("messageId", ifPresent: messageId)
+        body.append("channelId", ifPresent: channelId)
+        body.append("targetType", ifPresent: targetType)
+        body.append("targetId", ifPresent: targetId)
         body.append("status", status)
         body.append("reason", ifPresent: reason)
         if let deduped {
@@ -284,18 +300,27 @@ public struct AgentPendingMentionAction: JSONBodyConvertible, Sendable, Equatabl
     public var targetType: String
     public var targetId: String
     public var targetHandle: String
+    public var messageSeq: Int? = nil
+    public var createdAt: String? = nil
+    public var expiresAt: String? = nil
+    public var reason: String? = nil
+    public var availableActions: [String] = ["notify"]
 
     public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("resolutionId", resolutionId),
-            OrderedJSONField("messageId", messageId),
-            OrderedJSONField("channelId", channelId),
-            OrderedJSONField("channelName", channelName),
-            OrderedJSONField("targetType", targetType),
-            OrderedJSONField("targetId", targetId),
-            OrderedJSONField("targetHandle", targetHandle),
-            OrderedJSONField("availableActions", .array([.string("notify")])),
-        ])
+        var body = OrderedJSONObject()
+        body.append("resolutionId", resolutionId)
+        body.append("messageId", messageId)
+        body.append("messageSeq", ifPresent: messageSeq)
+        body.append("channelId", channelId)
+        body.append("channelName", channelName)
+        body.append("targetType", targetType)
+        body.append("targetId", targetId)
+        body.append("targetHandle", targetHandle)
+        body.append("reason", ifPresent: reason)
+        body.append("availableActions", .array(availableActions.map(OrderedJSON.string)))
+        body.append("createdAt", ifPresent: createdAt)
+        body.append("expiresAt", ifPresent: expiresAt)
+        return body.json
     }
 }
 

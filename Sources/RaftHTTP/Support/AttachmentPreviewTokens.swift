@@ -1,158 +1,119 @@
-import Crypto
 import Foundation
+import JWTKit
 
-/// The signed `token` query value of `GET /api/attachments/:id/html-preview`.
-///
-/// The payload is a fixed, sorted-key JSON object signed with
-/// `HMAC<SHA256>` over the base64url payload text; the token is
-/// `payload.signature`. Verification re-reads the published fields instead of
-/// handing back an untyped object, so the two routes that consume it
-/// (`html-preview` and `html-preview-url`) get a typed value.
-///
-/// The secret stays the legacy `JWT_SECRET` environment value with the
-/// in-process test fallback.
-public struct AttachmentPreviewTokens: Sendable {
-    /// The verified payload of a preview token.
+public enum AttachmentPreviewTokenError: Error, Sendable { case unavailable }
+
+/// One shared issuer/verifier for Node's preview-only HS256 capability. Root
+/// composition supplies the existing raw JWT key; no fallback key is generated.
+public struct AttachmentPreviewTokens: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public enum ActorType: String, Codable, Sendable { case user, machine }
+
+    /// Only successful cryptographic verification can construct this proof.
     public struct Payload: Sendable, Equatable {
-        public var attachmentId: String
-        public var serverId: String
-        public var actorId: String?
-        public var expiresAt: Int
+        public let attachmentId: String
+        public let serverId: String
+        public let actorType: ActorType
+        public let actorId: String
+        public let expiresAt: Int
 
-        public init(attachmentId: String, serverId: String, actorId: String?, expiresAt: Int) {
+        fileprivate init(attachmentId: String, serverId: String, actorType: ActorType, actorId: String, expiresAt: Int) {
             self.attachmentId = attachmentId
             self.serverId = serverId
+            self.actorType = actorType
             self.actorId = actorId
             self.expiresAt = expiresAt
+        }
+
+        /// A pure recheck after object I/O. The HTTP layer cannot construct or
+        /// alter a proof to bypass the original SDK verification.
+        public func isValid(attachmentId: String, serverId: String, now: Date = Date()) -> Bool {
+            self.attachmentId == attachmentId && self.serverId == serverId && !actorId.isEmpty
+                && Double(expiresAt) > now.timeIntervalSince1970
         }
     }
 
     public static let audience = "attachment-html-preview"
     public static let type = "attachment-html-preview"
+    public static let issuer = "slock-server"
+    private let secret: String
 
-    public init() {}
+    public init(secret: String) { self.secret = secret }
+    public var description: String { "AttachmentPreviewTokens(redacted)" }
+    public var debugDescription: String { description }
 
     public func mint(
-        attachmentId: String,
-        serverId: String,
-        actorId: String,
-        audience: String = AttachmentPreviewTokens.audience,
-        type: String = AttachmentPreviewTokens.type,
-        expiresIn: Int = 300,
-        now: Date = Date()
-    ) -> String {
-        // Legacy wrote the object with `JSONSerialization` and `.sortedKeys`:
-        // attachmentId, actorId, aud, audience, exp, serverId, type.
-        let expiry = Int(now.timeIntervalSince1970) + expiresIn
-        let payload = OrderedJSON.object([
-            OrderedJSONField("attachmentId", attachmentId), OrderedJSONField("actorId", actorId),
-            OrderedJSONField("aud", audience), OrderedJSONField("audience", audience),
-            OrderedJSONField("exp", expiry), OrderedJSONField("serverId", serverId),
-            OrderedJSONField("type", type),
-        ]).render()
-        let payloadPart = MessagePageCursor.previewBase64URL(Data(payload.utf8))
-        let signature = HMAC<SHA256>.authenticationCode(
-            for: Data(payloadPart.utf8),
-            using: secret()
-        )
-        return payloadPart + "." + MessagePageCursor.previewBase64URL(Data(signature))
+        attachmentId: String, serverId: String, actorId: String, actorType: ActorType = .user,
+        audience: String = Self.audience, type: String = Self.type,
+        expiresIn: Int = 300, now: Date = Date()
+    ) async throws -> String {
+        do {
+            let expiration = floor(now.timeIntervalSince1970) + Double(expiresIn)
+            guard expiration.isFinite, expiration >= 0, expiration < Double(Int.max) else {
+                throw AttachmentPreviewTokenError.unavailable
+            }
+            let payload = WirePayload(iss: .init(value: Self.issuer), aud: .init(value: [audience]),
+                sub: .init(value: actorId), iat: .init(value: Date(timeIntervalSince1970: floor(now.timeIntervalSince1970))),
+                exp: .init(value: Date(timeIntervalSince1970: expiration)),
+                type: type, attachmentId: attachmentId, serverId: serverId, actorType: actorType, actorId: actorId)
+            return try await keys().sign(payload)
+        } catch { throw AttachmentPreviewTokenError.unavailable }
     }
 
-    /// The verified payload, or `nil` for a malformed, mis-signed, mis-scoped
-    /// or expired token.
     public func verify(
-        _ token: String,
-        attachmentId: String,
-        serverId: String,
-        now: Date = Date()
-    ) -> Payload? {
-        let parts = token.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
-        let payloadPart: String
-        let signaturePart: String
-        let signedPart: String
-        if parts.count == 3 {
-            payloadPart = parts[1]
-            signaturePart = parts[2]
-            signedPart = parts[0] + "." + parts[1]
-        } else if parts.count == 2 {
-            payloadPart = parts[0]
-            signaturePart = parts[1]
-            signedPart = parts[0]
-        } else {
-            return nil
-        }
-        guard let signature = MessagePageCursor.previewBase64URLDecode(signaturePart),
-              let payloadData = MessagePageCursor.previewBase64URLDecode(payloadPart),
-              HMAC<SHA256>.isValidAuthenticationCode(
-                  signature,
-                  authenticating: Data(signedPart.utf8),
-                  using: secret()
-              ),
-              let wire = try? JSONDecoder().decode(WirePayload.self, from: payloadData)
-        else { return nil }
-        let wireAudience = wire.audience ?? wire.aud
-        guard wireAudience == Self.audience,
-              wire.type == Self.type,
-              wire.attachmentId == attachmentId,
-              wire.serverId == serverId,
-              let expiry = wire.exp,
-              expiry > Int(now.timeIntervalSince1970)
-        else { return nil }
-        return Payload(
-            attachmentId: attachmentId,
-            serverId: serverId,
-            actorId: wire.actorId,
-            expiresAt: expiry
-        )
+        _ token: String, attachmentId: String, serverId: String, now: Date = Date()
+    ) async -> Payload? {
+        guard let proof = await verifyForFlex(token, attachmentId: attachmentId, now: now),
+              proof.isValid(attachmentId: attachmentId, serverId: serverId, now: now) else { return nil }
+        return proof
     }
 
-    private func secret() -> SymmetricKey {
-        let raw = ProcessInfo.processInfo.environment["JWT_SECRET"] ?? "raft-test-preview-secret"
-        return SymmetricKey(data: Data(raw.utf8))
+    /// Flex learns server scope only from a fully verified signed claim. Every
+    /// consumer uses the same SDK verifier and closed set of accepted claims.
+    public func verifyForFlex(_ token: String, attachmentId: String, now: Date = Date()) async -> Payload? {
+        do {
+            guard token.utf8.count <= 16_384 else { return nil }
+            let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 3, parts.allSatisfy({ !$0.isEmpty }) else { return nil }
+            let header = try DefaultJWTParser().parse(Data(token.utf8), as: WirePayload.self).header
+            guard header.alg == "HS256", header.kid == nil else { return nil }
+            let wire = try await keys().verify(token, as: WirePayload.self)
+            let expiration = wire.exp.value.timeIntervalSince1970
+            guard expiration.isFinite, expiration >= 0, expiration < Double(Int.max),
+                  wire.attachmentId == attachmentId, !wire.serverId.isEmpty else { return nil }
+            let proof = Payload(attachmentId: wire.attachmentId, serverId: wire.serverId,
+                actorType: wire.actorType, actorId: wire.actorId, expiresAt: Int(expiration))
+            guard proof.isValid(attachmentId: attachmentId, serverId: wire.serverId, now: now) else { return nil }
+            return proof
+        } catch { return nil }
     }
 
-    /// The published payload shape. Every field is optional so a value of the
-    /// wrong JSON type reads as absent, exactly like the legacy per-key `as?`
-    /// cast.
-    private struct WirePayload: Decodable {
-        var attachmentId: String?
-        var serverId: String?
-        var actorId: String?
-        var audience: String?
-        var aud: String?
-        var type: String?
-        var exp: Int?
+    private func keys() async throws -> JWTKeyCollection {
+        // JWTKit's HMAC signer asserts on undersized keys. Validate before SDK
+        // construction and retain Node's exact raw key, without hashing it.
+        guard secret.utf8.count >= 32 else { throw AttachmentPreviewTokenError.unavailable }
+        return await JWTKeyCollection().add(hmac: HMACKey(from: secret), digestAlgorithm: .sha256)
+    }
 
-        private enum CodingKeys: String, CodingKey {
-            case attachmentId
-            case serverId
-            case actorId
-            case audience
-            case aud
-            case type
-            case exp
-        }
+    private struct WirePayload: JWTPayload {
+        let iss: IssuerClaim
+        let aud: AudienceClaim
+        let sub: SubjectClaim
+        let iat: IssuedAtClaim?
+        let exp: ExpirationClaim
+        let type: String
+        let attachmentId: String
+        let serverId: String
+        let actorType: ActorType
+        let actorId: String
 
-        init(from decoder: any Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            attachmentId = Self.string(container, .attachmentId)
-            serverId = Self.string(container, .serverId)
-            actorId = Self.string(container, .actorId)
-            audience = Self.string(container, .audience)
-            aud = Self.string(container, .aud)
-            type = Self.string(container, .type)
-            exp = (try? container.decodeIfPresent(Int.self, forKey: .exp)) ?? nil
-        }
-
-        private static func string(
-            _ container: KeyedDecodingContainer<CodingKeys>,
-            _ key: CodingKeys
-        ) -> String? {
-            guard container.contains(key),
-                  (try? container.decodeNil(forKey: key)) == false
-            else { return nil }
-            guard let value = try? container.decode(String.self, forKey: key) else { return nil }
-            return value
+        func verify(using algorithm: some JWTAlgorithm) throws {
+            guard algorithm.name == "HS256", iss.value == AttachmentPreviewTokens.issuer,
+                  type == AttachmentPreviewTokens.type, !actorId.isEmpty, sub.value == actorId,
+                  !attachmentId.isEmpty, !serverId.isEmpty else { throw InvalidClaims.invalid }
+            try aud.verifyIntendedAudience(includes: AttachmentPreviewTokens.audience)
+            // Expiry uses the caller's injectable clock after SDK verification;
+            // no proof escapes verification before that explicit comparison.
         }
     }
+    private enum InvalidClaims: Error { case invalid }
 }

@@ -49,8 +49,24 @@ import VaporTesting
             let patchOwn = try await call(.patch, "/api/agents/\(own)", body: "{\"description\":\"still mine after demotion\"}")
             #expect(patchOwn.status == .ok)
             #expect((try JSONSerialization.jsonObject(with: Data((patchOwn.body.string ?? "").utf8)) as? [String: Any])?["description"] as? String == "still mine after demotion")
-            #expect(try await call(.post, "/api/agents/\(own)/stop", body: "{}").status == .ok)
-            #expect(try await call(.post, "/api/agents/\(own)/reset", body: "{\"mode\":\"full\"}").status == .accepted)
+            // This root has no retained execution runtime. The accepted creator
+            // Stop200/full-reset202 scenes now run in the real PG opt-in test.
+            let ownStop = try await call(.post, "/api/agents/\(own)/stop", body: "{}")
+            #expect(ownStop.status == .internalServerError)
+            #expect(ownStop.body.string == #"{"error":"Failed to stop agent"}"#)
+            let ownReset = try await call(.post, "/api/agents/\(own)/reset", body: "{\"mode\":\"full\"}")
+            #expect(ownReset.status == .internalServerError)
+            #expect(ownReset.body.string == #"{"error":"Failed to reset agent"}"#)
+            // Exact creator authority survives Guest demotion as well. Passing
+            // authority still cannot turn this unbound root into an executor.
+            accounts.oauth.addMember(serverId: serverId, userId: relatedId, role: "guest")
+            let guestOwnStop = try await call(.post, "/api/agents/\(own)/stop", body: "{}")
+            #expect(guestOwnStop.status == .internalServerError)
+            #expect(guestOwnStop.body.string == #"{"error":"Failed to stop agent"}"#)
+            let guestOwnReset = try await call(.post, "/api/agents/\(own)/reset", body: "{\"mode\":\"full\"}")
+            #expect(guestOwnReset.status == .internalServerError)
+            #expect(guestOwnReset.body.string == #"{"error":"Failed to reset agent"}"#)
+            accounts.oauth.addMember(serverId: serverId, userId: relatedId, role: "member")
             #expect(try await call(.post, "/api/agents/\(ownExternal)/credentials", body: "{}").status == .created)
             #expect(try await call(.post, "/api/agents/\(own)/credentials", body: "{}").status == .badRequest)
 

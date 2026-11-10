@@ -1,4 +1,5 @@
 import Foundation
+import RaftObjectStorage
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -49,16 +50,40 @@ public struct AgentAttachmentsService: Sendable {
     }
 
     /// `GET /internal/agent-api/attachments/:attachmentId`.
-    public func download(authorization: String?, attachmentId: String) throws -> AgentAttachmentDownload {
+    public func download(authorization: String?, attachmentId: String) async throws -> AgentAttachmentDownload {
         let identity = try requireIdentity(authorization)
         guard let attachment = visibleAttachment(agentId: identity.agentId, serverId: identity.serverId, attachmentId: attachmentId) else {
             throw AgentAttachmentsError.unavailable
         }
+        let captured = messages.withState { state in
+            (state.attachmentObjectReferences[attachmentId], state.attachmentObjectStorage,
+             state.developmentAttachmentBytes[attachmentId], state.requiresDurableAttachmentStorage)
+        }
+        let bytes: Data
+        if let reference = captured.0 {
+            guard let storage = captured.1 else { throw AttachmentContentError.downloadsNotConfigured }
+            do { bytes = try await storage.get(reference) }
+            catch AttachmentStorageError.notFound { throw AgentAttachmentsError.unavailable }
+            catch { throw AttachmentContentError.downloadFailed }
+            guard messages.withState({ $0.attachmentObjectReferences[attachmentId] }) == reference else {
+                throw AgentAttachmentsError.unavailable
+            }
+        } else {
+            guard !captured.3 else { throw AttachmentContentError.downloadsNotConfigured }
+            guard let stored = captured.2 ?? agents.agentAttachmentBytes[attachmentId] else {
+                throw AgentAttachmentsError.unavailable
+            }
+            bytes = stored
+        }
+        let current = try requireIdentity(authorization)
+        guard current.agentId == identity.agentId, current.serverId == identity.serverId,
+              visibleAttachment(agentId: current.agentId, serverId: current.serverId, attachmentId: attachmentId) != nil else {
+            throw AgentAttachmentsError.unavailable
+        }
+        if let size = attachment.sizeBytes, bytes.count != size { throw AttachmentContentError.downloadFailed }
         return AgentAttachmentDownload(
-            bytes: agents.agentAttachmentBytes[attachmentId] ?? Data(),
-            mimeType: attachment.mimeType ?? "application/octet-stream",
-            filename: attachment.filename,
-            encodedFilename: ChannelFileRules.rfc5987Encode(attachment.filename)
+            bytes: bytes, mimeType: attachment.mimeType ?? "application/octet-stream",
+            filename: attachment.filename, encodedFilename: ChannelFileRules.rfc5987Encode(attachment.filename)
         )
     }
 

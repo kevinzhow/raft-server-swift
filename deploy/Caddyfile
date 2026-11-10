@@ -1,0 +1,25 @@
+# TLS TEMPLATE ONLY: DNS, certificate issuance and existing daemon compatibility
+# require acceptance before enabling the optional Compose tls profile.
+{
+    http_port 8080
+    https_port 8443
+    servers {
+        protocols h1 h2
+    }
+}
+
+raft.example.com {
+    @daemon path /daemon/connect /daemon/connect/*
+    handle @daemon {
+        reverse_proxy server:8081
+    }
+
+    @socket path /socket.io /socket.io/*
+    handle @socket {
+        reverse_proxy server:8082
+    }
+
+    handle {
+        reverse_proxy server:8080
+    }
+}

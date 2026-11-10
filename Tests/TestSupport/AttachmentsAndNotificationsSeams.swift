@@ -50,7 +50,9 @@ extension EmailLoginDirectory {
         storageKey: String? = nil,
         bytes: Data
     ) {
+        precondition(sizeBytes == bytes.count)
         messagesAndThreadsStore.withState { state in
+            state.developmentAttachmentBytes[id] = bytes
             state.channelAttachments[id] = ChannelAttachment(
                 id: id,
                 channelId: channelId,
@@ -195,11 +197,12 @@ extension EmailLoginDirectory {
 
     public func addAccount(id: String, email: String, password: String, avatarUrl: String? = nil, passwordCredentialEstablished: Bool = true) {
         let normalized = AccountNaming.normalize(email)
+        let passwordHash = AuthFixturePassword.encoded(password)
         authProfileStore.state.withLock { owned in
             owned.accountSurface.accounts[normalized] = Account(
                 id: id,
                 email: normalized,
-                passwordHash: AuthTokenCodec.sha256(password),
+                passwordHash: passwordHash,
                 passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
                 displayLanguage: nil,
                 name: String(normalized.split(separator: "@").first ?? "user"),

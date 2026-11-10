@@ -231,7 +231,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.get("clients", ":clientId", "setup") { request async throws -> Response in
-            try await respond(headers: .standard(extra: ["Cache-Control": "no-store"])) {
+            try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
                 try self.apps.integrationClientSetup(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",

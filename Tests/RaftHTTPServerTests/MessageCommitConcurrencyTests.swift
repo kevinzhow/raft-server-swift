@@ -1,12 +1,23 @@
 import Foundation
 import HTTPTypes
 import RaftHTTPServer
-import Synchronization
+import RaftRealtime
 import Testing
 import TestSupport
 import Vapor
 import VaporTesting
 @testable import RaftHTTP
+
+private struct CommitSocketAuth: RealtimeAuthorizing {
+    let core: AuthCoreService
+    let membership: SocketMembershipService
+    func userId(forAccessToken token: String) -> String? { core.sessionIdentity(accessToken: token)?.userId }
+    func sessionFamilyId(forAccessToken token: String) -> String? { core.sessionIdentity(accessToken: token)?.familyId }
+    func serverRole(serverId: String, userId: String) -> String? { membership.serverRole(serverId: serverId, userId: userId) }
+    func visibleChannelIds(serverId: String, userId: String) -> [String] {
+        membership.visibleChannelIds(serverId: serverId, userId: userId).channelIds
+    }
+}
 
 private struct CommitFixture: Sendable {
     let accounts: EmailLoginDirectory
@@ -166,9 +177,16 @@ func messageCommitAttachmentCompetitionLeavesNoLosingRowsMentionsOrBroadcasts(ag
     let f = commitFixture(agent ? "803" : "802")
     let uploaderId = agent ? f.agentId : f.ownerId
     let attachmentId = f.accounts.addChannelAttachment(channelId: f.channelId, uploaderId: uploaderId, filename: "one.pdf")
-    let broadcasts = Mutex<[String]>([])
-    f.accounts.messagesAndThreadsStore.realtimeEmitterStorage = { _, event, payload in
-        if event == "message:new", let payload { broadcasts.withLock { $0.append(payload) } }
+    let realtime = try await RealtimeServer.start(auth: CommitSocketAuth(core: f.accounts.authCore, membership: f.accounts.socketMembership))
+    let socket = try await SocketIOTestClient(port: realtime.port)
+    defer { socket.close(); Task { try? await realtime.close() } }
+    _ = try #require(await socket.waitForText { $0.hasPrefix("0") })
+    socket.send("40{\"token\":\"\(f.token)\",\"serverId\":\"\(f.serverId)\"}")
+    _ = try #require(await socket.waitForText { $0 == "42[\"rooms:joined\"]" })
+    let frameStart = socket.textFrames.count
+    let hub = realtime.hub
+    f.accounts.realtimeRelay.install { room, event, payload in
+        hub.emit(room: room, event: event, payloadJSON: payload)
     }
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
@@ -198,11 +216,35 @@ func messageCommitAttachmentCompetitionLeavesNoLosingRowsMentionsOrBroadcasts(ag
             #expect(ownerState.humanMessageRows.map(\.id) == [winnerId])
             #expect(ownerState.channelAttachments[attachmentId]?.messageId == winnerId)
             #expect(ownerState.storedMentions.allSatisfy { $0.messageId == winnerId })
-            let emitted = broadcasts.withLock { $0 }
-            #expect(emitted.count == (agent ? 0 : 1))
-            if let payload = emitted.first {
-                #expect(try JSONDecoder().decode(CommitReply.self, from: Data(payload.utf8)).id == winnerId)
+            // Bound the actual socket queue after all 32 HTTP responses. Only
+            // this test fence is injected; every message frame comes from send.
+            let nonce = UUID().uuidString.lowercased()
+            let fencePayload = "{\"nonce\":\"\(nonce)\"}"
+            let fence = "42[\"test:commit-fence\",\(fencePayload)]"
+            hub.emit(room: "user:\(f.ownerId)", event: "test:commit-fence", payloadJSON: fencePayload)
+            _ = try #require(await socket.waitForText { $0 == fence })
+            let frames = socket.textFrames
+            let end = try #require(frames.indices.first { $0 >= frameStart && frames[$0] == fence })
+            let emitted = try frames[frameStart..<end].filter { $0.hasPrefix("42") }.compactMap { frame -> [String: Any]? in
+                let event = try #require(try JSONSerialization.jsonObject(with: Data(frame.dropFirst(2).utf8)) as? [Any])
+                guard event.first as? String == "message:new" else { return nil }
+                return try #require(event.count == 2 ? event[1] as? [String: Any] : nil)
             }
+            #expect(emitted.count == 1)
+            let payload = try #require(emitted.first)
+            #expect(payload["id"] as? String == winnerId)
+            #expect(payload["channelId"] as? String == f.channelId)
+            #expect(payload["content"] as? String == rows.first?.content)
+            #expect(ownerState.humanMessageRows.first?.seq == rows.first?.seq)
+            if agent {
+                #expect(payload["seq"] as? Int == rows.first?.seq)
+                #expect(payload["senderId"] as? String == f.agentId)
+                #expect(payload["senderType"] as? String == "agent")
+            }
+            let attachments = try #require(payload["attachments"] as? [[String: Any]])
+            #expect(attachments.compactMap { $0["id"] as? String } == [attachmentId])
+            let mentions = try #require(payload["mentions"] as? [[String: Any]])
+            #expect(mentions.compactMap { $0["id"] as? String } == [f.peerId])
         }
     }
 }

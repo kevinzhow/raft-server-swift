@@ -31,7 +31,7 @@ import TestSupport
 }
 
 @Test func runtimeConfigDocumentKeepsLegacyNormalizationAndRedaction() throws {
-    let text = #"{"runtime":"claude","provider":{"kind":"custom","apiUrl":"https://x","apiKey":"secret"},"envVars":{"ANTHROPIC_X":"drop","KEEP":"1"}}"#
+    let text = #"{"runtime":"claude","provider":{"kind":"custom","apiUrl":"https://x","apiKey":"secret"},"envVars":{"ANTHROPIC_API_KEY":"drop","KEEP":"1"}}"#
     let value = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
     var document = try #require(AgentRuntimeConfigDocument(request: value)).normalized()
     #expect(document.userEnv == ["KEEP": "1"])
@@ -172,7 +172,7 @@ import TestSupport
         id: "a1", name: "n", runtime: "claude", model: "m", external: false,
         envVarsJSON: "{\"K\":\"https:\\/\\/x\"}", runtimeConfigJSON: "{\"v\":1}"
     )
-    #expect(projection.broadcastJSON == "{\"id\":\"a1\",\"name\":\"n\",\"runtime\":\"claude\",\"model\":\"m\",\"external\":false,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":null,\"runtimeConfig\":{\"v\":1}}")
+    #expect(projection.broadcastJSON == "{\"id\":\"a1\",\"name\":\"n\",\"runtime\":\"claude\",\"model\":\"m\",\"external\":false,\"machineId\":null,\"reasoningEffort\":null}")
     let created = CreatedAgentResponse(
         agent: projection, creatorId: "u1", displayName: "D", description: nil, avatarUrl: "pixel:mug",
         serverRole: "admin", hostedProvider: "antiproton"
@@ -185,7 +185,9 @@ import TestSupport
         config: .init(runtimeConfigJSON: "null", envVarsJSON: "null")
     )
     #expect(AgentListResponse(agents: [summary]).jsonBody.render() == "[{\"id\":\"a\",\"name\":\"n\",\"displayName\":\"N\",\"runtime\":\"external\",\"model\":\"external\",\"external\":true,\"serverRole\":\"member\",\"creator\":null,\"description\":\"d\",\"lastSeenAt\":null,\"runtimeConfig\":null,\"envVars\":null}]")
-    #expect(AgentDetailResponse.guest(id: "a", name: "n", displayName: "N", description: nil).jsonBody.render() == "{\"id\":\"a\",\"name\":\"n\",\"displayName\":\"N\",\"avatarUrl\":null,\"description\":null,\"profileProjection\":\"channel_summary\"}")
+    let guest = GuestAgentSummary(id: "a", serverId: "s", name: "n", displayName: "N", avatarUrl: nil,
+                                  description: nil, status: "inactive", activity: "offline")
+    #expect(AgentDetailResponse.guest(guest).jsonBody.render() == "{\"id\":\"a\",\"serverId\":\"s\",\"name\":\"n\",\"displayName\":\"N\",\"avatarUrl\":null,\"description\":null,\"status\":\"inactive\",\"deletedAt\":null,\"activity\":\"offline\",\"activityDetail\":\"\",\"profileProjection\":\"channel_summary\"}")
     #expect(AgentAvatarResponse(avatarUrl: "/api/avatars/users/k.webp").jsonBody.render() == "{\"avatarUrl\":\"/api/avatars/users/k.webp\"}")
     #expect(AssistantOwnerInboxResponse(ownerUserId: "o", items: [
         .init(kind: "thread", channelId: "c", unreadCount: 2, parentChannelId: "p"),
@@ -212,7 +214,8 @@ import TestSupport
     #expect(body(.onboardingAgentExists(agentId: "x")) == "{\"error\":\"Onboarding agent already exists\",\"onboardingAgentId\":\"x\"}")
     #expect(body(.avatarTooLarge(maxBytes: 5_242_880)) == "{\"error\":\"Avatar image must be 5 MB or smaller\",\"errorCode\":\"PROFILE_AVATAR_TOO_LARGE\",\"maxBytes\":5242880}")
     #expect(body(.modelNotAvailable) == "{\"error\":\"The selected model is not available on this Computer\",\"issues\":[{\"pointer\":\"/formValues/model\",\"code\":\"model_not_available\"}]}")
-    #expect(body(.invalidRestartMode("a\"b")) == "{\"error\":\"Invalid restart mode: a\"b\"}")
+    #expect(body(.invalidRestartMode("a\"b")) == "{\"error\":\"Invalid restart mode: a\\\"b\"}")
+    #expect((try? JSONDecoder().decode([String: String].self, from: Data(body(.invalidRestartMode("a\"b")).utf8))) == ["error": "Invalid restart mode: a\"b"])
     #expect(body(.assistantAlreadySet) == "{\"code\":\"assistant_already_set\",\"error\":\"This user already has an assistant\"}")
     #expect(body(.authRequired) == "{\"error\":\"Unauthorized\",\"code\":\"auth_required\"}")
     #expect(body(.tokenInvalid) == "{\"error\":\"token_invalid\",\"code\":\"token_invalid\"}")

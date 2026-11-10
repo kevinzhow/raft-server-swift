@@ -413,7 +413,7 @@ private func prepareCard(
     }
 }
 
-/// An execute without a session is the plain 401 the retired handler built.
+/// The complete Node mount rejects a missing session before the action handler.
 @Test func executeActionWithoutASessionPublishesTheExact401() async throws {
     var fixture = IntegrationRegisterFixture()
     fixture.seed()
@@ -439,7 +439,9 @@ private func prepareCard(
                 request.body = .init(string: "{}")
             }
             #expect(response.status == .unauthorized)
-            #expect((response.body.string ?? "") == "{\"error\":\"Unauthorized\"}")
+            #expect((response.body.string ?? "") == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(response.headers[.contentLength] == "74")
+            #expect(response.headers[.cacheControl] == "private, no-store")
         }
     }
 }

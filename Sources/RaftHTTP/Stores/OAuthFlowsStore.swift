@@ -9,6 +9,8 @@ struct OAuthFlowsConfig: Sendable {
     var nativeAppleClientId: String
     var nativeAppleClientSecret: String
     var nativeAppleStateSecret: String
+    var socialAuthStateSecret: String
+    var nativeAppleTrustedJWKS: String?
     var serverURL: String
     var appURL: String
     var mobileOAuthReturnURI: String?
@@ -114,6 +116,8 @@ struct OAuthFlowsStore: Sendable {
                 nativeAppleClientId: state.configSurface.oauthDeployment.nativeAppleClientId,
                 nativeAppleClientSecret: state.configSurface.oauthDeployment.nativeAppleClientSecret,
                 nativeAppleStateSecret: state.configSurface.oauthDeployment.nativeAppleStateSecret,
+                socialAuthStateSecret: state.configSurface.oauthDeployment.socialAuthStateSecret,
+                nativeAppleTrustedJWKS: state.configSurface.oauthDeployment.nativeAppleTrustedJWKS,
                 serverURL: state.configSurface.oauthDeployment.serverURL,
                 appURL: state.configSurface.oauthDeployment.appURL,
                 mobileOAuthReturnURI: state.configSurface.oauthDeployment.mobileOAuthReturnURI,
@@ -334,6 +338,15 @@ struct OAuthFlowsStore: Sendable {
     /// pending-link spend, the link-required hand-back, the existing-account
     /// sign-in and the new-account sign-up are one critical section, so a
     /// handoff code is spent at most once.
+    func mobilePasswordPlaceholderNeeded(code: String) -> Bool {
+        profiles.state.withLock { state in
+            guard let request = state.accountSurface.mobileRequests.values.first(where: { $0.handoffCode == code }),
+                  request.status == "provider_completed", request.userId == nil,
+                  let email = request.profileEmail else { return false }
+            return state.accountSurface.accounts[email] == nil
+        }
+    }
+
     func completeMobile(
         code: String,
         verifier: String,
@@ -341,7 +354,8 @@ struct OAuthFlowsStore: Sendable {
         acceptTerms: Bool,
         termsVersion: String?,
         privacyVersion: String?,
-        now: Date
+        now: Date,
+        passwordPlaceholder: String? = nil
     ) -> MobileCompletionOutcome {
         profiles.state.withLock { state in
             if state.accountSurface.consumedHandoffs.contains(code) { return .refused(.consumed) }
@@ -433,14 +447,14 @@ struct OAuthFlowsStore: Sendable {
                 return .refused(.termsChanged)
             }
             let email = request.profileEmail ?? ""
-            guard !email.isEmpty else { return .refused(.invalid) }
+            guard !email.isEmpty, let passwordPlaceholder else { return .refused(.invalid) }
             let taken = Set(state.accountSurface.accounts.values.map(\.name))
             let pendingName = AccountNaming.pendingHandle(taken: taken)
             let id = UUID().uuidString.lowercased()
             state.accountSurface.accounts[email] = Account(
                 id: id,
                 email: email,
-                passwordHash: AuthTokenCodec.sha256(AuthTokenCodec.token()),
+                passwordHash: passwordPlaceholder,
                 displayLanguage: nil,
                 name: pendingName,
                 profileSetupSuggestedHandle: AccountNaming.availableUserName(

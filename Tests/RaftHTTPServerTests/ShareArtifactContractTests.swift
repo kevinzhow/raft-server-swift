@@ -40,14 +40,18 @@ private func makeShareFixture() -> ShareFixture {
     accounts.oauth.addOwnedServer(id: serverId, slug: "share-contract", name: "Share Contract", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: guestId, role: "guest")
     accounts.oauth.addOwnedServer(id: otherServerId, slug: "share-other", name: "Share Other", ownerId: otherOwnerId)
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "general", creatorUserId: ownerId)
+    let otherChannelId = accounts.oauth.createChannel(serverId: otherServerId, name: "secret", creatorUserId: otherOwnerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: accounts.oauth.channelInfo(id: channelId)?.name)
+    accounts.addPostableChannel(serverId: otherServerId, channelId: otherChannelId, memberId: otherOwnerId, name: accounts.oauth.channelInfo(id: otherChannelId)?.name)
     return ShareFixture(
         accounts: accounts,
         ownerId: ownerId,
         guestId: guestId,
         serverId: serverId,
-        channelId: accounts.oauth.createChannel(serverId: serverId, name: "general", creatorUserId: ownerId),
+        channelId: channelId,
         otherServerId: otherServerId,
-        otherChannelId: accounts.oauth.createChannel(serverId: otherServerId, name: "secret", creatorUserId: otherOwnerId),
+        otherChannelId: otherChannelId,
         ownerToken: accounts.mintAccessTokenForTesting(userId: ownerId),
         guestToken: accounts.mintAccessTokenForTesting(userId: guestId)
     )

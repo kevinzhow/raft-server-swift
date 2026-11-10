@@ -61,6 +61,7 @@ public enum ActionCardMarketplaceError: DomainError, Equatable {
     case assigneeNotAssignable
     case taskDeleteForbidden
     case inboxUnavailable
+    case inboxDMTargetUnavailable
     case invalidInboxView
     case invalidInboxLimit
     case invalidBeforeSeq
@@ -76,7 +77,7 @@ public enum ActionCardMarketplaceError: DomainError, Equatable {
             404
         case .messageAlreadyTask, .idempotencyKeyReused:
             409
-        case .inboxUnavailable:
+        case .inboxUnavailable, .inboxDMTargetUnavailable:
             503
         case .invalidTaskDeleteRequest, .invalidTaskConvertRequest, .invalidTaskRequest,
              .invalidResourceReceipt, .invalidTaskAssignRequest, .invalidInboxView,
@@ -119,6 +120,8 @@ public enum ActionCardMarketplaceError: DomainError, Equatable {
             "Only the task creator can delete it"
         case .inboxUnavailable:
             "The agent inbox is unavailable"
+        case .inboxDMTargetUnavailable:
+            "A DM in this inbox has no current addressable peer"
         case .invalidInboxView:
             "view must be unread or mentions"
         case .invalidInboxLimit:
@@ -170,6 +173,11 @@ public enum ActionCardMarketplaceError: DomainError, Equatable {
             body.append("error", "The agent inbox is unavailable")
             body.append("code", "INBOX_UNAVAILABLE")
             body.append("suggestedNextAction", "Retry after the inbox service recovers.")
+            return body.json
+        case .inboxDMTargetUnavailable:
+            var body = OrderedJSONObject()
+            body.append("error", "A DM in this inbox has no current addressable peer")
+            body.append("code", "INBOX_DM_TARGET_UNAVAILABLE")
             return body.json
         case .idempotencyKeyReused(let body):
             return .raw(body)
@@ -617,8 +625,10 @@ public struct ActionCardMarketplaceService: Sendable {
             guard let message else { return nil }
             if let external = message.externalSenderName { return external }
             if message.senderId == "system" { return "system" }
+            if message.senderType == "agent" {
+                return oauth.agentRuntimeInfo(id: message.senderId)?.name
+            }
             return accountRows.values.first { $0.id == message.senderId }?.name
-                ?? oauth.agentRuntimeInfo(id: message.senderId)?.name
         }
         func mentionStats(channelId: String) -> (count: Int, maxSeq: Int?) {
             let ids = Set(snapshot.mentions.filter {
@@ -633,28 +643,84 @@ public struct ActionCardMarketplaceService: Sendable {
             return (ids.count, maxSeq)
         }
 
+        // This is a stateless projection of the retained typed participant
+        // rows, not a guessed peer name or a new DM identity writer.
+        func dmReference(_ id: String, _ channel: PostableChannel) throws -> String {
+            let nativeHumans = Set(oauth.channelHumanIds(channelId: id))
+            let nativeAgents = Set(oauth.channelAgentIds(channelId: id))
+            guard channel.serverId == serverId, channel.kind == "dm", channel.deletedAt == nil,
+                  nativeAgents.contains(agentId), channel.memberIds.contains(agentId) else {
+                throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+            }
+            if locator.agentReminderSurfaceChannelId(agentId: agentId) == id {
+                guard channel.memberIds == [agentId], nativeAgents == [agentId], nativeHumans.isEmpty else {
+                    throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+                }
+                return "dm:@reminders"
+            }
+            if channel.name.hasPrefix("migration-receipt-") {
+                guard channel.memberIds == [agentId], nativeAgents == [agentId], nativeHumans.isEmpty else {
+                    throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+                }
+                return "dm:@\(channel.name)"
+            }
+            var peers: [(id: String, name: String, kind: String)] = []
+            // Validate every actual native participant. A known subset cannot
+            // stand in for the complete typed identity of an older namespace.
+            for userId in nativeHumans {
+                guard let account = accountRows.values.first(where: { $0.id == userId }),
+                      oauth.memberRole(serverId: serverId, userId: userId) != nil,
+                      channel.memberIds.contains(userId) else {
+                    throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+                }
+                peers.append((userId, account.name, "human"))
+            }
+            for peerId in nativeAgents where peerId != agentId {
+                guard let peer = oauth.agentRuntimeInfo(id: peerId), !peer.deleted,
+                      peer.serverId == serverId, channel.memberIds.contains(peerId) else {
+                    throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+                }
+                peers.append((peerId, peer.name, "agent"))
+            }
+            guard peers.count == 1, let peer = peers.first, !peer.name.isEmpty else {
+                throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+            }
+            let expectedHumans: Set<String> = peer.kind == "human" ? [peer.id] : []
+            let expectedAgents: Set<String> = peer.kind == "agent" ? [agentId, peer.id] : [agentId]
+            guard nativeHumans == expectedHumans, nativeAgents == expectedAgents else {
+                throw ActionCardMarketplaceError.inboxDMTargetUnavailable
+            }
+            // Postable-only extra ids are not native participants. The peer's
+            // namespace survives equal UUIDs and exact cross-kind twin names.
+            let twin: Bool
+            if peer.kind == "agent" {
+                twin = accountRows.values.contains {
+                    $0.name.utf8.elementsEqual(peer.name.utf8)
+                        && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
+                }
+            } else {
+                twin = oauth.serverAgents(serverId: serverId).contains {
+                    $0.name.utf8.elementsEqual(peer.name.utf8)
+                }
+            }
+            return "dm:@\(peer.name)" + (twin ? "~\(peer.kind)" : "")
+        }
+
         // Channel and DM rows.
         for (id, channel) in channelRows {
             guard channel.serverId == serverId, channel.deletedAt == nil else { continue }
-            let visible = channel.kind == "channel"
-                || channel.memberIds.contains(agentId)
-                || oauth.channelAgentIds(channelId: id).contains(agentId)
+            let nativeAgentMember = oauth.channelAgentIds(channelId: id).contains(agentId)
+            let visible: Bool
+            if channel.kind == "dm" {
+                visible = nativeAgentMember
+            } else {
+                visible = channel.kind == "channel" || channel.memberIds.contains(agentId) || nativeAgentMember
+            }
             guard visible else { continue }
             var target: String
             var kind: String
-            if channel.kind == "dm", channel.name.hasPrefix("migration-receipt-"), channel.memberIds == [agentId] {
-                target = "dm:@\(channel.name)"
-                kind = "dm"
-            } else if channel.kind == "dm" {
-                let peer = channel.memberIds.compactMap { member -> (String, String)? in
-                    guard member != agentId,
-                          let account = accountRows.values.first(where: { $0.id == member }),
-                          oauth.memberRole(serverId: serverId, userId: member) != nil
-                    else { return nil }
-                    return (member, account.name)
-                }.first
-                guard let peer else { continue }
-                target = "dm:@\(peer.1)"
+            if channel.kind == "dm" {
+                target = try dmReference(id, channel)
                 kind = "dm"
             } else if channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint" {
                 target = "#\(channel.name)"
@@ -667,7 +733,8 @@ public struct ActionCardMarketplaceService: Sendable {
             guard latest.seq > 0 else { continue }
             let cursor = snapshot.readCursors["\(id)\n\(agentId)"]?.seq ?? 0
             let unread = snapshot.messages.filter {
-                $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId
+                $0.channelId == storage && $0.seq > cursor
+                    && ($0.senderType != "agent" || $0.senderId != agentId)
             }.count
             let mentions = mentionStats(channelId: storage)
             rows.append(ActionCardInboxItem(
@@ -688,10 +755,15 @@ public struct ActionCardMarketplaceService: Sendable {
                   let parentId = thread.parentChannelId,
                   let parent = channelRows[parentId], parent.deletedAt == nil
             else { continue }
-            let visible = thread.memberIds.contains(agentId)
-                || oauth.channelAgentIds(channelId: follow.threadChannelId).contains(agentId)
-                || parent.memberIds.contains(agentId)
-                || oauth.channelAgentIds(channelId: parentId).contains(agentId)
+            let visible: Bool
+            if parent.kind == "dm" {
+                visible = oauth.channelAgentIds(channelId: parentId).contains(agentId)
+            } else {
+                visible = thread.memberIds.contains(agentId)
+                    || oauth.channelAgentIds(channelId: follow.threadChannelId).contains(agentId)
+                    || parent.memberIds.contains(agentId)
+                    || oauth.channelAgentIds(channelId: parentId).contains(agentId)
+            }
             guard visible else { continue }
             let storage = jointProjections.first {
                 $0.localChannelId == follow.threadChannelId
@@ -700,20 +772,14 @@ public struct ActionCardMarketplaceService: Sendable {
             guard latest.seq > 0 else { continue }
             let cursor = snapshot.readCursors["\(follow.threadChannelId)\n\(agentId)"]?.seq ?? 0
             let unread = snapshot.messages.filter {
-                $0.channelId == storage && $0.seq > cursor && $0.senderId != agentId
+                $0.channelId == storage && $0.seq > cursor
+                    && ($0.senderType != "agent" || $0.senderId != agentId)
             }.count
             let mentions = mentionStats(channelId: storage)
             let parentShort = String((thread.parentMessageId ?? "").prefix(8))
             let target: String
             if parent.kind == "dm" {
-                let peer = parent.memberIds.compactMap { member -> String? in
-                    guard member != agentId,
-                          let account = accountRows.values.first(where: { $0.id == member }),
-                          oauth.memberRole(serverId: serverId, userId: member) != nil
-                    else { return nil }
-                    return account.name
-                }.first ?? "unknown"
-                target = "dm:@\(peer):\(parentShort)"
+                target = try dmReference(parentId, parent) + ":\(parentShort)"
             } else {
                 target = "#\(parent.name):\(parentShort)"
             }

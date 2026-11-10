@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import Vapor
@@ -90,6 +90,10 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             #expect(completed?["name"] as? String == "final-handle")
             #expect(completed?["displayName"] as? String == "Final User")
             #expect(completed?["profileSetupCompletedAt"] is String)
+            // The pinned auth store replaces its whole user with this flat body.
+            #expect(completed?["id"] as? String == registered.userId)
+            #expect(completed?["emailVerified"] as? Bool == true)
+            #expect(completed?["user"] == nil)
 
             let replay = try await identityPost(
                 client,
@@ -98,6 +102,11 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
                 body: "{\"name\":\"final-handle\",\"displayName\":\"Final User\"}"
             )
             #expect(replay.status == .ok)
+            let replayed = try #require(try JSONSerialization.jsonObject(with: Data((replay.body.string ?? "").utf8)) as? [String: Any])
+            #expect(replayed["id"] as? String == registered.userId)
+            #expect(replayed["emailVerified"] as? Bool == true)
+            #expect(replayed["profileSetupCompletedAt"] as? String == completed?["profileSetupCompletedAt"] as? String)
+            #expect(replayed["user"] == nil)
 
             let changed = try await identityPost(
                 client,
@@ -138,6 +147,42 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             let loser = responses.first { $0.status == .conflict }
             let loserBody = (try? JSONSerialization.jsonObject(with: Data((loser?.body.string ?? "").utf8))) as? [String: Any]
             #expect(loserBody?["code"] as? String == "PROFILE_SETUP_ALREADY_COMPLETED")
+        }
+    }
+}
+
+@Test func identityAdmissionUsesHandleRatherThanCompletionTimestamp() async throws {
+    let stamp = Date(timeIntervalSince1970: 1_800_000_000)
+    let cases: [(name: String, completedAt: Date?, allowed: Bool)] = [
+        ("", nil, false), ("", stamp, false),
+        ("pending_legacy", nil, false), ("pending_legacy", stamp, false),
+        ("PeNdInG_mixed", nil, false), ("PeNdInG_mixed", stamp, false),
+        ("legacy-handle", nil, true), ("legacy-handle", stamp, true),
+    ]
+    let services = FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {})
+    try await withApp { app in
+        configure(app, services: services)
+        try await app.testing { client in
+            for (index, item) in cases.enumerated() {
+                let email = "identity-admission-\(index)@example.com"
+                let registered = try await identityRegister(client, email: email)
+                // Seed legacy row disagreements; no password material or global fixture default changes.
+                services.emailAccounts.authProfileStore.state.withLock { state in
+                    state.accountSurface.accounts[email]?.emailVerified = true
+                    state.accountSurface.accounts[email]?.name = item.name
+                    state.accountSurface.accounts[email]?.profileSetupCompletedAt = item.completedAt
+                }
+                let slug = "identity-admission-\(index)"
+                let response = try await identityPost(client, path: "/api/servers", token: registered.token,
+                    body: "{\"name\":\"Identity Matrix\",\"slug\":\"\(slug)\"}")
+                #expect(response.status == (item.allowed ? .ok : .forbidden))
+                if !item.allowed {
+                    #expect(response.body.string == "{\"error\":\"Profile setup required\",\"code\":\"PROFILE_SETUP_REQUIRED\"}")
+                    #expect(services.emailAccounts.oauth.serverIdForSlug(slug) == nil)
+                } else {
+                    #expect(services.emailAccounts.oauth.serverIdForSlug(slug) != nil)
+                }
+            }
         }
     }
 }

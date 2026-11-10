@@ -9,13 +9,340 @@ import TestSupport
 
 // MARK: - Byte-exact bodies
 
-@Test func builtinV2FormKeepsTheLegacyMemberOrderAndLabels() {
+/// Complete released Node fixture; Chinese changes only the display copy at
+/// uiSchema.localization (runtimeFormV2Copy.ts119-134). Key order is not schema.
+@Test func builtinV2FormUsesTheReleasedNodeSchemaAndLocalizedCopy() throws {
+    func canonicalJSON(_ text: String) throws -> Data {
+        let value = try JSONSerialization.jsonObject(with: Data(text.utf8))
+        return try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+    }
+    let englishGolden = #"""
+{
+  "protocolVersion": 2,
+  "runtimeId": "builtin",
+  "schemaVersion": "builtin-pi.create.v3",
+  "dataSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "providerId",
+      "apiKey",
+      "model"
+    ],
+    "properties": {
+      "providerId": {
+        "type": "string",
+        "title": "Provider",
+        "minLength": 1,
+        "x-optionSource": "provider"
+      },
+      "apiKey": {
+        "type": "string",
+        "title": "API Key",
+        "minLength": 1,
+        "writeOnly": true
+      },
+      "baseUrl": {
+        "type": "string",
+        "title": "Base URL",
+        "minLength": 1,
+        "format": "uri"
+      },
+      "supportsImageInput": {
+        "type": "boolean",
+        "title": "Image input"
+      },
+      "loadLocalPlugins": {
+        "type": "boolean",
+        "title": "Load local Pi plugins"
+      },
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "minLength": 1,
+        "x-optionSource": "model"
+      },
+      "envVars": {
+        "type": "object",
+        "title": "Environment Variables",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiSchema": {
+    "order": [
+      "providerId",
+      "apiKey",
+      "baseUrl",
+      "supportsImageInput",
+      "model",
+      "loadLocalPlugins",
+      "envVars"
+    ],
+    "layout": {
+      "advanced": [
+        "/loadLocalPlugins",
+        "/envVars"
+      ]
+    },
+    "visibility": [
+      {
+        "pointer": "/baseUrl",
+        "when": {
+          "pointer": "/providerId",
+          "in": [
+            "openai-compatible",
+            "anthropic-compatible"
+          ]
+        }
+      },
+      {
+        "pointer": "/supportsImageInput",
+        "when": {
+          "pointer": "/providerId",
+          "in": [
+            "openai-compatible",
+            "anthropic-compatible"
+          ]
+        }
+      }
+    ],
+    "localization": {
+      "providerId": {
+        "label": "Provider",
+        "hint": "Built-in Pi is ready to use without local runtime setup. It uses the provider key entered here."
+      },
+      "apiKey": {
+        "label": "API Key",
+        "placeholder": "sk-..."
+      },
+      "baseUrl": {
+        "label": "Base URL",
+        "placeholder": "https://gateway.example.com/v1"
+      },
+      "supportsImageInput": {
+        "label": "Supports image input",
+        "hint": "Enable only when this gateway endpoint and model accept images."
+      },
+      "model": {
+        "label": "Model",
+        "placeholder": "Model ID",
+        "hint": "Use a model ID the selected provider supports."
+      },
+      "loadLocalPlugins": {
+        "label": "Load local Pi extensions",
+        "hint": "Load enabled Pi extensions installed on the computer running this agent. Applying changes restarts a running agent."
+      },
+      "envVars": {
+        "label": "Environment Variables",
+        "hint": "These will be injected into the runtime command environment."
+      }
+    }
+  },
+  "capabilities": {
+    "providerKinds": [
+      "preset",
+      "gateway"
+    ],
+    "writeOnlyPointers": [
+      "/apiKey"
+    ],
+    "forbiddenPointers": [
+      "/hostUserState"
+    ]
+  },
+  "optionSources": {
+    "provider": {
+      "protocolVersion": 1,
+      "runtimeId": "builtin",
+      "schemaVersion": "builtin-pi.create.v3",
+      "sourceId": "provider",
+      "kind": "select",
+      "pointer": "/providerId"
+    },
+    "model": {
+      "protocolVersion": 1,
+      "runtimeId": "builtin",
+      "schemaVersion": "builtin-pi.create.v3",
+      "sourceId": "model",
+      "kind": "dependent_select",
+      "pointer": "/model",
+      "dependsOn": "/providerId"
+    }
+  },
+  "requiredClientCapabilities": [
+    "option_source.status"
+  ]
+}
+"""#
+    let chineseGolden = #"""
+{
+  "protocolVersion": 2,
+  "runtimeId": "builtin",
+  "schemaVersion": "builtin-pi.create.v3",
+  "dataSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "providerId",
+      "apiKey",
+      "model"
+    ],
+    "properties": {
+      "providerId": {
+        "type": "string",
+        "title": "Provider",
+        "minLength": 1,
+        "x-optionSource": "provider"
+      },
+      "apiKey": {
+        "type": "string",
+        "title": "API Key",
+        "minLength": 1,
+        "writeOnly": true
+      },
+      "baseUrl": {
+        "type": "string",
+        "title": "Base URL",
+        "minLength": 1,
+        "format": "uri"
+      },
+      "supportsImageInput": {
+        "type": "boolean",
+        "title": "Image input"
+      },
+      "loadLocalPlugins": {
+        "type": "boolean",
+        "title": "Load local Pi plugins"
+      },
+      "model": {
+        "type": "string",
+        "title": "Model",
+        "minLength": 1,
+        "x-optionSource": "model"
+      },
+      "envVars": {
+        "type": "object",
+        "title": "Environment Variables",
+        "additionalProperties": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "uiSchema": {
+    "order": [
+      "providerId",
+      "apiKey",
+      "baseUrl",
+      "supportsImageInput",
+      "model",
+      "loadLocalPlugins",
+      "envVars"
+    ],
+    "layout": {
+      "advanced": [
+        "/loadLocalPlugins",
+        "/envVars"
+      ]
+    },
+    "visibility": [
+      {
+        "pointer": "/baseUrl",
+        "when": {
+          "pointer": "/providerId",
+          "in": [
+            "openai-compatible",
+            "anthropic-compatible"
+          ]
+        }
+      },
+      {
+        "pointer": "/supportsImageInput",
+        "when": {
+          "pointer": "/providerId",
+          "in": [
+            "openai-compatible",
+            "anthropic-compatible"
+          ]
+        }
+      }
+    ],
+    "localization": {
+      "providerId": {
+        "label": "提供方",
+        "hint": "内置 Pi 无需本地运行时设置即可使用。它会使用这里填写的提供方密钥。"
+      },
+      "apiKey": {
+        "label": "API 密钥",
+        "placeholder": "sk-..."
+      },
+      "baseUrl": {
+        "label": "Base URL",
+        "placeholder": "https://gateway.example.com/v1"
+      },
+      "supportsImageInput": {
+        "label": "支持图片输入",
+        "hint": "仅当此 gateway endpoint 和模型接受图片时开启。"
+      },
+      "model": {
+        "label": "模型",
+        "placeholder": "模型 ID",
+        "hint": "请填写所选提供方支持的模型 ID。"
+      },
+      "loadLocalPlugins": {
+        "label": "加载本机 Pi 扩展",
+        "hint": "加载运行此 Agent 的电脑上已安装并启用的 Pi 扩展。应用更改会重启正在运行的 Agent。"
+      },
+      "envVars": {
+        "label": "环境变量",
+        "hint": "这些变量会注入到运行时命令的环境中。"
+      }
+    }
+  },
+  "capabilities": {
+    "providerKinds": [
+      "preset",
+      "gateway"
+    ],
+    "writeOnlyPointers": [
+      "/apiKey"
+    ],
+    "forbiddenPointers": [
+      "/hostUserState"
+    ]
+  },
+  "optionSources": {
+    "provider": {
+      "protocolVersion": 1,
+      "runtimeId": "builtin",
+      "schemaVersion": "builtin-pi.create.v3",
+      "sourceId": "provider",
+      "kind": "select",
+      "pointer": "/providerId"
+    },
+    "model": {
+      "protocolVersion": 1,
+      "runtimeId": "builtin",
+      "schemaVersion": "builtin-pi.create.v3",
+      "sourceId": "model",
+      "kind": "dependent_select",
+      "pointer": "/model",
+      "dependsOn": "/providerId"
+    }
+  },
+  "requiredClientCapabilities": [
+    "option_source.status"
+  ]
+}
+"""#
     let schema = "builtin-pi.create.v3"
     let english = RuntimeFormDefinitionResponse.builtinV2(schemaVersion: schema, chinese: false).jsonBody.render()
-    #expect(english == "{\"protocolVersion\":2,\"runtimeId\":\"builtin\",\"schemaVersion\":\"builtin-pi.create.v3\",\"requiredClientCapabilities\":[\"option_source.status\"],\"fields\":[{\"key\":\"providerId\",\"kind\":\"select\",\"label\":\"Provider\",\"required\":true},{\"key\":\"apiKey\",\"kind\":\"password\",\"label\":\"API Key\",\"required\":true,\"writeOnly\":true},{\"key\":\"model\",\"kind\":\"dependent_select\",\"label\":\"Model\",\"required\":true,\"dependsOn\":\"providerId\"},{\"key\":\"supportsImageInput\",\"kind\":\"boolean\",\"label\":\"Image input\",\"required\":false}],\"capabilities\":{\"providerKinds\":[\"preset\"],\"writeOnlyPointers\":[\"/apiKey\"],\"forbiddenPointers\":[\"/hostUserState\"]},\"optionSources\":{\"provider\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"builtin-pi.create.v3\",\"sourceId\":\"provider\"},\"model\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"builtin-pi.create.v3\",\"sourceId\":\"model\"}}}")
     let chinese = RuntimeFormDefinitionResponse.builtinV2(schemaVersion: schema, chinese: true).jsonBody.render()
-    #expect(chinese.contains("\"label\":\"提供方\"") && chinese.contains("\"label\":\"API 密钥\"")
-        && chinese.contains("\"label\":\"模型\"") && chinese.contains("\"label\":\"图片输入\""))
+    #expect(try canonicalJSON(english) == canonicalJSON(englishGolden))
+    #expect(try canonicalJSON(chinese) == canonicalJSON(chineseGolden))
 }
 
 @Test func genericFormDefinitionsKeepTheLegacyBytes() {
@@ -77,7 +404,7 @@ import TestSupport
             reason: "machine_offline",
             retryable: true
         )).jsonBody.render()
-            == "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"builtin-pi.create.v3\",\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":{\"deepseek\":[{\"value\":\"deepseek-chat\",\"label\":\"DeepSeek Chat\"}],\"moonshotai\":[{\"value\":\"kimi-k2\",\"label\":\"Kimi K2\"}]},\"status\":\"fallback\",\"reason\":\"machine_offline\",\"retryable\":true}"
+            == "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"builtin-pi.create.v3\",\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"dependsOn\":\"/providerId\",\"optionsByValue\":{\"deepseek\":[{\"value\":\"deepseek/deepseek-v4-pro\",\"label\":\"DeepSeek V4 Pro\"},{\"value\":\"deepseek/deepseek-flash\",\"label\":\"DeepSeek V4.1 Flash\"}],\"moonshotai\":[{\"value\":\"moonshotai/kimi-k2.7-code\",\"label\":\"Kimi K2.7 Code\"},{\"value\":\"moonshotai/kimi-k2.7-code-highspeed\",\"label\":\"Kimi K2.7 Code HighSpeed\"},{\"value\":\"moonshotai/kimi-k3\",\"label\":\"Kimi K3\"},{\"value\":\"moonshotai/kimi-k2.6\",\"label\":\"Kimi K2.6\"}]},\"defaultValueByValue\":{\"deepseek\":\"deepseek/deepseek-v4-pro\",\"moonshotai\":\"moonshotai/kimi-k2.6\"},\"customValueAllowedByValue\":{\"deepseek\":false,\"moonshotai\":false},\"status\":\"fallback\",\"reason\":\"machine_offline\",\"retryable\":true}"
     )
     #expect(
         RuntimeOptionSourceResponse.builtinModel(BuiltinModelSourceBody(
@@ -87,7 +414,7 @@ import TestSupport
             reason: "probe_timeout",
             retryable: true
         )).jsonBody.render()
-            == "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"s\",\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"optionsByValue\":{},\"status\":\"unavailable\",\"reason\":\"probe_timeout\",\"retryable\":true}"
+            == "{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"s\",\"sourceId\":\"model\",\"kind\":\"dependent_select\",\"pointer\":\"/model\",\"dependsOn\":\"/providerId\",\"optionsByValue\":{},\"defaultValueByValue\":{},\"customValueAllowedByValue\":{},\"status\":\"unavailable\",\"reason\":\"probe_timeout\",\"retryable\":true}"
     )
     #expect(
         RuntimeOptionSourceResponse.builtinProvider(schemaVersion: "s", chinese: true).jsonBody.render()
@@ -165,8 +492,8 @@ import TestSupport
     #expect(MachineRuntimeModelsResponse.error(code: "boom").jsonBody.render() == "{\"kind\":\"error\",\"retryable\":true,\"code\":\"boom\"}")
 
     #expect(MachineWorkspacesResponse(rows: []).jsonBody.render() == "[]")
-    #expect(MachineWorkspacesResponse(rows: [.init(directoryName: "d", lastModified: "1970-01-01T00:00:00.000Z", status: "stopped", agentName: "N", agentStatus: "inactive")]).jsonBody.render()
-        == "[{\"directoryName\":\"d\",\"totalSizeBytes\":0,\"lastModified\":\"1970-01-01T00:00:00.000Z\",\"fileCount\":0,\"status\":\"stopped\",\"agentName\":\"N\",\"agentStatus\":\"inactive\"}]")
+    #expect(MachineWorkspacesResponse(rows: [.init(directoryName: "d", totalSizeBytes: 1234, lastModified: "2026-11-09T06:22:33.456Z", fileCount: 3, displayPath: "~/.raft/agents/d/", status: "stopped", agentName: "N", agentStatus: "inactive")]).jsonBody.render()
+        == "[{\"directoryName\":\"d\",\"totalSizeBytes\":1234,\"lastModified\":\"2026-11-09T06:22:33.456Z\",\"fileCount\":3,\"displayPath\":\"~/.raft/agents/d/\",\"status\":\"stopped\",\"agentName\":\"N\",\"agentStatus\":\"inactive\"}]")
 
     #expect(RuntimeAccountUsageResponse(state: "missing", snapshotJSON: nil).jsonBody.render() == "{\"state\":\"missing\",\"snapshot\":null}")
     #expect(RuntimeAccountUsageResponse(state: "fresh", snapshotJSON: "{\"a\":1}").jsonBody.render() == "{\"state\":\"fresh\",\"snapshot\":{\"a\":1}}")

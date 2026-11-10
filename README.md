@@ -6,10 +6,10 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 ## Status
 
-This is an active reimplementation, not a production deployment. Behavioral parity with the upstream tag is complete; active work is internal architecture refactoring.
+This is an active reimplementation undergoing production delivery validation; production activation is pending. The locked upstream assertion coverage below does not establish a complete Web/CLI user path. Current delivery evidence and remaining gates are recorded in [docs/PLAN.md](docs/PLAN.md).
 
-- **406/406 upstream parity modules locked** in [docs/PARITY.tsv](docs/PARITY.tsv): `219/219` route modules (`2000/2000` cases), `7/7` socket modules (`16/16` cases), and `180/180` daemon modules (`2616/2616` ledger cases). The daemon ledger includes explicitly excluded Node/runtime cases; [docs/PLAN.md](docs/PLAN.md) states the executable coverage qualifications.
-- The Swift regression suite runs alongside a **24-check real-process smoke suite** (`./scripts/smoke-server.sh`) and a separate two-server/daemon startup gate (`make test-e2e`). Smoke proves those specific live flows; the locked assertions and parity ledger provide broader coverage.
+- **406 upstream parity modules tracked** in [docs/PARITY.tsv](docs/PARITY.tsv). The legacy machine-on-behalf attested-send module is partial because credential-route tests do not establish its freshness and E1 behavior. The normal CLI and official Computer use credential `sendV2` with legacy fallback disabled. Current weighted coverage and runtime qualifications are recorded in [docs/PLAN.md](docs/PLAN.md); locked modules do not establish a complete client or production path.
+- The Swift regression suite runs alongside a **26-check real-process smoke suite** (`./scripts/smoke-server.sh`) and a separate two-server/daemon startup gate (`make test-e2e`). Smoke proves those specific live flows; the locked assertions and parity ledger provide broader coverage.
 - The HTTP surface uses **16 `RouteCollection` modules**, Vapor-free services, domain stores, and typed request/response contracts. The old directory owner root is **28 lines**; its global lock and all field forwarding accessors are deleted. Remaining factory extensions, broad constructors and Feature ledger calls still need explicit composition. The complete non-daemon source closure, including Generated, has no explicit unchecked conformance; daemon-only boundaries remain under review. Current counts and scanner limits live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
@@ -18,21 +18,22 @@ This is an active reimplementation, not a production deployment. Behavioral pari
 
 ## Architecture & Current Focus
 
-The real-process smoke suite covers human registration, email verification (`/api/auth/verify-email`, `/api/auth/resend-verification`, `SLOCK_E2E_AUTO_VERIFY_EMAIL`), channel messaging, live Socket.IO delivery, and `/daemon/connect`. Focused HTTP/socket tests verify the detailed authorization, serialization, and protocol contracts.
+The real-process smoke suite covers human registration, persisted profile completion, email-verification admission through the explicit local test opt-in, channel messaging, live Socket.IO delivery, and `/daemon/connect`. It does not send a real verification email or consume its link. Focused HTTP/socket tests verify the detailed authorization, serialization, and protocol contracts.
 
-Current work is **Phase 6 architecture cleanup** ([docs/PLAN.md](docs/PLAN.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
+The delivery objective and current validation stage are in [docs/PLAN.md](docs/PLAN.md). Phase 6 architecture cleanup remains a separate workstream ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
 
 - Typed domain payloads and errors now cover the public/OAuth surfaces; response mapping stays in Features.
 - Request-body helpers preserve each route's established decoding and authentication order; compatibility input parsers retain duplicate-key and numeric behavior.
 - Directory field forwarding and its global lock are gone; store/ledger isolation and non-daemon checked boundaries are in place. Remaining factory captures, broad initialization dependencies and Feature ledger calls must move to explicit domain composition before the final container migration; the credential-use and message-suppression construction loops have been separated.
 
-Domain state is currently in-memory and resets on restart. With `DATABASE_URL` set, `/health` runs a Postgres `SELECT 1` liveness check; without it the process keeps the 503 body.
+Development mode retains business state in memory. Production mode restores the retained owners from PostgreSQL and commits their snapshots and durable effects under a fenced writer before publication. The development `/health` contract remains `503` without database configuration; production also requires Redis and the configured deployment dependencies.
 
 ## Modules
 
 | Target | Responsibility |
 | --- | --- |
-| `RaftHTTP` | Framework-independent behavior: in-memory OAuth/domain ledger (`EmailLoginDirectory`, `OAuthLedger`), per-domain `Stores`, Vapor-free `Services`, `Codable` DTOs, public pages, release notes, CORS, version/liveness, route dispatch, and the JSON fallback. |
+| `RaftHTTP` | Framework-independent Services, authoritative domain Stores, OAuth, Codable DTOs, retained snapshots and transaction coordination, public pages, route dispatch, and the JSON fallback. |
+| `CRaftMarkdown` | JavaScriptCore C bridge for the pinned mature Markdown grammar and original-source ranges. |
 | `RaftHTTPServer` | Vapor mount (`FallbackApplication.swift`): registers the `Features/` `RouteCollection` modules, applies middleware, and turns unmatched paths into the JSON 404. |
 | `RaftShared` | Shared value types, including `JSONValue`, used by the HTTP layer and tests. |
 | `RaftServer` | Executable entrypoint (`@main`): reads configuration, wires `FallbackServices`, starts the background liveness tracker, opens the `/daemon/connect` listener, and runs the Vapor app. |
@@ -45,6 +46,7 @@ Domain state is currently in-memory and resets on restart. With `DATABASE_URL` s
 ## Requirements
 
 - Linux x86_64.
+- JavaScriptCore 4.1 runtime (`libjavascriptcoregtk-4.1.so.0`), supplied by `libjavascriptcoregtk-4.1-0` on Ubuntu. The Docker runtime installs this dependency.
 - **Swift 6.4.1**, pinned by `make`:
 
   ```text
@@ -56,39 +58,41 @@ Domain state is currently in-memory and resets on restart. With `DATABASE_URL` s
 
 ## Build and test
 
+Message Markdown uses the pinned mdast/GFM grammar through the in-process `CRaftMarkdown` bridge. The source entry is [Tools/MarkdownParser/entry.mjs](Tools/MarkdownParser/entry.mjs); [the resource provenance](Sources/RaftHTTP/Resources/raft-markdown-parser.provenance.json) records the exact packages, source hashes and build options. Distribute `raft-server-swift_RaftHTTP.bundle` beside the Linux `RaftServer` executable, including the parser, provenance and licenses. Startup loads and executes the packaged parser before opening listeners.
+
 ```bash
 make test                                                    # full suite with the pinned toolchain
 make test-e2e                                                # real RaftServer + RaftDaemon processes
 make pg-up                                                   # local Postgres for /health 200
 make test-pg                                                 # pg-up + real SELECT 1 test
 make parity                                                  # upstream coverage ledger (docs/PARITY.tsv)
-make parity-check                                            # fail if any parity module is not locked
+make parity-check                                            # validate parity status and case accounting
 make architecture                                            # enforced layering, file-size, and test-seam rules
-./scripts/smoke-server.sh                                    # 24-check real-process end-to-end smoke
+./scripts/smoke-server.sh                                    # 26-check real-process end-to-end smoke
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift test --filter <TestName>
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build -c release
 ```
 
-`make parity` reads `docs/PARITY.tsv` and prints how many upstream route/frame modules are `locked` and the weighted case coverage. Only a `locked` row with an existing commit counts, so the number cannot move without a landed slice. `make parity-check` fails when any module is not locked.
+`make parity` reads `docs/PARITY.tsv` and prints upstream route/frame status and weighted case coverage. `make parity-check` validates that ledger and its case accounting. The declared partial legacy module retains its documented qualification; a passing ledger check does not make it locked or establish production readiness.
 
-`make architecture` runs `scripts/check_architecture.py`, which enforces the `Feature -> Service -> Store` layering, rejects forbidden Vapor imports in `RaftHTTP`, guards against mega-files, and ratchets down test-only entry points. `./scripts/smoke-server.sh` builds the debug server and asserts the 24 published behaviors over real loopback ports.
+`make architecture` runs `scripts/check_architecture.py`, which enforces the `Feature -> Service -> Store` layering, rejects forbidden Vapor imports in `RaftHTTP`, guards against mega-files, and ratchets down test-only entry points. `./scripts/smoke-server.sh` builds the debug server and asserts the 26 published behaviors over real loopback ports.
 
-The full suite occasionally aborts with signal 6 or 11 under parallel execution; rerun it once before treating it as a failure. All 1,897+ tests pass in a clean run.
+Run the full test and startup gates for a stable change. The current delivery results and remaining gates are recorded in [docs/PLAN.md](docs/PLAN.md).
 
 ### Test suites
 
-| Target | Tests | Covers |
-| --- | --- | --- |
-| `RaftHTTPServerTests` | 1,229 | Route contracts through Vapor in-memory testing. |
-| `RaftDaemonClientTests` | 559 | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
-| `RaftHTTPTests` | 61 | Fallback/router, liveness, database health, version identity, CORS, and the shared `RaftShared` types. |
-| `RaftConnectAuthTests` | 17 | Upgrade auth, rejection reasons, RFC 6455 handshake. |
-| `RaftMachineSocketTests` | 6 | Exact handshake bytes and `machine:context` frame. |
-| `RaftServerStartupTests` | 2 | Real process startup, HTTP health, `/daemon/connect`, socket.io, `RaftDaemon` handshake, and two independent `RaftServer` processes. |
-| `RaftRealtimeTests` | 22 | Engine.IO/Socket.IO frames, room joins, guest isolation, platform-scoped events, membership and family revocation. |
+| Target | Covers |
+| --- | --- |
+| `RaftHTTPServerTests` | Published route contracts through Vapor testing. |
+| `RaftDaemonClientTests` | Connect loop, daemon client, proxy selection, fetch timeouts, failure projection. |
+| `RaftHTTPTests` | Domain Services and Stores, fallback/router, liveness, database health, version identity and CORS. |
+| `RaftConnectAuthTests` | Upgrade auth, rejection reasons and RFC 6455 handshake. |
+| `RaftMachineSocketTests` | Exact handshake bytes and `machine:context` frame. |
+| `RaftServerStartupTests` | Real process startup, HTTP health, daemon/socket.io transports, independent server processes and opt-in owned PostgreSQL acceptance. |
+| `RaftRealtimeTests` | Engine.IO/Socket.IO frames, room joins, guest isolation, platform scope, membership and family revocation. |
 
-`RaftShared` is a library target rather than a separate test bundle; its `JSONValue` model is exercised through `RaftHTTPTests`. The per-target counts above come from `swift test --list-tests`; the full run reports 1,897+ tests.
+Use `make parity` for the locked upstream modules and weighted assertion coverage; use the actual gate results for the current source revision.
 
 ## Run
 

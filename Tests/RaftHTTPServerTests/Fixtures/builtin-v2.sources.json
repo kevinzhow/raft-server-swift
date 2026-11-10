@@ -1,0 +1,2430 @@
+{
+  "provider": {
+    "protocolVersion": 1,
+    "runtimeId": "builtin",
+    "schemaVersion": "builtin-pi.create.v3",
+    "sourceId": "provider",
+    "kind": "select",
+    "pointer": "/providerId",
+    "options": [
+      {
+        "value": "deepseek",
+        "label": "DeepSeek",
+        "providerKind": "preset"
+      },
+      {
+        "value": "minimax",
+        "label": "MiniMax",
+        "providerKind": "preset"
+      },
+      {
+        "value": "minimax-cn",
+        "label": "MiniMax CN",
+        "providerKind": "preset"
+      },
+      {
+        "value": "zai",
+        "label": "Z.AI",
+        "providerKind": "preset"
+      },
+      {
+        "value": "zai-coding-cn",
+        "label": "Z.AI Coding CN",
+        "providerKind": "preset"
+      },
+      {
+        "value": "moonshotai",
+        "label": "Moonshot AI",
+        "providerKind": "preset"
+      },
+      {
+        "value": "moonshotai-cn",
+        "label": "Moonshot AI CN",
+        "providerKind": "preset"
+      },
+      {
+        "value": "kimi-coding",
+        "label": "Kimi For Coding",
+        "providerKind": "preset"
+      },
+      {
+        "value": "qwen-token-plan",
+        "label": "Qwen Token Plan",
+        "providerKind": "preset"
+      },
+      {
+        "value": "qwen-token-plan-cn",
+        "label": "Qwen Token Plan CN",
+        "providerKind": "preset"
+      },
+      {
+        "value": "openrouter",
+        "label": "OpenRouter",
+        "providerKind": "preset"
+      },
+      {
+        "value": "openai",
+        "label": "OpenAI",
+        "providerKind": "preset"
+      },
+      {
+        "value": "anthropic",
+        "label": "Anthropic",
+        "providerKind": "preset"
+      },
+      {
+        "value": "google",
+        "label": "Google",
+        "providerKind": "preset"
+      },
+      {
+        "value": "xai",
+        "label": "xAI",
+        "providerKind": "preset"
+      },
+      {
+        "value": "xiaomi",
+        "label": "Xiaomi",
+        "providerKind": "preset"
+      },
+      {
+        "value": "openai-compatible",
+        "label": "openai-compatible",
+        "providerKind": "gateway"
+      },
+      {
+        "value": "anthropic-compatible",
+        "label": "anthropic-compatible",
+        "providerKind": "gateway"
+      }
+    ],
+    "defaultValue": "deepseek"
+  },
+  "model": {
+    "protocolVersion": 1,
+    "runtimeId": "builtin",
+    "schemaVersion": "builtin-pi.create.v3",
+    "sourceId": "model",
+    "kind": "dependent_select",
+    "pointer": "/model",
+    "dependsOn": "/providerId",
+    "optionsByValue": {
+      "deepseek": [
+        {
+          "value": "deepseek/deepseek-v4-pro",
+          "label": "DeepSeek V4 Pro"
+        },
+        {
+          "value": "deepseek/deepseek-flash",
+          "label": "DeepSeek V4.1 Flash"
+        }
+      ],
+      "minimax": [
+        {
+          "value": "minimax/MiniMax-M3",
+          "label": "MiniMax-M3"
+        },
+        {
+          "value": "minimax/MiniMax-M2.7",
+          "label": "MiniMax-M2.7"
+        },
+        {
+          "value": "minimax/MiniMax-M2.7-highspeed",
+          "label": "MiniMax-M2.7-highspeed"
+        }
+      ],
+      "minimax-cn": [
+        {
+          "value": "minimax-cn/MiniMax-M3",
+          "label": "MiniMax-M3"
+        },
+        {
+          "value": "minimax-cn/MiniMax-M2.7",
+          "label": "MiniMax-M2.7"
+        },
+        {
+          "value": "minimax-cn/MiniMax-M2.7-highspeed",
+          "label": "MiniMax-M2.7-highspeed"
+        }
+      ],
+      "zai": [
+        {
+          "value": "zai/glm-5.3",
+          "label": "GLM-5.3"
+        },
+        {
+          "value": "zai/glm-5.2",
+          "label": "GLM-5.2"
+        },
+        {
+          "value": "zai/glm-4.7",
+          "label": "GLM-4.7"
+        },
+        {
+          "value": "zai/glm-5.3-highspeed",
+          "label": "GLM-5.3 Highspeed"
+        },
+        {
+          "value": "zai/glm-5.3-flash",
+          "label": "GLM-5.3-Flash"
+        },
+        {
+          "value": "zai/glm-5.2-highspeed",
+          "label": "GLM-5.2 Highspeed"
+        },
+        {
+          "value": "zai/glm-5-turbo",
+          "label": "GLM-5-Turbo"
+        }
+      ],
+      "zai-coding-cn": [
+        {
+          "value": "zai-coding-cn/glm-5.3",
+          "label": "GLM-5.3"
+        },
+        {
+          "value": "zai-coding-cn/glm-4.6v",
+          "label": "GLM-4.6V"
+        },
+        {
+          "value": "zai-coding-cn/glm-5.3-highspeed",
+          "label": "GLM-5.3 Highspeed"
+        },
+        {
+          "value": "zai-coding-cn/glm-5.3-flash",
+          "label": "GLM-5.3-Flash"
+        }
+      ],
+      "moonshotai": [
+        {
+          "value": "moonshotai/kimi-k2.7-code",
+          "label": "Kimi K2.7 Code"
+        },
+        {
+          "value": "moonshotai/kimi-k2.7-code-highspeed",
+          "label": "Kimi K2.7 Code HighSpeed"
+        },
+        {
+          "value": "moonshotai/kimi-k3",
+          "label": "Kimi K3"
+        },
+        {
+          "value": "moonshotai/kimi-k2.6",
+          "label": "Kimi K2.6"
+        }
+      ],
+      "moonshotai-cn": [
+        {
+          "value": "moonshotai-cn/kimi-k2.7-code",
+          "label": "Kimi K2.7 Code"
+        },
+        {
+          "value": "moonshotai-cn/kimi-k2.7-code-highspeed",
+          "label": "Kimi K2.7 Code HighSpeed"
+        },
+        {
+          "value": "moonshotai-cn/kimi-k3",
+          "label": "Kimi K3"
+        },
+        {
+          "value": "moonshotai-cn/kimi-k2.6",
+          "label": "Kimi K2.6"
+        }
+      ],
+      "kimi-coding": [
+        {
+          "value": "kimi-coding/k3-256k",
+          "label": "Kimi K3-256K"
+        },
+        {
+          "value": "kimi-coding/k3",
+          "label": "Kimi K3"
+        },
+        {
+          "value": "kimi-coding/kimi-for-coding",
+          "label": "kimi-for-coding"
+        },
+        {
+          "value": "kimi-coding/kimi-for-coding-highspeed",
+          "label": "Kimi For Coding HighSpeed"
+        }
+      ],
+      "qwen-token-plan": [
+        {
+          "value": "qwen-token-plan/deepseek-v4-pro-0813",
+          "label": "DeepSeek V4 Pro 0813"
+        },
+        {
+          "value": "qwen-token-plan/deepseek-v4-pro",
+          "label": "DeepSeek V4 Pro"
+        },
+        {
+          "value": "qwen-token-plan/qwen3.8-max",
+          "label": "Qwen3.8 Max"
+        },
+        {
+          "value": "qwen-token-plan/qwen3.7-max",
+          "label": "Qwen3.7 Max"
+        },
+        {
+          "value": "qwen-token-plan/kimi-k2.7-code",
+          "label": "Kimi K2.7 Code"
+        },
+        {
+          "value": "qwen-token-plan/glm-5.3",
+          "label": "GLM-5.3"
+        },
+        {
+          "value": "qwen-token-plan/glm-5.2",
+          "label": "GLM-5.2"
+        },
+        {
+          "value": "qwen-token-plan/glm-5.1",
+          "label": "GLM-5.1"
+        },
+        {
+          "value": "qwen-token-plan/glm-5",
+          "label": "GLM-5"
+        },
+        {
+          "value": "qwen-token-plan/qwen3.7-plus",
+          "label": "Qwen3.7 Plus"
+        },
+        {
+          "value": "qwen-token-plan/qwen3.6-plus",
+          "label": "Qwen3.6 Plus"
+        },
+        {
+          "value": "qwen-token-plan/deepseek-v3.2",
+          "label": "DeepSeek V3.2"
+        },
+        {
+          "value": "qwen-token-plan/kimi-k2.6",
+          "label": "Kimi K2.6"
+        },
+        {
+          "value": "qwen-token-plan/kimi-k2.5",
+          "label": "Kimi K2.5"
+        },
+        {
+          "value": "qwen-token-plan/MiniMax-M2.5",
+          "label": "MiniMax-M2.5"
+        },
+        {
+          "value": "qwen-token-plan/deepseek-v4-flash-0731",
+          "label": "DeepSeek V4 Flash 0731"
+        },
+        {
+          "value": "qwen-token-plan/deepseek-v4.1-flash",
+          "label": "DeepSeek V4.1 Flash"
+        },
+        {
+          "value": "qwen-token-plan/deepseek-v4-flash",
+          "label": "DeepSeek V4 Flash"
+        },
+        {
+          "value": "qwen-token-plan/qwen3.8-flash",
+          "label": "Qwen3.8 Flash"
+        },
+        {
+          "value": "qwen-token-plan/qwen3.6-flash",
+          "label": "Qwen3.6 Flash"
+        }
+      ],
+      "qwen-token-plan-cn": [
+        {
+          "value": "qwen-token-plan-cn/deepseek-v4-pro-0813",
+          "label": "DeepSeek V4 Pro 0813"
+        },
+        {
+          "value": "qwen-token-plan-cn/deepseek-v4-pro",
+          "label": "DeepSeek V4 Pro"
+        },
+        {
+          "value": "qwen-token-plan-cn/qwen3.8-max",
+          "label": "Qwen3.8 Max"
+        },
+        {
+          "value": "qwen-token-plan-cn/qwen3.7-max",
+          "label": "Qwen3.7 Max"
+        },
+        {
+          "value": "qwen-token-plan-cn/kimi-k2.7-code",
+          "label": "Kimi K2.7 Code"
+        },
+        {
+          "value": "qwen-token-plan-cn/glm-5.3",
+          "label": "GLM-5.3"
+        },
+        {
+          "value": "qwen-token-plan-cn/glm-5.2",
+          "label": "GLM-5.2"
+        },
+        {
+          "value": "qwen-token-plan-cn/glm-5.1",
+          "label": "GLM-5.1"
+        },
+        {
+          "value": "qwen-token-plan-cn/glm-5",
+          "label": "GLM-5"
+        },
+        {
+          "value": "qwen-token-plan-cn/qwen3.7-plus",
+          "label": "Qwen3.7 Plus"
+        },
+        {
+          "value": "qwen-token-plan-cn/qwen3.6-plus",
+          "label": "Qwen3.6 Plus"
+        },
+        {
+          "value": "qwen-token-plan-cn/deepseek-v3.2",
+          "label": "DeepSeek V3.2"
+        },
+        {
+          "value": "qwen-token-plan-cn/kimi-k2.6",
+          "label": "Kimi K2.6"
+        },
+        {
+          "value": "qwen-token-plan-cn/kimi-k2.5",
+          "label": "Kimi K2.5"
+        },
+        {
+          "value": "qwen-token-plan-cn/MiniMax-M2.5",
+          "label": "MiniMax-M2.5"
+        },
+        {
+          "value": "qwen-token-plan-cn/deepseek-v4-flash-0731",
+          "label": "DeepSeek V4 Flash 0731"
+        },
+        {
+          "value": "qwen-token-plan-cn/deepseek-v4.1-flash",
+          "label": "DeepSeek V4.1 Flash"
+        },
+        {
+          "value": "qwen-token-plan-cn/deepseek-v4-flash",
+          "label": "DeepSeek V4 Flash"
+        },
+        {
+          "value": "qwen-token-plan-cn/qwen3.8-flash",
+          "label": "Qwen3.8 Flash"
+        },
+        {
+          "value": "qwen-token-plan-cn/qwen3.6-flash",
+          "label": "Qwen3.6 Flash"
+        }
+      ],
+      "openrouter": [
+        {
+          "value": "openrouter/anthropic/claude-fable-5.1",
+          "label": "Anthropic: Claude Fable 5.1"
+        },
+        {
+          "value": "openrouter/anthropic/claude-fable-5.1:batch",
+          "label": "Anthropic: Claude Fable 5.1 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-fable-5",
+          "label": "Anthropic: Claude Fable 5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-fable-5:batch",
+          "label": "Anthropic: Claude Fable 5 (batch)"
+        },
+        {
+          "value": "openrouter/~anthropic/claude-fable-latest",
+          "label": "Anthropic: Claude Fable Latest"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-5.5",
+          "label": "Anthropic: Claude Opus 5.5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-5.5:batch",
+          "label": "Anthropic: Claude Opus 5.5 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-5",
+          "label": "Anthropic: Claude Opus 5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-5:batch",
+          "label": "Anthropic: Claude Opus 5 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.8",
+          "label": "Anthropic: Claude Opus 4.8"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.8:batch",
+          "label": "Anthropic: Claude Opus 4.8 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.7",
+          "label": "Anthropic: Claude Opus 4.7"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.7:batch",
+          "label": "Anthropic: Claude Opus 4.7 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.6",
+          "label": "Anthropic: Claude Opus 4.6"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.6:batch",
+          "label": "Anthropic: Claude Opus 4.6 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.5",
+          "label": "Anthropic: Claude Opus 4.5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.5:batch",
+          "label": "Anthropic: Claude Opus 4.5 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.1",
+          "label": "Anthropic: Claude Opus 4.1"
+        },
+        {
+          "value": "openrouter/anthropic/claude-opus-4.1:batch",
+          "label": "Anthropic: Claude Opus 4.1 (batch)"
+        },
+        {
+          "value": "openrouter/~anthropic/claude-opus-latest",
+          "label": "Anthropic: Claude Opus Latest"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-5.5",
+          "label": "Anthropic: Claude Sonnet 5.5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-5.5:batch",
+          "label": "Anthropic: Claude Sonnet 5.5 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-5",
+          "label": "Anthropic: Claude Sonnet 5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-5:batch",
+          "label": "Anthropic: Claude Sonnet 5 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-4.6",
+          "label": "Anthropic: Claude Sonnet 4.6"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-4.6:batch",
+          "label": "Anthropic: Claude Sonnet 4.6 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-4.5",
+          "label": "Anthropic: Claude Sonnet 4.5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-sonnet-4.5:batch",
+          "label": "Anthropic: Claude Sonnet 4.5 (batch)"
+        },
+        {
+          "value": "openrouter/~anthropic/claude-sonnet-latest",
+          "label": "Anthropic: Claude Sonnet Latest"
+        },
+        {
+          "value": "openrouter/anthropic/claude-haiku-5.5",
+          "label": "Anthropic: Claude Haiku 5.5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-haiku-5.5:batch",
+          "label": "Anthropic: Claude Haiku 5.5 (batch)"
+        },
+        {
+          "value": "openrouter/anthropic/claude-haiku-4.5",
+          "label": "Anthropic: Claude Haiku 4.5"
+        },
+        {
+          "value": "openrouter/anthropic/claude-haiku-4.5:batch",
+          "label": "Anthropic: Claude Haiku 4.5 (batch)"
+        },
+        {
+          "value": "openrouter/~anthropic/claude-haiku-latest",
+          "label": "Anthropic: Claude Haiku Latest"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.1-codex-max",
+          "label": "OpenAI: GPT-5.1-Codex-Max"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.8-max-0902",
+          "label": "Qwen: Qwen3.8 Max (0902)"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4-pro-0813",
+          "label": "DeepSeek: DeepSeek V4 Pro 0813"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3-ultra-550b-a55b",
+          "label": "NVIDIA: Nemotron 3 Ultra"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4-pro",
+          "label": "DeepSeek: DeepSeek V4 Pro 0423"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-pro-preview",
+          "label": "Google: Gemini 2.5 Pro Preview 06-05"
+        },
+        {
+          "value": "openrouter/openai/gpt-6.1-sol-pro",
+          "label": "OpenAI: GPT-6.1 Sol Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-6.1-sol-pro:batch",
+          "label": "OpenAI: GPT-6.1 Sol Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-astra-pro",
+          "label": "OpenAI: GPT-6 Astra Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-astra-pro:batch",
+          "label": "OpenAI: GPT-6 Astra Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-luna-pro",
+          "label": "OpenAI: GPT-6 Luna Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-luna-pro:batch",
+          "label": "OpenAI: GPT-6 Luna Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-sol-pro",
+          "label": "OpenAI: GPT-6 Sol Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-sol-pro:batch",
+          "label": "OpenAI: GPT-6 Sol Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-luna-pro",
+          "label": "OpenAI: GPT-5.6 Luna Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-luna-pro:batch",
+          "label": "OpenAI: GPT-5.6 Luna Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-sol-pro",
+          "label": "OpenAI: GPT-5.6 Sol Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-sol-pro:batch",
+          "label": "OpenAI: GPT-5.6 Sol Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-terra-pro",
+          "label": "OpenAI: GPT-5.6 Terra Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-terra-pro:batch",
+          "label": "OpenAI: GPT-5.6 Terra Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.5-pro",
+          "label": "OpenAI: GPT-5.5 Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.5-pro:batch",
+          "label": "OpenAI: GPT-5.5 Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4-pro",
+          "label": "OpenAI: GPT-5.4 Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4-pro:batch",
+          "label": "OpenAI: GPT-5.4 Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.2-pro",
+          "label": "OpenAI: GPT-5.2 Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.2-pro:batch",
+          "label": "OpenAI: GPT-5.2 Pro (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5-pro",
+          "label": "OpenAI: GPT-5 Pro"
+        },
+        {
+          "value": "openrouter/openai/gpt-5-pro:batch",
+          "label": "OpenAI: GPT-5 Pro (batch)"
+        },
+        {
+          "value": "openrouter/upstage/solar-pro4",
+          "label": "Upstage: Solar Pro 4"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.8-max-prime",
+          "label": "Qwen: Qwen3.8 Max Prime"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.7-max",
+          "label": "Qwen: Qwen3.7 Max"
+        },
+        {
+          "value": "openrouter/google/gemini-3.1-pro-preview",
+          "label": "Google: Gemini 3.1 Pro Preview"
+        },
+        {
+          "value": "openrouter/google/gemini-3.1-pro-preview:batch",
+          "label": "Google: Gemini 3.1 Pro Preview (batch)"
+        },
+        {
+          "value": "openrouter/google/gemini-3.1-pro-preview-customtools",
+          "label": "Google: Gemini 3.1 Pro Preview Custom Tools"
+        },
+        {
+          "value": "openrouter/openai/o3-pro",
+          "label": "OpenAI: o3 Pro"
+        },
+        {
+          "value": "openrouter/upstage/solar-pro-3",
+          "label": "Upstage: Solar Pro 3"
+        },
+        {
+          "value": "openrouter/xiaomi/mimo-v2.6-pro",
+          "label": "Xiaomi: MiMo-V2.6-Pro"
+        },
+        {
+          "value": "openrouter/xiaomi/mimo-v2.6-pro-ultraspeed",
+          "label": "Xiaomi: MiMo-V2.6-Pro-UltraSpeed"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-pro",
+          "label": "Google: Gemini 2.5 Pro"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-pro:batch",
+          "label": "Google: Gemini 2.5 Pro (batch)"
+        },
+        {
+          "value": "openrouter/nex-agi/nex-n2.5-pro",
+          "label": "Nex AGI: Nex-N2.5-Pro"
+        },
+        {
+          "value": "openrouter/xiaomi/mimo-v2.5-pro",
+          "label": "Xiaomi: MiMo-V2.5-Pro"
+        },
+        {
+          "value": "openrouter/sakana/fugu-ultra-v2",
+          "label": "Sakana: Fugu Ultra v2"
+        },
+        {
+          "value": "openrouter/amazon/nova-premier-v1",
+          "label": "Amazon: Nova Premier 1.0"
+        },
+        {
+          "value": "openrouter/amazon/nova-pro-v1",
+          "label": "Amazon: Nova Pro 1.0"
+        },
+        {
+          "value": "openrouter/~deepseek/deepseek-pro-latest",
+          "label": "DeepSeek: DeepSeek Pro Latest"
+        },
+        {
+          "value": "openrouter/~google/gemini-pro-latest",
+          "label": "Google: Gemini Pro Latest"
+        },
+        {
+          "value": "openrouter/sakana/fugu-max",
+          "label": "Sakana: Fugu Max"
+        },
+        {
+          "value": "openrouter/sakana/fugu-ultra",
+          "label": "Sakana: Fugu Ultra"
+        },
+        {
+          "value": "openrouter/arcee-ai/trinity-large-thinking",
+          "label": "Arcee AI: Trinity Large Thinking"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-coder",
+          "label": "Qwen: Qwen3 Coder 480B A35B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-coder-30b-a3b-instruct",
+          "label": "Qwen: Qwen3 Coder 30B A3B Instruct"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.3-codex",
+          "label": "OpenAI: GPT-5.3-Codex"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.2-codex",
+          "label": "OpenAI: GPT-5.2-Codex"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.1-codex",
+          "label": "OpenAI: GPT-5.1-Codex"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-coder-next",
+          "label": "Qwen: Qwen3 Coder Next"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k2.7-code",
+          "label": "MoonshotAI: Kimi K2.7 Code"
+        },
+        {
+          "value": "openrouter/bytedance-seed/seed-2.0-code",
+          "label": "ByteDance Seed: Seed-2.0-Code"
+        },
+        {
+          "value": "openrouter/openrouter/pareto-code",
+          "label": "Pareto Code Router"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-235b-a22b-thinking-2507",
+          "label": "Qwen: Qwen3 235B A22B Thinking 2507"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-next-80b-a3b-thinking",
+          "label": "Qwen: Qwen3 Next 80B A3B Thinking"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-vl-30b-a3b-thinking",
+          "label": "Qwen: Qwen3 VL 30B A3B Thinking"
+        },
+        {
+          "value": "openrouter/google/gemini-3-pro-image",
+          "label": "Google: Nano Banana Pro (Gemini 3 Pro Image)"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k2-thinking",
+          "label": "MoonshotAI: Kimi K2 Thinking"
+        },
+        {
+          "value": "openrouter/thinkingmachines/inkling",
+          "label": "Thinking Machines: Inkling"
+        },
+        {
+          "value": "openrouter/thinkingmachines/inkling-small",
+          "label": "Thinking Machines: Inkling Small"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-coder-flash",
+          "label": "Qwen: Qwen3 Coder Flash"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-large-2512",
+          "label": "Mistral: Mistral Large 3 2512"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-large-2512:batch",
+          "label": "Mistral: Mistral Large 3 2512 (batch)"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-large-2407",
+          "label": "Mistral Large 2407"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3-super-120b-a12b",
+          "label": "NVIDIA: Nemotron 3 Super"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-large-4-0",
+          "label": "Mistral: Mistral Large 4"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3.5-super-vl",
+          "label": "NVIDIA: Nemotron 3.5 Super VL"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-large",
+          "label": "Mistral Large"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "label": "NVIDIA: Nemotron 3 Ultra (free)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.1-codex-mini",
+          "label": "OpenAI: GPT-5.1-Codex-Mini"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-plus-20260420",
+          "label": "Qwen: Qwen3.5 Plus 2026-04-20"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-small-2603",
+          "label": "Mistral: Mistral Small 4"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-small-2603:batch",
+          "label": "Mistral: Mistral Small 4 (batch)"
+        },
+        {
+          "value": "openrouter/mistralai/devstral-2512",
+          "label": "Mistral: Devstral 2 2512"
+        },
+        {
+          "value": "openrouter/mistralai/ministral-14b-2512",
+          "label": "Mistral: Ministral 3 14B 2512"
+        },
+        {
+          "value": "openrouter/mistralai/ministral-3b-2512",
+          "label": "Mistral: Ministral 3 3B 2512"
+        },
+        {
+          "value": "openrouter/mistralai/ministral-8b-2512",
+          "label": "Mistral: Ministral 3 8B 2512"
+        },
+        {
+          "value": "openrouter/mistralai/ministral-8b-2512:batch",
+          "label": "Mistral: Ministral 3 8B 2512 (batch)"
+        },
+        {
+          "value": "openrouter/mistralai/codestral-2508",
+          "label": "Mistral: Codestral 2508"
+        },
+        {
+          "value": "openrouter/mistralai/codestral-2508:batch",
+          "label": "Mistral: Codestral 2508 (batch)"
+        },
+        {
+          "value": "openrouter/mistralai/voxtral-small-24b-2507",
+          "label": "Mistral: Voxtral Small 24B 2507"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-235b-a22b-2507",
+          "label": "Qwen: Qwen3 235B A22B Instruct 2507"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-30b-a3b-instruct-2507",
+          "label": "Qwen: Qwen3 30B A3B Instruct 2507"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-plus-02-15",
+          "label": "Qwen: Qwen3.5 Plus 2026-02-15"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o-2024-11-20",
+          "label": "OpenAI: GPT-4o (2024-11-20)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o-2024-08-06",
+          "label": "OpenAI: GPT-4o (2024-08-06)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o-2024-05-13",
+          "label": "OpenAI: GPT-4o (2024-05-13)"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k2-0905",
+          "label": "MoonshotAI: Kimi K2 0905"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k2",
+          "label": "MoonshotAI: Kimi K2 0711"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-r1-0528",
+          "label": "DeepSeek: R1 0528"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-397b-a17b",
+          "label": "Qwen: Qwen3.5 397B A17B"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-chat-v3-0324",
+          "label": "DeepSeek: DeepSeek V3 0324"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-vl-235b-a22b-instruct",
+          "label": "Qwen: Qwen3 VL 235B A22B Instruct"
+        },
+        {
+          "value": "openrouter/openai/gpt-oss-120b",
+          "label": "OpenAI: gpt-oss-120b"
+        },
+        {
+          "value": "openrouter/openai/gpt-oss-120b:batch",
+          "label": "OpenAI: gpt-oss-120b (batch)"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.8-2.4t-a95b",
+          "label": "Qwen: Qwen3.8 2.4T A95B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-next-80b-a3b-instruct",
+          "label": "Qwen: Qwen3 Next 80B A3B Instruct"
+        },
+        {
+          "value": "openrouter/qwen/qwen-2.5-72b-instruct",
+          "label": "Qwen2.5 72B Instruct"
+        },
+        {
+          "value": "openrouter/meta-llama/llama-3.1-70b-instruct",
+          "label": "Meta: Llama 3.1 70B Instruct"
+        },
+        {
+          "value": "openrouter/meta-llama/llama-3.3-70b-instruct",
+          "label": "Meta: Llama 3.3 70B Instruct"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.6-35b-a3b",
+          "label": "Qwen: Qwen3.6 35B A3B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-32b",
+          "label": "Qwen: Qwen3 32B"
+        },
+        {
+          "value": "openrouter/google/gemma-4-31b-it",
+          "label": "Google: Gemma 4 31B"
+        },
+        {
+          "value": "openrouter/meta/muse-glimmer-30b",
+          "label": "Meta: Muse Glimmer 30B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-30b-a3b",
+          "label": "Qwen: Qwen3 30B A3B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-vl-30b-a3b-instruct",
+          "label": "Qwen: Qwen3 VL 30B A3B Instruct"
+        },
+        {
+          "value": "openrouter/cohere/command-r-08-2024",
+          "label": "Cohere: Command R (08-2024)"
+        },
+        {
+          "value": "openrouter/cohere/command-r-plus-08-2024",
+          "label": "Cohere: Command R+ (08-2024)"
+        },
+        {
+          "value": "openrouter/google/gemma-3-27b-it",
+          "label": "Google: Gemma 3 27B"
+        },
+        {
+          "value": "openrouter/prism-ml/ternary-bonsai-2-27b",
+          "label": "PrismML: Ternary Bonsai 2 27B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.6-27b",
+          "label": "Qwen: Qwen3.6 27B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.8-27b",
+          "label": "Qwen: Qwen3.8 27B"
+        },
+        {
+          "value": "openrouter/unbiased/pareto-26.9",
+          "label": "Pareto 26.9"
+        },
+        {
+          "value": "openrouter/google/gemma-4-26b-a4b-it",
+          "label": "Google: Gemma 4 26B A4B "
+        },
+        {
+          "value": "openrouter/mistralai/mistral-small-3.1-24b-instruct",
+          "label": "Mistral: Mistral Small 3.1 24B"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-small-3.2-24b-instruct",
+          "label": "Mistral: Mistral Small 3.2 24B"
+        },
+        {
+          "value": "openrouter/mistralai/mixtral-8x22b-instruct",
+          "label": "Mistral: Mixtral 8x22B Instruct"
+        },
+        {
+          "value": "openrouter/openai/gpt-oss-20b",
+          "label": "OpenAI: gpt-oss-20b"
+        },
+        {
+          "value": "openrouter/openai/gpt-oss-20b:batch",
+          "label": "OpenAI: gpt-oss-20b (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-oss-safeguard-20b",
+          "label": "OpenAI: gpt-oss-safeguard-20b"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-14b",
+          "label": "Qwen: Qwen3 14B"
+        },
+        {
+          "value": "openrouter/google/gemma-3-12b-it",
+          "label": "Google: Gemma 3 12B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-122b-a10b",
+          "label": "Qwen: Qwen3.5-122B-A10B"
+        },
+        {
+          "value": "openrouter/ibm-granite/granite-4.2-8b",
+          "label": "IBM: Granite 4.2 8B"
+        },
+        {
+          "value": "openrouter/meta-llama/llama-3.1-8b-instruct",
+          "label": "Meta: Llama 3.1 8B Instruct"
+        },
+        {
+          "value": "openrouter/qwen/qwen3-vl-8b-instruct",
+          "label": "Qwen: Qwen3 VL 8B Instruct"
+        },
+        {
+          "value": "openrouter/qwen/qwen-2.5-7b-instruct",
+          "label": "Qwen: Qwen2.5 7B Instruct"
+        },
+        {
+          "value": "openrouter/openai/gpt-6.1-sol",
+          "label": "OpenAI: GPT-6.1 Sol"
+        },
+        {
+          "value": "openrouter/openai/gpt-6.1-sol:batch",
+          "label": "OpenAI: GPT-6.1 Sol (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-astra",
+          "label": "OpenAI: GPT-6 Astra"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-astra:batch",
+          "label": "OpenAI: GPT-6 Astra (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-luna",
+          "label": "OpenAI: GPT-6 Luna"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-luna:batch",
+          "label": "OpenAI: GPT-6 Luna (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-sol",
+          "label": "OpenAI: GPT-6 Sol"
+        },
+        {
+          "value": "openrouter/openai/gpt-6-sol:batch",
+          "label": "OpenAI: GPT-6 Sol (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-luna",
+          "label": "OpenAI: GPT-5.6 Luna"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-luna:batch",
+          "label": "OpenAI: GPT-5.6 Luna (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-sol",
+          "label": "OpenAI: GPT-5.6 Sol"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-sol:batch",
+          "label": "OpenAI: GPT-5.6 Sol (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-terra",
+          "label": "OpenAI: GPT-5.6 Terra"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.6-terra:batch",
+          "label": "OpenAI: GPT-5.6 Terra (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.5",
+          "label": "OpenAI: GPT-5.5"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.5:batch",
+          "label": "OpenAI: GPT-5.5 (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4",
+          "label": "OpenAI: GPT-5.4"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4:batch",
+          "label": "OpenAI: GPT-5.4 (batch)"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.3",
+          "label": "Z.ai: GLM 5.3"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.3:batch",
+          "label": "Z.ai: GLM 5.3 (batch)"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.3-flashx",
+          "label": "Z.ai: GLM 5.3 FlashX"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.3-prime",
+          "label": "Z.ai: GLM 5.3 Prime"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.2",
+          "label": "OpenAI: GPT-5.2"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.2:batch",
+          "label": "OpenAI: GPT-5.2 (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.2-chat",
+          "label": "OpenAI: GPT-5.2 Chat"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.2",
+          "label": "Z.ai: GLM 5.2"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.1",
+          "label": "OpenAI: GPT-5.1"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.1:batch",
+          "label": "OpenAI: GPT-5.1 (batch)"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.1",
+          "label": "Z.ai: GLM 5.1"
+        },
+        {
+          "value": "openrouter/openai/gpt-5",
+          "label": "OpenAI: GPT-5"
+        },
+        {
+          "value": "openrouter/openai/gpt-5:batch",
+          "label": "OpenAI: GPT-5 (batch)"
+        },
+        {
+          "value": "openrouter/stepfun/step-5-preview",
+          "label": "StepFun: Step 5 Preview"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5",
+          "label": "Z.ai: GLM 5"
+        },
+        {
+          "value": "openrouter/x-ai/grok-4.20",
+          "label": "SpaceXAI: Grok 4.20"
+        },
+        {
+          "value": "openrouter/x-ai/grok-4.7",
+          "label": "SpaceXAI: Grok 4.7"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.7",
+          "label": "Z.ai: GLM 4.7"
+        },
+        {
+          "value": "openrouter/x-ai/grok-4.6",
+          "label": "SpaceXAI: Grok 4.6"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.6",
+          "label": "Z.ai: GLM 4.6"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.6v",
+          "label": "Z.ai: GLM 4.6V"
+        },
+        {
+          "value": "openrouter/x-ai/grok-4.5",
+          "label": "SpaceXAI: Grok 4.5"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.5",
+          "label": "Z.ai: GLM 4.5"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.5-air",
+          "label": "Z.ai: GLM 4.5 Air"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.5v",
+          "label": "Z.ai: GLM 4.5V"
+        },
+        {
+          "value": "openrouter/x-ai/grok-4.3",
+          "label": "SpaceXAI: Grok 4.3"
+        },
+        {
+          "value": "openrouter/x-ai/grok-4.3:batch",
+          "label": "SpaceXAI: Grok 4.3 (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4.1",
+          "label": "OpenAI: GPT-4.1"
+        },
+        {
+          "value": "openrouter/openai/gpt-4.1:batch",
+          "label": "OpenAI: GPT-4.1 (batch)"
+        },
+        {
+          "value": "openrouter/google/gemini-4-argon",
+          "label": "Google: Gemini 4 Argon"
+        },
+        {
+          "value": "openrouter/google/gemini-4-argon:batch",
+          "label": "Google: Gemini 4 Argon (batch)"
+        },
+        {
+          "value": "openrouter/meta-llama/llama-4-maverick",
+          "label": "Meta: Llama 4 Maverick"
+        },
+        {
+          "value": "openrouter/meta-llama/llama-4-scout",
+          "label": "Meta: Llama 4 Scout"
+        },
+        {
+          "value": "openrouter/openai/gpt-4",
+          "label": "OpenAI: GPT-4"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o",
+          "label": "OpenAI: GPT-4o"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o:batch",
+          "label": "OpenAI: GPT-4o (batch)"
+        },
+        {
+          "value": "openrouter/tencent/hy4-preview",
+          "label": "Tencent: Hy4 preview"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.7-plus",
+          "label": "Qwen: Qwen3.7 Plus"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.6-plus",
+          "label": "Qwen: Qwen3.6 Plus"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-35b-a3b",
+          "label": "Qwen: Qwen3.5-35B-A3B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-27b",
+          "label": "Qwen: Qwen3.5-27B"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-9b",
+          "label": "Qwen: Qwen3.5-9B"
+        },
+        {
+          "value": "openrouter/aion-labs/aion-3.5",
+          "label": "AionLabs: Aion 3.5"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-medium-3-5",
+          "label": "Mistral: Mistral Medium 3.5"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-medium-3-5:batch",
+          "label": "Mistral: Mistral Medium 3.5 (batch)"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3.5-lightning",
+          "label": "NVIDIA: Nemotron 3.5 Lightning"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v3.2",
+          "label": "DeepSeek: DeepSeek V3.2"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v3.2-exp",
+          "label": "DeepSeek: DeepSeek V3.2 Exp"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-chat-v3.1",
+          "label": "DeepSeek: DeepSeek V3.1"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v3.1-terminus",
+          "label": "DeepSeek: DeepSeek V3.1 Terminus"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-medium-3.1",
+          "label": "Mistral: Mistral Medium 3.1"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-medium-3.1:batch",
+          "label": "Mistral: Mistral Medium 3.1 (batch)"
+        },
+        {
+          "value": "openrouter/aion-labs/aion-3.0",
+          "label": "AionLabs: Aion-3.0"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-chat",
+          "label": "DeepSeek: DeepSeek V3"
+        },
+        {
+          "value": "openrouter/minimax/minimax-m3",
+          "label": "MiniMax: MiniMax M3"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-medium-3",
+          "label": "Mistral: Mistral Medium 3"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k3",
+          "label": "MoonshotAI: Kimi K3"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k3:batch",
+          "label": "MoonshotAI: Kimi K3 (batch)"
+        },
+        {
+          "value": "openrouter/openai/o3",
+          "label": "OpenAI: o3"
+        },
+        {
+          "value": "openrouter/openai/o3:batch",
+          "label": "OpenAI: o3 (batch)"
+        },
+        {
+          "value": "openrouter/tencent/hy3",
+          "label": "Tencent: Hy3"
+        },
+        {
+          "value": "openrouter/tencent/hy3-preview",
+          "label": "Tencent: Hy3 preview"
+        },
+        {
+          "value": "openrouter/minimax/minimax-m2.7",
+          "label": "MiniMax: MiniMax M2.7"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k2.6",
+          "label": "MoonshotAI: Kimi K2.6"
+        },
+        {
+          "value": "openrouter/liquid/lfm-2.5-24b-a2b",
+          "label": "LiquidAI: LFM2.5-24B-A2B"
+        },
+        {
+          "value": "openrouter/inception/mercury-2.5",
+          "label": "Inception: Mercury 2.5"
+        },
+        {
+          "value": "openrouter/minimax/minimax-m2.5",
+          "label": "MiniMax: MiniMax M2.5"
+        },
+        {
+          "value": "openrouter/moonshotai/kimi-k2.5",
+          "label": "MoonshotAI: Kimi K2.5"
+        },
+        {
+          "value": "openrouter/xiaomi/mimo-v2.5",
+          "label": "Xiaomi: MiMo-V2.5"
+        },
+        {
+          "value": "openrouter/minimax/minimax-m2.1",
+          "label": "MiniMax: MiniMax M2.1"
+        },
+        {
+          "value": "openrouter/poolside/laguna-s-2.1",
+          "label": "Poolside: Laguna S 2.1"
+        },
+        {
+          "value": "openrouter/poolside/laguna-xs-2.1",
+          "label": "Poolside: Laguna XS 2.1"
+        },
+        {
+          "value": "openrouter/aion-labs/aion-2.0",
+          "label": "AionLabs: Aion-2.0"
+        },
+        {
+          "value": "openrouter/inception/mercury-2",
+          "label": "Inception: Mercury 2"
+        },
+        {
+          "value": "openrouter/meituan/longcat-2.0",
+          "label": "Meituan: LongCat 2.0"
+        },
+        {
+          "value": "openrouter/minimax/minimax-m2",
+          "label": "MiniMax: MiniMax M2"
+        },
+        {
+          "value": "openrouter/bytedance-seed/seed-1.6",
+          "label": "ByteDance Seed: Seed 1.6"
+        },
+        {
+          "value": "openrouter/perceptron/perceptron-mk1.5",
+          "label": "Perceptron: Perceptron Mk1.5"
+        },
+        {
+          "value": "openrouter/meta/muse-spark-1.3",
+          "label": "Meta: Muse Spark 1.3"
+        },
+        {
+          "value": "openrouter/meta/muse-spark-1.3-contributor",
+          "label": "Meta: Muse Spark 1.3 Contributor"
+        },
+        {
+          "value": "openrouter/meta/muse-spark-1.2",
+          "label": "Meta: Muse Spark 1.2"
+        },
+        {
+          "value": "openrouter/meta/muse-spark-1.2-contributor",
+          "label": "Meta: Muse Spark 1.2 Contributor"
+        },
+        {
+          "value": "openrouter/meta/muse-spark-1.1",
+          "label": "Meta: Muse Spark 1.1"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-r1",
+          "label": "DeepSeek: R1"
+        },
+        {
+          "value": "openrouter/fireworks/ember-1",
+          "label": "Fireworks: Ember-1"
+        },
+        {
+          "value": "openrouter/minimax/minimax-m1",
+          "label": "MiniMax: MiniMax M1"
+        },
+        {
+          "value": "openrouter/openai/o1",
+          "label": "OpenAI: o1"
+        },
+        {
+          "value": "openrouter/x-ai/grok-build-0.1",
+          "label": "SpaceXAI: Grok Build 0.1"
+        },
+        {
+          "value": "openrouter/auto",
+          "label": "Auto"
+        },
+        {
+          "value": "openrouter/openrouter/auto",
+          "label": "Auto Router"
+        },
+        {
+          "value": "openrouter/openrouter/auto-beta",
+          "label": "Auto Router (Beta)"
+        },
+        {
+          "value": "openrouter/cohere/command-a-plus",
+          "label": "Cohere: Command A+"
+        },
+        {
+          "value": "openrouter/meta/muse-spark-open",
+          "label": "Meta: Muse Spark Open"
+        },
+        {
+          "value": "openrouter/meta/muse-wonder",
+          "label": "Meta: Muse Wonder"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-nemo",
+          "label": "Mistral: Mistral Nemo"
+        },
+        {
+          "value": "openrouter/mistralai/mistral-saba",
+          "label": "Mistral: Saba"
+        },
+        {
+          "value": "openrouter/~moonshotai/kimi-latest",
+          "label": "MoonshotAI: Kimi Latest"
+        },
+        {
+          "value": "openrouter/~openai/gpt-astra-latest",
+          "label": "OpenAI: GPT Astra Latest"
+        },
+        {
+          "value": "openrouter/openai/gpt-audio",
+          "label": "OpenAI: GPT Audio"
+        },
+        {
+          "value": "openrouter/openai/gpt-chat-latest",
+          "label": "OpenAI: GPT Chat Latest"
+        },
+        {
+          "value": "openrouter/~openai/gpt-luna-latest",
+          "label": "OpenAI: GPT Luna Latest"
+        },
+        {
+          "value": "openrouter/~openai/gpt-sol-latest",
+          "label": "OpenAI: GPT Sol Latest"
+        },
+        {
+          "value": "openrouter/~openai/gpt-terra-latest",
+          "label": "OpenAI: GPT Terra Latest"
+        },
+        {
+          "value": "openrouter/openrouter/fusion",
+          "label": "OpenRouter: Fusion"
+        },
+        {
+          "value": "openrouter/~unbiased/pareto-latest",
+          "label": "Pareto Latest"
+        },
+        {
+          "value": "openrouter/qwen/qwen-plus",
+          "label": "Qwen: Qwen-Plus"
+        },
+        {
+          "value": "openrouter/rekaai/reka-edge",
+          "label": "Reka Edge"
+        },
+        {
+          "value": "openrouter/relace/relace-search",
+          "label": "Relace: Relace Search"
+        },
+        {
+          "value": "openrouter/sakana/sakana-namazu",
+          "label": "Sakana: Sakana Namazu"
+        },
+        {
+          "value": "openrouter/typesafe/jev-router",
+          "label": "TypeSafe: Jev Router"
+        },
+        {
+          "value": "openrouter/~x-ai/grok-latest",
+          "label": "xAI: Grok Latest"
+        },
+        {
+          "value": "openrouter/~z-ai/glm-latest",
+          "label": "Z.ai: GLM Latest"
+        },
+        {
+          "value": "openrouter/thinkingmachines/inkling:free",
+          "label": "Thinking Machines: Inkling (free)"
+        },
+        {
+          "value": "openrouter/thinkingmachines/inkling-small:free",
+          "label": "Thinking Machines: Inkling Small (free)"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "label": "DeepSeek: DeepSeek V4 Flash 0731"
+        },
+        {
+          "value": "openrouter/openai/gpt-3.5-turbo-0613",
+          "label": "OpenAI: GPT-3.5 Turbo (older v0613)"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4-flash",
+          "label": "DeepSeek: DeepSeek V4 Flash 0423"
+        },
+        {
+          "value": "openrouter/openai/gpt-3.5-turbo-16k",
+          "label": "OpenAI: GPT-3.5 Turbo 16k"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.3-flash",
+          "label": "Z.ai: GLM 5.3 Flash"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5.3-flash:batch",
+          "label": "Z.ai: GLM 5.3 Flash (batch)"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5-turbo",
+          "label": "Z.ai: GLM 5 Turbo"
+        },
+        {
+          "value": "openrouter/z-ai/glm-5v-turbo",
+          "label": "Z.ai: GLM 5V Turbo"
+        },
+        {
+          "value": "openrouter/z-ai/glm-4.7-flash",
+          "label": "Z.ai: GLM 4.7 Flash"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4.1-flash",
+          "label": "DeepSeek: DeepSeek V4.1 Flash"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4.1-flash:batch",
+          "label": "DeepSeek: DeepSeek V4.1 Flash (batch)"
+        },
+        {
+          "value": "openrouter/~deepseek/deepseek-v4-flash-latest",
+          "label": "DeepSeek: DeepSeek V4 Flash Latest"
+        },
+        {
+          "value": "openrouter/deepseek/deepseek-v4-flash-vision-exp",
+          "label": "DeepSeek: DeepSeek V4 Flash Vision Exp"
+        },
+        {
+          "value": "openrouter/openai/gpt-4-turbo",
+          "label": "OpenAI: GPT-4 Turbo"
+        },
+        {
+          "value": "openrouter/openai/gpt-4-turbo:batch",
+          "label": "OpenAI: GPT-4 Turbo (batch)"
+        },
+        {
+          "value": "openrouter/google/gemini-3.8-flash",
+          "label": "Google: Gemini 3.8 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.8-flash:batch",
+          "label": "Google: Gemini 3.8 Flash (batch)"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.8-flash",
+          "label": "Qwen: Qwen3.8 Flash"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.8-omni-flash",
+          "label": "Qwen: Qwen3.8 Omni Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.7-flash",
+          "label": "Google: Gemini 3.7 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.7-flash:batch",
+          "label": "Google: Gemini 3.7 Flash (batch)"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.7-flash",
+          "label": "Qwen: Qwen3.7 Flash"
+        },
+        {
+          "value": "openrouter/stepfun/step-3.7-flash",
+          "label": "StepFun: Step 3.7 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.6-flash",
+          "label": "Google: Gemini 3.6 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.6-flash:batch",
+          "label": "Google: Gemini 3.6 Flash (batch)"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.6-flash",
+          "label": "Qwen: Qwen3.6 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.5-flash",
+          "label": "Google: Gemini 3.5 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3.5-flash:batch",
+          "label": "Google: Gemini 3.5 Flash (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-3.5-turbo",
+          "label": "OpenAI: GPT-3.5 Turbo"
+        },
+        {
+          "value": "openrouter/openai/gpt-3.5-turbo:batch",
+          "label": "OpenAI: GPT-3.5 Turbo (batch)"
+        },
+        {
+          "value": "openrouter/qwen/qwen3.5-flash-02-23",
+          "label": "Qwen: Qwen3.5-Flash"
+        },
+        {
+          "value": "openrouter/stepfun/step-3.5-flash",
+          "label": "StepFun: Step 3.5 Flash"
+        },
+        {
+          "value": "openrouter/inclusionai/ling-3.1-flash",
+          "label": "inclusionAI: Ling 3.1 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-3-flash-preview",
+          "label": "Google: Gemini 3 Flash Preview"
+        },
+        {
+          "value": "openrouter/google/gemini-3-flash-preview:batch",
+          "label": "Google: Gemini 3 Flash Preview (batch)"
+        },
+        {
+          "value": "openrouter/inclusionai/ling-3.0-flash",
+          "label": "inclusionAI: Ling 3.0 Flash"
+        },
+        {
+          "value": "openrouter/inclusionai/ling-3.0-flash-vl",
+          "label": "inclusionAI: Ling 3.0 Flash VL"
+        },
+        {
+          "value": "openrouter/xiaomi/mimo-v2.6-flash",
+          "label": "Xiaomi: MiMo-V2.6-Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-flash",
+          "label": "Google: Gemini 2.5 Flash"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-flash:batch",
+          "label": "Google: Gemini 2.5 Flash (batch)"
+        },
+        {
+          "value": "openrouter/bytedance-seed/seed-2-1-turbo",
+          "label": "ByteDance Seed: Seed 2.1 Turbo"
+        },
+        {
+          "value": "openrouter/bytedance-seed/seed-1.6-flash",
+          "label": "ByteDance Seed: Seed 1.6 Flash"
+        },
+        {
+          "value": "openrouter/~deepseek/deepseek-flash-latest",
+          "label": "DeepSeek: DeepSeek Flash Latest"
+        },
+        {
+          "value": "openrouter/~google/gemini-flash-latest",
+          "label": "Google: Gemini Flash Latest"
+        },
+        {
+          "value": "openrouter/~z-ai/glm-flash-latest",
+          "label": "Z.ai: GLM Flash Latest"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+          "label": "NVIDIA: Nemotron 3 Super (free)"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3.5-super-vl:free",
+          "label": "NVIDIA: Nemotron 3.5 Super VL (free)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o-mini-2024-07-18",
+          "label": "OpenAI: GPT-4o-mini (2024-07-18)"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3-nano-30b-a3b",
+          "label": "NVIDIA: Nemotron 3 Nano 30B A3B"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4-mini",
+          "label": "OpenAI: GPT-5.4 Mini"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4-mini:batch",
+          "label": "OpenAI: GPT-5.4 Mini (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4-nano",
+          "label": "OpenAI: GPT-5.4 Nano"
+        },
+        {
+          "value": "openrouter/openai/gpt-5.4-nano:batch",
+          "label": "OpenAI: GPT-5.4 Nano (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5-mini",
+          "label": "OpenAI: GPT-5 Mini"
+        },
+        {
+          "value": "openrouter/openai/gpt-5-mini:batch",
+          "label": "OpenAI: GPT-5 Mini (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-5-nano",
+          "label": "OpenAI: GPT-5 Nano"
+        },
+        {
+          "value": "openrouter/openai/gpt-5-nano:batch",
+          "label": "OpenAI: GPT-5 Nano (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4.1-mini",
+          "label": "OpenAI: GPT-4.1 Mini"
+        },
+        {
+          "value": "openrouter/openai/gpt-4.1-mini:batch",
+          "label": "OpenAI: GPT-4.1 Mini (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4.1-nano",
+          "label": "OpenAI: GPT-4.1 Nano"
+        },
+        {
+          "value": "openrouter/openai/gpt-4.1-nano:batch",
+          "label": "OpenAI: GPT-4.1 Nano (batch)"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o-mini",
+          "label": "OpenAI: GPT-4o-mini"
+        },
+        {
+          "value": "openrouter/openai/gpt-4o-mini:batch",
+          "label": "OpenAI: GPT-4o-mini (batch)"
+        },
+        {
+          "value": "openrouter/openai/o4-mini",
+          "label": "OpenAI: o4 Mini"
+        },
+        {
+          "value": "openrouter/openai/o4-mini:batch",
+          "label": "OpenAI: o4 Mini (batch)"
+        },
+        {
+          "value": "openrouter/openai/o4-mini-high",
+          "label": "OpenAI: o4 Mini High"
+        },
+        {
+          "value": "openrouter/upstage/solar-mini4",
+          "label": "Upstage: Solar Mini 4"
+        },
+        {
+          "value": "openrouter/aion-labs/aion-3.5-mini",
+          "label": "AionLabs: Aion 3.5 Mini"
+        },
+        {
+          "value": "openrouter/aion-labs/aion-3.0-mini",
+          "label": "AionLabs: Aion-3.0-Mini"
+        },
+        {
+          "value": "openrouter/openai/o3-mini",
+          "label": "OpenAI: o3 Mini"
+        },
+        {
+          "value": "openrouter/openai/o3-mini:batch",
+          "label": "OpenAI: o3 Mini (batch)"
+        },
+        {
+          "value": "openrouter/openai/o3-mini-high",
+          "label": "OpenAI: o3 Mini High"
+        },
+        {
+          "value": "openrouter/google/gemini-nano-banana-2.1",
+          "label": "Google: Nano Banana 2.1"
+        },
+        {
+          "value": "openrouter/amazon/nova-2-lite-v1",
+          "label": "Amazon: Nova 2 Lite"
+        },
+        {
+          "value": "openrouter/bytedance-seed/seed-2.0-lite",
+          "label": "ByteDance Seed: Seed-2.0-Lite"
+        },
+        {
+          "value": "openrouter/bytedance-seed/seed-2.0-mini",
+          "label": "ByteDance Seed: Seed-2.0-Mini"
+        },
+        {
+          "value": "openrouter/amazon/nova-lite-v1",
+          "label": "Amazon: Nova Lite 1.0"
+        },
+        {
+          "value": "openrouter/amazon/nova-micro-v1",
+          "label": "Amazon: Nova Micro 1.0"
+        },
+        {
+          "value": "openrouter/cohere/north-mini-code:free",
+          "label": "Cohere: North Mini Code (free)"
+        },
+        {
+          "value": "openrouter/openai/gpt-audio-mini",
+          "label": "OpenAI: GPT Audio Mini"
+        },
+        {
+          "value": "openrouter/~openai/gpt-mini-latest",
+          "label": "OpenAI: GPT Mini Latest"
+        },
+        {
+          "value": "openrouter/google/gemma-4-31b-it:free",
+          "label": "Google: Gemma 4 31B (free)"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "label": "NVIDIA: Nemotron 3 Nano Omni (free)"
+        },
+        {
+          "value": "openrouter/google/gemma-4-26b-a4b-it:free",
+          "label": "Google: Gemma 4 26B A4B  (free)"
+        },
+        {
+          "value": "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "label": "NVIDIA: Nemotron 3.5 Lightning (free)"
+        },
+        {
+          "value": "openrouter/dots-studio/dots-3-note-preview:free",
+          "label": "Dots Studio: Dots3-Note Preview (free)"
+        },
+        {
+          "value": "openrouter/liquid/lfm-2.5-2.6b:free",
+          "label": "LiquidAI: LFM2.5-2.6B (free)"
+        },
+        {
+          "value": "openrouter/poolside/laguna-s-2.1:free",
+          "label": "Poolside: Laguna S 2.1 (free)"
+        },
+        {
+          "value": "openrouter/poolside/laguna-xs-2.1:free",
+          "label": "Poolside: Laguna XS 2.1 (free)"
+        },
+        {
+          "value": "openrouter/openrouter/free",
+          "label": "Free Models Router"
+        },
+        {
+          "value": "openrouter/google/gemini-3.5-flash-lite",
+          "label": "Google: Gemini 3.5 Flash Lite"
+        },
+        {
+          "value": "openrouter/google/gemini-3.5-flash-lite:batch",
+          "label": "Google: Gemini 3.5 Flash Lite (batch)"
+        },
+        {
+          "value": "openrouter/google/gemini-3.1-flash-lite",
+          "label": "Google: Gemini 3.1 Flash Lite"
+        },
+        {
+          "value": "openrouter/google/gemini-3.1-flash-lite:batch",
+          "label": "Google: Gemini 3.1 Flash Lite (batch)"
+        },
+        {
+          "value": "openrouter/google/gemini-3.1-flash-lite-preview",
+          "label": "Google: Gemini 3.1 Flash Lite Preview"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-flash-lite",
+          "label": "Google: Gemini 2.5 Flash Lite"
+        },
+        {
+          "value": "openrouter/google/gemini-2.5-flash-lite:batch",
+          "label": "Google: Gemini 2.5 Flash Lite (batch)"
+        }
+      ],
+      "openai": [
+        {
+          "value": "openai/gpt-5.5-pro",
+          "label": "GPT-5.5 Pro"
+        },
+        {
+          "value": "openai/gpt-5.4-pro",
+          "label": "GPT-5.4 Pro"
+        },
+        {
+          "value": "openai/gpt-5.2-pro",
+          "label": "GPT-5.2 Pro"
+        },
+        {
+          "value": "openai/gpt-5-pro",
+          "label": "GPT-5 Pro"
+        },
+        {
+          "value": "openai/o3-pro",
+          "label": "o3-pro"
+        },
+        {
+          "value": "openai/o1-pro",
+          "label": "o1-pro"
+        },
+        {
+          "value": "openai/gpt-5.3-codex",
+          "label": "GPT-5.3 Codex"
+        },
+        {
+          "value": "openai/gpt-5.3-codex-spark",
+          "label": "GPT-5.3 Codex Spark"
+        },
+        {
+          "value": "openai/gpt-4o-2024-11-20",
+          "label": "GPT-4o (2024-11-20)"
+        },
+        {
+          "value": "openai/gpt-4o-2024-08-06",
+          "label": "GPT-4o (2024-08-06)"
+        },
+        {
+          "value": "openai/gpt-4o-2024-05-13",
+          "label": "GPT-4o (2024-05-13)"
+        },
+        {
+          "value": "openai/gpt-6.1-sol",
+          "label": "GPT-6.1 Sol"
+        },
+        {
+          "value": "openai/gpt-6-astra",
+          "label": "GPT-6 Astra"
+        },
+        {
+          "value": "openai/gpt-6-luna",
+          "label": "GPT-6 Luna"
+        },
+        {
+          "value": "openai/gpt-6-sol",
+          "label": "GPT-6 Sol"
+        },
+        {
+          "value": "openai/gpt-5.6-luna",
+          "label": "GPT-5.6 Luna"
+        },
+        {
+          "value": "openai/gpt-5.6-sol",
+          "label": "GPT-5.6 Sol"
+        },
+        {
+          "value": "openai/gpt-5.6-terra",
+          "label": "GPT-5.6 Terra"
+        },
+        {
+          "value": "openai/gpt-5.5",
+          "label": "GPT-5.5"
+        },
+        {
+          "value": "openai/gpt-5.4",
+          "label": "GPT-5.4"
+        },
+        {
+          "value": "openai/gpt-5.3-chat-latest",
+          "label": "GPT-5.3 Chat (latest)"
+        },
+        {
+          "value": "openai/gpt-5.2",
+          "label": "GPT-5.2"
+        },
+        {
+          "value": "openai/gpt-5.2-chat-latest",
+          "label": "GPT-5.2 Chat"
+        },
+        {
+          "value": "openai/gpt-5.1",
+          "label": "GPT-5.1"
+        },
+        {
+          "value": "openai/gpt-5",
+          "label": "GPT-5"
+        },
+        {
+          "value": "openai/gpt-5-chat-latest",
+          "label": "GPT-5 Chat Latest"
+        },
+        {
+          "value": "openai/gpt-4.1",
+          "label": "GPT-4.1"
+        },
+        {
+          "value": "openai/gpt-4",
+          "label": "GPT-4"
+        },
+        {
+          "value": "openai/gpt-4o",
+          "label": "GPT-4o"
+        },
+        {
+          "value": "openai/o3",
+          "label": "o3"
+        },
+        {
+          "value": "openai/gpt-realtime-2.1",
+          "label": "GPT-Realtime-2.1"
+        },
+        {
+          "value": "openai/o1",
+          "label": "o1"
+        },
+        {
+          "value": "openai/gpt-daybreak-blue-latest",
+          "label": "Daybreak Blue"
+        },
+        {
+          "value": "openai/gpt-daybreak-red-latest",
+          "label": "Daybreak Red"
+        },
+        {
+          "value": "openai/gpt-4-turbo",
+          "label": "GPT-4 Turbo"
+        },
+        {
+          "value": "openai/gpt-5.4-mini",
+          "label": "GPT-5.4 mini"
+        },
+        {
+          "value": "openai/gpt-5.4-nano",
+          "label": "GPT-5.4 nano"
+        },
+        {
+          "value": "openai/gpt-5-mini",
+          "label": "GPT-5 Mini"
+        },
+        {
+          "value": "openai/gpt-5-nano",
+          "label": "GPT-5 Nano"
+        },
+        {
+          "value": "openai/gpt-4.1-mini",
+          "label": "GPT-4.1 mini"
+        },
+        {
+          "value": "openai/gpt-4.1-nano",
+          "label": "GPT-4.1 nano"
+        },
+        {
+          "value": "openai/gpt-4o-mini",
+          "label": "GPT-4o mini"
+        },
+        {
+          "value": "openai/o4-mini",
+          "label": "o4-mini"
+        },
+        {
+          "value": "openai/o3-mini",
+          "label": "o3-mini"
+        }
+      ],
+      "anthropic": [
+        {
+          "value": "anthropic/claude-fable-5-1",
+          "label": "Claude Fable 5.1"
+        },
+        {
+          "value": "anthropic/claude-fable-5",
+          "label": "Claude Fable 5"
+        },
+        {
+          "value": "anthropic/claude-opus-4-5-20251101",
+          "label": "Claude Opus 4.5"
+        },
+        {
+          "value": "anthropic/claude-opus-5-5",
+          "label": "Claude Opus 5.5"
+        },
+        {
+          "value": "anthropic/claude-opus-5",
+          "label": "Claude Opus 5"
+        },
+        {
+          "value": "anthropic/claude-opus-4-8",
+          "label": "Claude Opus 4.8"
+        },
+        {
+          "value": "anthropic/claude-opus-4-7",
+          "label": "Claude Opus 4.7"
+        },
+        {
+          "value": "anthropic/claude-opus-4-6",
+          "label": "Claude Opus 4.6"
+        },
+        {
+          "value": "anthropic/claude-opus-4-5",
+          "label": "Claude Opus 4.5 (latest)"
+        },
+        {
+          "value": "anthropic/claude-sonnet-4-5-20250929",
+          "label": "Claude Sonnet 4.5"
+        },
+        {
+          "value": "anthropic/claude-sonnet-5-5",
+          "label": "Claude Sonnet 5.5"
+        },
+        {
+          "value": "anthropic/claude-sonnet-5",
+          "label": "Claude Sonnet 5"
+        },
+        {
+          "value": "anthropic/claude-sonnet-4-6",
+          "label": "Claude Sonnet 4.6"
+        },
+        {
+          "value": "anthropic/claude-sonnet-4-5",
+          "label": "Claude Sonnet 4.5 (latest)"
+        },
+        {
+          "value": "anthropic/claude-haiku-4-5-20251001",
+          "label": "Claude Haiku 4.5"
+        },
+        {
+          "value": "anthropic/claude-haiku-5-5",
+          "label": "Claude Haiku 5.5"
+        },
+        {
+          "value": "anthropic/claude-haiku-4-5",
+          "label": "Claude Haiku 4.5 (latest)"
+        }
+      ],
+      "google": [
+        {
+          "value": "google/deep-research-max-preview-04-2026",
+          "label": "Deep Research Max Preview (Apr-21-2026)"
+        },
+        {
+          "value": "google/gemini-3.1-pro-preview",
+          "label": "Gemini 3.1 Pro Preview"
+        },
+        {
+          "value": "google/gemini-3.1-pro-preview-customtools",
+          "label": "Gemini 3.1 Pro Preview Custom Tools"
+        },
+        {
+          "value": "google/gemini-2.5-pro",
+          "label": "Gemini 2.5 Pro"
+        },
+        {
+          "value": "google/deep-research-preview-04-2026",
+          "label": "Deep Research Preview (Apr-21-2026)"
+        },
+        {
+          "value": "google/gemma-4-31b-it",
+          "label": "Gemma 4 31B IT"
+        },
+        {
+          "value": "google/gemini-2.5-computer-use-preview-10-2025",
+          "label": "Gemini 2.5 Computer Use Preview 10-2025"
+        },
+        {
+          "value": "google/gemma-4-26b-a4b-it",
+          "label": "Gemma 4 26B A4B IT"
+        },
+        {
+          "value": "google/gemini-4-argon",
+          "label": "Gemini 4 Argon"
+        },
+        {
+          "value": "google/gemini-3.8-flash",
+          "label": "Gemini 3.8 Flash"
+        },
+        {
+          "value": "google/gemini-3.7-flash",
+          "label": "Gemini 3.7 Flash"
+        },
+        {
+          "value": "google/gemini-3.6-flash",
+          "label": "Gemini 3.6 Flash"
+        },
+        {
+          "value": "google/gemini-3.5-flash",
+          "label": "Gemini 3.5 Flash"
+        },
+        {
+          "value": "google/gemini-3.1-flash-live-preview",
+          "label": "Gemini 3.1 Flash Live Preview"
+        },
+        {
+          "value": "google/gemini-3-flash-preview",
+          "label": "Gemini 3 Flash Preview"
+        },
+        {
+          "value": "google/gemini-2.5-flash",
+          "label": "Gemini 2.5 Flash"
+        },
+        {
+          "value": "google/gemini-flash-latest",
+          "label": "Gemini Flash Latest"
+        },
+        {
+          "value": "google/gemini-3.5-flash-lite",
+          "label": "Gemini 3.5 Flash Lite"
+        },
+        {
+          "value": "google/gemini-3.1-flash-lite",
+          "label": "Gemini 3.1 Flash Lite"
+        },
+        {
+          "value": "google/gemini-3.1-flash-lite-preview",
+          "label": "Gemini 3.1 Flash Lite Preview"
+        },
+        {
+          "value": "google/gemini-3.1-flash-lite-image",
+          "label": "Nano Banana 2 Lite"
+        },
+        {
+          "value": "google/gemini-2.5-flash-lite",
+          "label": "Gemini 2.5 Flash-Lite"
+        },
+        {
+          "value": "google/gemini-flash-lite-latest",
+          "label": "Gemini Flash-Lite Latest"
+        }
+      ],
+      "xai": [
+        {
+          "value": "xai/grok-4.7",
+          "label": "Grok 4.7"
+        },
+        {
+          "value": "xai/grok-4.6",
+          "label": "Grok 4.6"
+        },
+        {
+          "value": "xai/grok-4.5",
+          "label": "Grok 4.5"
+        },
+        {
+          "value": "xai/grok-4.3",
+          "label": "Grok 4.3"
+        }
+      ],
+      "xiaomi": [
+        {
+          "value": "xiaomi/mimo-v2.6-pro",
+          "label": "MiMo-V2.6-Pro"
+        },
+        {
+          "value": "xiaomi/mimo-v2.6-pro-ultraspeed",
+          "label": "MiMo-V2.6-Pro-UltraSpeed"
+        },
+        {
+          "value": "xiaomi/mimo-v2.5-pro",
+          "label": "MiMo-V2.5-Pro"
+        },
+        {
+          "value": "xiaomi/mimo-v2.5-pro-ultraspeed",
+          "label": "MiMo-V2.5-Pro-UltraSpeed"
+        },
+        {
+          "value": "xiaomi/mimo-v2.5",
+          "label": "MiMo-V2.5"
+        },
+        {
+          "value": "xiaomi/mimo-v2.6-flash",
+          "label": "MiMo-V2.6-Flash"
+        }
+      ],
+      "openai-compatible": [],
+      "anthropic-compatible": []
+    },
+    "defaultValueByValue": {
+      "deepseek": "deepseek/deepseek-v4-pro",
+      "minimax": "minimax/MiniMax-M2.7",
+      "minimax-cn": "minimax-cn/MiniMax-M2.7",
+      "zai": "zai/glm-5.3",
+      "zai-coding-cn": "zai-coding-cn/glm-5.3",
+      "moonshotai": "moonshotai/kimi-k2.6",
+      "moonshotai-cn": "moonshotai-cn/kimi-k2.6",
+      "kimi-coding": "kimi-coding/kimi-for-coding",
+      "qwen-token-plan": "qwen-token-plan/qwen3.7-max",
+      "qwen-token-plan-cn": "qwen-token-plan-cn/qwen3.7-max",
+      "openrouter": "openrouter/moonshotai/kimi-k2.6",
+      "openai": "openai/gpt-5.5",
+      "anthropic": "anthropic/claude-opus-4-8",
+      "google": "google/gemini-3.1-pro-preview",
+      "xai": "xai/grok-4.7",
+      "xiaomi": "xiaomi/mimo-v2.5-pro"
+    },
+    "customValueAllowedByValue": {
+      "deepseek": false,
+      "minimax": false,
+      "minimax-cn": false,
+      "zai": false,
+      "zai-coding-cn": false,
+      "moonshotai": false,
+      "moonshotai-cn": false,
+      "kimi-coding": false,
+      "qwen-token-plan": false,
+      "qwen-token-plan-cn": false,
+      "openrouter": false,
+      "openai": false,
+      "anthropic": false,
+      "google": false,
+      "xai": false,
+      "xiaomi": false,
+      "openai-compatible": true,
+      "anthropic-compatible": true
+    }
+  }
+}

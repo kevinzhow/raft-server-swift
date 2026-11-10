@@ -1,9 +1,15 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Agent thread-follow ledger behind its own lock.
 final class ThreadFollowStore: Sendable {
-    private let rows = Mutex<[String: AgentThreadFollowRecord]>([:])
+    private let rows = TransactionalState<[String: AgentThreadFollowRecord]>([:])
+
+    var persistenceRowsSnapshot: [String: AgentThreadFollowRecord] {
+        get { rows.withLock { $0 } }
+        set { rows.withLock { $0 = newValue } }
+    }
 
     private func key(serverId: String, agentId: String, threadChannelId: String) -> String {
         "\(serverId)\n\(agentId)\n\(threadChannelId)"

@@ -370,28 +370,13 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
             }
         }
         agent.post("upload") { request async throws -> Response in
-            guard let contentType = request.headers[.contentType],
-                  let boundary = contentType.components(separatedBy: "boundary=").dropFirst().first?
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"")),
-                  !boundary.isEmpty
-            else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
-            }
-            let buffer = try await request.body.collect(max: .specified(ByteCount(value: 300 * 1024 * 1024)))
-            guard let buffer,
-                  let parsed = parseAttachmentMultipart(data: buffer, boundary: boundary),
-                  let file = parsed.files.first
-            else {
-                return respond(status: 400, headers: .exact([:]), rawJSON: OrderedJSON.object([OrderedJSONField("error", "Invalid multipart upload")]).render())
-            }
-            return try await respond {
-                try services.emailAccounts.agentsLifecycle.uploadAgentAttachment(
+            try await respond {
+                let parsed = try await AttachmentMultipartDecoder.decode(request)
+                guard let file = parsed.files.first else { throw AttachmentContentError.noFiles }
+                return try await services.emailAccounts.agentsLifecycle.uploadMachineAttachmentContent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("agentId") ?? "",
-                    channelId: parsed.channelId,
-                    filename: file.filename,
-                    mimeType: file.mimeType,
-                    sizeBytes: file.sizeBytes
+                    channelId: parsed.channelId, file: file
                 )
             }
         }
@@ -579,73 +564,4 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
     }
 
 
-}
-
-// MARK: - File-private helpers copied verbatim from `FallbackApplication.swift`
-
-private struct MultipartPart {
-    var name: String?
-    var filename: String?
-    var mimeType: String?
-    var data: Data
-}
-
-private func multipartParts(data: Data, boundary: String) -> [MultipartPart] {
-    let separator = Data("\r\n--\(boundary)".utf8)
-    var chunks: [Data] = []
-    var splitCursor = data.startIndex
-    while let range = data.range(of: separator, in: splitCursor..<data.endIndex) {
-        chunks.append(data[splitCursor..<range.lowerBound])
-        splitCursor = range.upperBound
-    }
-    chunks.append(data[splitCursor..<data.endIndex])
-    let firstPrefix = Data("--\(boundary)\r\n".utf8)
-    if var first = chunks.first, first.starts(with: firstPrefix) {
-        first = first.dropFirst(firstPrefix.count)
-        chunks[0] = first
-    }
-    var parts: [MultipartPart] = []
-    for chunk in chunks {
-        var part = chunk
-        if part.starts(with: Data("\r\n".utf8)) { part = part.dropFirst(2) }
-        if part.starts(with: Data("--".utf8)) { continue }
-        guard let headerEnd = part.range(of: Data("\r\n\r\n".utf8)) else { continue }
-        let headerData = part[part.startIndex..<headerEnd.lowerBound]
-        let body = part[headerEnd.upperBound..<part.endIndex]
-        let headers = String(decoding: headerData, as: UTF8.self)
-        var name: String?
-        var filename: String?
-        var mimeType: String?
-        for line in headers.components(separatedBy: "\r\n") {
-            let lower = line.lowercased()
-            if lower.hasPrefix("content-disposition:") {
-                for component in line.components(separatedBy: ";") {
-                    let trimmed = component.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("name=") {
-                        name = trimmed.dropFirst(5).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    } else if trimmed.hasPrefix("filename=") {
-                        filename = trimmed.dropFirst(9).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    }
-                }
-            } else if lower.hasPrefix("content-type:") {
-                mimeType = line.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces)
-            }
-        }
-        parts.append(MultipartPart(name: name, filename: filename, mimeType: mimeType, data: Data(body)))
-    }
-    return parts
-}
-
-private func parseAttachmentMultipart(data: Data, boundary: String) -> (channelId: String, files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)])? {
-    var channelId: String?
-    var files: [(filename: String, mimeType: String?, sizeBytes: Int, data: Data)] = []
-    for part in multipartParts(data: data, boundary: boundary) {
-        if part.name == "channelId" {
-            channelId = String(decoding: part.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let filename = part.filename, !filename.isEmpty {
-            files.append((filename: filename, mimeType: part.mimeType, sizeBytes: part.data.count, data: part.data))
-        }
-    }
-    guard let channelId, !channelId.isEmpty else { return nil }
-    return (channelId, files)
 }

@@ -6,7 +6,7 @@ import Testing
 import Vapor
 import VaporTesting
 
-@Test func memberCanStopAndSessionResetButNotFullReset() async throws {
+@Test func memberCannotResetWorkspaceBeforeAnyExecutionBinding() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111601"
     let memberId = "11111111-1111-4111-8111-111111111602"
@@ -37,18 +37,14 @@ import VaporTesting
             headers[.authorization] = "Bearer \(token)"
             headers[.contentType] = "application/json"
             headers[HTTPField.Name("X-Server-Id")!] = serverId
-            #expect(try await client.send(.post, headers: headers, to: "/api/agents/\(agent)/stop").status == .ok)
-            for mode in ["restart", "session"] {
-                let reset = try await client.send(.post, headers: headers, to: "/api/agents/\(agent)/reset") { request in
-                    request.body = .init(string: "{\"mode\":\"\(mode)\"}")
-                }
-                #expect(reset.status.code == 202)
-                #expect((try JSONSerialization.jsonObject(with: Data((reset.body.string ?? "").utf8)) as? [String: Any])?["status"] as? String == "accepted")
-            }
+            // Accepted member Stop/restart/session scenes now run through the
+            // retained PG runtime in postgresPublicAgentControlsWithProtocolPeer.
+            // This ungated test locks authority before an executor can be used.
             let full = try await client.send(.post, headers: headers, to: "/api/agents/\(agent)/reset") { request in
                 request.body = .init(string: "{\"mode\":\"full\"}")
             }
             #expect(full.status == .forbidden)
+            #expect(full.body.string == #"{"error":"The `resetAgentWorkspace` capability or human creator authority is required to reset agent workspaces"}"#)
             #expect(((try JSONSerialization.jsonObject(with: Data((full.body.string ?? "").utf8)) as? [String: Any])?["error"] as? String ?? "").contains("resetAgentWorkspace"))
         }
     }

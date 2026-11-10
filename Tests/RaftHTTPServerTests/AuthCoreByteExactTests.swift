@@ -30,7 +30,7 @@ private func expectStandard(_ response: ClientResponse) {
     #expect(response.headers[HTTPField.Name("Content-Type")!] == "application/json; charset=utf-8")
     #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] != nil)
     #expect(response.headers[HTTPField.Name("Content-Length")!] == String(length))
-    #expect(response.headers[HTTPField.Name("Cache-Control")!] == nil)
+    #expect(response.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
 }
 
 private func services(_ accounts: EmailLoginDirectory) -> FallbackServices {

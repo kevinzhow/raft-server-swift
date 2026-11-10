@@ -197,12 +197,21 @@ public struct ServerProfileAndOrderService: Sendable {
             userId: userId,
             memberships: memberships
         )
+        let channelFacts = dependencies.channels.state
         let rows = snapshot.ids.compactMap { serverId -> OrderedServerListEntry? in
-            guard let details = oauth.serverDetailsValue(id: serverId) else { return nil }
+            guard let profile = oauth.serverProfile(id: serverId),
+                  let role = oauth.memberRole(serverId: serverId, userId: userId) else { return nil }
             return OrderedServerListEntry(
-                id: serverId,
-                slug: details.slug,
-                role: oauth.memberRole(serverId: serverId, userId: userId) ?? "member",
+                id: profile.id,
+                name: profile.name,
+                avatarUrl: profile.avatarUrl,
+                slug: profile.slug,
+                ownerId: profile.ownerId,
+                onboardingAgentId: channelFacts.serverOnboardingSettings[serverId]?.agentId,
+                hideHumansFromMembers: channelFacts.hideHumansFromMembers[serverId] == true,
+                plan: profile.plan,
+                role: role,
+                serverPushMuted: oauth.isServerPushMuted(serverId: serverId, userId: userId),
                 serverOrderVersion: snapshot.version
             )
         }

@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 /// Domain failure for the session, identity, app-login and profile surface.
 ///
@@ -253,6 +254,25 @@ public struct AuthIdentitiesService: Sendable {
     /// refused before any account lookup; a missing account and a wrong
     /// password share one 401.
     public func login(_ request: LoginRequest?) throws -> LoginResponse {
+        let input = try Self.loginInput(request)
+        guard let candidate = store.passwordCandidate(email: input.email),
+              PasswordCredential.verify(input.password, encoded: candidate.encodedHash)
+        else { throw AuthIdentitiesError.invalidCredentials }
+        return try finishLogin(candidate, pendingLinkToken: input.pendingLinkToken)
+    }
+
+    /// Published HTTP uses bounded CPU preparation, then commits on this Task.
+    public func loginAsync(_ request: LoginRequest?) async throws -> LoginResponse {
+        let input = try Self.loginInput(request)
+        guard let candidate = store.passwordCandidate(email: input.email),
+              PasswordCredential.accepts(candidate.encodedHash) else { throw AuthIdentitiesError.invalidCredentials }
+        guard try await PasswordWork.verify(input.password, encoded: candidate.encodedHash) else {
+            throw AuthIdentitiesError.invalidCredentials
+        }
+        return try finishLogin(candidate, pendingLinkToken: input.pendingLinkToken)
+    }
+
+    private static func loginInput(_ request: LoginRequest?) throws -> (email: String, password: String, pendingLinkToken: String?) {
         guard let request else {
             throw AuthIdentitiesError.invalidLoginBody([
                 AuthRequestIssue(path: "", message: "Expected object, received string"),
@@ -262,16 +282,20 @@ public struct AuthIdentitiesService: Sendable {
         let email = Self.requiredString(request.email, path: "email", into: &issues)
         let password = Self.requiredString(request.password, path: "password", into: &issues)
         if !issues.isEmpty { throw AuthIdentitiesError.invalidLoginBody(issues) }
+        return (AccountNaming.normalize(email ?? ""), password ?? "", request.pendingLinkToken)
+    }
+
+    private func finishLogin(_ candidate: PasswordCredentialCandidate, pendingLinkToken: String?) throws -> LoginResponse {
         switch store.authenticate(
-            email: AccountNaming.normalize(email ?? ""),
-            passwordHash: AuthTokenCodec.sha256(password ?? ""),
-            pendingLinkToken: request.pendingLinkToken,
+            email: candidate.email,
+            passwordHash: candidate.encodedHash,
+            expectedUserId: candidate.userId,
+            pendingLinkToken: pendingLinkToken,
             now: now()
         ) {
-        case .authenticated(let userId, let accountEmail, let tokens, let linkedProvider):
+        case .authenticated(let account, let tokens, let linkedProvider):
             return LoginResponse(
-                userId: userId,
-                email: accountEmail,
+                user: AuthUserDTO(account: account),
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
                 linkedProvider: linkedProvider
@@ -485,22 +509,55 @@ public struct AuthIdentitiesService: Sendable {
         let userId = try authorizedUser(authorization)
         guard let request else { throw AuthIdentitiesError.profileUpdateFailed }
 
-        if case .value(let current) = request.currentPassword, !current.isEmpty,
-           case .value(let newPassword) = request.newPassword, !newPassword.isEmpty {
-            if newPassword.count < 8 {
-                throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters")
-            }
-            switch store.changePassword(
-                userId: userId,
-                currentHash: AuthTokenCodec.sha256(current),
-                newHash: AuthTokenCodec.sha256(newPassword)
-            ) {
-            case .changed: break
-            case .accountMissing: throw AuthIdentitiesError.invalidToken
-            case .wrongPassword: throw AuthIdentitiesError.wrongCurrentPassword
-            }
+        if let change = try Self.passwordChange(request) {
+            guard let candidate = store.passwordCandidate(userId: userId),
+                  PasswordCredential.verify(change.current, encoded: candidate.encodedHash)
+            else { throw AuthIdentitiesError.wrongCurrentPassword }
+            _ = try commitPasswordChange(candidate, newHash: PasswordCredential.hash(change.next), authorization: authorization)
         }
+        return try finishProfileUpdate(userId: userId, request: request)
+    }
 
+    public func updateProfileAsync(
+        authorization: String?, _ request: UpdateProfileRequest?,
+        onSessionsRevoked: @escaping @Sendable (PasswordSessionRevocation) -> Void
+    ) async throws -> AuthProfileUserResponse {
+        let userId = try authorizedUser(authorization)
+        guard let request else { throw AuthIdentitiesError.profileUpdateFailed }
+        if let change = try Self.passwordChange(request) {
+            guard let candidate = store.passwordCandidate(userId: userId) else { throw AuthIdentitiesError.invalidToken }
+            guard PasswordCredential.accepts(candidate.encodedHash) else { throw AuthIdentitiesError.wrongCurrentPassword }
+            let encoded = try await PasswordWork.run {
+                guard PasswordCredential.verify(change.current, encoded: candidate.encodedHash) else {
+                    throw AuthIdentitiesError.wrongCurrentPassword
+                }
+                return try PasswordCredential.hash(change.next)
+            }
+            let revocation = try commitPasswordChange(candidate, newHash: encoded, authorization: authorization)
+            DeferredEffects.emit(in: store.state.domain) { onSessionsRevoked(revocation) }
+        }
+        return try finishProfileUpdate(userId: userId, request: request)
+    }
+
+    private static func passwordChange(_ request: UpdateProfileRequest) throws -> (current: String, next: String)? {
+        guard case .value(let current) = request.currentPassword, !current.isEmpty,
+              case .value(let next) = request.newPassword, !next.isEmpty else { return nil }
+        guard next.count >= 8 else { throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters") }
+        return (current, next)
+    }
+
+    private func commitPasswordChange(_ candidate: PasswordCredentialCandidate, newHash: String,
+                                      authorization: String?) throws -> PasswordSessionRevocation {
+        let token = String((authorization ?? "").dropFirst("Bearer ".count))
+        switch store.changePassword(userId: candidate.userId, currentHash: candidate.encodedHash, newHash: newHash,
+                                    authorizationToken: token, now: now()) {
+        case .changed(let revocation): return revocation
+        case .accountMissing: throw AuthIdentitiesError.invalidToken
+        case .wrongPassword: throw AuthIdentitiesError.wrongCurrentPassword
+        }
+    }
+
+    private func finishProfileUpdate(userId: String, request: UpdateProfileRequest) throws -> AuthProfileUserResponse {
         let update = try Self.validatedUpdate(request)
         guard let account = store.applyProfileUpdate(
             userId: userId,

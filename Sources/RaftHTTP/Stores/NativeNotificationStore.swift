@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// The session-family liveness facts a native-notification decision needs,
 /// copied out of the profile store before a section runs.
@@ -77,7 +78,11 @@ final class NativeNotificationStore: Sendable {
         )
     }
 
-    private let state = Mutex(State())
+    private let state = TransactionalState(State())
+
+    func restorePersistenceState(_ replacement: State) {
+        state.withLock { $0 = replacement }
+    }
 
     // MARK: - Enrollment grants
 

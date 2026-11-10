@@ -185,14 +185,7 @@ public struct ProfileCompletionResponse: JSONBodyConvertible {
     let completedAt: Date
     let user: AuthUserDTO
 
-    public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("name", name),
-            OrderedJSONField("displayName", displayName),
-            OrderedJSONField("profileSetupCompletedAt", DateText.isoString(completedAt)),
-            OrderedJSONField("user", user.jsonBody),
-        ])
-    }
+    public var jsonBody: OrderedJSON { user.jsonBody }
 }
 
 /// `POST /api/servers`: the created or already-owned server.

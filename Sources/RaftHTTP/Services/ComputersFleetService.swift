@@ -115,8 +115,9 @@ public struct ComputersFleetService: Sendable {
               let agent = oauth.agentRuntimeInfo(id: directoryName),
               agent.serverId == serverId
         else { throw ComputersFleetError.workspaceNotFound }
-        machines.markWorkspaceDeleted(machineId: machineId, directoryName: directoryName)
-        return OkResponse()
+        // No physical delete adapter/outcome contract is implemented here. Do not
+        // mark the cache/archive or report an unobserved filesystem mutation.
+        throw MachineWorkspaceDeleteUnavailable()
     }
 
     /// `GET /api/servers/:id/machines`.
@@ -134,6 +135,10 @@ public struct ComputersFleetService: Sendable {
         let remoteUpgradeDisabled = assignments.remoteUpgradeDisabledServers.contains(serverId)
         let accountsSnapshot = profiles.accounts
         let memberIds = Set(oauth.memberIdsWithRoles(serverId: serverId).map(\.id))
+        // The enclosing business scope supplies a coherent read of both retained
+        // owners. Legacy machineOnline Bools never grant live presence.
+        let heartbeatFormatter = ISO8601DateFormatter()
+        heartbeatFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let entries = rows.map { machine -> ServerMachineEntry in
             let policy = snapshot.machineBroadcastPolicies[machine.id]
             let linked = linkedMachineIds.contains(machine.id)
@@ -173,9 +178,19 @@ public struct ComputersFleetService: Sendable {
                 computerAttachedByCurrentUser: snapshot.computerAttachers[machine.id] == userId,
                 agentCount: agentCount,
                 creator: creator,
+                status: assignments.execution.connections[machine.id].map {
+                    $0.serverId == serverId && $0.online
+                } == true ? "online" : "offline",
+                // Zero is the existing logical counter's initial value, matching
+                // Node getMachineStatusVersion; reads never bump it.
+                statusVersion: snapshot.machineStatusVersions[machine.id] ?? 0,
                 runtimes: machine.runtimes,
                 computerUpgradeAvailable: upgrade,
-                computerBroadcastPolicy: policyBody
+                computerBroadcastPolicy: policyBody,
+                runtimeVersions: machine.runtimeVersions,
+                runtimeDetection: machine.runtimeDetection,
+                hostname: machine.hostname,
+                lastHeartbeat: machine.lastSeenAt.map { heartbeatFormatter.string(from: $0) }
             )
         }
         return ServerMachinesResponse(

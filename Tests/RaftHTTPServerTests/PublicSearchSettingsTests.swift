@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -52,7 +53,8 @@ private func isoTime(_ value: String) -> Date {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicServerDirectory: directory
+            publicServerDirectory: directory,
+            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
         ))
         try await app.testing { client in
             let goPublic = try await send(client, .patch, "/api/servers/settings/public-visibility", token: "owner-token", body: "{\"publiclyVisible\":true}")
@@ -101,7 +103,8 @@ private func isoTime(_ value: String) -> Date {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicServerDirectory: directory
+            publicServerDirectory: directory,
+            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
         ))
         try await app.testing { client in
             let adminRead = try await client.get("/api/servers/toggle/public-visibility", headers: [
@@ -156,7 +159,8 @@ private func isoTime(_ value: String) -> Date {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicServerDirectory: directory
+            publicServerDirectory: directory,
+            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
         ))
         try await app.testing { client in
             let beforePublic = try await send(
@@ -229,7 +233,8 @@ private func isoTime(_ value: String) -> Date {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicServerDirectory: directory
+            publicServerDirectory: directory,
+            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), (inviteeId, "invitee-token")], emails: [inviteeId: "source-invite-guest@slock.test"])
         ))
         try await app.testing { client in
             let before = try await client.get("/api/servers/invite/public-visibility", headers: [
@@ -274,7 +279,8 @@ private func isoTime(_ value: String) -> Date {
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicServerDirectory: directory
+            publicServerDirectory: directory,
+            emailAccounts: publicServerAuthAccounts([("owner", "owner-token")])
         ))
         try await app.testing { client in
             let ownerRead = try await client.get("/api/servers/gated/public-visibility", headers: [

@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Presence, push, cursor, status and provider facts for one external agent,
 /// read as one locked snapshot so the diagnostics projection cannot mix two
@@ -45,6 +46,7 @@ final class AgentsRuntimeStore: Sendable {
     /// transaction can inspect and update several rows together. Individual
     /// accessors copy or replace only their own field.
     struct State: Sendable {
+        var execution = AgentExecutionState()
         var serverAgents: [String: ServerAgent] = [:]
         var channelAgentMembers: [String: Set<String>] = [:]
         var storedAgentDeliveries: [(agentId: String, messageId: String, channelType: String)] = []
@@ -97,7 +99,6 @@ final class AgentsRuntimeStore: Sendable {
         var agentWorkspaceReadProvider: (@Sendable (_ agentId: String, _ path: String?) -> AgentSurfaceResult)? = nil
         var agentStartControlDispatch: (@Sendable (_ agentId: String, _ control: String) -> Void)? = nil
         var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? = nil
-        var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? = nil
         var agentConnectionOrigin = "http://localhost:3000"
         var agentConnectionProviderStorage: (@Sendable (AgentConnectionProviderRequest) -> AgentConnectionProviderResult)? = nil
         var agentCredentialUseThrottleOverrideMs: Int? = nil
@@ -105,7 +106,7 @@ final class AgentsRuntimeStore: Sendable {
         var agentAttachmentPresign: (@Sendable (String, Int, String, String) throws -> String)? = nil
     }
 
-    private let storage = Mutex(State())
+    private let storage = TransactionalState(State())
 
     /// A copied snapshot of every owned row. Whole-state replacement is retained
     /// for deterministic setup; field setters below update only their own field.
@@ -380,11 +381,6 @@ final class AgentsRuntimeStore: Sendable {
     var agentResetDispatch: (@Sendable (_ agentId: String, _ mode: String, _ terminalControl: String) -> Void)? {
         get { storage.withLock { $0.agentResetDispatch } }
         set { storage.withLock { $0.agentResetDispatch = newValue } }
-    }
-
-    var agentConfigLiftDispatch: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)? {
-        get { storage.withLock { $0.agentConfigLiftDispatch } }
-        set { storage.withLock { $0.agentConfigLiftDispatch = newValue } }
     }
 
     var agentConnectionOrigin: String {

@@ -12,18 +12,30 @@ import Foundation
 public struct AuthCoreService: Sendable {
     let store: AuthProfileStore
     let now: @Sendable () -> Date
+    private let transactionalEmail: TransactionalEmailIntentPort
 
-    init(store: AuthProfileStore, now: @escaping @Sendable () -> Date = { Date() }) {
+    init(
+        store: AuthProfileStore,
+        now: @escaping @Sendable () -> Date = { Date() },
+        transactionalEmail: TransactionalEmailIntentPort = .developmentOnly
+    ) {
         self.store = store
         self.now = now
+        self.transactionalEmail = transactionalEmail
+    }
+
+    /// Retains this owner's account/session data and clock. The production
+    /// coordinator and real worker are wired by the composition root.
+    public func bindingTransactionalEmail(_ port: TransactionalEmailIntentPort) -> Self {
+        Self(store: store, now: now, transactionalEmail: port)
     }
 
     // MARK: Bearer check
 
-    /// Access-token identity for transport adapters, using the push token-table
-    /// lookup. The optional family id scopes revocation to its connections.
+    /// Realtime identity from one live account/session snapshot. Push keeps its
+    /// separate token-table lookup; legacy familyless access remains supported.
     public func sessionIdentity(accessToken: String) -> (userId: String, familyId: String?)? {
-        store.pushPrincipal(accessToken: accessToken)
+        store.activeSessionPrincipal(accessToken: accessToken)
     }
 
     /// The user behind a live access token. A missing or non-bearer header is
@@ -45,11 +57,38 @@ public struct AuthCoreService: Sendable {
     /// `POST /api/auth/:provider/complete`. A first login checks legal
     /// acceptance before the code is spent.
     public func completeSocial(
+        provider: String, body: SocialCompleteRequest, userAgent: String?,
+        acceptLanguage: String?, authorization: String?
+    ) throws -> SocialCompleteResponse {
+        let needed = try socialPlaceholderNeeded(provider: provider, body: body)
+        let placeholder = needed ? try PasswordCredential.hash(AuthTokenCodec.randomHex(32)) : nil
+        return try finishSocial(provider: provider, body: body, userAgent: userAgent,
+                                acceptLanguage: acceptLanguage, authorization: authorization, passwordPlaceholder: placeholder)
+    }
+
+    public func completeSocialAsync(
+        provider: String, body: SocialCompleteRequest, userAgent: String?,
+        acceptLanguage: String?, authorization: String?
+    ) async throws -> SocialCompleteResponse {
+        let needed = try socialPlaceholderNeeded(provider: provider, body: body)
+        let placeholder = needed ? try await PasswordWork.hash(AuthTokenCodec.randomHex(32)) : nil
+        return try finishSocial(provider: provider, body: body, userAgent: userAgent,
+                                acceptLanguage: acceptLanguage, authorization: authorization, passwordPlaceholder: placeholder)
+    }
+
+    private func socialPlaceholderNeeded(provider: String, body: SocialCompleteRequest) throws -> Bool {
+        guard AuthRedirects.socialProviders.contains(provider) else { throw AuthCoreError.notFound }
+        guard let code = body.code, !code.isEmpty else { throw AuthCoreError.socialCompletionCodeRequired }
+        return store.socialPasswordPlaceholderNeeded(provider: provider, code: code)
+    }
+
+    private func finishSocial(
         provider: String,
         body: SocialCompleteRequest,
         userAgent: String?,
         acceptLanguage: String?,
-        authorization: String?
+        authorization: String?,
+        passwordPlaceholder: String?
     ) throws -> SocialCompleteResponse {
         guard AuthRedirects.socialProviders.contains(provider) else {
             throw AuthCoreError.notFound
@@ -69,7 +108,8 @@ public struct AuthCoreService: Sendable {
             bearerToken: Self.bearerToken(authorization),
             userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : AuthTokenCodec.sha256($0) },
             locale: acceptLanguage,
-            now: moment
+            now: moment,
+            passwordPlaceholder: passwordPlaceholder
         ))
         switch outcome {
         case .invalidCompletion:
@@ -138,10 +178,30 @@ public struct AuthCoreService: Sendable {
     /// before any account exists. Missing acceptance is 422. A stale version is
     /// 409 and creates no account.
     public func register(
+        _ body: RegisterRequest?, userAgent: String?, acceptLanguage: String?
+    ) throws -> RegisterResponse {
+        let input = try registrationInput(body, userAgent: userAgent, acceptLanguage: acceptLanguage)
+        var attempt = input.attempt
+        attempt.passwordHash = try PasswordCredential.hash(input.password)
+        attempt.now = now()
+        return try finishRegistration(attempt)
+    }
+
+    public func registerAsync(
+        _ body: RegisterRequest?, userAgent: String?, acceptLanguage: String?
+    ) async throws -> RegisterResponse {
+        let input = try registrationInput(body, userAgent: userAgent, acceptLanguage: acceptLanguage)
+        var attempt = input.attempt
+        attempt.passwordHash = try await PasswordWork.hash(input.password)
+        attempt.now = now()
+        return try finishRegistration(attempt)
+    }
+
+    private func registrationInput(
         _ body: RegisterRequest?,
         userAgent: String?,
         acceptLanguage: String?
-    ) throws -> RegisterResponse {
+    ) throws -> (attempt: RegistrationAttempt, password: String) {
         guard let body else {
             throw AuthCoreError.registerBodyInvalid([
                 AuthRequestIssue(path: "", message: "Expected object, received string"),
@@ -173,23 +233,33 @@ public struct AuthCoreService: Sendable {
             || body.privacyVersion != AuthLegalPolicy.privacyVersion {
             throw AuthCoreError.termsChanged
         }
-        let autoVerify = ProcessInfo.processInfo.environment["SLOCK_E2E_AUTO_VERIFY_EMAIL"] == "1"
+        try transactionalEmail.requireReady(in: store.state.domain)
+        let autoVerify = transactionalEmail.allowsDevelopmentAutoVerification(in: store.state.domain)
+            && ProcessInfo.processInfo.environment["SLOCK_E2E_AUTO_VERIFY_EMAIL"] == "1"
             && body.e2eAutoVerify
-        let outcome = store.registerAccount(RegistrationAttempt(
+        let moment = now()
+        return (RegistrationAttempt(
             normalizedEmail: AccountNaming.normalize(email),
-            passwordHash: AuthTokenCodec.sha256(password),
+            passwordHash: "",
             requestedName: requestedName,
             capabilityHash: capability.map(AuthTokenCodec.sha256),
             legalAcceptanceSource: body.legalAcceptanceSource == "invite" ? "invite" : "signup",
             userAgentHash: userAgent.flatMap { $0.isEmpty ? nil : AuthTokenCodec.sha256($0) },
             locale: acceptLanguage,
             autoVerify: autoVerify,
-            now: now()
-        ))
-        switch outcome {
+            now: moment
+        ), password)
+    }
+
+    private func finishRegistration(_ attempt: RegistrationAttempt) throws -> RegisterResponse {
+        switch store.registerAccount(attempt) {
         case .emailTaken:
             throw AuthCoreError.emailAlreadyRegistered
         case .created(let account):
+            try transactionalEmail.verification(
+                recipientEmail: account.email, name: "there", rawToken: account.verificationToken,
+                issuedAt: attempt.now
+            )
             return RegisterResponse(
                 id: account.id,
                 email: account.email,
@@ -253,7 +323,8 @@ public struct AuthCoreService: Sendable {
     /// stays usable after the sessions are revoked.
     public func retireStagingSelfAccount(
         _ body: RetireStagingRequest,
-        authorization: String?
+        authorization: String?,
+        onSessionsRevoked: @Sendable (SessionAccessRevocation) -> Void = { _ in }
     ) throws -> StagingRetirementResponse {
         guard let token = Self.bearerToken(authorization),
               let actorId = store.accessTokenOwner(token)
@@ -281,8 +352,10 @@ public struct AuthCoreService: Sendable {
             throw AuthCoreError.invalidRetirementCapability
         case .alreadyRetired(let receipt):
             guard let receipt else { throw AuthCoreError.retirementReceiptUnavailable }
+            onSessionsRevoked(.user(userId: receipt.userId))
             return Self.response(receipt)
         case .retired(let receipt):
+            onSessionsRevoked(.user(userId: receipt.userId))
             return Self.response(receipt)
         }
     }
@@ -442,9 +515,11 @@ public struct AuthCoreService: Sendable {
 
     /// `POST /api/auth/logout`. Revoking the predecessor's family blocks a later
     /// replay. A body without a usable token still answers `{"ok":true}`.
-    public func logout(_ body: RefreshTokenRequest) -> OkResponse {
-        if let refreshToken = body.refreshToken, !refreshToken.isEmpty {
-            store.revokeRefreshFamily(refreshToken: refreshToken, now: now())
+    public func logout(_ body: RefreshTokenRequest,
+                       onSessionsRevoked: @Sendable (SessionAccessRevocation) -> Void = { _ in }) -> OkResponse {
+        if let refreshToken = body.refreshToken, !refreshToken.isEmpty,
+           let revoked = store.revokeRefreshFamily(refreshToken: refreshToken, now: now()) {
+            onSessionsRevoked(revoked)
         }
         return OkResponse()
     }

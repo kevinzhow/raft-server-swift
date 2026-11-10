@@ -23,7 +23,9 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverB, slug: "attach-b", name: "Attach B", ownerId: userBId)
     let channel = accounts.oauth.createChannel(serverId: serverA, name: "attach-a-room", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverA, channelId: channel, memberId: ownerId, name: "attach-a-room")
-    let attachment = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "doc.txt")
+    let attachmentBytes = Data("access matrix document\n".utf8)
+    let attachment = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "doc.txt",
+        mimeType: "text/plain", sizeBytes: attachmentBytes.count, bytes: attachmentBytes)
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -75,7 +77,10 @@ import VaporTesting
 
             let own = try await get("/api/attachments/\(attachment)", headers(owner, serverA))
             #expect(own.status == .ok)
-            #expect(body(own)["filename"] as? String == "doc.txt")
+            #expect(own.body.data == attachmentBytes)
+            #expect(own.headers[.contentType] == "text/plain; charset=utf-8")
+            #expect(own.headers[.contentLength] == String(attachmentBytes.count))
+            #expect(own.headers[.contentDisposition]?.contains("doc.txt") == true)
         }
     }
 }

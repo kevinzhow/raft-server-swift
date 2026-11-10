@@ -18,10 +18,11 @@ extension EmailLoginDirectory {
     }
 
     public func setPasswordForTesting(userId: String, password: String) {
+        let passwordHash = AuthFixturePassword.encoded(password)
         authProfileStore.state.withLock { owned in
             if let key = owned.accountSurface.accounts.first(where: { $0.value.id == userId })?.key {
                 var account = owned.accountSurface.accounts[key]!
-                account.passwordHash = AuthTokenCodec.sha256(password)
+                account.passwordHash = passwordHash
                 account.passwordCredentialEstablishedAt = Date()
                 owned.accountSurface.accounts[key] = account
             }

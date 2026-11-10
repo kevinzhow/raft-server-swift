@@ -1,4 +1,5 @@
 import Foundation
+import TestSupport
 @testable import RaftHTTP
 
 /// Auth unit subjects and typed setup over one actual thirteen-owner graph.
@@ -56,11 +57,12 @@ struct AuthServicesUnitFixture: Sendable {
         passwordCredentialEstablished: Bool = true
     ) {
         let normalized = AccountNaming.normalize(email)
+        let passwordHash = AuthFixturePassword.encoded(password)
         profiles.state.withLock { owned in
             owned.accountSurface.accounts[normalized] = Account(
                 id: id,
                 email: normalized,
-                passwordHash: AuthTokenCodec.sha256(password),
+                passwordHash: passwordHash,
                 passwordCredentialEstablishedAt: passwordCredentialEstablished ? Date() : nil,
                 displayLanguage: nil,
                 name: String(normalized.split(separator: "@").first ?? "user"),
@@ -152,11 +154,12 @@ struct AuthServicesUnitFixture: Sendable {
 
     /// Preserves this payload fixture's Account defaults, including its Date().
     func seedMeAccount(userId: String, email: String, password: String, completedAt: Date) {
+        let passwordHash = AuthFixturePassword.encoded(password)
         profiles.state.withLock { state in
             state.accountSurface.accounts[email] = Account(
                 id: userId,
                 email: email,
-                passwordHash: AuthTokenCodec.sha256(password),
+                passwordHash: passwordHash,
                 displayLanguage: "en",
                 name: "identity-03",
                 profileSetupSuggestedHandle: "ident",

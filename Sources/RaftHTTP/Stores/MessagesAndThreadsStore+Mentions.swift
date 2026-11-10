@@ -1,95 +1,60 @@
 import Foundation
 
-// MARK: - Human message create: mention rows, thread follows, forward commit
-
-/// What a human mention-action resolution has to do to another store once the
-/// mention row itself has been claimed.
-enum MentionActionEffect: Sendable, Equatable {
-    /// The agent target receives the message in its delivery ledger.
-    case deliver(agentId: String, messageId: String)
-    /// The agent target is added to the channel's agent roster and receives the message.
-    case addAgent(channelId: String, agentId: String, messageId: String)
-    /// The human target becomes a channel member.
-    case addMember(channelId: String, userId: String)
-}
-
-/// One resolved id of a mention-action batch: the published result row and the
-/// cross-store effects its claim implies.
-struct MentionActionStep: Sendable, Equatable {
+/// A claim is returned only by the existing Messages owner. Cross-owner effects
+/// are staged by the service in the same enclosing business transaction.
+struct MentionActionClaim: Sendable {
     var result: MentionActionResult
-    var effects: [MentionActionEffect]
+    var mention: StoredMention
+    var newlyClaimed: Bool
 }
 
-/// One outsider mention that needs a stored resolution row beside the message.
 struct PendingMentionCandidate: Sendable, Equatable {
     var type: String
     var id: String
     var name: String
 }
 
-/// A mentioned member of a thread whose follow row the reply writes.
 struct ThreadMentionFollowTarget: Sendable, Equatable {
     var userId: String
-    /// Whether the parent channel lists the user as a member. A suppressed
-    /// follow is reactivated only for a parent member.
     var isParentMember: Bool
 }
 
 extension MessagesAndThreadsStore {
-    /// Membership is an explicit cross-store fact supplied by the caller. The
-    /// unique-key check and append share this one Messages transaction.
-    func recordMemberMentions(messageId: String, channelId: String, mentions: [MentionInput]) {
+    /// Prepared membership/lexical facts are immutable. The retained host,
+    /// unique-key check and insertion share this one Messages critical section.
+    func recordMemberMentions(messageId: String, channelId: String,
+                              registrations: [ResolvedMentionRegistration]) {
         withState { state in
+            let hosts = state.humanMessageRows.filter { $0.id == messageId && $0.channelId == channelId }
+            guard hosts.count == 1, let host = hosts.first else { return }
             var existing = Set(state.storedMentions.filter { $0.messageId == messageId }
                 .map { "\($0.targetType):\($0.targetId)" })
-            for mention in mentions where existing.insert("\(mention.type):\(mention.id)").inserted {
+            for row in registrations where existing.insert("\(row.mention.type):\(row.mention.id)").inserted {
                 state.storedMentions.append(StoredMention(
                     id: UUID().uuidString.lowercased(), messageId: messageId, channelId: channelId,
-                    senderId: "system", targetType: mention.type, targetId: mention.id, handle: mention.name,
-                    notifiableAtSend: true, notifiedAt: nil, notifiedByType: nil, notifiedById: nil, notifiedAction: nil
-                ))
+                    senderId: host.senderId, targetType: row.mention.type, targetId: row.mention.id,
+                    handle: row.mention.name, notifiableAtSend: row.notifiableAtSend,
+                    notifiedAt: nil, notifiedByType: nil,
+                    notifiedById: nil, notifiedAction: nil))
             }
         }
     }
 
-    /// Resolution rows for the outsider mentions a send leaves pending, in one
-    /// critical section: a mention that already has a row for this
-    /// `(message, target)` reuses it, otherwise one row is appended. Two
-    /// concurrent identical sends therefore cannot append two rows for one
-    /// target.
-    func resolvePendingMentionRows(
-        messageId: String,
-        channelId: String,
-        candidates: [PendingMentionCandidate]
-    ) -> [String] {
-        withState { state in
-            var ids: [String] = []
-            for candidate in candidates {
-                if let existing = state.storedMentions.first(where: {
-                    $0.messageId == messageId && $0.targetType == candidate.type && $0.targetId == candidate.id
-                }) {
-                    ids.append(existing.id)
-                    continue
-                }
-                let id = UUID().uuidString.lowercased()
-                let senderId = state.humanMessageRows.first { $0.id == messageId }?.senderId ?? ""
-                state.storedMentions.append(StoredMention(
-                    id: id,
-                    messageId: messageId,
-                    channelId: channelId,
-                    senderId: senderId,
-                    targetType: candidate.type,
-                    targetId: candidate.id,
-                    handle: candidate.name,
-                    notifiableAtSend: false,
-                    notifiedAt: nil,
-                    notifiedByType: nil,
-                    notifiedById: nil,
-                    notifiedAction: nil
-                ))
-                ids.append(id)
+    /// The existing store-level concurrency operation also requires a real host;
+    /// it cannot invent an author or revise an existing send-time snapshot.
+    func resolvePendingMentionRows(messageId: String, channelId: String,
+                                   candidates: [PendingMentionCandidate]) -> [String] {
+        recordMemberMentions(messageId: messageId, channelId: channelId,
+            registrations: candidates.map {
+                .init(mention: MentionInput(type: $0.type, id: $0.id, name: $0.name), notifiableAtSend: false)
+            })
+        return withState { state in
+            candidates.compactMap { candidate in
+                state.storedMentions.first {
+                    $0.messageId == messageId && $0.channelId == channelId
+                        && $0.targetType == candidate.type && $0.targetId == candidate.id
+                }?.id
             }
-            return ids
         }
     }
 
@@ -106,6 +71,9 @@ extension MessagesAndThreadsStore {
     ) {
         withState { state in
             func key(_ userId: String) -> String { "\(serverId)\n\(userId)\n\(threadChannelId)" }
+            state.threadUnfollows.removeValue(forKey: key(senderId))
+            Self.retireManagedThreadFollowerRemovals(in: &state, serverId: serverId,
+                threadId: threadChannelId, agentId: senderId)
             state.threadFollows[key(senderId)] = (
                 serverId: serverId,
                 userId: senderId,
@@ -117,6 +85,8 @@ extension MessagesAndThreadsStore {
                     guard target.isParentMember else { continue }
                     state.threadUnfollows.removeValue(forKey: key(target.userId))
                 }
+                Self.retireManagedThreadFollowerRemovals(in: &state, serverId: serverId,
+                    threadId: threadChannelId, agentId: target.userId)
                 state.threadFollows[key(target.userId)] = (
                     serverId: serverId,
                     userId: target.userId,
@@ -127,178 +97,69 @@ extension MessagesAndThreadsStore {
         }
     }
 
-    /// `POST /api/messages/mention-actions/execute`: every id of the batch is
-    /// decided and claimed in one critical section. The decision closures are
-    /// pure over snapshots the caller took beforehand, so no other store's lock
-    /// is taken while this one is held.
-    func applyUserMentionActions(
-        ids: [String],
-        action: String,
-        userId: String,
-        now: Date,
-        inScope: (StoredMention) -> Bool,
-        targetCanRead: (StoredMention) -> Bool,
-        senderStillInChannel: (StoredMention) -> Bool
-    ) -> [MentionActionStep] {
+    /// Atomic cross-message claim. The service checks authority over the retained
+    /// BPR view; actual host author, identity and current claim state are checked
+    /// again here. No callback or another owner's lock runs while State is held.
+    func claimMentionGroup(resolutionId: String, action: String, actorType: String,
+                           actorId: String, now: Date) -> MentionActionClaim? {
         withState { state in
-            var steps: [MentionActionStep] = []
-            for id in ids {
-                guard let index = state.storedMentions.firstIndex(where: { $0.id == id }),
-                      inScope(state.storedMentions[index]),
-                      state.storedMentions[index].senderId == userId
-                else {
-                    steps.append(MentionActionStep(
-                        result: MentionActionResult(resolutionId: id, action: action, status: "not_found"),
-                        effects: []
-                    ))
-                    continue
-                }
-                let mention = state.storedMentions[index]
-                if action == "notify" {
-                    if !targetCanRead(mention) {
-                        steps.append(MentionActionStep(
-                            result: MentionActionResult(
-                                resolutionId: id,
-                                action: "notify",
-                                status: "no_permission",
-                                reason: "target_lacks_read_access"
-                            ),
-                            effects: []
-                        ))
-                        continue
-                    }
-                    var effects: [MentionActionEffect] = []
-                    if mention.notifiedAt == nil {
-                        state.storedMentions[index].notifiedAt = now
-                        state.storedMentions[index].notifiedByType = "user"
-                        state.storedMentions[index].notifiedById = userId
-                        state.storedMentions[index].notifiedAction = "notify_only"
-                        if mention.targetType == "agent" {
-                            effects.append(.deliver(agentId: mention.targetId, messageId: mention.messageId))
-                        }
-                    }
-                    steps.append(MentionActionStep(
-                        result: MentionActionResult(
-                            resolutionId: id,
-                            action: "notify",
-                            status: "queued",
-                            deduped: [id]
-                        ),
-                        effects: effects
-                    ))
-                } else if mention.notifiedAction == "add" {
-                    steps.append(MentionActionStep(
-                        result: MentionActionResult(
-                            resolutionId: id,
-                            action: "add",
-                            status: "delivered",
-                            reason: "already_delivered",
-                            deduped: [id]
-                        ),
-                        effects: []
-                    ))
-                } else if !senderStillInChannel(mention) {
-                    steps.append(MentionActionStep(
-                        result: MentionActionResult(
-                            resolutionId: id,
-                            action: "add",
-                            status: "no_permission",
-                            reason: "sender_lacks_channel_access"
-                        ),
-                        effects: []
-                    ))
-                } else {
-                    state.storedMentions[index].notifiedAt = now
-                    state.storedMentions[index].notifiedByType = "user"
-                    state.storedMentions[index].notifiedById = userId
-                    state.storedMentions[index].notifiedAction = "add"
-                    let effect: MentionActionEffect = mention.targetType == "agent"
-                        ? .addAgent(channelId: mention.channelId, agentId: mention.targetId, messageId: mention.messageId)
-                        : .addMember(channelId: mention.channelId, userId: mention.targetId)
-                    steps.append(MentionActionStep(
-                        result: MentionActionResult(
-                            resolutionId: id,
-                            action: "add",
-                            status: "delivered",
-                            deduped: [id]
-                        ),
-                        effects: [effect]
-                    ))
-                }
+            guard let index = state.storedMentions.firstIndex(where: { $0.id == resolutionId }) else { return nil }
+            let selected = state.storedMentions[index]
+            let hosts = state.humanMessageRows.filter { $0.id == selected.messageId }
+            guard hosts.count == 1, let host = hosts.first, host.channelId == selected.channelId,
+                  host.senderType == actorType, host.senderId == actorId else { return nil }
+            func result(_ status: String, _ reason: String? = nil, _ ids: [String]? = nil) -> MentionActionResult {
+                MentionActionResult(resolutionId: selected.id, action: action, status: status,
+                    reason: reason, deduped: ids, messageId: selected.messageId, channelId: selected.channelId,
+                    targetType: selected.targetType, targetId: selected.targetId)
             }
-            return steps
+            if selected.notifiedAction == "add" || selected.notifiedAction == "invite"
+                || (selected.notifiedAt != nil && (action == "notify" || selected.notifiedAction != "notify_only")) {
+                return MentionActionClaim(result: result(action == "notify" ? "queued" : "delivered",
+                    action == "notify" ? "already_queued" : "already_delivered", [selected.id]),
+                    mention: selected, newlyClaimed: false)
+            }
+            guard !selected.notifiableAtSend else {
+                return MentionActionClaim(result: result("stale", "no_longer_pending"), mention: selected, newlyClaimed: false)
+            }
+            guard now.timeIntervalSince(selected.createdAt) <= MessageMentionRules.pendingLifetime else {
+                return MentionActionClaim(result: result("expired"), mention: selected, newlyClaimed: false)
+            }
+            let authors = Dictionary(state.humanMessageRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            var ids: [String] = []
+            for other in state.storedMentions.indices {
+                let row = state.storedMentions[other]
+                guard row.channelId == selected.channelId, row.targetType == selected.targetType,
+                      row.targetId == selected.targetId, !row.notifiableAtSend,
+                      now.timeIntervalSince(row.createdAt) < MessageMentionRules.pendingLifetime,
+                      let author = authors[row.messageId], author.channelId == row.channelId,
+                      author.senderType == actorType, author.senderId == actorId,
+                      row.notifiedAt == nil || (action == "add" && row.notifiedAction == "notify_only") else { continue }
+                state.storedMentions[other].notifiedAt = now
+                state.storedMentions[other].notifiedByType = actorType
+                state.storedMentions[other].notifiedById = actorId
+                state.storedMentions[other].notifiedAction = action == "notify" ? "notify_only" : "add"
+                ids.append(row.id)
+            }
+            guard !ids.isEmpty else { return nil }
+            return MentionActionClaim(result: result(action == "notify" ? "queued" : "delivered", nil, ids),
+                                      mention: selected, newlyClaimed: true)
         }
     }
 
-    /// `POST /internal/agent-api/mention-actions/execute`: the batch for one
-    /// agent in one critical section. A `notify` marks every still-unnotified
-    /// row of the same `(message, target)` and reports the deduplicated ids.
-    func applyAgentMentionActions(
-        ids: [String],
-        action: String,
-        agentId: String,
-        now: Date,
-        inScope: (StoredMention) -> Bool,
-        targetCanRead: (StoredMention) -> Bool,
-        senderStillInChannel: (StoredMention) -> Bool
-    ) -> [MentionActionResult] {
+    /// A real mention ADD reactivates the existing follow and Done/unfollow
+    /// projection together. Its start is the actual action time, never backdated.
+    func completeMentionThreadJoin(serverId: String, targetId: String, threadChannelId: String,
+                                   parentMessageId: String, at date: Date) {
         withState { state in
-            var results: [MentionActionResult] = []
-            for id in ids {
-                guard let index = state.storedMentions.firstIndex(where: { $0.id == id }),
-                      state.storedMentions[index].senderId == agentId,
-                      inScope(state.storedMentions[index]),
-                      state.humanMessageRows.contains(where: { $0.id == state.storedMentions[index].messageId })
-                else {
-                    results.append(MentionActionResult(resolutionId: id, action: action, status: "not_found"))
-                    continue
-                }
-                let mention = state.storedMentions[index]
-                if action == "notify" {
-                    guard targetCanRead(mention) else {
-                        results.append(MentionActionResult(
-                            resolutionId: id,
-                            action: "notify",
-                            status: "no_permission",
-                            reason: "target_lacks_read_access"
-                        ))
-                        continue
-                    }
-                    var deduped = [id]
-                    for other in state.storedMentions.indices
-                    where state.storedMentions[other].messageId == mention.messageId
-                        && state.storedMentions[other].targetType == mention.targetType
-                        && state.storedMentions[other].targetId == mention.targetId
-                        && state.storedMentions[other].notifiedAt == nil {
-                        state.storedMentions[other].notifiedAt = now
-                        state.storedMentions[other].notifiedByType = "agent"
-                        state.storedMentions[other].notifiedById = agentId
-                        state.storedMentions[other].notifiedAction = "notify_only"
-                        if state.storedMentions[other].id != id { deduped.append(state.storedMentions[other].id) }
-                    }
-                    results.append(MentionActionResult(
-                        resolutionId: id,
-                        action: "notify",
-                        status: "queued",
-                        deduped: deduped
-                    ))
-                } else if senderStillInChannel(mention) {
-                    results.append(MentionActionResult(
-                        resolutionId: id,
-                        action: "add",
-                        status: "no_permission",
-                        reason: "add_requires_human_member_authority"
-                    ))
-                } else {
-                    results.append(MentionActionResult(
-                        resolutionId: id,
-                        action: "add",
-                        status: "no_permission",
-                        reason: "sender_lacks_channel_access"
-                    ))
-                }
-            }
-            return results
+            let key = "\(serverId)\n\(targetId)\n\(threadChannelId)"
+            Self.retireManagedThreadFollowerRemovals(in: &state, serverId: serverId,
+                threadId: threadChannelId, agentId: targetId)
+            state.threadFollows[key] = (serverId, targetId, threadChannelId, parentMessageId)
+            state.threadFollowStarts[key] = date
+            state.threadUnfollows.removeValue(forKey: key)
+            state.inboxDoneScopes.remove("\(targetId)\n\(threadChannelId)")
+            state.inboxDoneAt.removeValue(forKey: "\(targetId)\n\(threadChannelId)")
         }
     }
 
@@ -326,6 +187,12 @@ extension MessagesAndThreadsStore {
                 copy.messageId = messageId
                 copy.messagePosition = projection.position
                 state.channelAttachments[copy.id] = copy
+                // Forward projections retain the immutable physical object. Its
+                // AEAD authenticates objectKey, not this new projection id; the
+                // copied row preserves that storageKey and plaintext size.
+                if let reference = state.attachmentObjectReferences[projection.attachment.id] {
+                    state.attachmentObjectReferences[copy.id] = reference
+                }
             }
             guard var message = state.humanMessageRows.first(where: { $0.id == messageId }) else { return nil }
             message.channelId = destinationChannelId

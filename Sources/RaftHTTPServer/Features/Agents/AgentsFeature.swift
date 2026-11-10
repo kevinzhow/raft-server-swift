@@ -28,12 +28,12 @@ public struct AgentsFeature: RouteCollection, Sendable {
 
         agentGroup.post("login") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.agentLogin(body: await jsonRequestBody(LegacyJSONObjectBody.self, request))
+                try services.agentSurface.agentLogin(body: await jsonRequestBody(LegacyJSONObjectBody.self, request))
             }
         }
         agents.get { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.listServerAgents(
+                try services.agentSurface.listServerAgents(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
                 )
@@ -41,7 +41,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.post { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.createAgent(
+                try services.agentSurface.createAgent(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     body: await jsonRequestBody(LegacyJSONObjectBody.self, request)
@@ -51,7 +51,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.delete(":id") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AgentDeleteRequest.self, request)) ?? AgentDeleteRequest()
             return try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.deleteAgent(
+                try services.agentMachineMigrationControl.deleteAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -61,7 +61,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.getAgent(
+                try services.agentSurface.getAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
@@ -70,7 +70,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.patch(":id") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.patchAgent(
+                try services.agentSurface.patchAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     body: await jsonRequestBody(LegacyJSONObjectBody.self, request),
@@ -80,7 +80,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "activity") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentActivity(
+                try services.agentMachineMigrationControl.agentActivity(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? ""
@@ -89,7 +89,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "activity-log") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentActivityLog(
+                try services.agentMachineMigrationControl.agentActivityLog(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -99,7 +99,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "activity-summaries") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentActivitySummaries(
+                try services.agentMachineMigrationControl.agentActivitySummaries(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -109,7 +109,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "agent-dms") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentDirectMessages(
+                try services.agentMachineMigrationControl.agentDirectMessages(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? ""
@@ -118,7 +118,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "archive") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentArchiveView(
+                try services.agentMachineMigrationControl.agentArchiveView(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
@@ -128,7 +128,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.post(":id", "archive", "workspace") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AgentArchiveWorkspaceRequest.self, request)) ?? AgentArchiveWorkspaceRequest()
             return try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentArchiveWorkspaceAction(
+                try services.agentMachineMigrationControl.agentArchiveWorkspaceAction(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -148,7 +148,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.delete(":id", "assistant-owner") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.agentAssistantOwner(
+                try services.agentSurface.agentAssistantOwner(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -158,7 +158,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.put(":id", "assistant-owner") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.agentAssistantOwner(
+                try services.agentSurface.agentAssistantOwner(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -169,7 +169,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.post(":id", "avatar") { request async throws -> Response in
             let byteCount = (try await request.bodyText()).utf8.count
             return try await respond {
-                try services.emailAccounts.agentSurface.uploadAgentAvatar(
+                try services.agentSurface.uploadAgentAvatar(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     byteCount: byteCount
@@ -178,7 +178,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.post(":id", "bootstrap-tokens") { request async throws -> Response in
             try await respond(status: 201) {
-                try services.emailAccounts.agentSurface.createAgentBootstrapToken(
+                try services.agentSurface.createAgentBootstrapToken(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? ""
@@ -187,7 +187,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "channels") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentChannels(
+                try services.agentMachineMigrationControl.agentChannels(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? ""
@@ -260,7 +260,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.patch(":id", "creator") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.patchAgentCreator(
+                try services.agentSurface.patchAgentCreator(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -306,7 +306,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "external-status") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.externalAgentStatus(
+                try services.agentSurface.externalAgentStatus(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? ""
                 )
@@ -371,7 +371,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.post(":id", "migrate") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AgentMigrateRequest.self, request)) ?? AgentMigrateRequest()
             return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
-                try services.emailAccounts.agentMachineMigrationControl.migrateAgent(
+                try services.agentMachineMigrationControl.migrateAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -406,7 +406,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.post(":id", "migration", "confirm-hosted") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AgentMigrationCancelRequest.self, request)) ?? AgentMigrationCancelRequest()
             return try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.confirmHostedMigration(
+                try services.agentMachineMigrationControl.confirmHostedMigration(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -435,7 +435,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.post(":id", "reset") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AgentResetRequest.self, request)) ?? AgentResetRequest()
             return try await respond(status: 202) {
-                try services.emailAccounts.agentMachineMigrationControl.resetAgent(
+                try services.agentMachineMigrationControl.resetAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
@@ -457,16 +457,17 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "runtime-options") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.agentRuntimeOptions(
+                try services.agentSurface.agentRuntimeOptions(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                    agentId: request.parameters.get("id") ?? ""
+                    agentId: request.parameters.get("id") ?? "",
+                    includeRuntimeFormV2: request.headers[HTTPField.Name("X-Raft-Runtime-Form-V2")!] == "1"
                 )
             }
         }
         agents.get(":id", "scopes") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.getAgentScopes(
+                try services.agentMachineMigrationControl.getAgentScopes(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? ""
@@ -476,7 +477,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         agents.put(":id", "scopes") { request async throws -> Response in
             let body = (try await decodeJSONRequestBody(AgentScopesUpdateRequest.self, request)) ?? AgentScopesUpdateRequest()
             return try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.putAgentScopes(
+                try services.agentMachineMigrationControl.putAgentScopes(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -490,7 +491,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 || request.headers[HTTPField.Name("X-Raft-Replica-Replay-Timestamp")!] != nil
                 || request.headers[HTTPField.Name("X-Raft-Replica-Replay-Signature")!] != nil
             return try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentSkills(
+                try services.agentMachineMigrationControl.agentSkills(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
@@ -500,7 +501,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.post(":id", "start") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.startAgent(
+                try services.agentMachineMigrationControl.startAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
@@ -509,7 +510,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.post(":id", "stop") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.stopAgent(
+                try services.agentMachineMigrationControl.stopAgent(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
@@ -518,27 +519,27 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get(":id", "workspace-files") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentWorkspaceFiles(
+                try await services.agentMachineMigrationControl.queryAgentWorkspaceFiles(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
-                    query: request.url.query
+                    query: request.url.query, persistence: services.persistence
                 )
             }
         }
         agents.get(":id", "workspace-files", "read") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentMachineMigrationControl.agentWorkspaceRead(
+                try await services.agentMachineMigrationControl.queryAgentWorkspaceRead(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     agentId: request.parameters.get("id") ?? "",
-                    query: request.url.query
+                    query: request.url.query, persistence: services.persistence
                 )
             }
         }
         agents.get("archived") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.listArchivedAgents(
+                try services.agentSurface.listArchivedAgents(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
                 )
@@ -546,7 +547,7 @@ public struct AgentsFeature: RouteCollection, Sendable {
         }
         agents.get("manageable") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentSurface.manageableAgentList(authorization: request.headers[.authorization])
+                try services.agentSurface.manageableAgentList(authorization: request.headers[.authorization])
             }
         }
     }

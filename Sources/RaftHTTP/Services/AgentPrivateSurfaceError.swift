@@ -26,6 +26,12 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
     case unknownRuntimeProvider
     case providerOnlyForExternal
     case runtimeProviderDisabled
+    case grokRuntimeDisabled
+    case invalidMachineId
+    case machineNotInServer
+    case grokCapabilityUnavailable
+    case invalidRuntimeConfig(String)
+    case runtimeFormFailure(status: UInt, message: String, code: String, pointer: String?)
     case runtimeProviderNotConfigured
     case invalidProviderConnectionId
     case providerConnectionUnavailable
@@ -69,19 +75,22 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
 
     public var status: UInt {
         switch self {
+        case .runtimeFormFailure(let status, _, _, _):
+            status
         case .unauthorized, .authRequired, .tokenInvalid, .missingAuthorizationHeader, .invalidToken:
             401
-        case .notAMember, .forbidden, .onboardingRequiresAdmin, .runtimeProviderDisabled,
+        case .notAMember, .forbidden, .onboardingRequiresAdmin, .runtimeProviderDisabled, .grokRuntimeDisabled,
              .insufficientCredentialRole, .assistantRequiresCreator, .assistantNotEnabled,
              .assistantReadNotEnabled, .onlyOwnerCanDemoteAdmin, .onlyOwnerCanPromote:
             403
         case .agentNotFound, .agentMissing, .bootstrapDisabled, .channelNotVisible:
             404
-        case .onboardingAgentExists, .cindyExists, .nameTaken, .runtimeProviderNotConfigured,
+        case .onboardingAgentExists, .cindyExists, .nameTaken, .runtimeProviderNotConfigured, .grokCapabilityUnavailable,
              .providerConnectionUnavailable, .builtinCatalogUnavailable, .assistantAlreadySet,
              .assistantHasChannels:
             409
         case .invalidAgent, .reservedName, .externalWithMachine, .unknownRuntimeProvider,
+             .invalidMachineId, .machineNotInServer, .invalidRuntimeConfig,
              .providerOnlyForExternal, .invalidProviderConnectionId, .modelNotAvailable,
              .deprecatedRuntime, .runtimeConfigModelNameRequired,
              .runtimeConfigProviderNotSupportedForCursor, .runtimeConfigProviderAPIKeyRequired,
@@ -95,6 +104,8 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
 
     public var errorMessage: String {
         switch self {
+        case .runtimeFormFailure(_, let message, _, _):
+            message
         case .unauthorized, .authRequired:
             "Unauthorized"
         case .notAMember:
@@ -123,6 +134,16 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
             "provider is only for external agents"
         case .runtimeProviderDisabled:
             "The hosted runtime provider is not enabled for this server"
+        case .grokRuntimeDisabled:
+            "Grok Build is not enabled on this server"
+        case .invalidMachineId:
+            "Invalid machineId: must be a UUID"
+        case .machineNotInServer:
+            "Machine not found in this server"
+        case .grokCapabilityUnavailable:
+            "Grok Build is not available on this computer"
+        case .invalidRuntimeConfig(let message):
+            message
         case .runtimeProviderNotConfigured:
             "The hosted runtime provider is not configured for this deployment"
         case .invalidProviderConnectionId:
@@ -204,6 +225,10 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
             "auth_required"
         case .runtimeProviderDisabled:
             "agent_runtime_provider_disabled"
+        case .grokRuntimeDisabled:
+            "grok_runtime_disabled"
+        case .grokCapabilityUnavailable:
+            "runtime_capability_unavailable"
         case .runtimeProviderNotConfigured:
             "agent_runtime_provider_not_configured"
         case .bootstrapDisabled:
@@ -241,6 +266,13 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
     /// carry members after it.
     public var errorBody: OrderedJSON? {
         switch self {
+        case .runtimeFormFailure(_, let message, let code, let pointer):
+            .object([
+                .init("error", message),
+                pointer.map { value in
+                    .init("issues", .array([.object([.init("code", code), .init("pointer", value)])]))
+                } ?? .init("code", code),
+            ])
         case .agentMissing, .builtinCatalogUnavailable, .insufficientCredentialRole,
              .agentNotExternalCoded, .assistantRequiresCreator, .assistantNotEnabled,
              .assistantAlreadySet, .assistantHasChannels, .assistantReadNotEnabled:
@@ -259,10 +291,10 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
             issues(pointer: "/formValues/providerId", code: "provider_connection_unavailable")
         case .modelNotAvailable:
             issues(pointer: "/formValues/model", code: "model_not_available")
-        // The retired handlers interpolated these two client-supplied values
-        // without escaping them; the bytes stay exactly as they were.
-        case .invalidRestartMode(let mode):
-            .raw("{\"error\":\"Invalid restart mode: \(mode)\"}")
+        // Restart errors contain raw request text; use the shared JSON escaper.
+        case .invalidRestartMode:
+            .object([OrderedJSONField("error", errorMessage)])
+        // Preserve the legacy command refusal's existing wire representation.
         case .commandNotSupported(let runtime):
             .raw("{\"error\":\"runtimeConfig.command is not supported for runtime: \(runtime)\"}")
         case .avatarTooLarge(let maxBytes):
@@ -286,5 +318,16 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
                 ]),
             ])),
         ])
+    }
+}
+
+/// A real template-conversion failure. One occurrence identity links body/header.
+struct AgentValueCoercionFailure: DomainError {
+    let errorMessage: String
+    let correlationId = UUID().uuidString.lowercased()
+    var status: UInt { 500 }
+    var responseHeaders: [String: String] { ["X-Slock-Error-Id": correlationId] }
+    var errorBody: OrderedJSON? {
+        .object([.init("error", errorMessage), .init("correlationId", correlationId)])
     }
 }

@@ -1,14 +1,8 @@
 import Foundation
 
-/// `POST /api/tasks/channel/:channelId` request body.
-///
-/// The upstream handler reads this body with the raw object cast: `tasks` must
-/// be a present, non-empty array of objects, while an individual `title` or
-/// `description` that is not a string is skipped instead of failing the batch.
-/// This decoder keeps that exact tolerance so the migrated service cannot turn
-/// a previously accepted body into a 400. A `tasks` value that is absent, not
-/// an array, or holds a non-object element still fails to decode, which is the
-/// same shape the raw array-of-dictionaries cast rejected.
+/// `POST /api/tasks/channel/:channelId` request body. The decoder preserves
+/// missing or mistyped fields for the service's Node validation order: require a
+/// nonempty batch, cap it at 50, then reject each missing/blank title.
 public struct CreateChannelTasksRequest: Codable, Sendable, Equatable {
     public var tasks: [TaskDraft]
 
@@ -53,19 +47,12 @@ private struct LenientTaskDraft: Decodable {
     }
 
     init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
+        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
+            task = TaskDraft()
+            return
+        }
         let title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? nil
         let description = (try? container.decodeIfPresent(String.self, forKey: .description)) ?? nil
         task = TaskDraft(title: title, description: description)
-    }
-}
-
-/// `POST /api/tasks/channel/:channelId` success body. The order is the upstream
-/// single key, so the canonical encoder reproduces `{"taskIds":[…]}`.
-public struct TaskIDsResponse: Codable, Sendable, Equatable {
-    public let taskIds: [String]
-
-    public init(taskIds: [String]) {
-        self.taskIds = taskIds
     }
 }

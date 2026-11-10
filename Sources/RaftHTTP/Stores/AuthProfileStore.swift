@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// One issued email-verification token.
 ///
@@ -57,7 +58,7 @@ final class AuthProfileStore: Sendable {
     }
 
     /// Shared by the store's file extensions; every access borrows state via withLock.
-    let state = Mutex(State())
+    let state = TransactionalState(State())
 
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
         state.withLock { state in
@@ -117,17 +118,10 @@ final class AuthProfileStore: Sendable {
         passwordHash: String,
         now: Date
     ) -> ResetPasswordOutcome {
-        return state.withLock { state in
-            guard let reset = state.passwordResetTokens[tokenHash], reset.expiresAt > now,
-                  let email = state.accountSurface.accounts.first(where: { $0.value.id == reset.userId })?.key
-            else {
-                return .invalidOrExpiredToken
-            }
-            state.passwordResetTokens.removeValue(forKey: tokenHash)
-            state.accountSurface.accounts[email]?.passwordHash = passwordHash
-            state.accountSurface.accounts[email]?.passwordCredentialEstablishedAt = now
-            return .reset
-        }
+        guard let candidate = resetPasswordCandidate(tokenHash: tokenHash, now: now),
+              commitPasswordReset(candidate: candidate, tokenHash: tokenHash, newHash: passwordHash, now: now) != nil
+        else { return .invalidOrExpiredToken }
+        return .reset
     }
 
     /// Cancels one pending social link. Unknown, already-cancelled and expired

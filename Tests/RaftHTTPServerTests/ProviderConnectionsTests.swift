@@ -6,6 +6,25 @@ import Testing
 import Vapor
 import VaporTesting
 
+/// Full HTTP wiring with an explicit external key for this scenario's real provider service.
+func configureProviderConnectionsTestApp(
+    _ app: Application, accounts: EmailLoginDirectory, credentialMasterKey: Data
+) throws {
+    let providers = try accounts.managedMCPProviderConnections.bindingCredentialMasterKey(credentialMasterKey)
+    configure(app, services: FallbackServices(
+        nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+    ))
+    IntegrationsFeature(
+        controlPlane: accounts.managedMCPControlPlane,
+        identities: accounts.authIdentities,
+        apps: accounts.integrationsAndAppAccess,
+        cardPrepare: accounts.actionCardPrepare,
+        agentsLifecycle: accounts.agentsLifecycle,
+        providerConnections: providers,
+        actionCards: accounts.actionCards
+    ).register(routes: app)
+}
+
 @Test func providerConnectionsAreGatedAndNeverEchoCredentials() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111244"
@@ -19,12 +38,9 @@ import VaporTesting
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
 
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        try configureProviderConnectionsTestApp(
+            app, accounts: accounts, credentialMasterKey: Data((0..<32).map { UInt8($0) })
+        )
         try await app.testing { client in
             func login(_ email: String) async throws -> String {
                 var headers = HTTPFields()

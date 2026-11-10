@@ -17,6 +17,7 @@ public enum ServerMembersAndSidebarError: DomainError, Equatable {
     /// The member-role refusal that names the owner even though an admin also
     /// passes the check, as the published text did.
     case onlyOwnerCanChangeRoles
+    case onlyOwnerCanDeleteServer
     case forbidden
     case memberNotFound
     case invalidMemberRole
@@ -48,7 +49,7 @@ public enum ServerMembersAndSidebarError: DomainError, Equatable {
         switch self {
         case .authRequired, .unauthorized:
             401
-        case .notAMember, .onlyOwnerCanChangeRoles, .forbidden, .guestRoleDisabled,
+        case .notAMember, .onlyOwnerCanChangeRoles, .onlyOwnerCanDeleteServer, .forbidden, .guestRoleDisabled,
              .serverScopeForbidden:
             403
         case .memberNotFound, .serverNotFound, .labNotFound, .channelNotFound:
@@ -77,6 +78,8 @@ public enum ServerMembersAndSidebarError: DomainError, Equatable {
             "Not a member of this server"
         case .onlyOwnerCanChangeRoles:
             "Only the owner can change member roles"
+        case .onlyOwnerCanDeleteServer:
+            "Only the server owner can delete a server"
         case .forbidden:
             "Forbidden"
         case .memberNotFound:
@@ -148,7 +151,7 @@ public enum ServerMembersAndSidebarError: DomainError, Equatable {
             "server_labs_access_disabled"
         case .labNotOpen:
             "lab_not_open"
-        case .unauthorized, .notAMember, .onlyOwnerCanChangeRoles, .forbidden,
+        case .unauthorized, .notAMember, .onlyOwnerCanChangeRoles, .onlyOwnerCanDeleteServer, .forbidden,
              .memberNotFound, .invalidMemberRole, .selfRoleChange, .guestRoleDisabled,
              .lastOwner, .serverNotFound, .invalidSidebarOrder, .invalidSidebarSortMode,
              .invalidSidebarPanelOrder, .invalidCustomSections, .invalidSectionOrder,
@@ -169,7 +172,7 @@ public enum ServerMembersAndSidebarError: DomainError, Equatable {
                 OrderedJSONField("code", "server_labs_version_conflict"),
                 OrderedJSONField("currentVersion", currentVersion),
             ])
-        case .authRequired, .unauthorized, .notAMember, .onlyOwnerCanChangeRoles, .forbidden,
+        case .authRequired, .unauthorized, .notAMember, .onlyOwnerCanChangeRoles, .onlyOwnerCanDeleteServer, .forbidden,
              .memberNotFound, .invalidMemberRole, .selfRoleChange, .guestRoleDisabled,
              .lastOwner, .serverNotFound, .invalidSidebarOrder, .invalidSidebarSortMode,
              .invalidSidebarPanelOrder, .sidebarSectionsConflict, .invalidCustomSections,

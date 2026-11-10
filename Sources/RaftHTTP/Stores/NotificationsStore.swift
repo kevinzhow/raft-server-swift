@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Owns notification, announcement and push records behind checked Mutex state.
 /// Domain services make HTTP and delivery decisions; compound row mutations
@@ -49,7 +50,7 @@ final class NotificationsStore: Sendable {
         var nativeNotificationAttestationVerifier: (@Sendable (String) -> Bool)? = nil
     }
 
-    let storage = Mutex(State())
+    let storage = TransactionalState(State())
 
     /// Enrollment grants, devices, native credentials and the event ledger.
     /// A `Mutex`-guarded store of its own; this store keeps only the kill

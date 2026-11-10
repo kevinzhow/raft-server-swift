@@ -179,6 +179,8 @@ private func contextObject(_ response: ClientResponse) throws -> [String: Any] {
     accounts.addPostableChannel(serverId: guestId, channelId: guestProjection, memberId: guestOwner, kind: "joint", name: "joint-link-room-970")
     accounts.addJointChannelProjection(localChannelId: hostProjection, canonicalChannelId: hostProjection, serverId: hostId)
     accounts.addJointChannelProjection(localChannelId: guestProjection, canonicalChannelId: hostProjection, serverId: guestId)
+    accounts.oauth.addChannelHuman(channelId: hostProjection, userId: hostOwner)
+    accounts.oauth.addChannelHuman(channelId: guestProjection, userId: guestOwner)
     let message = accounts.addChannelMessageForTesting(channelId: hostProjection, content: "joint permalink target", senderId: hostOwner)
 
     try await withApp { app in
@@ -230,6 +232,8 @@ private func contextObject(_ response: ClientResponse) throws -> [String: Any] {
     accounts.addPostableChannel(serverId: guestId, channelId: guestProjection, memberId: guestOwner, kind: "joint", name: "joint-thread-room-970")
     accounts.addJointChannelProjection(localChannelId: hostProjection, canonicalChannelId: hostProjection, serverId: hostId)
     accounts.addJointChannelProjection(localChannelId: guestProjection, canonicalChannelId: hostProjection, serverId: guestId)
+    accounts.oauth.addChannelHuman(channelId: hostProjection, userId: hostOwner)
+    accounts.oauth.addChannelHuman(channelId: guestProjection, userId: guestOwner)
     let parent = accounts.addChannelMessageForTesting(channelId: hostProjection, content: "joint thread parent", senderId: hostOwner)
     let canonicalThread = accounts.oauth.createThreadChannel(parentChannelId: hostProjection, parentMessageId: parent)
     let guestThread = accounts.oauth.createThreadChannel(parentChannelId: guestProjection, parentMessageId: parent)

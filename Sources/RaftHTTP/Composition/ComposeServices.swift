@@ -53,7 +53,7 @@ func composeServices(
     let taskCredentials = AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
     let visibility = ManagedMCPChannelVisibility(oauth: oauth, channels: channels)
     let probe = ChannelProbeAccessQuery(channels: channels, messages: messages, inboxFacts: inboxFacts, oauth: oauth)
-    let projection = MessageReadProjection(messages: messages, channels: channels, profiles: profiles, agents: agents, oauth: oauth)
+    let projection = MessageReadProjection(messages: messages, channels: channels, profiles: profiles, agents: agents, oauth: oauth, tasks: tasks)
     let mentions = MessageMentionsService(messages: messages, channels: channels, profiles: profiles, agents: agents, oauth: oauth)
     let metadata = ActionCardMetadataProjection(cards: cards, oauth: oauth)
     let notices = SystemNoticeAppender(messages: messages, ledger: ledger)
@@ -73,7 +73,7 @@ func composeServices(
     let credentialUse = AgentCredentialUseService(agents: agents, oauth: oauth, realtime: realtime)
     let native = NativeNotificationsService(rows: notifications.native, settings: notifications, profiles: profiles)
     let emailUnsubscribe = MobileAppEmailUnsubscribe(profiles: profiles, notifications: notifications)
-    let catalog = TaskCatalogService(tasks: tasks, profiles: profiles, oauth: oauth)
+    let catalog = TaskCatalogService(tasks: tasks, profiles: profiles, oauth: oauth, messages: messages, channels: channels, flags: agents)
     let feedbackTransport = FeedbackService(
         store: feedback,
         dependencies: FeedbackService.Dependencies(profiles: profiles, flags: agents)
@@ -135,6 +135,7 @@ func composeServices(
         channels: channels,
         messages: messages,
         oauth: oauth,
+        flags: agents,
         attachmentCommentsEnabled: projection.commentsEnabled
     )
     let prepare = ActionCardPrepareService(
@@ -332,12 +333,14 @@ func composeServices(
             mentions: mentions,
             channels: channels,
             search: search
-        )
+        ),
+        machines: machines
     )
     let inbox = InboxAndWakeService(
         messages: messages,
         channels: channels,
         oauth: oauth,
+        flags: agents,
         dependencies: InboxAndWakeDependencies(
             auth: core,
             profiles: profiles,
@@ -384,6 +387,10 @@ func composeServices(
             agentCredential: lookup.agentCredentialAgent,
             agentVisibleAttachment: attachments.visibleAttachment,
             agentHistoryThread: { channels.historyThread(parentId: $0, anchorMessageId: $1) },
+            resolveMentions: { serverId, channelId, senderId, content, typed, warn, surface in
+                try mentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId,
+                    content: content, typed: typed, warnUnresolved: warn, surface: surface)
+            },
             recordMemberMentionRows: mentions.register
         )
     )
@@ -468,7 +475,11 @@ func composeServices(
         oauth: oauth,
         tasks: tasks,
         agentTasks: execute,
-        feedbackLocators: locators
+        feedbackLocators: locators,
+        messages: messages,
+        channels: channels,
+        profiles: profiles,
+        flags: agents
     )
     let actionCards = ActionCardService(
         store: cards,

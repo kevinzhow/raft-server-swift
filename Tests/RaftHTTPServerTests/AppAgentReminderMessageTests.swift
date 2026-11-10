@@ -100,6 +100,22 @@ import VaporTesting
 
             var agentHeaders = HTTPFields()
             agentHeaders[.authorization] = "Bearer \(agentKey)"
+            let ordinary = try await client.send(.post, headers: seedHeaders, to: "/api/channels/dm") { request in
+                request.body = .init(string: "{\"agentId\":\"\(agentId)\"}")
+            }
+            #expect(ordinary.status == .ok)
+            let ordinaryObject = try #require(try JSONSerialization.jsonObject(with: Data((ordinary.body.string ?? "").utf8)) as? [String: Any])
+            let ordinaryId = try #require(ordinaryObject["id"] as? String)
+            let companion = try await client.send(.post, headers: seedHeaders, to: "/api/messages") { request in
+                request.body = .init(string: "{\"channelId\":\"\(ordinaryId)\",\"content\":\"ordinary reminder companion\"}")
+            }
+            #expect(companion.status == .ok)
+            let inbox = try await client.get("/internal/agent-api/inbox/conversations", headers: agentHeaders)
+            #expect(inbox.status == .ok)
+            let inboxObject = try #require(try JSONSerialization.jsonObject(with: Data((inbox.body.string ?? "").utf8)) as? [String: Any])
+            let inboxItems = try #require(inboxObject["items"] as? [[String: Any]])
+            #expect(inboxItems.contains { $0["kind"] as? String == "dm" && $0["target"] as? String == "dm:@reminders" })
+            #expect(inboxItems.contains { $0["kind"] as? String == "dm" && $0["target"] as? String == "dm:@reminder-owner" })
             let encodedTarget = "dm:@reminders".addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "dm:@reminders"
             let history = try await client.get(URI(string: "/internal/agent-api/history?channel=\(encodedTarget)"), headers: agentHeaders)
             #expect(history.status == .ok)

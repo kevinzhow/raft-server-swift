@@ -114,6 +114,7 @@ import VaporTesting
             #expect(roster.headers[.contentType] == "application/json; charset=utf-8")
             #expect(roster.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
             #expect(roster.headers[.contentLength] == String(rosterBody.utf8.count))
+            #expect(roster.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
 
             // MARK: Follow and unfollow
 
@@ -168,7 +169,7 @@ import VaporTesting
             let missingAuth = try await client.get(URI(string: "/api/channels/\(channel)/threads"))
             #expect(missingAuth.status == .unauthorized)
             #expect(missingAuth.body.string == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-            #expect(missingAuth.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            #expect(missingAuth.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
             #expect(missingAuth.headers[.contentLength] == String("{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}".utf8.count))
 
             // MARK: Unfollowed inbox

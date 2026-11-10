@@ -232,6 +232,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-222222222227"
     accounts.addAccount(id: userId, email: "messages-attachment-order@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "attachment-order-read", name: "Message Read Fixture", ownerId: userId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: userId)
     let uploadedFirst = accounts.addChannelAttachment(channelId: channelId, uploaderId: userId, filename: "uploaded-first-b.png")
     let uploadedSecond = accounts.addChannelAttachment(channelId: channelId, uploaderId: userId, filename: "uploaded-second-a.png")
@@ -501,6 +502,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-222222222230"
     accounts.addAccount(id: userId, email: "reaction-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: userId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reaction-history-read", name: "Message Read Fixture", ownerId: userId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: userId)
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -624,7 +626,6 @@ private func deleteJSON(
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111122"
     let humanId = "11111111-1111-4111-8111-111111111123"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     let serverId = "33333333-3333-4333-8333-333333333343"
     let channelId = "22222222-2222-4222-8222-222222222232"
     let agentName = "UserRouteMentionOutsider"
@@ -632,8 +633,13 @@ private func deleteJSON(
     let agentAvatar = "pixel:random:UserRouteMentionOutsider"
     accounts.addAccount(id: ownerId, email: "messages-mention-actions-owner@slock.test", password: "password123")
     accounts.addAccount(id: humanId, email: "messages-mention-actions-human@slock.test", password: "password123")
+    accounts.setAccountProfileForTesting(id: humanId, name: humanName)
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "pending-mention-read", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: humanId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, avatarUrl: agentAvatar, creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: agentAvatar)
     let content = "please coordinate with @\(agentName) and @\(humanName)"
     try await withApp { app in
@@ -702,15 +708,19 @@ private func deleteJSON(
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111124"
     let humanId = "11111111-1111-4111-8111-111111111125"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab"
     let serverId = "33333333-3333-4333-8333-333333333344"
     let channelId = "22222222-2222-4222-8222-222222222233"
     let agentName = "UserRouteMentionDeliveryOutsider"
     let humanName = "messagesMentionDeliveryHuman"
     accounts.addAccount(id: ownerId, email: "messages-mention-delivery-owner@slock.test", password: "password123")
     accounts.addAccount(id: humanId, email: "messages-mention-delivery-human@slock.test", password: "password123")
+    accounts.setAccountProfileForTesting(id: humanId, name: humanName)
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-send-time", name: "Mention contract", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: humanId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, avatarUrl: "pixel:random:UserRouteMentionDeliveryOutsider", creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: "pixel:random:UserRouteMentionDeliveryOutsider")
     let apiKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["mentions"], name: "messages-mention-delivery-outsider-mentions")
     let content = "please coordinate with @\(agentName) and @\(humanName)"
@@ -765,7 +775,6 @@ private func deleteJSON(
     let ownerId = "11111111-1111-4111-8111-111111111126"
     let peerId = "11111111-1111-4111-8111-111111111127"
     let outsiderId = "11111111-1111-4111-8111-111111111128"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac"
     let serverId = "33333333-3333-4333-8333-333333333345"
     let dmId = "22222222-2222-4222-8222-222222222234"
     let humanName = "messagesDmMentionOutsider"
@@ -773,8 +782,14 @@ private func deleteJSON(
     accounts.addAccount(id: ownerId, email: "messages-dm-mention-owner@slock.test", password: "password123")
     accounts.addAccount(id: peerId, email: "messages-dm-mention-peer@slock.test", password: "password123")
     accounts.addAccount(id: outsiderId, email: "messages-dm-mention-outsider@slock.test", password: "password123")
+    accounts.setAccountProfileForTesting(id: outsiderId, name: humanName)
     accounts.markEmailVerified(userId: ownerId)
+    accounts.markEmailVerified(userId: outsiderId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-dm-inert", name: "Mention DM", ownerId: ownerId)
+    for actor in [peerId, outsiderId] { accounts.oauth.addMember(serverId: serverId, userId: actor, role: "member") }
+    for actor in [ownerId, peerId] { accounts.oauth.addChannelHuman(channelId: dmId, userId: actor) }
     accounts.addDirectMessage(serverId: serverId, channelId: dmId, participantIds: [ownerId, peerId])
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, avatarUrl: nil, creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: nil)
     let apiKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["mentions"], name: "messages-dm-mention-agent-mentions")
     let content = "quiet reference @\(humanName) and @\(agentName)"
@@ -896,15 +911,20 @@ private func deleteJSON(
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-11111111112a"
     let otherId = "11111111-1111-4111-8111-11111111112b"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaae"
     let serverId = "33333333-3333-4333-8333-333333333347"
     let channelId = "22222222-2222-4222-8222-222222222236"
     let agentName = "UserRouteExecuteOutsider"
     accounts.addAccount(id: ownerId, email: "messages-actions-execute-owner@slock.test", password: "password123")
     accounts.addAccount(id: otherId, email: "messages-actions-execute-other@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.markEmailVerified(userId: otherId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-sender-owned", name: "Mention contract", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: otherId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: otherId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: otherId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, avatarUrl: nil, creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: nil)
     let content = "loop in @\(agentName)"
     try await withApp { app in
@@ -966,13 +986,14 @@ private func deleteJSON(
             #expect(notify.status == .ok)
             let notifyBody = try JSONSerialization.jsonObject(with: Data(bodyText(notify).utf8)) as? [String: Any]
             let notifyResults = notifyBody?["results"] as? [[String: Any]] ?? []
-            #expect(notifyResults.first?["status"] as? String == "queued")
-            #expect(notifyResults.first?["dedupedResolutionIds"] as? [String] == [resolutionId])
+            #expect(notifyResults.first?["status"] as? String == "dropped")
+            #expect(notifyResults.first?["reason"] as? String == "delivery_unavailable")
+            #expect(notifyResults.first?["dedupedResolutionIds"] == nil)
             let recorded = accounts.mentionActionRecord(id: resolutionId)
-            #expect(recorded?.notified == true)
-            #expect(recorded?.notifiedByType == "user")
-            #expect(recorded?.notifiedById == ownerId)
-            #expect(recorded?.notifiedAction == "notify_only")
+            #expect(recorded?.notified == false)
+            #expect(recorded?.notifiedByType == nil)
+            #expect(recorded?.notifiedById == nil)
+            #expect(recorded?.notifiedAction == nil)
             #expect(accounts.channelAgentIds(channelId: channelId).isEmpty)
         }
     }
@@ -982,15 +1003,19 @@ private func deleteJSON(
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-11111111112c"
     let humanId = "11111111-1111-4111-8111-11111111112d"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaf"
     let serverId = "33333333-3333-4333-8333-333333333348"
     let channelId = "22222222-2222-4222-8222-222222222237"
     let agentName = "UserRouteAddTarget"
     let humanName = "messagesActionsAddHuman"
     accounts.addAccount(id: ownerId, email: "messages-actions-add-owner@slock.test", password: "password123")
     accounts.addAccount(id: humanId, email: "messages-actions-add-human@slock.test", password: "password123")
+    accounts.setAccountProfileForTesting(id: humanId, name: humanName)
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-add-target", name: "Mention contract", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: humanId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, avatarUrl: nil, creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: nil)
     let apiKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["mentions"], name: "messages-actions-add-mentions")
     let content = "loop in @\(agentName) and @\(humanName)"
@@ -1048,7 +1073,7 @@ private func deleteJSON(
             }
             #expect(accounts.channelAgentIds(channelId: channelId) == [agentId])
             #expect(accounts.channelMemberIds(channelId: channelId).contains(humanId))
-            #expect(accounts.agentDeliveries(agentId: agentId) == [messageId])
+            #expect(accounts.oauth.channelAgentIds(channelId: channelId).contains(agentId))
 
             var mentionHeaders = HTTPFields()
             mentionHeaders[.authorization] = "Bearer \(apiKey)"
@@ -1070,7 +1095,7 @@ private func deleteJSON(
             let replayResults = replayBody?["results"] as? [[String: Any]] ?? []
             #expect(replayResults.first?["status"] as? String == "delivered")
             #expect(replayResults.first?["reason"] as? String == "already_delivered")
-            #expect(accounts.agentDeliveries(agentId: agentId) == [messageId])
+            #expect(accounts.oauth.channelAgentIds(channelId: channelId).filter { $0 == agentId }.count == 1)
         }
     }
 }
@@ -1084,7 +1109,12 @@ private func deleteJSON(
     let humanName = "messagesActionsHuman"
     accounts.addAccount(id: ownerId, email: "messages-actions-notify-owner@slock.test", password: "password123")
     accounts.addAccount(id: humanId, email: "messages-actions-notify-human@slock.test", password: "password123")
+    accounts.setAccountProfileForTesting(id: humanId, name: humanName)
     accounts.markEmailVerified(userId: ownerId)
+    accounts.markEmailVerified(userId: humanId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "notify-history-read", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: humanId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
     let content = "loop in @\(humanName)"
     try await withApp { app in
@@ -1160,68 +1190,59 @@ private func deleteJSON(
 @Test func privateSurfaceMentionNotifyRefusesATargetWhoCannotRead() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111130"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab0"
     let serverId = "33333333-3333-4333-8333-33333333334a"
-    let privateChannel = "22222222-2222-4222-8222-222222222239"
-    let threadChannel = "22222222-2222-4222-8222-22222222223a"
     let agentName = "UserRouteClosedOutsider"
     accounts.addAccount(id: ownerId, email: "messages-actions-closed-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
-    accounts.addPostableChannel(serverId: serverId, channelId: privateChannel, memberId: ownerId, kind: "private")
-    accounts.addPostableChannel(serverId: serverId, channelId: threadChannel, memberId: ownerId, kind: "thread", parentChannelId: privateChannel)
-    accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: nil)
-    func notify(_ client: any Client, token: String, channelId: String, content: String) async throws -> (status: String?, reason: String?, resolutionId: String) {
-        let sent = try await postJSON(
-            client,
-            path: "/api/messages",
-            body: "{\"channelId\":\"\(channelId)\",\"content\":\"\(content)\",\"mentions\":[{\"type\":\"agent\",\"id\":\"\(agentId)\",\"name\":\"\(agentName)\"}]}",
-            authorization: "Bearer \(token)",
-            serverId: serverId
-        )
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-current-private", name: "Mention private", ownerId: ownerId)
+    let privateChannel = accounts.oauth.createChannel(serverId: serverId, name: "mention-closing-room", creatorUserId: ownerId)
+    let threadParent = accounts.oauth.createChannel(serverId: serverId, name: "mention-closing-parent", creatorUserId: ownerId)
+    for id in [privateChannel, threadParent] {
+        accounts.addPostableChannel(serverId: serverId, channelId: id, memberId: ownerId)
+    }
+    let parentMessage = accounts.addHumanMessageForTesting(channelId: threadParent, senderId: ownerId, content: "real public parent")
+    let threadChannel = accounts.oauth.createThreadChannel(parentChannelId: threadParent, parentMessageId: parentMessage)
+    accounts.addThreadChannel(serverId: serverId, threadChannelId: threadChannel, parentChannelId: threadParent, parentMessageId: parentMessage, memberId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, creatorUserId: ownerId)
+    func notify(_ client: any Client, token: String, channelId: String, closingParentId: String, content: String) async throws -> (status: String?, reason: String?, resolutionId: String) {
+        // Generate a legal pending intent while the actual scope is public.
+        // Its retained host/author remain unchanged when current privacy changes.
+        let sent = try await postJSON(client, path: "/api/messages",
+            body: "{\"channelId\":\"\(channelId)\",\"content\":\"\(content) @\(agentName)\",\"mentions\":[{\"type\":\"agent\",\"id\":\"\(agentId)\",\"name\":\"\(agentName)\"}]}",
+            authorization: "Bearer \(token)", serverId: serverId)
         #expect(sent.status == .ok)
         let sentBody = try JSONSerialization.jsonObject(with: Data(bodyText(sent).utf8)) as? [String: Any]
         let resolutionId = (sentBody?["pendingMentionActions"] as? [[String: Any]])?.first?["resolutionId"] as? String ?? ""
         #expect(resolutionId.isEmpty == false)
-        let response = try await postJSON(
-            client,
-            path: "/api/messages/mention-actions/execute",
-            body: "{\"action\":\"notify\",\"resolutionIds\":[\"\(resolutionId)\"]}",
-            authorization: "Bearer \(token)",
-            serverId: serverId
-        )
+        #expect(accounts.oauth.setChannelType(id: closingParentId, type: "private"))
+        accounts.setChannelPostablePrivateForTesting(channelId: closingParentId)
+        let response = try await postJSON(client, path: "/api/messages/mention-actions/execute",
+            body: "{\"action\":\"notify\",\"resolutionIds\":[\"\(resolutionId)\"]}", authorization: "Bearer \(token)", serverId: serverId)
         #expect(response.status == .ok)
         let body = try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]
         let result = (body?["results"] as? [[String: Any]])?.first
         return (result?["status"] as? String, result?["reason"] as? String, resolutionId)
     }
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
         try await app.testing { client in
-            let login = try await postJSON(
-                client,
-                path: "/api/auth/login",
-                body: "{\"email\":\"messages-actions-closed-owner@slock.test\",\"password\":\"password123\"}"
-            )
+            let login = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"messages-actions-closed-owner@slock.test\",\"password\":\"password123\"}")
             #expect(login.status == .ok)
             let token = ((try JSONSerialization.jsonObject(with: Data(bodyText(login).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
-            let channelNotify = try await notify(client, token: token, channelId: privateChannel, content: "private mention")
+            let channelNotify = try await notify(client, token: token, channelId: privateChannel, closingParentId: privateChannel, content: "private mention")
             #expect(channelNotify.status == "no_permission")
             #expect(channelNotify.reason == "target_lacks_read_access")
             #expect(accounts.mentionActionRecord(id: channelNotify.resolutionId)?.notified == false)
             #expect(accounts.channelAgentIds(channelId: privateChannel).isEmpty)
             #expect(accounts.agentDeliveries(agentId: agentId).isEmpty)
-
-            let threadNotify = try await notify(client, token: token, channelId: threadChannel, content: "private thread mention")
+            #expect(!accounts.oauth.channelAgentIds(channelId: privateChannel).contains(agentId))
+            let threadNotify = try await notify(client, token: token, channelId: threadChannel, closingParentId: threadParent, content: "private thread mention")
             #expect(threadNotify.status == "no_permission")
             #expect(threadNotify.reason == "target_lacks_read_access")
             #expect(accounts.mentionActionRecord(id: threadNotify.resolutionId)?.notified == false)
             #expect(accounts.channelAgentIds(channelId: threadChannel).isEmpty)
             #expect(accounts.agentDeliveries(agentId: agentId).isEmpty)
+            #expect(!accounts.oauth.channelAgentIds(channelId: threadParent).contains(agentId))
         }
     }
 }
@@ -1229,13 +1250,15 @@ private func deleteJSON(
 @Test func removedSenderCannotAddThroughAMentionAction() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111131"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab1"
     let serverId = "33333333-3333-4333-8333-33333333334b"
     let channelId = "22222222-2222-4222-8222-22222222223b"
     let agentName = "UserRouteClosedOutsider"
     accounts.addAccount(id: ownerId, email: "messages-actions-removed-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-removed-sender", name: "Mention contract", ownerId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: agentName, avatarUrl: nil, creatorUserId: ownerId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: agentName, avatarUrl: nil)
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -1255,7 +1278,7 @@ private func deleteJSON(
             let sent = try await postJSON(
                 client,
                 path: "/api/messages",
-                body: "{\"channelId\":\"\(channelId)\",\"content\":\"public mention\",\"mentions\":[{\"type\":\"agent\",\"id\":\"\(agentId)\",\"name\":\"\(agentName)\"}]}",
+                body: "{\"channelId\":\"\(channelId)\",\"content\":\"public mention @\(agentName)\",\"mentions\":[{\"type\":\"agent\",\"id\":\"\(agentId)\",\"name\":\"\(agentName)\"}]}",
                 authorization: "Bearer \(token)",
                 serverId: serverId
             )
@@ -1263,6 +1286,7 @@ private func deleteJSON(
             let sentBody = try JSONSerialization.jsonObject(with: Data(bodyText(sent).utf8)) as? [String: Any]
             let resolutionId = (sentBody?["pendingMentionActions"] as? [[String: Any]])?.first?["resolutionId"] as? String ?? ""
             #expect(resolutionId.isEmpty == false)
+            accounts.oauth.removeChannelHuman(channelId: channelId, userId: ownerId)
             accounts.removeChannelMember(channelId: channelId, memberId: ownerId)
             let added = try await postJSON(
                 client,
@@ -2132,6 +2156,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-22222222224d"
     accounts.addAccount(id: ownerId, email: "search-sort-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "search-sort-scope", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
     let olderAt = try #require(ISO8601DateFormatter().date(from: "2026-05-01T00:00:00Z"))
     let newerAt = try #require(ISO8601DateFormatter().date(from: "2026-05-02T00:00:00Z"))
@@ -2200,6 +2225,7 @@ private func deleteJSON(
     let targetContent = "今晚真收工 Eric 的八发全中账我背书，各位辛苦。"
     accounts.addAccount(id: ownerId, email: "search-cjk-fallback-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "search-relaxed-scope", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
     func search(_ client: any Client, token: String, query: String) async throws -> ClientResponse {
         var headers = HTTPFields()
@@ -2271,6 +2297,8 @@ private func deleteJSON(
     accounts.addAccount(id: otherId, email: "search-filter-only-other@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: otherId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "search-browse-scope", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: otherId, role: "member")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: otherId)
     accounts.addPostableChannel(serverId: serverId, channelId: otherChannelId, memberId: ownerId)
@@ -2360,6 +2388,8 @@ private func deleteJSON(
     accounts.addAccount(id: otherId, email: "search-scope-other@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: otherId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "search-filter-scope", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: otherId, role: "member")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: otherId)
     accounts.addServerAgent(serverId: serverId, id: agentId, name: "SearchScopeAgent", avatarUrl: nil)
@@ -2446,6 +2476,8 @@ private func deleteJSON(
     accounts.addAccount(id: nonMemberId, email: "search-private-nonmember@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: nonMemberId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "search-private-scope", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: nonMemberId, role: "member")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, kind: "private")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -2493,6 +2525,8 @@ private func deleteJSON(
     accounts.addAccount(id: memberId, email: "search-deleted-member@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: memberId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "search-deleted-scope", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
     accounts.addPostableChannel(serverId: serverId, channelId: doomedId, memberId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: doomedId, memberId: memberId)
     accounts.addPostableChannel(serverId: serverId, channelId: archivedId, memberId: ownerId)
@@ -2570,10 +2604,16 @@ private func deleteJSON(
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111150"
     let serverId = "33333333-3333-4333-8333-333333333360"
-    let sourceChannelId = "22222222-2222-4222-8222-222222222257"
-    let destinationChannelId = "22222222-2222-4222-8222-222222222258"
     accounts.addAccount(id: ownerId, email: "forward-retired-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-retired-server", name: "Forward Retired Server", ownerId: ownerId)
+    let sourceChannelId = accounts.oauth.createChannel(serverId: serverId, name: "forward-retired-source", creatorUserId: ownerId)
+    let destinationChannelId = accounts.oauth.createChannel(serverId: serverId, name: "forward-retired-destination", creatorUserId: ownerId)
+    #expect(accounts.oauth.memberRole(serverId: serverId, userId: ownerId) == "owner")
+    #expect(accounts.oauth.channelServerId(channelId: sourceChannelId) == serverId)
+    #expect(accounts.oauth.channelServerId(channelId: destinationChannelId) == serverId)
+    #expect(accounts.oauth.isChannelParticipant(channelId: sourceChannelId, userId: ownerId))
+    #expect(accounts.oauth.isChannelParticipant(channelId: destinationChannelId, userId: ownerId))
     accounts.addPostableChannel(serverId: serverId, channelId: sourceChannelId, memberId: ownerId, name: "forward-retired-source")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationChannelId, memberId: ownerId, name: "forward-retired-destination")
     let killed = PublicFeatureFlag(key: "message_forwarding_v0", enabled: true, killSwitch: true, defaultEnabled: true)
@@ -2632,10 +2672,16 @@ private func deleteJSON(
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111151"
     let serverId = "33333333-3333-4333-8333-333333333361"
-    let sourceChannelId = "22222222-2222-4222-8222-222222222259"
-    let destinationChannelId = "22222222-2222-4222-8222-222222222260"
     accounts.addAccount(id: ownerId, email: "forward-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-server", name: "Forward Server", ownerId: ownerId)
+    let sourceChannelId = accounts.oauth.createChannel(serverId: serverId, name: "forward-source", creatorUserId: ownerId)
+    let destinationChannelId = accounts.oauth.createChannel(serverId: serverId, name: "forward-destination", creatorUserId: ownerId)
+    #expect(accounts.oauth.memberRole(serverId: serverId, userId: ownerId) == "owner")
+    #expect(accounts.oauth.channelServerId(channelId: sourceChannelId) == serverId)
+    #expect(accounts.oauth.channelServerId(channelId: destinationChannelId) == serverId)
+    #expect(accounts.oauth.isChannelParticipant(channelId: sourceChannelId, userId: ownerId))
+    #expect(accounts.oauth.isChannelParticipant(channelId: destinationChannelId, userId: ownerId))
     accounts.addPostableChannel(serverId: serverId, channelId: sourceChannelId, memberId: ownerId, name: "forward-source")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationChannelId, memberId: ownerId, name: "forward-destination")
     let sourceAttachmentId = accounts.addChannelAttachment(
@@ -2749,6 +2795,7 @@ private func deleteJSON(
     let requestId = "11111111-2222-4333-8444-555555555555"
     accounts.addAccount(id: ownerId, email: "forward-batch-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-batch-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: sourceChannelId, memberId: ownerId, name: "forward-batch-source")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationA, memberId: ownerId, name: "forward-batch-a")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationB, memberId: ownerId, name: "forward-batch-b")
@@ -2871,6 +2918,8 @@ private func deleteJSON(
     accounts.addAccount(id: viewerId, email: "forward-thread-viewer@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: viewerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-thread-read", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: viewerId, role: "member")
     accounts.addPostableChannel(serverId: serverId, channelId: parentChannelId, memberId: ownerId, name: "forward-thread-parent")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: ownerId, name: "forward-thread-destination")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: viewerId)
@@ -3080,6 +3129,10 @@ private func deleteJSON(
     accounts.addAccount(id: viewerId, email: "forward-private-thread-viewer@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: viewerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-private-thread-read", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: viewerId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: privateParentId, userId: ownerId)
+    for actor in [ownerId, viewerId] { accounts.oauth.addChannelHuman(channelId: destinationId, userId: actor) }
     accounts.addPostableChannel(serverId: serverId, channelId: privateParentId, memberId: ownerId, kind: "private", name: "forward-private-thread-parent")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: ownerId, name: "forward-private-thread-destination")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: viewerId)
@@ -3157,102 +3210,137 @@ private func deleteJSON(
     }
 }
 
-@Test func messageForwardRequiresSourceReadAuthorityAndHidesPrivateProvenance() async throws {
+@Test(.timeLimit(.minutes(1))) func messageForwardRequiresSourceReadAuthorityAndHidesPrivateProvenance() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111158"
     let viewerId = "11111111-1111-4111-8111-111111111159"
     let serverId = "33333333-3333-4333-8333-333333333365"
-    let privateChannelId = "22222222-2222-4222-8222-222222222271"
-    let destinationId = "22222222-2222-4222-8222-222222222272"
     accounts.addAccount(id: ownerId, email: "forward-private-owner@slock.test", password: "password123")
     accounts.addAccount(id: viewerId, email: "forward-private-viewer@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: viewerId)
+    // Match Node's actual regular-server/member and channel-human facts. The
+    // destination member never joins the private source channel.
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-private-real", name: "Forward Private", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: viewerId, role: "member")
+    let privateChannelId = accounts.oauth.createChannel(serverId: serverId, name: "private-forward-source", creatorUserId: ownerId, type: "private")
+    let destinationId = accounts.oauth.createChannel(serverId: serverId, name: "private-forward-destination", creatorUserId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: privateChannelId, userId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: destinationId, userId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: destinationId, userId: viewerId)
     accounts.addPostableChannel(serverId: serverId, channelId: privateChannelId, memberId: ownerId, kind: "private", name: "private-forward-source")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: ownerId, name: "private-forward-destination")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: viewerId)
-    let sourceAttachmentId = accounts.addChannelAttachment(
-        channelId: privateChannelId,
-        uploaderId: ownerId,
-        filename: "private-source.txt",
-        mimeType: "text/plain",
-        sizeBytes: 24
-    )
-    try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
-        try await app.testing { client in
-            let ownerLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"forward-private-owner@slock.test\",\"password\":\"password123\"}")
-            let viewerLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"forward-private-viewer@slock.test\",\"password\":\"password123\"}")
-            let ownerToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(ownerLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
-            let viewerToken = ((try JSONSerialization.jsonObject(with: Data(bodyText(viewerLogin).utf8)) as? [String: Any])?["accessToken"] as? String) ?? ""
-            let sent = try await postJSON(
-                client,
-                path: "/api/messages",
-                body: "{\"channelId\":\"\(privateChannelId)\",\"content\":\"private source body\",\"attachmentIds\":[\"\(sourceAttachmentId)\"]}",
-                authorization: "Bearer \(ownerToken)",
-                serverId: serverId
-            )
-            #expect(sent.status == .ok)
-            let sourceMessageId = ((try JSONSerialization.jsonObject(with: Data(bodyText(sent).utf8)) as? [String: Any])?["id"] as? String) ?? ""
-            let forged = try await postJSON(
-                client,
-                path: "/api/messages/forward",
-                body: "{\"destinationChannelId\":\"\(destinationId)\",\"sourceMessageIds\":[\"\(sourceMessageId)\"]}",
-                authorization: "Bearer \(viewerToken)",
-                serverId: serverId
-            )
-            #expect(forged.status == .notFound)
-            #expect(bodyText(forged).contains("private source body") == false)
-            let created = try await postJSON(
-                client,
-                path: "/api/messages/forward",
-                body: "{\"destinationChannelId\":\"\(destinationId)\",\"sourceMessageIds\":[\"\(sourceMessageId)\"]}",
-                authorization: "Bearer \(ownerToken)",
-                serverId: serverId
-            )
-            #expect(created.status == .ok)
-            let createdBody = try JSONSerialization.jsonObject(with: Data(bodyText(created).utf8)) as? [String: Any]
-            let items = ((createdBody?["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]]) ?? []
-            try #require(items.count == 1)
-            #expect(items[0]["contentSnapshot"] as? String == "private source body")
-            let author = items[0]["sourceAuthorSnapshot"] as? [String: Any]
-            #expect(author?["uniqueName"] as? String == "forward-private-owner")
-            #expect(items[0]["sourceMessageId"] is NSNull)
-            #expect(items[0]["sourceMessageSeq"] is NSNull)
-            #expect(items[0]["sourceServerId"] is NSNull)
-            #expect(items[0]["sourceTargetId"] is NSNull)
-            let snapshot = items[0]["sourceTargetSnapshot"] as? [String: Any]
-            #expect(snapshot?["label"] as? String == "")
-            #expect(snapshot?["id"] is NSNull)
-            #expect(snapshot?["labelVisibility"] as? String == "restricted")
-            let projected = (items[0]["attachmentSnapshots"] as? [[String: Any]]) ?? []
-            try #require(projected.count == 1)
-            let projectedId = projected[0]["id"] as? String
-            #expect(projectedId != nil)
-            #expect(projectedId != sourceAttachmentId)
-            #expect(projected[0]["filename"] as? String == "private-source.txt")
+    let attachmentBytes = Data("private forwarded file bytes\n".utf8)
+    try await withSingleURLStorage { storage in
+        accounts.configureAttachmentStorage(storage.storage)
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test",
+                tracker: DbLivenessTracker(ping: {}),
+                pingDatabase: {},
+                emailAccounts: accounts
+            ))
+            try await app.testing(.running, options: .live(clientOptions: .init(timeout: .seconds(10)))) { client in
+                let ownerLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"forward-private-owner@slock.test\",\"password\":\"password123\"}")
+                let viewerLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"forward-private-viewer@slock.test\",\"password\":\"password123\"}")
+                let ownerLoginBytes = try await attachmentPreviewBody(ownerLogin)
+                let ownerToken = try #require((JSONSerialization.jsonObject(with: ownerLoginBytes) as? [String: Any])?["accessToken"] as? String)
+                let viewerLoginBytes = try await attachmentPreviewBody(viewerLogin)
+                let viewerToken = try #require((JSONSerialization.jsonObject(with: viewerLoginBytes) as? [String: Any])?["accessToken"] as? String)
+                let sourceAttachmentId = try await singleURLUpload(client, authorization: "Bearer \(ownerToken)",
+                    server: serverId, channel: privateChannelId, filename: "private-source.txt", mime: "text/plain", bytes: attachmentBytes)
+                let ownerRead = try await client.get(URI(string: "/api/attachments/\(sourceAttachmentId)"),
+                    headers: singleURLHeaders("Bearer \(ownerToken)", serverId))
+                #expect(ownerRead.status == .ok)
+                let sourcePlaintext = try await attachmentPreviewBody(ownerRead)
+                #expect(sourcePlaintext == attachmentBytes)
+                let sealed = storage.state.value.withLock { Array($0.ciphertext.values) }
+                #expect(sealed.count == 1)
+                #expect(sealed.first != attachmentBytes)
+                #expect(sealed.first?.count == attachmentBytes.count + 28)
+                let sent = try await postJSON(
+                    client,
+                    path: "/api/messages",
+                    body: "{\"channelId\":\"\(privateChannelId)\",\"content\":\"private source body\",\"attachmentIds\":[\"\(sourceAttachmentId)\"]}",
+                    authorization: "Bearer \(ownerToken)",
+                    serverId: serverId
+                )
+                #expect(sent.status == .ok)
+                let sentBytes = try await attachmentPreviewBody(sent)
+                let sourceMessageId = try #require((JSONSerialization.jsonObject(with: sentBytes) as? [String: Any])?["id"] as? String)
+                let forged = try await postJSON(
+                    client,
+                    path: "/api/messages/forward",
+                    body: "{\"destinationChannelId\":\"\(destinationId)\",\"sourceMessageIds\":[\"\(sourceMessageId)\"]}",
+                    authorization: "Bearer \(viewerToken)",
+                    serverId: serverId
+                )
+                #expect(forged.status == .notFound)
+                #expect(String(decoding: try await attachmentPreviewBody(forged), as: UTF8.self).contains("private source body") == false)
+                let created = try await postJSON(
+                    client,
+                    path: "/api/messages/forward",
+                    body: "{\"destinationChannelId\":\"\(destinationId)\",\"sourceMessageIds\":[\"\(sourceMessageId)\"]}",
+                    authorization: "Bearer \(ownerToken)",
+                    serverId: serverId
+                )
+                #expect(created.status == .ok)
+                let createdBytes = try await attachmentPreviewBody(created)
+                let createdBody = try JSONSerialization.jsonObject(with: createdBytes) as? [String: Any]
+                let items = ((createdBody?["actionMetadata"] as? [String: Any])?["forwardedItems"] as? [[String: Any]]) ?? []
+                try #require(items.count == 1)
+                #expect(items[0]["contentSnapshot"] as? String == "private source body")
+                let author = items[0]["sourceAuthorSnapshot"] as? [String: Any]
+                #expect(author?["uniqueName"] as? String == "forward-private-owner")
+                #expect(items[0]["sourceMessageId"] is NSNull)
+                #expect(items[0]["sourceMessageSeq"] is NSNull)
+                #expect(items[0]["sourceServerId"] is NSNull)
+                #expect(items[0]["sourceTargetId"] is NSNull)
+                let snapshot = items[0]["sourceTargetSnapshot"] as? [String: Any]
+                #expect(snapshot?["label"] as? String == "")
+                #expect(snapshot?["id"] is NSNull)
+                #expect(snapshot?["labelVisibility"] as? String == "restricted")
+                let projected = (items[0]["attachmentSnapshots"] as? [[String: Any]]) ?? []
+                try #require(projected.count == 1)
+                let projectedId = projected[0]["id"] as? String
+                #expect(projectedId != nil)
+                #expect(projectedId != sourceAttachmentId)
+                #expect(projected[0]["filename"] as? String == "private-source.txt")
 
-            func attachmentURL(_ id: String, token: String) async throws -> ClientResponse {
-                var headers = HTTPFields()
-                headers[.authorization] = "Bearer \(token)"
-                headers[HTTPField.Name("X-Server-Id")!] = serverId
-                return try await client.send(.get, headers: headers, to: URI(string: "/api/attachments/\(id)/url"))
+                func attachmentURL(_ id: String, token: String) async throws -> ClientResponse {
+                    var headers = HTTPFields()
+                    headers[.authorization] = "Bearer \(token)"
+                    headers[HTTPField.Name("X-Server-Id")!] = serverId
+                    let listenerPort = try #require(client.port)
+                    headers[HTTPField.Name("Host")!] = "127.0.0.1:\(listenerPort)"
+                    return try await client.send(.get, headers: headers, to: URI(string: "/api/attachments/\(id)/url"))
+                }
+                let destinationURL = try await attachmentURL(projectedId ?? "", token: viewerToken)
+                #expect(destinationURL.status == .ok)
+                let destinationWire = try await singleURLWire(destinationURL)
+                let destinationOrigin = try #require(URLComponents(string: destinationWire.url))
+                #expect(destinationOrigin.host == "127.0.0.1")
+                #expect(destinationOrigin.port == client.port)
+                // A forward must publish the real immutable object reference with
+                // its projection. Never repair missing production refs in this test.
+                let destinationDownload = try await client.get(URI(string: destinationWire.url))
+                #expect(destinationDownload.status == .ok)
+                let destinationPlaintext = try await attachmentPreviewBody(destinationDownload)
+                #expect(destinationPlaintext == attachmentBytes)
+                #expect(destinationDownload.headers[.contentType] == "text/plain; charset=utf-8")
+                #expect(destinationDownload.headers[.contentLength] == String(attachmentBytes.count))
+                let sourceURL = try await attachmentURL(sourceAttachmentId, token: viewerToken)
+                #expect(sourceURL.status == .notFound)
+                let sourceRefusal = try await singleURLError(sourceURL)
+                #expect(sourceRefusal == "Attachment not found")
+                var contextHeaders = HTTPFields()
+                contextHeaders[.authorization] = "Bearer \(viewerToken)"
+                contextHeaders[HTTPField.Name("X-Server-Id")!] = serverId
+                let context = try await client.send(.get, headers: contextHeaders, to: URI(string: "/api/messages/context/\(sourceMessageId)?channelId=\(privateChannelId)"))
+                #expect(context.status == .notFound)
+                #expect(String(decoding: try await attachmentPreviewBody(context), as: UTF8.self).contains("private source body") == false)
             }
-            let destinationURL = try await attachmentURL(projectedId ?? "", token: viewerToken)
-            #expect(destinationURL.status == .ok)
-            let sourceURL = try await attachmentURL(sourceAttachmentId, token: viewerToken)
-            #expect(sourceURL.status == .notFound)
-            var contextHeaders = HTTPFields()
-            contextHeaders[.authorization] = "Bearer \(viewerToken)"
-            contextHeaders[HTTPField.Name("X-Server-Id")!] = serverId
-            let context = try await client.send(.get, headers: contextHeaders, to: URI(string: "/api/messages/context/\(sourceMessageId)?channelId=\(privateChannelId)"))
-            #expect(context.status == .notFound)
-            #expect(bodyText(context).contains("private source body") == false)
         }
     }
 }
@@ -3323,10 +3411,17 @@ private func deleteJSON(
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: peerId)
     accounts.markEmailVerified(userId: guestId)
+    accounts.oauth.addOwnedServer(id: hostServerId, slug: "forward-joint-host-read", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: hostServerId, userId: peerId, role: "member")
+    accounts.oauth.addOwnedServer(id: guestServerId, slug: "forward-joint-guest-read", name: "Message Read Fixture", ownerId: guestId)
+    accounts.oauth.addMember(serverId: guestServerId, userId: ownerId, role: "member")
     accounts.addPostableChannel(serverId: hostServerId, channelId: sourceId, memberId: ownerId, name: "forward-joint-source")
     accounts.addPostableChannel(serverId: hostServerId, channelId: privateSourceId, memberId: ownerId, kind: "private", name: "forward-joint-private-source")
     accounts.addPostableChannel(serverId: hostServerId, channelId: regularDestinationId, memberId: ownerId, name: "forward-joint-regular-destination")
     accounts.addPostableChannel(serverId: hostServerId, channelId: privateDestinationId, memberId: ownerId, kind: "private", name: "forward-joint-private-destination")
+    for hostId in [sourceId, privateSourceId, regularDestinationId, privateDestinationId] { accounts.oauth.addChannelHuman(channelId: hostId, userId: ownerId) }
+    accounts.oauth.addChannelHuman(channelId: guestRegularDestinationId, userId: guestId)
+    for actor in [ownerId, peerId] { accounts.oauth.addChannelHuman(channelId: dmDestinationId, userId: actor) }
     accounts.addDirectMessage(serverId: hostServerId, channelId: dmDestinationId, participantIds: [ownerId, peerId])
     accounts.addPostableChannel(serverId: guestServerId, channelId: guestRegularDestinationId, memberId: guestId, name: "forward-joint-guest-regular-destination")
     accounts.addPostableChannel(serverId: storageServerId, channelId: canonicalId, memberId: ownerId, name: "forward-joint-storage")
@@ -3335,6 +3430,9 @@ private func deleteJSON(
     accounts.addPostableChannel(serverId: guestServerId, channelId: guestProjectionId, memberId: ownerId, kind: "joint")
     accounts.addJointChannelProjection(localChannelId: hostProjectionId, canonicalChannelId: canonicalId, serverId: hostServerId)
     accounts.addJointChannelProjection(localChannelId: guestProjectionId, canonicalChannelId: canonicalId, serverId: guestServerId)
+    accounts.oauth.addChannelHuman(channelId: hostProjectionId, userId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: guestProjectionId, userId: guestId)
+    accounts.oauth.addChannelHuman(channelId: guestProjectionId, userId: ownerId)
     func items(_ response: ClientResponse) throws -> [[String: Any]] {
         let body = try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8)) as? [String: Any]
         let metadata = body?["actionMetadata"] as? [String: Any]
@@ -3582,6 +3680,7 @@ private func deleteJSON(
     let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab7"
     accounts.addAccount(id: ownerId, email: "forward-reject-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-reject-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: sourceA, memberId: ownerId, name: "forward-reject-source-a")
     accounts.addPostableChannel(serverId: serverId, channelId: sourceB, memberId: ownerId, name: "forward-reject-source-b")
     accounts.addPostableChannel(serverId: serverId, channelId: destinationId, memberId: ownerId, name: "forward-reject-destination")
@@ -3786,20 +3885,32 @@ private func deleteJSON(
     let peerId = "11111111-1111-4111-8111-111111111170"
     let serverId = "33333333-3333-4333-8333-333333333372"
     let otherServerId = "33333333-3333-4333-8333-333333333373"
-    let channelId = "22222222-2222-4222-8222-222222222292"
-    let agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab9"
     let messageId = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1"
     let unknownId = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2"
     accounts.addAccount(id: authorId, email: "mention-delivery-author@slock.test", password: "password123")
     accounts.addAccount(id: peerId, email: "mention-delivery-peer@slock.test", password: "password123")
     accounts.markEmailVerified(userId: authorId)
     accounts.markEmailVerified(userId: peerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "mention-delivery-primary", name: "Mention Delivery", ownerId: authorId)
+    accounts.oauth.addMember(serverId: serverId, userId: peerId, role: "member")
+    accounts.oauth.addOwnedServer(id: otherServerId, slug: "mention-delivery-other", name: "Other Mention Scope", ownerId: peerId)
+    accounts.oauth.addMember(serverId: otherServerId, userId: authorId, role: "member")
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "mention-delivery", creatorUserId: authorId, type: "private")
+    for member in [authorId, peerId] { accounts.oauth.addChannelHuman(channelId: channelId, userId: member) }
+    #expect(accounts.oauth.channelServerId(channelId: channelId) == serverId)
+    #expect(accounts.oauth.channelKind(channelId: channelId) == "private")
+    #expect(accounts.oauth.isChannelParticipant(channelId: channelId, userId: authorId))
+    #expect(accounts.oauth.isChannelParticipant(channelId: channelId, userId: peerId))
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: authorId, kind: "private", name: "mention-delivery")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: peerId, kind: "private")
-    accounts.addServerAgent(serverId: serverId, id: agentId, name: "mention-delivery-agent", avatarUrl: nil)
+    let agentId = accounts.oauth.createAgent(serverId: serverId, name: "mention-delivery-agent", runtime: "codex")
+    // Match Node's retained synthetic host/terminal fixture for the coarse read projection.
+    // This is not evidence that a provider or daemon produced a terminal outcome.
     accounts.insertHumanMessage(id: messageId, channelId: channelId, senderId: authorId, content: "synthetic")
     accounts.recordAgentMentionDelivery(messageId: messageId, agentId: agentId, handle: "original-name", terminalCode: "IDENTITY_DRIFT")
-    let machineKey = accounts.registerMachineForAgent(serverId: serverId, agentId: agentId)
+    #expect(accounts.messageMentionRows(messageId: messageId).map(\.targetId) == [agentId])
+    #expect(accounts.messageMentionRows(messageId: messageId).allSatisfy { $0.notifiableAtSend })
+    let agentKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["mentions"], name: "human-delivery-projection-refusal")
     let path = "/api/messages/\(messageId)/mention-deliveries"
     func get(_ client: any Client, url: String, token: String, server: String) async throws -> ClientResponse {
         var headers = HTTPFields()
@@ -3832,10 +3943,18 @@ private func deleteJSON(
                 #expect(bodyText(denied) == "{\"status\":\"NOT_JOINABLE\"}")
             }
             accounts.removeChannelMember(channelId: channelId, memberId: authorId)
-            let revoked = try await get(client, url: path, token: authorToken, server: serverId)
-            #expect(revoked.status == .notFound)
-            #expect(bodyText(revoked) == "{\"status\":\"NOT_JOINABLE\"}")
-            let agentRead = try await get(client, url: path, token: machineKey, server: serverId)
+            accounts.oauth.removeChannelHuman(channelId: channelId, userId: authorId)
+            #expect(!accounts.oauth.isChannelParticipant(channelId: channelId, userId: authorId))
+            let channelRevoked = try await get(client, url: path, token: authorToken, server: serverId)
+            #expect(channelRevoked.status == .notFound)
+            #expect(bodyText(channelRevoked) == "{\"status\":\"NOT_JOINABLE\"}")
+            // Losing server membership is the earlier Node mount refusal;
+            // channel-only revocation above remains the leaf cloaking 404.
+            accounts.oauth.removeMember(serverId: serverId, userId: authorId)
+            let leftServer = try await get(client, url: path, token: authorToken, server: serverId)
+            #expect(leftServer.status == .forbidden)
+            #expect(bodyText(leftServer) == "{\"error\":\"Not a member of this server\"}")
+            let agentRead = try await get(client, url: path, token: agentKey, server: serverId)
             #expect(agentRead.status == .unauthorized)
             #expect(bodyText(agentRead).contains("deliveries") == false)
         }
@@ -3849,6 +3968,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-222222222293"
     accounts.addAccount(id: ownerId, email: "context-window@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "context-window-scope", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "context-window")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -3897,6 +4017,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-222222222294"
     accounts.addAccount(id: ownerId, email: "storage-cols@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "history-columns-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "storage-cols")
     let storageKeys = ["searchText", "searchVector"]
     func assertNoStorageKeys(_ surface: String, _ rows: [[String: Any]]) {
@@ -3960,6 +4081,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-222222222295"
     accounts.addAccount(id: ownerId, email: "sender-tz@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "sender-timezone-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "sender-tz")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -4036,6 +4158,7 @@ private func deleteJSON(
     let threadId = "22222222-2222-4222-8222-222222222297"
     accounts.addAccount(id: ownerId, email: "summary-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "summary-parents-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "summaries")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -4093,6 +4216,7 @@ private func deleteJSON(
     let threadId = "22222222-2222-4222-8222-222222222299"
     accounts.addAccount(id: ownerId, email: "summary-context@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "context-summary-scope", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "context-summaries")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -4149,6 +4273,7 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-222222222300"
     accounts.addAccount(id: ownerId, email: "summary-empty@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "summary-empty-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "no-threads")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -4188,6 +4313,7 @@ private func deleteJSON(
     let threadId = "22222222-2222-4222-8222-222222222302"
     accounts.addAccount(id: ownerId, email: "summary-window@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "summary-window-read", name: "Message Read Fixture", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "windowed")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -4242,6 +4368,8 @@ private func deleteJSON(
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: outsiderId)
     accounts.setServerMemberRole(serverId: serverId, userId: outsiderId, role: "member")
+    accounts.oauth.addOwnedServer(id: serverId, slug: "summary-access-read", name: "Message Read Fixture", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: outsiderId, role: "member")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, kind: "private", name: "locked")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -4297,5 +4425,326 @@ private final class ReactionViewerEventCollector: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage
+    }
+}
+
+
+@Test func messageForwardRefusalCodesPreserveScopeAndReplayAuthority() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = UUID().uuidString.lowercased()
+    let peerId = UUID().uuidString.lowercased()
+    let serverId = UUID().uuidString.lowercased()
+    let otherServerId = UUID().uuidString.lowercased()
+    for (id, name) in [(ownerId, "forward_codes_owner"), (peerId, "forward_codes_peer")] {
+        accounts.addAccount(id: id, email: "\(name)@slock.test", password: "password123")
+        accounts.setAccountProfileForTesting(id: id, name: name)
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "forward-codes", name: "Forward Codes", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: peerId, role: "member")
+    accounts.oauth.addOwnedServer(id: otherServerId, slug: "forward-codes-other", name: "Other Scope", ownerId: peerId)
+    accounts.oauth.addMember(serverId: otherServerId, userId: ownerId, role: "member")
+    let source = accounts.oauth.createChannel(serverId: serverId, name: "forward-codes-source", creatorUserId: ownerId)
+    let privateSource = accounts.oauth.createChannel(serverId: serverId, name: "forward-codes-private", creatorUserId: peerId, type: "private")
+    accounts.oauth.addChannelHuman(channelId: privateSource, userId: peerId)
+    let destination = accounts.oauth.createChannel(serverId: serverId, name: "forward-codes-destination", creatorUserId: ownerId)
+    let unjoined = accounts.oauth.createChannel(serverId: serverId, name: "forward-codes-unjoined", creatorUserId: peerId)
+    let foreign = accounts.oauth.createChannel(serverId: otherServerId, name: "forward-codes-foreign", creatorUserId: peerId)
+    for (id, member, kind, name) in [(source, ownerId, "channel", "forward-codes-source"), (privateSource, peerId, "private", "forward-codes-private"), (destination, ownerId, "channel", "forward-codes-destination"), (unjoined, peerId, "channel", "forward-codes-unjoined")] {
+        accounts.addPostableChannel(serverId: serverId, channelId: id, memberId: member, kind: kind, name: name)
+    }
+    accounts.addPostableChannel(serverId: otherServerId, channelId: foreign, memberId: peerId, name: "forward-codes-foreign")
+    #expect(accounts.oauth.memberRole(serverId: serverId, userId: ownerId) == "owner")
+    #expect(accounts.oauth.memberRole(serverId: otherServerId, userId: ownerId) == "member")
+    #expect(!accounts.oauth.isChannelParticipant(channelId: privateSource, userId: ownerId))
+    #expect(!accounts.oauth.isChannelParticipant(channelId: unjoined, userId: ownerId))
+    func object(_ response: ClientResponse) throws -> [String: Any] {
+        let value = try JSONSerialization.jsonObject(with: Data(bodyText(response).utf8))
+        return try #require(value as? [String: Any])
+    }
+    func payload(_ destination: String, _ sourceId: String, randomId: String? = nil) throws -> String {
+        var body: [String: Any] = ["destinationChannelId": destination, "sourceMessageIds": [sourceId], "note": "forward refusal contract"]
+        if let randomId { body["randomId"] = randomId }
+        return String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+    }
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            let ownerLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"forward_codes_owner@slock.test\",\"password\":\"password123\"}")
+            let peerLogin = try await postJSON(client, path: "/api/auth/login", body: "{\"email\":\"forward_codes_peer@slock.test\",\"password\":\"password123\"}")
+            #expect(ownerLogin.status == .ok)
+            #expect(peerLogin.status == .ok)
+            let ownerBody = try object(ownerLogin)
+            let peerBody = try object(peerLogin)
+            let ownerToken = try #require(ownerBody["accessToken"] as? String)
+            let peerToken = try #require(peerBody["accessToken"] as? String)
+            let auth = "Bearer \(ownerToken)"
+            let peerAuth = "Bearer \(peerToken)"
+            var hostIds: [String] = []
+            for (channel, token, scope) in [(source, auth, serverId), (privateSource, peerAuth, serverId), (foreign, peerAuth, otherServerId)] {
+                let sent = try await postJSON(client, path: "/api/messages", body: "{\"channelId\":\"\(channel)\",\"content\":\"actual forward source\"}", authorization: token, serverId: scope)
+                #expect(sent.status == .ok)
+                let sentBody = try object(sent)
+                let id = try #require(sentBody["id"] as? String)
+                #expect(UUID(uuidString: id) != nil)
+                hostIds.append(id)
+            }
+            let publicId = hostIds[0]
+            let privateId = hostIds[1]
+            let foreignId = hostIds[2]
+            let missingSource = UUID().uuidString.lowercased()
+            let missingDestination = UUID().uuidString.lowercased()
+            let countBefore = accounts.humanMessageCount
+            let destinationBefore = accounts.humanMessageIds(channelId: destination)
+            // Node resolves source scope before destination admission. Every caller/server is real.
+            let refusals: [(String, String, Int, String)] = [
+                (destination, missingSource, 404, "{\"error\":\"Message not found\",\"code\":\"source_not_found\"}"),
+                (destination, foreignId, 404, "{\"error\":\"Message not found\",\"code\":\"source_not_found\"}"),
+                (destination, privateId, 404, "{\"error\":\"Source message not found\",\"code\":\"source_not_found\"}"),
+                (missingDestination, publicId, 404, "{\"error\":\"Channel not found\",\"code\":\"destination_unavailable\"}"),
+                (foreign, publicId, 404, "{\"error\":\"Channel not found\",\"code\":\"destination_unavailable\"}"),
+                (unjoined, publicId, 403, "{\"error\":\"You must join this channel to send messages\",\"code\":\"destination_unavailable\"}"),
+                (missingDestination, missingSource, 404, "{\"error\":\"Message not found\",\"code\":\"source_not_found\"}"),
+            ]
+            for (target, sourceId, status, expected) in refusals {
+                let response = try await postJSON(client, path: "/api/messages/forward", body: payload(target, sourceId), authorization: auth, serverId: serverId)
+                #expect(Int(response.status.code) == status)
+                #expect(bodyText(response) == expected)
+                #expect(response.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == nil)
+                #expect(accounts.humanMessageCount == countBefore)
+                #expect(accounts.humanMessageIds(channelId: destination) == destinationBefore)
+            }
+            // Forward's codes must not leak into the shared generic-create refusal.
+            let createMissing = try await postJSON(client, path: "/api/messages", body: "{\"channelId\":\"\(missingDestination)\",\"content\":\"no write\"}", authorization: auth, serverId: serverId)
+            #expect(createMissing.status == .notFound)
+            #expect(bodyText(createMissing) == "{\"error\":\"Channel not found\"}")
+            let invalidInputOverrides: [([String: Any], String)] = [
+                (["sourceMessageIds": NSNull()], "Destination channel and full source message ids are required"),
+                (["sourceMessageIds": [publicId, publicId]], "Destination channel and full source message ids are required"),
+                (["sourceMessageIds": ["12345678"]], "Destination channel and full source message ids are required"),
+                (["sourceMessageIds": (0..<21).map { _ in UUID().uuidString.lowercased() }], "Destination channel and full source message ids are required"),
+                (["sourceMessageIds": [publicId + "\u{0085}"]], "Destination channel and full source message ids are required"),
+                (["destinationChannelIds": []], "Destination channel and full source message ids are required"),
+                (["destinationChannelIds": (0..<11).map { _ in UUID().uuidString.lowercased() }, "requestId": UUID().uuidString.lowercased()], "Destination channel and full source message ids are required"),
+                (["destinationChannelIds": [destination + "\u{0085}"], "requestId": UUID().uuidString.lowercased()], "Destination channel and full source message ids are required"),
+                (["destinationChannelIds": [destination]], "Destination channel and full source message ids are required"),
+                (["requestId": "not-a-uuid"], "Destination channel and full source message ids are required"),
+                (["requestId": UUID().uuidString.lowercased() + "\u{0085}"], "Destination channel and full source message ids are required"),
+                (["randomId": NSNull()], "Destination channel and full source message ids are required"),
+                (["destinationChannelIds": [destination], "requestId": UUID().uuidString.lowercased(), "randomId": NSNull()], "Destination channel and full source message ids are required"),
+                (["randomId": ""], "Destination channel and full source message ids are required"),
+                (["randomId": String(repeating: "r", count: 129)], "Destination channel and full source message ids are required"),
+                (["randomId": String(repeating: "😀", count: 65)], "Destination channel and full source message ids are required"),
+                (["note": false], "Destination channel and full source message ids are required"),
+                (["note": String(repeating: "n", count: 32_001)], "Message content exceeds maximum length of 32000 characters"),
+                (["note": String(repeating: "😀", count: 16_001)], "Message content exceeds maximum length of 32000 characters"),
+            ]
+            for (overrides, error) in invalidInputOverrides {
+                var invalidBody: [String: Any] = ["destinationChannelId": destination, "sourceMessageIds": [publicId]]
+                invalidBody.merge(overrides) { _, override in override }
+                let encoded = try JSONSerialization.data(withJSONObject: invalidBody)
+                let invalid = try await postJSON(client, path: "/api/messages/forward", body: String(decoding: encoded, as: UTF8.self), authorization: auth, serverId: serverId)
+                #expect(invalid.status == .badRequest)
+                let invalidObject = try object(invalid)
+                #expect(invalidObject.count == 1)
+                #expect(invalidObject["error"] as? String == error)
+                #expect(invalidObject["code"] == nil)
+                #expect(invalid.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == nil)
+                #expect(accounts.humanMessageCount == countBefore)
+                #expect(accounts.humanMessageIds(channelId: destination) == destinationBefore)
+            }
+            let anonymous = try await postJSON(client, path: "/api/messages/forward", body: payload(destination, publicId), serverId: serverId)
+            #expect(anonymous.status == .unauthorized)
+            let anonymousBody = try object(anonymous)
+            #expect(anonymousBody["code"] as? String != "source_not_found")
+            #expect(anonymousBody["code"] as? String != "destination_unavailable")
+            #expect(accounts.humanMessageCount == countBefore)
+            accounts.oauth.addChannelHuman(channelId: privateSource, userId: ownerId)
+            accounts.addPostableChannel(serverId: serverId, channelId: privateSource, memberId: ownerId, kind: "private", name: "forward-codes-private")
+            let randomId = UUID().uuidString.lowercased()
+            let request = try payload(destination, privateId, randomId: randomId)
+            let first = try await postJSON(client, path: "/api/messages/forward", body: request, authorization: auth, serverId: serverId)
+            #expect(first.status == .ok)
+            #expect(first.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == "success")
+            let firstBody = try object(first)
+            let id = try #require(firstBody["id"] as? String)
+            #expect(id != privateId)
+            #expect(firstBody["channelId"] as? String == destination)
+            #expect(accounts.humanMessageCount == countBefore + 1)
+            #expect(accounts.humanMessageIds(channelId: destination) == [id])
+            let replay = try await postJSON(client, path: "/api/messages/forward", body: request, authorization: auth, serverId: serverId)
+            #expect(replay.status == .ok)
+            #expect(replay.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == "idempotent_replay")
+            let replayBody = try object(replay)
+            #expect(replayBody["id"] as? String == id)
+            #expect(accounts.humanMessageCount == countBefore + 1)
+            accounts.oauth.removeChannelHuman(channelId: privateSource, userId: ownerId)
+            accounts.removeChannelMember(channelId: privateSource, memberId: ownerId)
+            let sourceRevoked = try await postJSON(client, path: "/api/messages/forward", body: request, authorization: auth, serverId: serverId)
+            #expect(sourceRevoked.status == .notFound)
+            #expect(bodyText(sourceRevoked) == "{\"error\":\"Source message not found\",\"code\":\"source_not_found\"}")
+            accounts.oauth.addChannelHuman(channelId: privateSource, userId: ownerId)
+            accounts.addPostableChannel(serverId: serverId, channelId: privateSource, memberId: ownerId, kind: "private", name: "forward-codes-private")
+            accounts.oauth.removeChannelHuman(channelId: destination, userId: ownerId)
+            accounts.removeChannelMember(channelId: destination, memberId: ownerId)
+            let destinationRevoked = try await postJSON(client, path: "/api/messages/forward", body: request, authorization: auth, serverId: serverId)
+            #expect(destinationRevoked.status == .forbidden)
+            #expect(bodyText(destinationRevoked) == "{\"error\":\"You must join this channel to send messages\",\"code\":\"destination_unavailable\"}")
+            #expect(accounts.humanMessageCount == countBefore + 1)
+            #expect(accounts.humanMessageIds(channelId: destination) == [id])
+            accounts.oauth.addChannelHuman(channelId: destination, userId: ownerId)
+            accounts.addPostableChannel(serverId: serverId, channelId: destination, memberId: ownerId, name: "forward-codes-destination")
+            let restored = try await postJSON(client, path: "/api/messages/forward", body: request, authorization: auth, serverId: serverId)
+            #expect(restored.status == .ok)
+            #expect(restored.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == "idempotent_replay")
+            let restoredBody = try object(restored)
+            #expect(restoredBody["id"] as? String == id)
+            #expect(accounts.humanMessageCount == countBefore + 1)
+            #expect(accounts.humanMessageIds(channelId: destination) == [id])
+            // JS trims BOM but retains NEL; single requestId overrides a valid randomId.
+            let requestId = UUID().uuidString.lowercased()
+            var scalarForwardId: String?
+            for (index, wireRandomId) in [String(repeating: "😀", count: 64), "different-valid-random-id"].enumerated() {
+                let scalarBody: [String: Any] = [
+                    "destinationChannelId": "\u{FEFF}" + destination + "\u{FEFF}",
+                    "sourceMessageIds": ["\u{FEFF}" + publicId + "\u{FEFF}"],
+                    "requestId": "\u{FEFF}" + requestId + "\u{FEFF}",
+                    "randomId": wireRandomId,
+                    "note": "\u{FEFF}scalar note\u{0085}\u{FEFF}",
+                ]
+                let encoded = try JSONSerialization.data(withJSONObject: scalarBody)
+                let scalar = try await postJSON(client, path: "/api/messages/forward", body: String(decoding: encoded, as: UTF8.self), authorization: auth, serverId: serverId)
+                #expect(scalar.status == .ok)
+                #expect(scalar.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == (index == 0 ? "success" : "idempotent_replay"))
+                let scalarObject = try object(scalar)
+                let actualId = try #require(scalarObject["id"] as? String)
+                #expect(scalarObject["channelId"] as? String == destination)
+                #expect(scalarObject["content"] as? String == "scalar note\u{0085}")
+                if let scalarForwardId { #expect(actualId == scalarForwardId) }
+                else { scalarForwardId = actualId }
+                #expect(accounts.humanMessageCount == countBefore + 2)
+                #expect(accounts.humanMessageRandomIds(channelId: destination).sorted() == [randomId, "forward:\(requestId):\(destination)"].sorted())
+            }
+            // The actual Web composer uses valid destination arrays and a stable requestId.
+            func webBatch(_ sourceId: String, _ targets: [String], requestId: String) throws -> String {
+                let body: [String: Any] = ["destinationChannelIds": targets, "requestId": requestId, "sourceMessageIds": [sourceId], "note": "web batch primary"]
+                return String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+            }
+            let webRequestId = UUID().uuidString.lowercased()
+            let webCountBefore = accounts.humanMessageCount
+            let webDestinationBefore = accounts.humanMessageIds(channelId: destination)
+            let webUnjoinedBefore = accounts.humanMessageIds(channelId: unjoined)
+            #expect(webUnjoinedBefore.isEmpty)
+            accounts.oauth.removeChannelHuman(channelId: privateSource, userId: ownerId)
+            accounts.removeChannelMember(channelId: privateSource, memberId: ownerId)
+            #expect(!accounts.oauth.isChannelParticipant(channelId: privateSource, userId: ownerId))
+            for (sourceId, error) in [(missingSource, "Message not found"), (privateId, "Source message not found")] {
+                let denied = try await postJSON(client, path: "/api/messages/forward", body: webBatch(sourceId, [destination, unjoined], requestId: webRequestId), authorization: auth, serverId: serverId)
+                #expect(denied.status == .notFound)
+                #expect(bodyText(denied) == "{\"error\":\"\(error)\",\"code\":\"source_not_found\"}")
+                #expect(denied.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == nil)
+                #expect(accounts.humanMessageCount == webCountBefore)
+                #expect(accounts.humanMessageIds(channelId: destination) == webDestinationBefore)
+                #expect(accounts.humanMessageIds(channelId: unjoined) == webUnjoinedBefore)
+            }
+            accounts.oauth.addChannelHuman(channelId: privateSource, userId: ownerId)
+            accounts.addPostableChannel(serverId: serverId, channelId: privateSource, memberId: ownerId, kind: "private", name: "forward-codes-private")
+            let webRequest = try webBatch(publicId, [unjoined], requestId: webRequestId)
+            var webForwardId: String?
+            for stage in 0..<4 {
+                if stage == 1 || stage == 3 {
+                    accounts.oauth.addChannelHuman(channelId: unjoined, userId: ownerId)
+                    accounts.addPostableChannel(serverId: serverId, channelId: unjoined, memberId: ownerId, name: "forward-codes-unjoined")
+                } else if stage == 2 {
+                    accounts.oauth.removeChannelHuman(channelId: unjoined, userId: ownerId)
+                    accounts.removeChannelMember(channelId: unjoined, memberId: ownerId)
+                }
+                let batch = try await postJSON(client, path: "/api/messages/forward", body: webRequest, authorization: auth, serverId: serverId)
+                #expect(batch.status == .ok)
+                if stage == 0 || stage == 2 {
+                    #expect(batch.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == "all_failed")
+                    #expect(bodyText(batch) == "{\"results\":[{\"destinationChannelId\":\"\(unjoined)\",\"status\":\"failed\",\"code\":\"destination_unavailable\",\"error\":\"Could not forward to this target\"}]}")
+                    #expect(accounts.humanMessageCount == webCountBefore + (stage == 0 ? 0 : 1))
+                    let expectedIds: [String]
+                    if stage == 0 { expectedIds = [] }
+                    else {
+                        let retainedId = try #require(webForwardId)
+                        expectedIds = [retainedId]
+                    }
+                    #expect(accounts.humanMessageIds(channelId: unjoined) == expectedIds)
+                } else {
+                    #expect(batch.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == (stage == 1 ? "success" : "idempotent_replay"))
+                    let batchObject = try object(batch)
+                    let results = try #require(batchObject["results"] as? [[String: Any]])
+                    try #require(results.count == 1)
+                    #expect(Set(results[0].keys) == Set(["destinationChannelId", "status", "message"]))
+                    #expect(results[0]["destinationChannelId"] as? String == unjoined)
+                    #expect(results[0]["status"] as? String == "success")
+                    let message = try #require(results[0]["message"] as? [String: Any])
+                    let actualId = try #require(message["id"] as? String)
+                    #expect(message["channelId"] as? String == unjoined)
+                    if let webForwardId { #expect(actualId == webForwardId) }
+                    else { webForwardId = actualId }
+                    #expect(accounts.humanMessageCount == webCountBefore + 1)
+                    #expect(accounts.humanMessageIds(channelId: unjoined) == [actualId])
+                }
+                #expect(accounts.humanMessageIds(channelId: destination) == webDestinationBefore)
+            }
+            // Joined joint destinations publish the local ID while retaining canonical storage.
+            let jointCanonical = accounts.oauth.createChannel(serverId: serverId, name: "forward-code-joint-storage", creatorUserId: ownerId)
+            let jointLocal = accounts.oauth.createChannel(serverId: serverId, name: "forward-code-joint", creatorUserId: ownerId, type: "joint")
+            accounts.oauth.addChannelHuman(channelId: jointLocal, userId: ownerId)
+            accounts.addPostableChannel(serverId: serverId, channelId: jointCanonical, memberId: ownerId, name: "forward-code-joint-storage")
+            accounts.addPostableChannel(serverId: serverId, channelId: jointLocal, memberId: ownerId, kind: "joint", name: "forward-code-joint")
+            accounts.addJointChannelProjection(localChannelId: jointLocal, canonicalChannelId: jointCanonical, serverId: serverId)
+            #expect(jointLocal != jointCanonical)
+            #expect(accounts.oauth.isChannelParticipant(channelId: jointLocal, userId: ownerId))
+            let jointRequestId = UUID().uuidString.lowercased()
+            let jointBody: [String: Any] = ["destinationChannelId": jointLocal, "sourceMessageIds": [publicId], "requestId": jointRequestId, "note": "joint replay"]
+            let jointRequest = String(decoding: try JSONSerialization.data(withJSONObject: jointBody), as: UTF8.self)
+            let jointCountBefore = accounts.humanMessageCount
+            var jointOriginal: ClientResponse?
+            var jointForwardId: String?
+            for attempt in 0..<2 {
+                let response = try await postJSON(client, path: "/api/messages/forward", body: jointRequest, authorization: auth, serverId: serverId)
+                #expect(response.status == .ok)
+                #expect(response.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == (attempt == 0 ? "success" : "idempotent_replay"))
+                let message = try object(response)
+                let actualId = try #require(message["id"] as? String)
+                #expect(message["channelId"] as? String == jointLocal)
+                if let jointForwardId { #expect(actualId == jointForwardId) }
+                else { jointForwardId = actualId }
+                if let jointOriginal { #expect(bodyText(response) == bodyText(jointOriginal)) }
+                else { jointOriginal = response }
+                #expect(accounts.humanMessageCount == jointCountBefore + 1)
+                #expect(accounts.humanMessageIds(channelId: jointCanonical) == [actualId])
+                #expect(accounts.humanMessageIds(channelId: jointLocal).isEmpty)
+            }
+            // Swift canonical equivalence must not turn different wire code units into replay.
+            let unicodeRequestId = UUID().uuidString.lowercased()
+            func unicodeRequest(_ note: String) throws -> String {
+                let body: [String: Any] = ["destinationChannelId": destination, "sourceMessageIds": [publicId], "requestId": unicodeRequestId, "note": note]
+                return String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+            }
+            let unicodeCountBefore = accounts.humanMessageCount
+            let unicodeDestinationBefore = accounts.humanMessageIds(channelId: destination)
+            let composed = try await postJSON(client, path: "/api/messages/forward", body: unicodeRequest("\u{00E9}"), authorization: auth, serverId: serverId)
+            #expect(composed.status == .ok)
+            let composedObject = try object(composed)
+            let composedId = try #require(composedObject["id"] as? String)
+            let composedContent = try #require(composedObject["content"] as? String)
+            #expect(composedContent.utf16.elementsEqual("\u{00E9}".utf16))
+            let decomposed = try await postJSON(client, path: "/api/messages/forward", body: unicodeRequest("e\u{0301}"), authorization: auth, serverId: serverId)
+            #expect(decomposed.status == .conflict)
+            #expect(bodyText(decomposed) == "{\"error\":\"This forward request id was already used for different content\",\"code\":\"idempotency_conflict\"}")
+            #expect(accounts.humanMessageCount == unicodeCountBefore + 1)
+            #expect(accounts.humanMessageIds(channelId: destination) == unicodeDestinationBefore + [composedId])
+            let unicodeReplay = try await postJSON(client, path: "/api/messages/forward", body: unicodeRequest("\u{00E9}"), authorization: auth, serverId: serverId)
+            #expect(unicodeReplay.status == .ok)
+            #expect(unicodeReplay.headers[HTTPField.Name("X-Raft-Forward-Outcome")!] == "idempotent_replay")
+            #expect(bodyText(unicodeReplay) == bodyText(composed))
+            #expect(accounts.humanMessageCount == unicodeCountBefore + 1)
+            #expect(accounts.humanMessageIds(channelId: destination) == unicodeDestinationBefore + [composedId])
+        }
     }
 }

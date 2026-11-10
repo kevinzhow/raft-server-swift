@@ -183,23 +183,35 @@ private func lifecycleDirectory(slug: String, ownerId: String, serverId: String)
 
 // MARK: - Provider connections
 
-@Test func providerCredentialRotationCountsEveryConcurrentRotation() async {
+@Test func providerCredentialRotationCountsEveryConcurrentRotation() async throws {
     let store = ManagedMCPAndCardsStore()
+    let masterKey = Data((0..<32).map { UInt8($0) })
+    let vault = try ProviderCredentialVault(masterKey: masterKey)
+    let credential = try vault.seal("initial-provider-credential", serverId: "s", connectionId: "c1")
     let created = Date(timeIntervalSince1970: 1_700_000_000)
-    store.insertProviderConnection(ProviderConnection(
+    try store.insertProviderConnection(ProviderConnection(
         id: "c1", serverId: "s", name: "n", providerId: "deepseek", endpointUrl: nil,
         supportsImageInput: false, status: "verified", configVersion: 1, credentialVersion: 1,
         hasCredential: true, createdAt: created, updatedAt: created
-    ))
-    await withTaskGroup(of: Void.self) { group in
+    ), credential: credential)
+    try await withThrowingTaskGroup(of: Void.self) { group in
         for _ in 0..<10 {
-            group.addTask { _ = store.rotateProviderCredential(id: "c1", serverId: "s", now: created) }
+            group.addTask {
+                let rotated = try ProviderCredentialVault(masterKey: masterKey).seal(
+                    "rotated-provider-credential", serverId: "s", connectionId: "c1"
+                )
+                _ = try store.rotateProviderCredential(
+                    id: "c1", serverId: "s", credential: rotated, now: created
+                )
+            }
         }
+        try await group.waitForAll()
     }
     let row = store.providerConnections(serverId: "s").first
     #expect(row?.credentialVersion == 11)
     #expect(row?.status == "unchecked")
-    #expect(store.rotateProviderCredential(id: "c1", serverId: "other", now: created) == nil)
+    let otherCredential = try vault.seal("other-provider-credential", serverId: "other", connectionId: "c1")
+    #expect(try store.rotateProviderCredential(id: "c1", serverId: "other", credential: otherCredential, now: created) == nil)
 }
 
 // MARK: - Channels

@@ -9,8 +9,8 @@ import VaporTesting
 
 /// Byte-level locks for the server-member, sidebar, labs and task-metric
 /// surface: the published member order, the `Content-Length`/`Content-Type`
-/// header set, the two distinct 401 envelopes, and the raw-body fallback the
-/// retired handlers accepted without a JSON `Content-Type`.
+/// header set, complete-mount authentication/cache policy, and the raw-body
+/// fallback accepted without a JSON `Content-Type`.
 @Test func serverMemberAndSidebarSurfacePublishesTheLegacyBytes() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-000001150001"
@@ -55,7 +55,7 @@ import VaporTesting
             #expect(rolePatch.status == .ok)
             assertStandardHeaders(rolePatch, body: "{\"ok\":true,\"changed\":true}")
 
-            // The member-route 401 keeps `code: auth_required` and `no-store`.
+            // Complete app.ts auth runs before the member route.
             let anonymousRole = try await client.send(
                 .patch,
                 headers: HTTPFields(),
@@ -64,9 +64,8 @@ import VaporTesting
                 request.body = .init(string: "{\"role\":\"member\"}")
             }
             #expect(anonymousRole.status == .unauthorized)
-            #expect(anonymousRole.body.string
-                == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-            #expect(anonymousRole.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            assertStandardHeaders(anonymousRole, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(anonymousRole.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
 
             // `GET /labs`: catalog order and the two hidden definitions omitted.
             let labs = try await client.send(.get, headers: headers, to: "/api/servers/\(serverId)/labs")
@@ -98,7 +97,7 @@ import VaporTesting
                 body: "{\"channelOrder\":[],\"agentOrder\":[],\"dmOrder\":[],\"pinned\":[],\"pinnedChannelIds\":[],\"pinnedAgentIds\":[],\"pinnedOrder\":[],\"pinnedVersion\":0,\"hiddenDmIds\":[],\"channelSortMode\":\"manual\",\"jointChannelSortMode\":\"manual\",\"dmSortMode\":\"manual\",\"pinnedSortMode\":\"manual\",\"channelPanelTabOrder\":[\"chat\"],\"agentPanelTabOrder\":[\"activity\",\"profile\"],\"customSections\":[],\"sectionOrder\":[\"system:pinned\",\"system:joint\",\"system:channels\",\"system:dms\"],\"sectionPlacements\":[],\"sectionsVersion\":0}"
             )
 
-            // The sidebar 401 is the bare `Unauthorized` envelope.
+            // The same outer requireAuth owns the anonymous sidebar refusal.
             var scopeOnly = HTTPFields()
             scopeOnly[HTTPField.Name("X-Server-Id")!] = serverId
             let anonymousSidebar = try await client.send(
@@ -107,7 +106,8 @@ import VaporTesting
                 to: "/api/servers/\(serverId)/sidebar-order"
             )
             #expect(anonymousSidebar.status == .unauthorized)
-            assertStandardHeaders(anonymousSidebar, body: "{\"error\":\"Unauthorized\"}")
+            assertStandardHeaders(anonymousSidebar, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(anonymousSidebar.headers[.cacheControl] == "private, no-store")
 
             // `DELETE /members/:memberId` and `DELETE /:id` answer `{"ok":true}`.
             let removed = try await client.send(
@@ -121,14 +121,21 @@ import VaporTesting
             let deleted = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)")
             #expect(deleted.status == .ok)
             assertStandardHeaders(deleted, body: "{\"ok\":true}")
-            // A second delete is the idempotent `{"ok":true}` before auth.
+            // An anonymous retry still stops at the complete auth mount.
             let deletedAgain = try await client.send(
                 .delete,
                 headers: HTTPFields(),
                 to: "/api/servers/\(serverId)"
             )
-            #expect(deletedAgain.status == .ok)
-            #expect(deletedAgain.body.string == "{\"ok\":true}")
+            #expect(deletedAgain.status == .unauthorized)
+            assertStandardHeaders(deletedAgain, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(deletedAgain.headers[.cacheControl] == "private, no-store")
+
+            // Node permits the deleted owner to retry with the matching scope.
+            let ownerRetry = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)")
+            #expect(ownerRetry.status == .ok)
+            assertStandardHeaders(ownerRetry, body: "{\"ok\":true}")
+            #expect(ownerRetry.headers[.cacheControl] == "private, no-store")
         }
     }
 }
@@ -189,6 +196,83 @@ import VaporTesting
             }
             #expect(labsAccess.status == .ok, Comment(rawValue: labsAccess.body.string ?? ""))
             #expect(labsAccess.body.string?.hasPrefix("{\"applied\":true,\"accessEnabled\":true,\"version\":1,\"labs\":[") == true)
+        }
+    }
+}
+
+/// The full Node mount checks auth and scope before owner-only deletion,
+/// including retries after the server tombstone has been committed.
+@Test func serverDeletionChecksAuthorityBeforeIdempotentSuccess() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = "11111111-1111-4111-8111-111111111651"
+    let memberId = "11111111-1111-4111-8111-111111111652"
+    let removedId = "11111111-1111-4111-8111-111111111653"
+    let outsiderId = "11111111-1111-4111-8111-111111111654"
+    let serverId = "33333333-3333-4333-8333-333333333677"
+    for (id, email) in [(ownerId, "delete-owner@slock.test"), (memberId, "delete-member@slock.test"),
+                        (removedId, "delete-removed@slock.test"), (outsiderId, "delete-outsider@slock.test")] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+    }
+    accounts.oauth.addOwnedServer(id: serverId, slug: "task84-delete", name: "Task84 Delete", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
+    accounts.oauth.addMember(serverId: serverId, userId: removedId, role: "member")
+    let ownerToken = accounts.mintAccessTokenForTesting(userId: ownerId)
+    let memberToken = accounts.mintAccessTokenForTesting(userId: memberId)
+    let removedToken = accounts.mintAccessTokenForTesting(userId: removedId)
+    let outsiderToken = accounts.mintAccessTokenForTesting(userId: outsiderId)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            func headers(_ token: String) -> HTTPFields {
+                [.authorization: "Bearer \(token)", HTTPField.Name("X-Server-Id")!: serverId]
+            }
+            func assertReply(_ response: ClientResponse, status: HTTPResponse.Status, body: String) {
+                #expect(response.status == status)
+                #expect(response.body.string == body)
+                #expect(response.headers[.contentLength] == String(body.utf8.count))
+                #expect(response.headers[.contentType] == "application/json; charset=utf-8")
+                #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
+                #expect(response.headers[.cacheControl] == "private, no-store")
+            }
+            func checkDelete(_ fields: HTTPFields, status: HTTPResponse.Status, body: String) async throws {
+                let response = try await client.send(.delete, headers: fields, to: "/api/servers/\(serverId)")
+                assertReply(response, status: status, body: body)
+            }
+            let owner = headers(ownerToken)
+            var missing = owner
+            missing[HTTPField.Name("X-Server-Id")!] = nil
+            var mismatch = owner
+            mismatch[HTTPField.Name("X-Server-Id")!] = "33333333-3333-4333-8333-000001159999"
+            let removed = try await client.send(.delete, headers: owner,
+                to: "/api/servers/\(serverId)/members/\(removedId)")
+            assertReply(removed, status: .ok, body: "{\"ok\":true}")
+
+            try await checkDelete(HTTPFields(), status: .unauthorized,
+                body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            try await checkDelete(headers("bad-token"), status: .unauthorized,
+                body: "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            try await checkDelete(missing, status: .badRequest, body: "{\"error\":\"Missing X-Server-Id header\"}")
+            try await checkDelete(mismatch, status: .badRequest, body: "{\"error\":\"X-Server-Id must match server id in URL\"}")
+            try await checkDelete(headers(memberToken), status: .forbidden,
+                body: "{\"error\":\"Only the server owner can delete a server\"}")
+            try await checkDelete(headers(outsiderToken), status: .forbidden, body: "{\"error\":\"Not a member of this server\"}")
+            try await checkDelete(headers(removedToken), status: .forbidden, body: "{\"error\":\"Not a member of this server\"}")
+            try await checkDelete(owner, status: .ok, body: "{\"ok\":true}")
+
+            // The same live sessions and scope headers are re-used after deletion.
+            try await checkDelete(HTTPFields(), status: .unauthorized,
+                body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            try await checkDelete(headers("bad-token"), status: .unauthorized,
+                body: "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            try await checkDelete(missing, status: .badRequest, body: "{\"error\":\"Missing X-Server-Id header\"}")
+            try await checkDelete(mismatch, status: .badRequest, body: "{\"error\":\"X-Server-Id must match server id in URL\"}")
+            for token in [memberToken, outsiderToken, removedToken] {
+                try await checkDelete(headers(token), status: .forbidden, body: "{\"error\":\"Not a member of this server\"}")
+            }
+            try await checkDelete(owner, status: .ok, body: "{\"ok\":true}")
+            try await checkDelete(owner, status: .ok, body: "{\"ok\":true}")
         }
     }
 }

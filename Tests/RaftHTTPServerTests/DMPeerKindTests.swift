@@ -37,12 +37,18 @@ private func makeDMPeerKindFixture(suffix: String) -> DMPeerKindFixture {
     let agentTwin = accounts.oauth.createAgent(serverId: serverId, name: "Twin", runtime: "claude")
 
     let humanDM = accounts.oauth.createDirectChannel(serverId: serverId, firstUserId: humanTwinId, secondUserId: grace)
+    accounts.oauth.removeChannelHuman(channelId: humanDM, userId: grace)
+    accounts.oauth.addChannelAgent(channelId: humanDM, agentId: grace)
     for member in [humanTwinId, grace] {
         accounts.addPostableChannel(serverId: serverId, channelId: humanDM, memberId: member, kind: "dm", name: "dm")
     }
     let humanMsg = accounts.oauth.createMessageRecord(channelId: humanDM, content: "from the human Twin", senderId: humanTwinId).id
 
     let agentDM = accounts.oauth.createDirectChannel(serverId: serverId, firstUserId: grace, secondUserId: agentTwin)
+    accounts.oauth.removeChannelHuman(channelId: agentDM, userId: grace)
+    accounts.oauth.removeChannelHuman(channelId: agentDM, userId: agentTwin)
+    accounts.oauth.addChannelAgent(channelId: agentDM, agentId: grace)
+    accounts.oauth.addChannelAgent(channelId: agentDM, agentId: agentTwin)
     for member in [grace, agentTwin] {
         accounts.addPostableChannel(serverId: serverId, channelId: agentDM, memberId: member, kind: "dm", name: "dm")
     }

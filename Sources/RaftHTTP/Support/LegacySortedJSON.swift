@@ -15,8 +15,8 @@ import RaftShared
 ///   print as lowercase `\u00xx`; every other scalar prints raw;
 /// - an integral double prints without `.0`;
 /// - a non-finite number is unrepresentable (`nil`).
-enum LegacySortedJSON {
-    static func render(_ value: JSONValue) -> String? {
+public enum LegacySortedJSON {
+    public static func render(_ value: JSONValue) -> String? {
         var out = ""
         guard append(value, to: &out) else { return nil }
         return out

@@ -137,7 +137,13 @@ private func expectByteExact(
 
             let commentRef = #"{"attachmentId":"att-1","hostMessageId":"\#(messageId)","hostSource":{"type":"channel","routeKind":"channel","channelId":"\#(channelId)","rootThreadChannelId":null}}"#
             let chips = #"[{"id":"att-1","commentCount":1}]"#
-            let syncRow = #"{"id":"\#(messageId)","channelId":"\#(channelId)","seq":1,"content":"hello \"quoted\"\nline","attachments":\#(chips),"commentRef":\#(commentRef)}"#
+            let persisted = try #require(accounts.messagesAndThreadsStore.humanMessageRows.first { $0.id == messageId })
+            let createdAt = DateText.isoString(persisted.createdAt)
+            let firstReply = try #require(accounts.messagesAndThreadsStore.humanMessageRows.first { $0.id == firstReplyId })
+            let secondReply = try #require(accounts.messagesAndThreadsStore.humanMessageRows.first { $0.id == secondReplyId })
+            let firstReplyAt = DateText.isoString(firstReply.createdAt)
+            let secondReplyAt = DateText.isoString(secondReply.createdAt)
+            let syncRow = #"{"id":"\#(messageId)","channelId":"\#(channelId)","seq":1,"content":"hello \"quoted\"\nline","attachments":\#(chips),"commentRef":\#(commentRef),"senderId":"\#(ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\#(createdAt)","randomId":null,"threadId":"\#(threadId)","reactions":[{"emoji":"👍","count":1,"reactorIds":["unknown-user"],"reactorNames":["Unknown user"]}],"mentions":[{"type":"user","id":"\#(peerId)","name":""}],"senderName":"inbox-bytes-owner","senderHandle":"inbox-bytes-owner","senderDisplayName":"inbox-bytes-owner","conversationContext":{"channelType":"channel"}}"#
 
             let sync = try await client.send(
                 .get,
@@ -147,8 +153,8 @@ private func expectByteExact(
             expectByteExact(sync, status: .ok, body: "[\(syncRow)]")
 
             let window = #"{"schemaVersion":1,"domain":"receiver_visible_messages_v1","serverId":"\#(serverId)","receiverKind":"user","receiverId":"\#(ownerId)","scopeId":"\#(channelId)","coveredFromSeq":1,"coveredAfterSeq":0,"coveredThroughSeq":1,"remoteHighWaterSeq":1,"hasGap":false,"hasNewer":false,"completeThroughLatest":true}"#
-            let row = #"{"id":"\#(messageId)","senderId":"\#(ownerId)","senderType":"user","senderMembershipStatus":"active","content":"hello \"quoted\"\nline","attachments":\#(chips),"reactions":[{"emoji":"👍","count":1,"reactorIds":["unknown-user"],"reactorNames":["Unknown user"]}],"mentions":[{"type":"user","id":"\#(peerId)","name":""}],"commentRef":\#(commentRef)}"#
-            let summaries = #"{"\#(messageId)":{"replyCount":2,"latestReplies":[{"preview":"first reply"},{"preview":"second reply"}]}}"#
+            let row = #"{"id":"\#(messageId)","seq":1,"senderId":"\#(ownerId)","senderType":"user","senderMembershipStatus":"active","messageType":"chat","content":"hello \"quoted\"\nline","createdAt":"\#(createdAt)","attachments":\#(chips),"reactions":[{"emoji":"👍","count":1,"reactorIds":["unknown-user"],"reactorNames":["Unknown user"]}],"mentions":[{"type":"user","id":"\#(peerId)","name":""}],"commentRef":\#(commentRef),"channelId":"\#(channelId)","senderAvatarUrl":null,"randomId":null,"threadId":"\#(threadId)","senderName":"inbox-bytes-owner","senderHandle":"inbox-bytes-owner","senderDisplayName":"inbox-bytes-owner","conversationContext":{"channelType":"channel"}}"#
+            let summaries = #"{"\#(messageId)":{"replyCount":2,"latestReplies":[{"messageId":"\#(firstReplyId)","seq":2,"preview":"first reply","senderId":"\#(ownerId)","senderType":"user","senderAvatarUrl":null,"createdAt":"\#(firstReplyAt)","senderName":"inbox-bytes-owner","senderDisplayName":"inbox-bytes-owner"},{"messageId":"\#(secondReplyId)","seq":3,"preview":"second reply","senderId":"\#(ownerId)","senderType":"user","senderAvatarUrl":null,"createdAt":"\#(secondReplyAt)","senderName":"inbox-bytes-owner","senderDisplayName":"inbox-bytes-owner"}],"threadChannelId":"\#(threadId)","lastReplyAt":"\#(secondReplyAt)","participantIds":["\#(ownerId)"],"unreadCount":0,"firstUnreadMessageId":null,"followed":false}}"#
             let page = #"{"messages":[\#(row)],"historyLimited":false,"messageWindow":\#(window),"threadSummariesByParentMessageId":\#(summaries)}"#
             let pageResponse = try await client.send(
                 .get,
@@ -198,7 +204,9 @@ private func expectByteExact(
             let headers = inboxByteHeaders(token)
 
             let commentRef = #"{"attachmentId":"att-1","hostMessageId":"\#(messageId)","hostSource":{"type":"channel","routeKind":"channel","channelId":"\#(channelId)","rootThreadChannelId":null}}"#
-            let row = #"{"id":"\#(messageId)","channelId":"\#(channelId)","seq":1,"content":"hello \"quoted\"\nline","attachments":[{"id":"att-1","commentCount":1}],"commentRef":\#(commentRef)}"#
+            let persisted = try #require(accounts.messagesAndThreadsStore.humanMessageRows.first { $0.id == messageId })
+            let createdAt = DateText.isoString(persisted.createdAt)
+            let row = #"{"id":"\#(messageId)","channelId":"\#(channelId)","seq":1,"content":"hello \"quoted\"\nline","attachments":[{"id":"att-1","commentCount":1}],"commentRef":\#(commentRef),"senderId":"\#(ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\#(createdAt)","randomId":null,"threadId":null,"reactions":[{"emoji":"👍","count":1,"reactorIds":["unknown-user"],"reactorNames":["Unknown user"]}],"mentions":[{"type":"user","id":"\#(peerId)","name":""}],"senderName":"inbox-bytes-owner","senderHandle":"inbox-bytes-owner","senderDisplayName":"inbox-bytes-owner","conversationContext":{"channelType":"channel"}}"#
             let broadcast = try await client.send(
                 .get,
                 headers: headers,
@@ -214,7 +222,8 @@ private func expectByteExact(
             )
 
             let anonymous = try await client.get(URI(string: "/api/channels/inbox/done"), headers: HTTPFields())
-            expectByteExact(anonymous, status: .unauthorized, body: #"{"error":"Unauthorized"}"#)
+            expectByteExact(anonymous, status: .unauthorized, body: #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(anonymous.headers[.cacheControl] == "private, no-store")
         }
     }
 }

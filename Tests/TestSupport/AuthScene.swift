@@ -7,8 +7,9 @@ public struct AuthScene: Sendable {
     public let mobile: AuthMobileFixture
     public let invites: AuthInviteFixture
 
-    public init() {
+    public init(signingSecret: String = AuthJWTFixture.socialSigningSecret) {
         let profiles = AuthProfileStore()
+        profiles.state.withLock { $0.configSurface.oauthDeployment.socialAuthStateSecret = signingSecret }
         let notifications = NotificationsStore()
         let productEvents = ProductEventStore()
         let inboxFacts = InboxFactStore()

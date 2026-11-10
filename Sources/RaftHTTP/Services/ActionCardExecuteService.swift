@@ -120,7 +120,8 @@ public struct ActionCardExecuteService: Sendable {
                     channelId: task.channelId,
                     title: task.title,
                     status: task.status,
-                    taskNumber: task.taskNumber
+                    taskNumber: task.taskNumber,
+                    description: task.description
                 )
             }
         )
@@ -345,12 +346,22 @@ public struct ActionCardExecuteService: Sendable {
             }
         }
 
+        let mentionSurface = try MessageMentionMarkdown.parse(content)
         let channelId = try resolveSendChannel(
             trimmed: trimmed,
             identity: identity
         )
 
         return try cards.withSendCommit { () throws -> any JSONBodyConvertible in
+            // The outer fast replay check can race another send. Recheck under
+            // the same commit gate that appends the message and stores its receipt.
+            if let sendReceiptKey, let receipt = cards.sendReceipt(key: sendReceiptKey) {
+                if receipt.target != trimmed { throw AgentSendError.idempotencyKeyReused(mismatch: "target") }
+                if receipt.content != content { throw AgentSendError.idempotencyKeyReused(mismatch: "content") }
+                if receipt.attachmentIds != attachmentIds { throw AgentSendError.idempotencyKeyReused(mismatch: "attachments") }
+                return AgentSendReceiptResponse(messageId: receipt.messageId, messageSeq: receipt.messageSeq,
+                    channelId: messages.channelId(forMessageId: receipt.messageId) ?? "", content: receipt.content)
+            }
             if let channel = channels.postableChannels[channelId],
                channel.name.hasPrefix("migration-receipt-") {
                 throw AgentSendError.migrationReceiptReadOnly
@@ -417,8 +428,6 @@ public struct ActionCardExecuteService: Sendable {
             }
             let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
 
-            var mentionExemption: (messageId: String, handle: String)?
-            var mentionExemptionMessageCount = 0
             if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
                 let snapshot = messages.sendFreshnessSnapshot(
                     channelId: channelId,
@@ -432,7 +441,9 @@ public struct ActionCardExecuteService: Sendable {
                     guard message.channelId == storageChannelId else { return nil }
                     return (message.seq, message)
                 }
-                let latestFromOthers = rows.last { $0.message.senderId != identity.agentId }?.seq ?? 0
+                let latestFromOthers = rows.last {
+                    $0.message.senderType != "agent" || $0.message.senderId != identity.agentId
+                }?.seq ?? 0
                 let threadParentSeq = conversation?.kind == "thread"
                     ? (conversation?.parentMessageId.flatMap { parentId in
                         snapshot.rows.first { $0.id == parentId }?.seq
@@ -460,7 +471,7 @@ public struct ActionCardExecuteService: Sendable {
                     || boundarySource == "client_seen_exact"
                 let newer = rows.filter {
                     $0.seq > boundarySeq
-                        && $0.message.senderId != identity.agentId
+                        && ($0.message.senderType != "agent" || $0.message.senderId != identity.agentId)
                         && !effectiveExactSeqs.contains($0.seq)
                         && !dependencies.messageSuppressed($0.message, identity.agentId)
                         && !dependencies.selfCausedExempt($0.message, identity.agentId)
@@ -470,6 +481,7 @@ public struct ActionCardExecuteService: Sendable {
                         $0.messageId == entry.message.id
                             && $0.targetType == "agent"
                             && $0.targetId == identity.agentId
+                            && ($0.notifiableAtSend || $0.notifiedAt != nil)
                     } ? 1 : 0)
                 }
                 let boundaryMessageId: String? = boundarySeq > 0
@@ -477,21 +489,7 @@ public struct ActionCardExecuteService: Sendable {
                         ? conversation?.parentMessageId
                         : rows.first { $0.seq == boundarySeq }?.message.id)
                     : nil
-                let legacyReadSeq = snapshot.readCursor.seq
-                let mentionFacts: [(messageId: String, handle: String)] = newer.compactMap { entry in
-                    guard let mention = snapshot.mentions.first(where: {
-                        $0.messageId == entry.message.id
-                            && $0.targetType == "agent"
-                            && $0.targetId == identity.agentId
-                            && $0.senderId == "system"
-                    }) else { return nil }
-                    return (entry.message.id, mention.handle)
-                }
-                if boundarySeq > 0, legacyReadSeq == boundarySeq, !mentionFacts.isEmpty {
-                    mentionExemption = mentionFacts.first
-                    mentionExemptionMessageCount = newer.count
-                }
-                if let latestSeq = newer.last?.seq, mentionExemption == nil {
+                if let latestSeq = newer.last?.seq {
                     let attentionCount = newer.count
                     let shownRows = Array(newer.suffix(3))
                     let shownCount = shownRows.count
@@ -569,60 +567,24 @@ public struct ActionCardExecuteService: Sendable {
                     )
                 }
             }
-            if let exemption = mentionExemption {
-                dependencies.recordAttestedSendEvent(
-                    "e1_exempt",
-                    identity.agentId,
-                    exemption.messageId,
-                    .mentionExemption(
-                        mentionMessageId: exemption.messageId,
-                        mentionedHandle: exemption.handle,
-                        newMessageCountSinceLastSeen: mentionExemptionMessageCount
-                    )
-                )
-                dependencies.recordAgentSendActivity(
-                    identity.agentId,
-                    "Send freshness check passed by mention",
-                    "target: \(trimmed)\nreason: direct @\(exemption.handle) mention\nnew messages: \(mentionExemptionMessageCount)",
-                    nil
-                )
-            }
             if holdForCards {
                 return AgentSendHeldForCardsResponse(holdReasons: cardHoldReasons, cards: cardFields)
             }
 
-            if let threadChannel = channels.postableChannels[channelId],
-               threadChannel.kind == "thread",
-               let parentChannelId = threadChannel.parentChannelId,
-               let parentMessageId = threadChannel.parentMessageId {
-                var followRows: [(serverId: String, userId: String, threadChannelId: String, parentMessageId: String)] = [
-                    (identity.serverId, identity.agentId, channelId, parentMessageId),
-                ]
-                let parentSender = oauth.historyMessages(channelId: parentChannelId).first {
-                    $0.id == parentMessageId
-                }?.senderId
-                    ?? messages.humanMessageRows.first { $0.id == parentMessageId }?.senderId
-                if let parentSender, parentSender != "system",
-                   oauth.memberRole(serverId: identity.serverId, userId: parentSender) != nil {
-                    followRows.append((identity.serverId, parentSender, channelId, parentMessageId))
-                }
-                messages.ensureThreadFollows(followRows)
-            }
-
             let typedMentions = body.mentions
-            if v2, MessageMentionRules.mentionBindingConflict(typedMentions) {
-                throw AgentSendError.mentionBindingConflict
-            }
-            let mentionResolution = dependencies.resolvedMentions(
+            let mentionResolution = try dependencies.resolvedMentions(
                 identity.serverId,
+                channelId,
                 identity.agentId,
                 content,
                 v2 ? typedMentions : [],
-                v2
+                v2,
+                mentionSurface
             )
+            if mentionResolution.bindingConflict { throw AgentSendError.mentionBindingConflict }
             let messageId = makeMessageId()
             let ownSeq: Int
-            switch dependencies.commitAgentSend(
+            switch try dependencies.commitAgentSend(
                 StoredHumanMessage(
                     id: messageId,
                     channelId: channelId,
@@ -631,7 +593,8 @@ public struct ActionCardExecuteService: Sendable {
                     randomId: nil,
                     attachmentIds: attachmentIds,
                     messageType: "chat",
-                    senderType: "agent"
+                    senderType: "agent",
+                    mentions: mentionResolution.mentions.map { StoredMessageMention(type: $0.type, id: $0.id, name: $0.name) }
                 ),
                 attachmentIds,
                 channelId,
@@ -646,6 +609,10 @@ public struct ActionCardExecuteService: Sendable {
             case .committed(let seq):
                 ownSeq = seq
             }
+            // Only a fresh, committed reply can reactivate a sender or eligible
+            // resolved mention. Both receipt replay exits remain above this point.
+            dependencies.recordThreadReplyFollows(messageId, channelId, identity.serverId,
+                                                   identity.agentId, mentionResolution)
             if let sendReceiptKey {
                 cards.setSendReceipt(
                     AgentApiSendReceipt(
@@ -661,18 +628,10 @@ public struct ActionCardExecuteService: Sendable {
             dependencies.recordMemberMentionRows(
                 messageId,
                 channelId,
-                mentionResolution.mentions
+                mentionResolution
             )
 
-            let pendingMentionActions = sendMentionReport(
-                content: content,
-                typedMentions: typedMentions,
-                v2: v2,
-                channelId: channelId,
-                serverId: identity.serverId,
-                senderAgentId: identity.agentId,
-                messageId: messageId
-            )
+            let pendingMentionActions = sendMentionReport(channelId: channelId, messageId: messageId)
             let unresolvedMentionHandles = v2 && !mentionResolution.unresolved.isEmpty
                 ? mentionResolution.unresolved
                 : nil
@@ -811,13 +770,15 @@ public struct ActionCardExecuteService: Sendable {
             case .notFound:
                 throw AgentSendError.dmTargetNotFound
             }
-            guard case .resolved(let peerId, _, _) = resolution else {
+            guard case .resolved(let peerId, let peerKind, let peerName) = resolution else {
                 throw AgentSendError.channelNotFound
             }
             let existing = prepare.dmChannelId(
                 serverId: identity.serverId,
                 agentId: identity.agentId,
-                peerId: peerId
+                peerId: peerId,
+                peerKind: peerKind,
+                peerName: peerName
             )
             let dmChannelId: String
             if let existing {
@@ -826,7 +787,9 @@ public struct ActionCardExecuteService: Sendable {
                 dmChannelId = oauth.createDirectChannel(
                     serverId: identity.serverId,
                     firstUserId: identity.agentId,
-                    secondUserId: peerId
+                    secondUserId: peerId,
+                    firstKind: .agent,
+                    secondKind: peerKind == "agent" ? .agent : .human
                 )
                 dependencies.addPostableChannel(
                     identity.serverId, dmChannelId, identity.agentId, "dm", nil, nil, "dm"
@@ -834,7 +797,7 @@ public struct ActionCardExecuteService: Sendable {
                 dependencies.addPostableChannel(
                     identity.serverId, dmChannelId, peerId, "dm", nil, nil, "dm"
                 )
-                oauth.addChannelHuman(channelId: dmChannelId, userId: peerId)
+                if peerKind == "human" { oauth.addChannelHuman(channelId: dmChannelId, userId: peerId) }
             }
             if let suffix, !suffix.isEmpty {
                 let anchorId = oauth.historyMessages(channelId: dmChannelId).first {
@@ -878,59 +841,18 @@ public struct ActionCardExecuteService: Sendable {
         return false
     }
 
-    /// The sender-only mention facts the sent reply reports: pending actions for
-    /// a non-member agent on v1. The unresolved handles come from the typed
-    /// mention resolution, not this report.
-    private func sendMentionReport(
-        content: String,
-        typedMentions: [MentionInput],
-        v2: Bool,
-        channelId: String,
-        serverId: String,
-        senderAgentId: String,
-        messageId: String
-    ) -> [String] {
-        let handles = MessageMentionRules.mentionHandlesOutsideCode(content)
-        guard !handles.isEmpty else { return [] }
-        var typedByName: [String: (type: String, id: String)] = [:]
-        for mention in typedMentions {
-            typedByName[mention.name] = (mention.type, mention.id)
+    /// The report is a projection of the actual retained false rows, including
+    /// v2 and human targets. Neither a new UUID nor a second name resolver runs.
+    private func sendMentionReport(channelId: String, messageId: String) -> [String] {
+        guard let channel = channels.postableChannel(id: channelId),
+              channel.kind == "channel" || channel.kind == "thread" else { return [] }
+        return messages.state.storedMentions.filter {
+            $0.messageId == messageId && $0.channelId == channelId && !$0.notifiableAtSend && $0.notifiedAt == nil
+        }.map { mention in
+            let avatar = mention.targetType == "agent" ? oauth.agentRuntimeInfo(id: mention.targetId)?.avatarUrl
+                : dependencies.targetAvatar(mention.targetType, mention.targetId)
+            return MessageMentionRules.pendingMentionActionJSON(mention: mention, avatarUrl: avatar, actions: ["notify"])
         }
-        let senderName = oauth.agentRuntimeInfo(id: senderAgentId)?.name ?? ""
-        let channelAgents = Set(oauth.channelAgentIds(channelId: channelId))
-        let serverAgents = oauth.serverAgents(serverId: serverId)
-        var pending: [String] = []
-        var seen = Set<String>()
-        for handle in handles where seen.insert(handle).inserted {
-            if handle == senderName { continue }
-            if let typed = typedByName[handle] {
-                if typed.type == "agent" {
-                    if !serverAgents.contains(where: { $0.id == typed.id }) { continue }
-                    if v2 { continue }
-                    if !channelAgents.contains(typed.id) {
-                        pending.append(MessageMentionRules.pendingMentionActionJSON(
-                            messageId: messageId,
-                            handle: handle,
-                            avatarUrl: oauth.agentRuntimeInfo(id: typed.id)?.avatarUrl
-                        ))
-                    }
-                    continue
-                }
-                continue
-            }
-            if let agent = serverAgents.first(where: { $0.name == handle }) {
-                if v2 { continue }
-                if !channelAgents.contains(agent.id) {
-                    pending.append(MessageMentionRules.pendingMentionActionJSON(
-                        messageId: messageId,
-                        handle: handle,
-                        avatarUrl: agent.avatarUrl
-                    ))
-                }
-                continue
-            }
-        }
-        return pending
     }
 
     // MARK: - Shared task decisions

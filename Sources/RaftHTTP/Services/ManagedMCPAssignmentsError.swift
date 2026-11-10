@@ -25,8 +25,10 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
     case protectedServerRole
     case channelAdminSelfDemote
     case taskNotFound
+    case taskConflict(String)
     case joinChannelToChangeTasks
     case onlyCreatorCanDeleteTask
+    case onlyAdminsCanCloseDeletedTask
     /// `claim` on a task whose channel was deleted.
     case channelDeletedClaimForbidden
     /// A status write other than done/closed/cancelled on a deleted channel.
@@ -45,12 +47,12 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
         case .unauthorized:
             401
         case .jointChannelAdminLimited, .protectedServerRole, .joinChannelToChangeTasks,
-             .onlyCreatorCanDeleteTask, .assistantChannelForbidden:
+             .onlyCreatorCanDeleteTask, .assistantChannelForbidden, .onlyAdminsCanCloseDeletedTask:
             403
         case .parentMessageNotFound, .memberNotFound, .taskNotFound, .messageNotFound:
             404
         case .channelAdminSelfDemote, .channelDeletedClaimForbidden, .channelDeletedTerminalOnly,
-             .onlyAssigneeCanReturnToTodo:
+             .onlyAssigneeCanReturnToTodo, .taskConflict:
             409
         case .invalidChannelMembers, .usersNotInServer, .parentMessageIdRequired, .invalidChannelMember,
              .invalidAgent, .invalidMember, .invalidChannelRole, .invalidTaskStatus,
@@ -77,8 +79,10 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
         case .protectedServerRole: "Server role is managed separately"
         case .channelAdminSelfDemote: "A channel admin cannot demote themselves"
         case .taskNotFound: "Task not found"
-        case .joinChannelToChangeTasks: "Join the channel to change tasks"
+        case .taskConflict(let reason): reason
+        case .joinChannelToChangeTasks: "You must join this channel to modify tasks"
         case .onlyCreatorCanDeleteTask: "Only the task creator can delete it"
+        case .onlyAdminsCanCloseDeletedTask: "Only server admins can close tasks in deleted channels"
         case .channelDeletedClaimForbidden: "This channel was deleted; the task can only be closed"
         case .channelDeletedTerminalOnly: "This channel was deleted; only terminal task statuses are allowed"
         case .onlyAssigneeCanReturnToTodo: "Only the current assignee can return this task to todo"
@@ -105,7 +109,7 @@ public enum ManagedMCPAssignmentsError: DomainError, Equatable {
              .memberNotFound, .taskNotFound, .joinChannelToChangeTasks, .onlyCreatorCanDeleteTask,
              .onlyAssigneeCanReturnToTodo, .invalidTaskStatus, .messageNotFound,
              .repeatedQueryParameter, .detailMustBeFullOrSummary, .limitOutOfRange,
-             .cursorRequiresLimit, .invalidCursor:
+             .cursorRequiresLimit, .invalidCursor, .taskConflict, .onlyAdminsCanCloseDeletedTask:
             nil
         }
     }

@@ -84,12 +84,12 @@ public struct RuntimeFormsAndProbesService: Sendable {
     ]
 
     /// Runtimes that still publish a v1 form definition.
-    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "claude", "cursor", "kimi-sdk"]
+    static let runtimeFormV1Runtimes: Set<String> = ["builtin", "kimi-sdk"]
 
     /// Runtimes whose released form only exists at protocol v2; v1 clients must
     /// see them as having no form at all.
     static let runtimeFormV2Only: Set<String> = [
-        "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
+        "claude", "cursor", "pi", "opencode", "gemini", "codex", "grok", "antigravity", "kimi",
     ]
 
     static let grokBundledModels: [RuntimeModelProbeModel] = [
@@ -139,7 +139,19 @@ public struct RuntimeFormsAndProbesService: Sendable {
         if agent.runtime != "antigravity", let model = config.model {
             values.model = model.id ?? model.name
         }
-        var writeOnly: [String] = []
+        if agent.runtime == "builtin" {
+            guard let provider = config.provider, provider.kind == "preset" || provider.kind == "gateway" else {
+                throw RuntimeFormsAndProbesError.noRuntimeForm
+            }
+            values.providerId = provider.providerId ?? ""
+            values.model = config.model?.id ?? config.model?.name ?? ""
+            values.loadLocalPlugins = config.loadLocalPlugins == true
+            if provider.kind == "gateway" {
+                values.baseUrl = provider.baseUrl ?? ""
+                values.supportsImageInput = provider.supportsImageInput == true
+            }
+        }
+        var writeOnly: [String] = agent.runtime == "builtin" ? ["/apiKey"] : []
         if agent.runtime == "claude" {
             values.provider = config.provider?.kind ?? "default"
             values.apiUrl = config.provider?.apiUrl
@@ -479,341 +491,11 @@ public struct RuntimeFormsAndProbesService: Sendable {
         return .selectV1(runtimeId: runtimeId, schemaVersion: expected)
     }
 
-    // MARK: - Runtime form option sources
-
-    /// `GET .../runtime-form-definitions/:runtimeId/option-sources/:sourceId`
-    /// (v1) and `GET .../runtime-forms/v2/:runtimeId/option-sources/:sourceId`
-    /// (v2). Static sources never probe the Computer; the model sources of
-    /// probed runtimes do.
-    public func runtimeFormOptionSource(
-        authorization: String?,
-        serverId: String,
-        machineId: String,
-        runtimeId: String,
-        sourceId: String,
-        protocolVersion: Int,
-        schemaVersion: String?,
-        language: String?,
-        refresh: Bool = false
-    ) throws -> RuntimeOptionSourceResponse {
-        _ = try authorizedMachine(
-            authorization: authorization,
-            serverId: serverId,
-            machineId: machineId,
-            purpose: "inspect runtime form option sources"
-        )
-        let expected = try expectedSchema(
-            runtimeId: runtimeId,
-            protocolVersion: protocolVersion,
-            schemaVersion: schemaVersion,
-            unknown: .runtimeFormOptionSourceNotFound
-        )
-        let chinese = Self.prefersChinese(language)
-
-        if protocolVersion == 2 {
-            if let source = try v2OptionSource(
-                machineId: machineId,
-                runtimeId: runtimeId,
-                sourceId: sourceId,
-                expected: expected,
-                refresh: refresh
-            ) {
-                return source
-            }
-        }
-
-        if sourceId == "model", runtimeId == "kimi-sdk" {
-            return try kimiSDKSource(
-                resolution: probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
-                protocolVersion: 1,
-                expected: expected
-            )
-        }
-        if sourceId == "model", runtimeId == "builtin" {
-            return try builtinModelSource(protocolVersion: 1, expected: expected)
-        }
-        switch sourceId {
-        case "provider" where runtimeId == "builtin":
-            return .builtinProvider(schemaVersion: expected, chinese: chinese)
-        case "model":
-            let cached = dependencies.machines.runtimeModels(machineId: machineId, runtime: runtimeId)
-            return .cachedModels(
-                schemaVersion: expected,
-                models: cached.map { RuntimeModelChoice(value: $0.id, label: $0.label) }
-            )
-        default:
-            throw RuntimeFormsAndProbesError.unknownOptionSource
-        }
-    }
-
-    /// The v2 sources that answer without falling through to the shared
-    /// legacy tail; `nil` leaves the request to that tail.
-    private func v2OptionSource(
-        machineId: String,
-        runtimeId: String,
-        sourceId: String,
-        expected: String,
-        refresh: Bool
-    ) throws -> RuntimeOptionSourceResponse? {
-        if runtimeId == "antigravity" {
-            throw RuntimeFormsAndProbesError.unknownOptionSource
-        }
-        if sourceId == "provider", runtimeId == "pi" {
-            return .catalog(RuntimeFormCatalog.optionSources["pi/provider"] ?? "")
-        }
-        if sourceId == "providerModel", runtimeId == "pi" {
-            return .catalog(RuntimeFormCatalog.optionSources["pi/providerModel"] ?? "")
-        }
-        if sourceId == "model", runtimeId == "kimi" || runtimeId == "gemini" {
-            return .catalog(RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "")
-        }
-        if sourceId == "model", runtimeId == "kimi-sdk" {
-            return try kimiSDKSource(
-                resolution: probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh),
-                protocolVersion: 2,
-                expected: expected
-            )
-        }
-        if sourceId == "model", runtimeId == "builtin" {
-            return try builtinModelSource(protocolVersion: 2, expected: expected)
-        }
-        if sourceId == "provider", runtimeId == "claude" {
-            return .catalog(RuntimeFormCatalog.optionSources["claude/provider"] ?? "")
-        }
-        if sourceId == "model", runtimeId == "claude" || runtimeId == "cursor" {
-            switch probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh) {
-            case .live(let models, let defaultModel):
-                return .model(RuntimeModelSourceBody(
-                    runtimeId: runtimeId,
-                    schemaVersion: expected,
-                    options: models.map { RuntimeProbeOption($0, reasoning: runtimeId == "claude") },
-                    defaultValue: defaultModel ?? models.first?.id ?? "",
-                    customValueAllowed: true,
-                    status: "live"
-                ))
-            case .notLive(let reason):
-                return .catalog(Self.catalogWithReason(
-                    RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? "",
-                    reason: reason
-                ))
-            }
-        }
-        if sourceId == "model", ["opencode", "codex", "grok", "pi"].contains(runtimeId) {
-            switch probeResolution(machineId: machineId, runtimeId: runtimeId, refresh: refresh) {
-            case .live(let models, let defaultModel):
-                let reasoning = runtimeId == "codex" || runtimeId == "grok" || runtimeId == "pi"
-                return .model(RuntimeModelSourceBody(
-                    runtimeId: runtimeId,
-                    schemaVersion: expected,
-                    options: models.map { RuntimeProbeOption($0, reasoning: reasoning) },
-                    defaultValue: defaultModel ?? models.first?.id ?? "",
-                    customValueAllowed: runtimeId == "codex" || runtimeId == "pi" ? true : nil,
-                    status: runtimeId == "opencode" ? nil : "live"
-                ))
-            case .notLive(let reason):
-                switch runtimeId {
-                case "opencode":
-                    return .catalog(RuntimeFormCatalog.optionSources["opencode/model"] ?? "")
-                case "grok":
-                    return .model(RuntimeModelSourceBody(
-                        runtimeId: "grok",
-                        schemaVersion: expected,
-                        options: Self.grokBundledModels.map { RuntimeProbeOption($0, reasoning: true) },
-                        defaultValue: "grok-4.5",
-                        status: "fallback",
-                        reason: reason,
-                        retryable: Self.runtimeReasonRetryable(reason)
-                    ))
-                default:
-                    let raw = RuntimeFormCatalog.optionSources["\(runtimeId)/model"] ?? ""
-                    if reason == "missing_config" { return .catalog(raw) }
-                    return .catalog(Self.catalogWithReason(raw, reason: reason))
-                }
-            }
-        }
-        return nil
-    }
-
-    /// The shipped `missing_config` source with the probe's reason and
-    /// retryability substituted into the rendered catalog text.
-    private static func catalogWithReason(_ raw: String, reason: String) -> String {
-        raw
-            .replacingOccurrences(of: "\"reason\": \"missing_config\"", with: "\"reason\": \"\(reason)\"")
-            .replacingOccurrences(of: "\"retryable\": false", with: "\"retryable\": \(runtimeReasonRetryable(reason))")
-    }
-
-    // MARK: - Probe resolution
-
-    /// How a machine's model probe resolved for one runtime.
-    enum ProbeResolution {
-        case live(models: [RuntimeModelProbeModel], default: String?)
-        case notLive(reason: String)
-    }
-
-    private func probeResolution(machineId: String, runtimeId: String, refresh: Bool) -> ProbeResolution {
-        guard dependencies.machines.machineRoutedLocally?(machineId) ?? true else {
-            return .notLive(reason: "machine_offline")
-        }
-        let outcome: RuntimeModelProbeOutcome
-        if let probe = dependencies.machines.machineRuntimeModelProbe {
-            outcome = probe(machineId, runtimeId, refresh)
-        } else {
-            let models = dependencies.machines.runtimeModels(machineId: machineId, runtime: runtimeId)
-            outcome = models.isEmpty
-                ? .missingConfig
-                : .live(
-                    models: models.map { RuntimeModelProbeModel(id: $0.id, label: $0.label) },
-                    default: models.first?.id
-                )
-        }
-        switch outcome {
-        case .live(let models, let defaultModel), .models(let models, let defaultModel):
-            return models.isEmpty ? .notLive(reason: "no_models") : .live(models: models, default: defaultModel)
-        case .missingConfig:
-            return .notLive(reason: "missing_config")
-        case .noModels:
-            return .notLive(reason: "no_models")
-        case .unsupported:
-            return .notLive(reason: "unsupported")
-        case .error(let code, _):
-            if code == "detect_timeout" { return .notLive(reason: "probe_timeout") }
-            if code == "computer_offline" { return .notLive(reason: "machine_offline") }
-            return .notLive(reason: "probe_failed")
-        case .failed:
-            return .notLive(reason: "probe_failed")
-        }
-    }
-
-    private static func runtimeReasonRetryable(_ reason: String) -> Bool {
-        ["probe_timeout", "probe_failed", "machine_offline", "no_models"].contains(reason)
-    }
-
-    private func kimiSDKSource(
-        resolution: ProbeResolution,
-        protocolVersion: Int,
-        expected: String
-    ) throws -> RuntimeOptionSourceResponse {
-        let managed = RuntimeModelProbeModel(id: "kimi-code/kimi-for-coding", label: "Kimi for Coding (default)")
-        func body(
-            options: [RuntimeProbeOption],
-            defaultValue: String,
-            status: String? = nil,
-            reason: String? = nil,
-            retryable: Bool? = nil
-        ) -> RuntimeOptionSourceResponse {
-            .model(RuntimeModelSourceBody(
-                runtimeId: "kimi-sdk",
-                schemaVersion: expected,
-                options: options,
-                defaultValue: defaultValue,
-                status: status,
-                reason: reason,
-                retryable: retryable
-            ))
-        }
-        switch resolution {
-        case .live(let models, let defaultModel):
-            return body(
-                options: models.map { RuntimeProbeOption($0, reasoning: true) },
-                defaultValue: defaultModel ?? models.first?.id ?? "",
-                status: protocolVersion == 2 ? "live" : nil
-            )
-        case .notLive(let reason):
-            let retryable = Self.runtimeReasonRetryable(reason)
-            let fallbackReason = reason == "missing_config" || reason == "machine_offline"
-            if protocolVersion == 2 {
-                if fallbackReason {
-                    return body(
-                        options: [RuntimeProbeOption(managed, reasoning: true)],
-                        defaultValue: "kimi-code/kimi-for-coding",
-                        status: "fallback",
-                        reason: reason,
-                        retryable: retryable
-                    )
-                }
-                return body(
-                    options: [],
-                    defaultValue: "",
-                    status: "unavailable",
-                    reason: reason,
-                    retryable: retryable
-                )
-            }
-            if fallbackReason {
-                return body(
-                    options: [RuntimeProbeOption(managed, reasoning: true)],
-                    defaultValue: "kimi-code/kimi-for-coding"
-                )
-            }
-            switch reason {
-            case "no_models":
-                throw RuntimeFormsAndProbesError.kimiSDKSource(code: "runtime_model_source_no_models")
-            case "unsupported":
-                throw RuntimeFormsAndProbesError.kimiSDKSource(code: "runtime_model_source_unsupported")
-            default:
-                throw RuntimeFormsAndProbesError.kimiSDKSource(code: "runtime_model_source_error")
-            }
-        }
-    }
-
-    private func builtinModelSource(
-        protocolVersion: Int,
-        expected: String
-    ) throws -> RuntimeOptionSourceResponse {
-        let mode = dependencies.machines.builtinCatalogMode
-        if mode == "legacy" {
-            throw RuntimeFormsAndProbesError.builtinCatalogCapabilityRequired
-        }
-        let bundled = BuiltinModelSourceBody.bundledGroups()
-        if protocolVersion == 1 {
-            if mode == "timeout" {
-                throw RuntimeFormsAndProbesError.builtinCatalogUnavailable
-            }
-            let groups = mode == "offline" ? bundled : liveBuiltinGroups(bundled: bundled)
-            return .builtinModel(BuiltinModelSourceBody(schemaVersion: expected, groups: groups))
-        }
-        switch mode {
-        case "timeout":
-            return .builtinModel(BuiltinModelSourceBody(
-                schemaVersion: expected,
-                groups: [],
-                status: "unavailable",
-                reason: "probe_timeout",
-                retryable: true
-            ))
-        case "offline":
-            return .builtinModel(BuiltinModelSourceBody(
-                schemaVersion: expected,
-                groups: bundled,
-                status: "fallback",
-                reason: "machine_offline",
-                retryable: true
-            ))
-        default:
-            return .builtinModel(BuiltinModelSourceBody(
-                schemaVersion: expected,
-                groups: liveBuiltinGroups(bundled: bundled),
-                status: "live"
-            ))
-        }
-    }
-
-    private func liveBuiltinGroups(
-        bundled: [BuiltinModelSourceBody.Group]
-    ) -> [BuiltinModelSourceBody.Group] {
-        let models = dependencies.machines.builtinRuntimeModels()
-        guard !models.isEmpty else { return bundled }
-        return [BuiltinModelSourceBody.Group(
-            provider: "deepseek",
-            models: models.map { RuntimeModelChoice(value: $0.id, label: $0.label) }
-        )]
-    }
-
     // MARK: - Shared guards
 
     /// The session, membership and machine-authority checks every runtime-form
     /// route runs in the same order: `401`, server `404`, Computer `404`, `403`.
-    private func authorizedMachine(
+    func authorizedMachine(
         authorization: String?,
         serverId: String,
         machineId: String,
@@ -836,7 +518,7 @@ public struct RuntimeFormsAndProbesService: Sendable {
 
     /// The schema version a runtime form publishes, refusing an unknown runtime,
     /// a v2-only runtime asked at v1 and a stale v1 schema version.
-    private func expectedSchema(
+    func expectedSchema(
         runtimeId: String,
         protocolVersion: Int,
         schemaVersion: String?,
@@ -878,36 +560,52 @@ public struct RuntimeFormsAndProbesService: Sendable {
         guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
             throw RuntimeFormsAndProbesError.computerNotFound
         }
-        let installed = Set(machine.runtimes)
-        let grokEnabled = dependencies.agents.isGrokRuntimeEnabled(serverId: serverId)
         guard role == "owner" || role == "admin" || machine.userId == userId else {
             throw RuntimeFormsAndProbesError.editMachinesRequired(purpose: "inspect runtime options")
         }
-        let catalog: [(id: String, binary: String)] = [
-            ("claude", "claude"),
-            ("codex", "codex"),
-            ("builtin", ""),
-            ("kimi-sdk", ""),
-            ("cursor", "cursor-agent"),
-            ("opencode", "opencode"),
-            ("pi", "pi"),
-            ("grok", "grok"),
+        return MachineRuntimeOptionsResponse(machineId: machine.id, options: Self.admissionOptions(
+            installedRuntimeIds: machine.runtimes, currentRuntime: nil,
+            grokEnabled: dependencies.agents.evaluateFeatureFlag(
+                key: "grok_runtime_v0", userId: userId, serverId: serverId, platform: nil,
+                client: .init(os: nil, buildNumber: nil, buildType: nil)
+            ).enabled,
+            includeRuntimeFormV2: includeRuntimeFormV2
+        ))
+    }
+
+    /// Registered local v2 definitions comprise the static JSON entries and
+    /// the independently built builtin form. A v1 reference is not a v2 gate.
+    static func hasRegisteredRuntimeFormV2(_ runtimeId: String) -> Bool {
+        runtimeId == "builtin" || RuntimeFormCatalog.v2Forms[runtimeId] != nil
+    }
+
+    /// Pinned runtimeCatalog/runtimeAdmissionService projection. No capability is
+    /// inferred from a version string or a connection; inventory remains factual.
+    static func admissionOptions(installedRuntimeIds: [String], currentRuntime: String?,
+                                 grokEnabled: Bool, includeRuntimeFormV2: Bool) -> [MachineRuntimeOptionsResponse.Option] {
+        let catalog: [(id: String, binary: String, deprecated: Bool)] = [
+            ("claude", "claude", false), ("codex", "codex", false), ("grok", "grok", false),
+            ("builtin", "", false), ("antigravity", "agy", true), ("kimi-sdk", "", false),
+            ("kimi", "kimi", true), ("copilot", "copilot", true), ("cursor", "cursor-agent", false),
+            ("gemini", "gemini", true), ("opencode", "opencode", false), ("pi", "pi", false),
         ]
-        let options = catalog.filter { $0.id != "grok" || grokEnabled }.map { runtime in
-            let capability = installed.contains(runtime.id)
-                ? "available"
-                : (runtime.binary.isEmpty ? "update_required" : "not_installed")
-            return MachineRuntimeOptionsResponse.Option(
-                runtimeId: runtime.id,
-                capabilityStatus: capability,
-                canSelectInThisContext: capability == "available",
-                runtimeFormV2: includeRuntimeFormV2 && RuntimeFormCatalog.v2Forms[runtime.id] != nil,
-                formDefinitionSchemaVersion: !includeRuntimeFormV2 && Self.runtimeFormV1Runtimes.contains(runtime.id)
-                    ? (Self.runtimeFormSchemas[runtime.id] ?? "")
-                    : nil
-            )
-        }
-        return MachineRuntimeOptionsResponse(machineId: machine.id, options: options)
+        let installed = Set(installedRuntimeIds)
+        return catalog.filter { !$0.deprecated || $0.id == currentRuntime }
+            .filter { $0.id != "grok" || grokEnabled || $0.id == currentRuntime }
+            .map { runtime in
+                let current = runtime.id == currentRuntime
+                let reason: String? = current && runtime.deprecated ? "deprecated"
+                    : (current && runtime.id == "grok" && !grokEnabled ? "feature_flag_off" : nil)
+                let capability = installed.contains(runtime.id) ? "available"
+                    : (runtime.binary.isEmpty ? "update_required" : "not_installed")
+                // v1 refs and opt-in v2 markers are independent. In particular,
+                // onboarding asks for the marker but deliberately stays on v1.
+                return .init(runtimeId: runtime.id, capabilityStatus: capability,
+                    canSelectInThisContext: capability == "available",
+                    runtimeFormV2: includeRuntimeFormV2 && Self.hasRegisteredRuntimeFormV2(runtime.id),
+                    formDefinitionSchemaVersion: runtimeFormV1Runtimes.contains(runtime.id) ? runtimeFormSchemas[runtime.id] : nil,
+                    current: current, admissionReason: reason)
+            }
     }
 
     // MARK: - GET .../runtime-models/:runtime
@@ -966,44 +664,70 @@ public struct RuntimeFormsAndProbesService: Sendable {
 
     // MARK: - GET .../workspaces
 
-    /// The agent workspaces one Computer hosts for one Server.
+    /// Scan the actual Computer filesystem; there is no agent-derived fallback.
+    /// Only short committed reads surround the RPC wait, including its failure.
     public func machineWorkspaces(
         authorization: String?,
         serverId: String,
-        machineId: String
-    ) throws -> MachineWorkspacesResponse {
-        guard let userId = dependencies.sessionUserId(authorization) else {
-            throw RuntimeFormsAndProbesError.unauthorized
+        machineId: String,
+        persistence: BusinessPersistenceRuntime? = nil
+    ) async throws -> MachineWorkspacesResponse {
+        func authorize() throws {
+            guard let userId = dependencies.sessionUserId(authorization) else {
+                throw RuntimeFormsAndProbesError.unauthorized
+            }
+            guard dependencies.oauth.activeRegularServerMember(serverId: serverId, userId: userId),
+                  let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
+                throw RuntimeFormsAndProbesError.notAMember
+            }
+            guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
+                throw RuntimeFormsAndProbesError.machineNotFound
+            }
+            guard role == "owner" || role == "admin" || machine.userId == userId else {
+                throw RuntimeFormsAndProbesError.workspacesForbidden
+            }
         }
-        guard let role = dependencies.oauth.memberRole(serverId: serverId, userId: userId) else {
-            throw RuntimeFormsAndProbesError.notAMember
+        let binding: (MachineQueryAuthority, any MachineQuerying)
+        do {
+            binding = try machineQueryRead(persistence: persistence) {
+                try authorize()
+                guard dependencies.machines.machineRoutedLocally?(machineId) ?? true,
+                      let port = dependencies.machines.machineQueries else { throw MachineQueryError.offline }
+                return (try machineQueryAuthority(agents: dependencies.agents, machineId: machineId, serverId: serverId), port)
+            }
+        } catch is MachineQueryError { throw MachineWorkspaceScanFailure() }
+        let directories: [MachineWorkspaceDirectory]
+        do { directories = try await binding.1.machineWorkspaces(authority: binding.0) }
+        catch is CancellationError { throw CancellationError() }
+        catch {
+            try machineQueryRead(persistence: persistence) {
+                try authorize()
+                guard dependencies.machines.machineRoutedLocally?(machineId) ?? true,
+                      (try? machineQueryAuthority(agents: dependencies.agents, machineId: machineId, serverId: serverId)) == binding.0 else {
+                    throw MachineWorkspaceScanFailure()
+                }
+            }
+            throw MachineWorkspaceScanFailure()
         }
-        guard let machine = dependencies.machines.machine(id: machineId, serverId: serverId) else {
-            throw RuntimeFormsAndProbesError.machineNotFound
+        return try machineQueryRead(persistence: persistence) {
+            try authorize()
+            guard dependencies.machines.machineRoutedLocally?(machineId) ?? true,
+                  (try? machineQueryAuthority(agents: dependencies.agents, machineId: machineId, serverId: serverId)) == binding.0 else {
+                throw MachineWorkspaceScanFailure()
+            }
+            let rows = directories.compactMap { workspaceEntry -> MachineWorkspacesResponse.Row? in
+                // Own live OR soft-deleted identity is the only ownership proof.
+                // Current machine bindings and cached deletion marks prove no FS fact.
+                guard let agent = dependencies.oauth.agentRuntimeInfo(id: workspaceEntry.directoryName),
+                      agent.serverId == serverId else { return nil }
+                let status = agent.deleted ? "deleted" : (agent.status == "inactive" ? "stopped" : "active")
+                let name = !agent.displayName.isEmpty ? agent.displayName : (agent.name.isEmpty ? nil : agent.name)
+                return .init(directoryName: workspaceEntry.directoryName, totalSizeBytes: workspaceEntry.totalSizeBytes,
+                    lastModified: workspaceEntry.lastModified, fileCount: workspaceEntry.fileCount, displayPath: workspaceEntry.displayPath,
+                    status: status, agentName: name, agentStatus: agent.status)
+            }
+            return MachineWorkspacesResponse(rows: rows)
         }
-        let canManage = role == "owner" || role == "admin" || machine.userId == userId
-        let agentIds = dependencies.agents.agentIds(boundToMachine: machineId)
-        let deleted = dependencies.machines.deletedWorkspaceKeys()
-        guard canManage else {
-            throw RuntimeFormsAndProbesError.workspacesForbidden
-        }
-        let epoch = RuntimeUsageISO.string(Date(timeIntervalSince1970: 0))
-        let rows = agentIds.compactMap { agentId -> MachineWorkspacesResponse.Row? in
-            guard let agent = dependencies.oauth.agentRuntimeInfo(id: agentId),
-                  agent.serverId == serverId
-            else { return nil }
-            if deleted.contains("\(machineId)\n\(agentId)") { return nil }
-            let agentStatus = dependencies.agents.agentStatus(agentId: agentId) ?? "inactive"
-            let status = agent.deleted ? "deleted" : (agentStatus == "inactive" ? "stopped" : "active")
-            return MachineWorkspacesResponse.Row(
-                directoryName: agent.id,
-                lastModified: epoch,
-                status: status,
-                agentName: agent.displayName.isEmpty ? agent.name : agent.displayName,
-                agentStatus: agentStatus
-            )
-        }
-        return MachineWorkspacesResponse(rows: rows)
     }
 
     // MARK: - Runtime account usage

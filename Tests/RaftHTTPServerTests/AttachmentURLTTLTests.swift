@@ -1,91 +1,53 @@
-import TestSupport
 import Foundation
 import HTTPTypes
-@testable import RaftHTTP
+import RaftHTTP
 import RaftHTTPServer
+import RaftObjectStorage
 import Testing
 import Vapor
 import VaporTesting
 
-private final class PresignRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [(id: String, ttl: Int)] = []
-
-    func append(_ id: String, _ ttl: Int) {
-        lock.lock()
-        storage.append((id, ttl))
-        lock.unlock()
-    }
-
-    var calls: [(id: String, ttl: Int)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
-    }
-}
-
-@Test func attachmentURLTTLIsFiveMinutesExceptInlineMediaPreview() async throws {
-    let accounts = EmailLoginDirectory()
-    let serverId = "33333333-3333-4333-8333-000001016001"
-    let ownerId = "11111111-1111-4111-8111-000001016001"
-    let ownerEmail = "attachment-ttl-owner@slock.test"
-    accounts.addAccount(id: ownerId, email: ownerEmail, password: "password123")
-    accounts.markEmailVerified(userId: ownerId)
-    accounts.oauth.addOwnedServer(id: serverId, slug: "attachment-ttl", name: "Attachment TTL", ownerId: ownerId)
-    let channel = accounts.oauth.createChannel(serverId: serverId, name: "attachment-ttl-room", creatorUserId: ownerId)
-    accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "attachment-ttl-room")
-    let video = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "clip.mp4", mimeType: "video/mp4", sizeBytes: 42)
-    let audio = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "voice.mp3", mimeType: "audio/mpeg", sizeBytes: 42)
-    let pdf = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "doc.pdf", mimeType: "application/pdf", sizeBytes: 42)
-    let recorder = PresignRecorder()
-    accounts.messagesAndThreadsStore.attachmentPresign = { id, _, ttl in
-        recorder.append(id, ttl)
-        return "https://storage.example.test/\(id)"
-    }
-
-    try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
-        try await app.testing { client in
-            var headers = HTTPFields()
-            headers[.contentType] = "application/json"
-            let login = try await client.send(.post, headers: headers, to: "/api/auth/login") { request in
-                request.body = .init(string: "{\"email\":\"\(ownerEmail)\",\"password\":\"password123\"}")
+/// The production AEAD backend has no plaintext presign capability. These are
+/// published proxy/null-expiry/bytes assertions, not presign TTL evidence.
+@Test(.timeLimit(.minutes(1))) func attachmentProxyURLsHaveNullExpiryAndPreserveDisposition() async throws {
+    try await withSingleURLStorage { storage in
+        let setup = AttachmentPreviewAccounts(storage: storage.storage)
+        try await withApp { app in
+            configure(app, services: singleURLServices(setup.accounts, environment: ["CDN_BASE_URL": "https://cdn.example.test"]))
+            try await app.testing(.running, options: .live(clientOptions: .init(timeout: .seconds(10)))) { client in
+                let videoBytes = Data("synthetic uploaded video bytes".utf8)
+                let audioBytes = Data("synthetic uploaded audio bytes".utf8)
+                let pdfBytes = Data("%PDF-synthetic uploaded bytes".utf8)
+                let video = try await singleURLUpload(client, authorization: setup.authorization, server: setup.serverId,
+                    channel: setup.channelId, filename: "clip.mp4", mime: "video/mp4", bytes: videoBytes)
+                let audio = try await singleURLUpload(client, authorization: setup.authorization, server: setup.serverId,
+                    channel: setup.channelId, filename: "voice.mp3", mime: "audio/mpeg", bytes: audioBytes)
+                let pdf = try await singleURLUpload(client, authorization: setup.authorization, server: setup.serverId,
+                    channel: setup.channelId, filename: "doc.pdf", mime: "application/pdf", bytes: pdfBytes)
+                let cases: [(String, Data, String, String?, Bool)] = [
+                    (video, videoBytes, "?disposition=inline", "inline", true),
+                    (audio, audioBytes, "?disposition=inline", "inline", true),
+                    (video, videoBytes, "?disposition=attachment", "attachment", false),
+                    (video, videoBytes, "?disposition=inline&download=1", "attachment", false),
+                    (video, videoBytes, "", nil, false),
+                    (pdf, pdfBytes, "?disposition=inline", "inline", true),
+                ]
+                for (id, bytes, query, disposition, inline) in cases {
+                    let response = try await client.get(URI(string: "/api/attachments/\(id)/url\(query)"),
+                        headers: singleURLHeaders(setup.authorization, setup.serverId))
+                    #expect(response.status == .ok)
+                    let wire = try await singleURLWire(response)
+                    let parsed = try #require(URLComponents(string: wire.url))
+                    #expect(parsed.host == "127.0.0.1")
+                    #expect(parsed.port == client.port)
+                    #expect(parsed.queryItems?.first { $0.name == "disposition" }?.value == disposition)
+                    let fetched = try await client.get(URI(string: wire.url))
+                    #expect(fetched.status == .ok)
+                    let plaintext = try await attachmentPreviewBody(fetched)
+                    #expect(plaintext == bytes)
+                    #expect(fetched.headers[.contentDisposition]?.hasPrefix(inline ? "inline;" : "attachment;") == true)
+                }
             }
-            let token = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
-            headers[.authorization] = "Bearer \(token)"
-            headers[HTTPField.Name("X-Server-Id")!] = serverId
-            func ttl(_ id: String, _ query: String) async throws -> Int {
-                let before = recorder.calls.count
-                let response = try await client.get(URI(string: "/api/attachments/\(id)/url\(query)"), headers: headers)
-                #expect(response.status == .ok)
-                let body = (try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-                let expiresAt = try #require(body["expiresAt"] as? String)
-                let formatter = ISO8601DateFormatter()
-                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                let date = try #require(formatter.date(from: expiresAt))
-                let delta = date.timeIntervalSinceNow
-                let recorded = recorder.calls[before].ttl
-                #expect(abs(delta - Double(recorded)) < 30)
-                return recorded
-            }
-            #expect(try await ttl(video, "?disposition=inline") == 3600)
-            #expect(try await ttl(audio, "?disposition=inline") == 3600)
-            #expect(try await ttl(video, "?disposition=attachment") == 300)
-            #expect(try await ttl(video, "?disposition=inline&download=1") == 300)
-            #expect(try await ttl(video, "") == 300)
-            #expect(try await ttl(pdf, "?disposition=inline") == 300)
-
-            setenv("CDN_BASE_URL", "https://cdn.example.test", 1)
-            defer { unsetenv("CDN_BASE_URL") }
-            let cdnCheck = try await client.get(URI(string: "/api/attachments/\(pdf)/url"), headers: headers)
-            let cdnBody = (try JSONSerialization.jsonObject(with: Data((cdnCheck.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-            #expect((cdnBody["url"] as? String)?.hasPrefix("https://storage.example.test/") == true)
-            #expect((cdnBody["url"] as? String)?.contains("cdn.example.test") == false)
         }
     }
 }

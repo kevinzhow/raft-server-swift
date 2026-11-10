@@ -12,6 +12,17 @@ extension OAuthLedger {
             ledgerState.channelHumans.insert("\(allId)\n\(ownerId)")
         }
     }
+    /// This owner represents regular host servers: its sole production creation
+    /// path is addOwnedServer; joint creation only creates channel projections.
+    /// Restore uses this owner's versioned schema, not Node server-table rows.
+    /// Require both live server and actual membership; no empty-set exception.
+    public func activeRegularServerMember(serverId: String, userId: String) -> Bool {
+        state.withLock { ledgerState in
+            guard let server = ledgerState.servers[serverId], !server.deleted else { return false }
+            return ledgerState.members["\(serverId)\n\(userId)"] != nil
+        }
+    }
+
     public struct ServerProfile: Sendable {
         public var id: String
         public var slug: String

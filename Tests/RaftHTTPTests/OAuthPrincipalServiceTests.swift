@@ -29,9 +29,10 @@ import TestSupport
     let ownerId = "11111111-1111-4111-8111-111111111647"
     let serverId = "33333333-3333-4333-8333-333333333673"
     let email = "composed-principal-647@test.invalid"
+    let passwordHash = AuthFixturePassword.encoded("password123")
     profiles.state.withLock { owned in
         owned.accountSurface.accounts[email] = Account(
-            id: ownerId, email: email, passwordHash: AuthTokenCodec.sha256("password123"),
+            id: ownerId, email: email, passwordHash: passwordHash,
             displayLanguage: nil, name: "Granted identity", profileSetupSuggestedHandle: nil,
             avatarUrl: "/api/avatars/users/cafe.webp"
         )

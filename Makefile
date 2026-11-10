@@ -3,11 +3,11 @@ PYTHON ?= python3
 
 .PHONY: test test-e2e test-pg pg-up pg-down pg-url parity parity-check architecture
 test:
-	$(SWIFT) test
+	$(SWIFT) test --no-parallel
 
 test-e2e:
 	$(SWIFT) build
-	RAFT_E2E=1 RAFT_SERVER_BIN=$(CURDIR)/.build/debug/RaftServer RAFT_DAEMON_BIN=$(CURDIR)/.build/debug/RaftDaemon $(SWIFT) test --filter RaftServerStartupTests
+	RAFT_E2E=1 RAFT_SERVER_BIN=$(CURDIR)/.build/debug/RaftServer RAFT_DAEMON_BIN=$(CURDIR)/.build/debug/RaftDaemon $(SWIFT) test --no-parallel --filter RaftServerStartupTests
 
 parity:
 	$(PYTHON) scripts/parity.py
@@ -28,4 +28,4 @@ pg-url:
 	@echo postgres://raft:raft@127.0.0.1:54329/raft?sslmode=disable
 
 test-pg: pg-up
-	DATABASE_URL=$$($(MAKE) -s pg-url) RAFT_PG_INTEGRATION=1 $(SWIFT) test --filter DatabaseHealthTests
+	DATABASE_URL=$$($(MAKE) -s pg-url) RAFT_PG_INTEGRATION=1 $(SWIFT) test --no-parallel --filter DatabaseHealthTests

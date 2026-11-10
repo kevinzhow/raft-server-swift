@@ -376,13 +376,18 @@ public struct ServersFeature: RouteCollection, Sendable {
             // A body that does not decode keeps the service's published
             // `Invalid member role` 400; an absent one does too.
             let body = await jsonRequestBody(ServerMemberRolePatchRequest.self, request)
+            let memberId = request.parameters.get("memberId") ?? ""
             return try await respond {
-                try services.emailAccounts.serverMembersAndSidebar.patchServerMemberRole(
+                let result = try services.emailAccounts.serverMembersAndSidebar.patchServerMemberRole(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
-                    memberId: request.parameters.get("memberId") ?? "",
+                    memberId: memberId,
                     body: body
                 )
+                // Node revokes every user connection after authorized role writes,
+                // including idempotent retries. The Hub defers close until commit.
+                services.realtime?.revokeUserAccess(userId: memberId)
+                return result
             }
         }
         servers.delete(":id", "members", ":memberId") { request async throws -> Response in
@@ -403,10 +408,17 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.delete(":id") { request async throws -> Response in
-            try await respond {
+            let serverId = request.parameters.get("id") ?? ""
+            if let reply = ServerScope.membersGuard(
+                serverId: serverId,
+                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
+            ) {
+                return routeResponse(reply)
+            }
+            return try await respond {
                 try services.emailAccounts.serverMembersAndSidebar.deleteServer(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? ""
+                    serverId: serverId
                 )
             }
         }
@@ -540,11 +552,19 @@ public struct ServersFeature: RouteCollection, Sendable {
             }
         }
         servers.get(":id", "machines", ":machineId", "workspaces") { request async throws -> Response in
-            try await respond {
-                try services.emailAccounts.runtimeFormsAndProbes.machineWorkspaces(
+            let serverId = request.parameters.get("id") ?? ""
+            if let reply = ServerScope.membersGuard(
+                serverId: serverId,
+                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
+            ) {
+                return routeResponse(reply)
+            }
+            return try await respond {
+                try await services.emailAccounts.runtimeFormsAndProbes.machineWorkspaces(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? "",
-                    machineId: request.parameters.get("machineId") ?? ""
+                    serverId: serverId,
+                    machineId: request.parameters.get("machineId") ?? "",
+                    persistence: services.persistence
                 )
             }
         }
@@ -569,11 +589,11 @@ public struct ServersFeature: RouteCollection, Sendable {
         }
         servers.get(":id", "machines", ":machineId", "runtime-models", ":runtime") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.runtimeFormsAndProbes.machineRuntimeModels(
+                try await services.emailAccounts.runtimeFormsAndProbes.queryMachineRuntimeModels(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
                     machineId: request.parameters.get("machineId") ?? "",
-                    runtime: request.parameters.get("runtime") ?? ""
+                    runtime: request.parameters.get("runtime") ?? "", persistence: services.persistence
                 )
             }
         }
@@ -609,7 +629,7 @@ public struct ServersFeature: RouteCollection, Sendable {
         }
         servers.get(":id", "machines", ":machineId", "runtime-form-definitions", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
             var response = try await respond {
-                try services.emailAccounts.runtimeFormsAndProbes.runtimeFormOptionSource(
+                try await services.emailAccounts.runtimeFormsAndProbes.queryRuntimeFormOptionSource(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
                     machineId: request.parameters.get("machineId") ?? "",
@@ -617,7 +637,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                     sourceId: request.parameters.get("sourceId") ?? "",
                     protocolVersion: 1,
                     schemaVersion: desktopQuery(request.url.query, "schemaVersion"),
-                    language: request.headers[HTTPField.Name("Accept-Language")!]
+                    language: request.headers[HTTPField.Name("Accept-Language")!], persistence: services.persistence
                 )
             }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])
@@ -625,7 +645,7 @@ public struct ServersFeature: RouteCollection, Sendable {
         }
         servers.get(":id", "machines", ":machineId", "runtime-forms", "v2", ":runtimeId", "option-sources", ":sourceId") { request async throws -> Response in
             var response = try await respond {
-                try services.emailAccounts.runtimeFormsAndProbes.runtimeFormOptionSource(
+                try await services.emailAccounts.runtimeFormsAndProbes.queryRuntimeFormOptionSource(
                     authorization: request.headers[.authorization],
                     serverId: request.parameters.get("id") ?? "",
                     machineId: request.parameters.get("machineId") ?? "",
@@ -634,7 +654,7 @@ public struct ServersFeature: RouteCollection, Sendable {
                     protocolVersion: 2,
                     schemaVersion: nil,
                     language: request.headers[HTTPField.Name("Accept-Language")!],
-                    refresh: desktopQuery(request.url.query, "refresh") == "1"
+                    refresh: desktopQuery(request.url.query, "refresh") == "1", persistence: services.persistence
                 )
             }
             applyRuntimeFormLanguage(&response, language: request.headers[HTTPField.Name("Accept-Language")!])

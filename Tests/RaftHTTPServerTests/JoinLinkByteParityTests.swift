@@ -90,9 +90,8 @@ import VaporTesting
     }
 }
 
-/// The unauthenticated list reply keeps both the published body order and the
-/// `Cache-Control: no-store` header the retired `PublicVisits.authRequired`
-/// helper set.
+/// The complete Node mount keeps requireAuth's byte order and the API-wide
+/// `Cache-Control: private, no-store` default before the join-link handler.
 @Test func joinLinkListUnauthenticatedKeepsTheExactErrorEnvelope() async throws {
     let accounts = EmailLoginDirectory()
     let serverId = "33333333-3333-4333-8333-000001140003"
@@ -108,14 +107,16 @@ import VaporTesting
             let anonymous = try await client.get(URI(string: "/api/servers/\(serverId)/join-links"))
             #expect(anonymous.status == .unauthorized)
             #expect(anonymous.body.string == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-            #expect(anonymous.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            #expect(anonymous.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
+            #expect(anonymous.headers[.contentLength] == "74")
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer not-a-token"
             let expired = try await client.get(URI(string: "/api/servers/\(serverId)/join-links"), headers: headers)
             #expect(expired.status == .unauthorized)
             #expect(expired.body.string == "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
-            #expect(expired.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            #expect(expired.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
+            #expect(expired.headers[.contentLength] == "59")
         }
     }
 }

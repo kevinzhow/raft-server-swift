@@ -17,7 +17,8 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "builtin-form", name: "Builtin Form", ownerId: ownerId)
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "builtin-form-machine")
     accounts.setMachineRuntimesForTesting(machineId: machine, runtimes: ["builtin"])
-    accounts.machinesAndComputersStore.builtinCatalogMode = "supported"
+    // No machine connection/query port: this fixture proves bundled offline UI,
+    // never a supported live catalog or a successful Built-in model execution.
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -62,10 +63,12 @@ import VaporTesting
             #expect(v2Response.status == .ok)
             #expect(v2Response.headers[HTTPField.Name("Content-Language")!] == "en")
             let v2 = (try JSONSerialization.jsonObject(with: Data((v2Response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-            let fields = v2["fields"] as? [[String: Any]] ?? []
-            #expect(fields.first { $0["key"] as? String == "providerId" }?["kind"] as? String == "select")
-            #expect(fields.first { $0["key"] as? String == "providerId" }?["label"] as? String == "Provider")
-            #expect(fields.first { $0["key"] as? String == "model" }?["kind"] as? String == "dependent_select")
+            let v2Properties = (v2["dataSchema"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
+            let v2Sources = v2["optionSources"] as? [String: [String: Any]] ?? [:]
+            #expect((v2Properties["providerId"] as? [String: Any])?["x-optionSource"] as? String == "provider")
+            #expect(v2Sources["provider"]?["kind"] as? String == "select")
+            #expect(v2Sources["model"]?["kind"] as? String == "dependent_select")
+            #expect(v2Sources["model"]?["dependsOn"] as? String == "/providerId")
 
             var zhHeaders = headers
             zhHeaders[HTTPField.Name("Accept-Language")!] = "zh-CN,zh;q=0.9,en;q=0.8"
@@ -74,8 +77,8 @@ import VaporTesting
             #expect(zhResponse.headers[HTTPField.Name("Content-Language")!] == "zh-CN")
             #expect((zhResponse.headers[HTTPField.Name("Vary")!] ?? "").contains("Accept-Language"))
             let zh = (try JSONSerialization.jsonObject(with: Data((zhResponse.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-            let zhFields = zh["fields"] as? [[String: Any]] ?? []
-            #expect(zhFields.first { $0["key"] as? String == "providerId" }?["label"] as? String == "提供方")
+            let zhCopy = (zh["uiSchema"] as? [String: Any])?["localization"] as? [String: [String: Any]]
+            #expect(zhCopy?["providerId"]?["label"] as? String == "提供方")
 
             let provider = try await client.get(URI(string: "\(base)/runtime-forms/v2/builtin/option-sources/provider"), headers: headers)
             #expect(provider.status == .ok)
@@ -89,6 +92,21 @@ import VaporTesting
             let modelBody = (try JSONSerialization.jsonObject(with: Data((model.body.string ?? "").utf8))) as? [String: Any] ?? [:]
             #expect(modelBody["kind"] as? String == "dependent_select")
             #expect(((modelBody["optionsByValue"] as? [String: Any])?["deepseek"] as? [[String: Any]] ?? []).isEmpty == false)
+            #expect(modelBody["dependsOn"] as? String == "/providerId")
+            #expect(modelBody["status"] == nil && modelBody["reason"] == nil && modelBody["retryable"] == nil)
+            let deepseek = (modelBody["optionsByValue"] as? [String: Any])?["deepseek"] as? [[String: String]] ?? []
+            #expect(deepseek == [
+                ["value": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"],
+                ["value": "deepseek/deepseek-flash", "label": "DeepSeek V4.1 Flash"],
+            ])
+            #expect((modelBody["defaultValueByValue"] as? [String: String])?["deepseek"] == "deepseek/deepseek-v4-pro")
+            #expect((modelBody["customValueAllowedByValue"] as? [String: Bool])?["deepseek"] == false)
+            let unavailable = try await client.get(URI(string: "\(base)/runtime-models/builtin"), headers: headers)
+            let unavailableBody = try JSONSerialization.jsonObject(with: Data((unavailable.body.string ?? "").utf8)) as? [String: Any]
+            #expect(unavailable.status == .ok)
+            #expect(unavailableBody?["kind"] as? String == "error")
+            #expect(unavailableBody?["code"] as? String == "computer_offline")
+            #expect(unavailableBody?["models"] == nil)
 
             let stale = try await client.get(URI(string: "\(base)/runtime-form-definitions/builtin?schemaVersion=stale"), headers: headers)
             #expect(stale.status == .conflict)

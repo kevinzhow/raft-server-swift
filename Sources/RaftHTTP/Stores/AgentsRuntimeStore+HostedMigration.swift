@@ -84,11 +84,16 @@ extension AgentsRuntimeStore {
     /// cloud or holds a live migration since the caller's early check. One
     /// critical section.
     func insertHostedMigrationIfIdle(_ record: HostedMigrationRecord) -> Bool {
-        return withState { state in
-            if state.hostedRuntimes[record.agentId] != nil { return false }
-            if let existing = state.hostedMigrations[record.agentId], existing.state != "canceled" { return false }
+        admitHostedMigrationIfIdle(record) == .inserted
+    }
+
+    func admitHostedMigrationIfIdle(_ record: HostedMigrationRecord) -> AgentMigrationAdmissionOutcome {
+        withState { state in
+            if state.hostedRuntimes[record.agentId] != nil { return .activeMigration }
+            if let existing = state.hostedMigrations[record.agentId], existing.state != "canceled" { return .activeMigration }
+            if (state.execution.resetIntents ?? [:]).values.contains(where: { $0.agentId == record.agentId && $0.phase.isActive }) { return .activeReset }
             state.hostedMigrations[record.agentId] = record
-            return true
+            return .inserted
         }
     }
 

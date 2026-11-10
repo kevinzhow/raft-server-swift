@@ -73,7 +73,7 @@ private func executePost(
     }
 }
 
-@Test func taskListBodyKeepsTheLegacyMemberOrder() async throws {
+@Test func taskListBodyKeepsOtherMembersAndPublishesCanonicalDescription() async throws {
     let f = makeExecuteByteFixture("001")
     let first = f.accounts.addTaskWithDescriptionForTesting(channelId: f.channelId, title: "first", description: "one")
     let second = f.accounts.addTaskWithDescriptionForTesting(channelId: f.channelId, title: "second", description: "two")
@@ -91,9 +91,12 @@ private func executePost(
                 headers: executeAgentHeaders(f.agentKey)
             )
             #expect(response.status == .ok)
+            // Node taskService.enrichTaskRows publishes description immediately
+            // after title, even though the old Swift reader dropped it. These
+            // expected literals come from that contract, not recorded Swift output.
             let expected = "{\"tasks\":["
-                + "{\"id\":\"\(first)\",\"channelId\":\"\(f.channelId)\",\"title\":\"first\",\"status\":\"todo\",\"taskNumber\":1},"
-                + "{\"id\":\"\(second)\",\"channelId\":\"\(f.channelId)\",\"title\":\"second\",\"status\":\"todo\",\"taskNumber\":2}"
+                + "{\"id\":\"\(first)\",\"channelId\":\"\(f.channelId)\",\"title\":\"first\",\"description\":\"one\",\"status\":\"todo\",\"taskNumber\":1},"
+                + "{\"id\":\"\(second)\",\"channelId\":\"\(f.channelId)\",\"title\":\"second\",\"description\":\"two\",\"status\":\"todo\",\"taskNumber\":2}"
                 + "]}"
             #expect(response.body.string == expected)
         }

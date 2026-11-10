@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOHTTP1
 import NIOPosix
+import NIOWebSocket
 import RaftConnectAuth
 import Synchronization
 
@@ -11,12 +12,14 @@ import Synchronization
 public final class MachineConnectServer: Sendable {
     private let group: MultiThreadedEventLoopGroup
     private let channel: any Channel
+    private let commandRegistry: MachineCommandRegistry?
     public let port: Int
 
-    fileprivate init(group: MultiThreadedEventLoopGroup, channel: any Channel, port: Int) {
+    fileprivate init(group: MultiThreadedEventLoopGroup, channel: any Channel, port: Int, commandRegistry: MachineCommandRegistry? = nil) {
         self.group = group
         self.channel = channel
         self.port = port
+        self.commandRegistry = commandRegistry
     }
 
     public static func start(
@@ -24,13 +27,37 @@ public final class MachineConnectServer: Sendable {
         capabilities: [String] = [serverCapabilityRuntimeDetectionAsyncV1],
         host: String = "127.0.0.1",
         port: Int = 0,
-        onStatusChange: (@Sendable (MatchedMachine, Bool) -> Void)? = nil
+        onStatusChange: (@Sendable (MatchedMachine, Bool) -> Void)? = nil,
+        onStatusCommitted: (@Sendable (MatchedMachine, Bool) async throws -> Void)? = nil,
+        commandRegistry: MachineCommandRegistry? = nil
     ) async throws -> MachineConnectServer {
+        let registry = commandRegistry ?? (onStatusCommitted == nil ? nil : MachineCommandRegistry())
+        let capabilities = machineIngressCapabilities(
+            capabilities, durable: registry?.durableOutcomeAcknowledgementsEnabled == true
+        )
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 channel.eventLoop.preconditionInEventLoop()
+                if let registry {
+                    let handler = MachineCommandConnectionHandler(
+                        lookup: lookup, capabilities: capabilities, registry: registry,
+                        status: onStatusCommitted, legacyStatus: onStatusChange
+                    )
+                    return channel.eventLoop.makeFutureWithTask {
+                        try await registry.openTransport(epoch: handler.epoch, channel: channel)
+                    }.flatMap {
+                        channel.eventLoop.makeCompletedFuture {
+                            try channel.pipeline.syncOperations.addHandler(handler)
+                        }
+                    }.flatMapError { error in
+                        channel.eventLoop.makeFutureWithTask {
+                            await registry.finishTransport(epoch: handler.epoch)
+                            throw error
+                        }
+                    }
+                }
                 return channel.eventLoop.makeCompletedFuture {
                     try channel.pipeline.syncOperations.addHandler(
                         ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .dropBytes))
@@ -49,15 +76,18 @@ public final class MachineConnectServer: Sendable {
                 try await group.shutdownGracefully()
                 throw MachineConnectError.missingPort
             }
-            return MachineConnectServer(group: group, channel: channel, port: port)
+            return MachineConnectServer(group: group, channel: channel, port: port, commandRegistry: registry)
         } catch {
+            if let registry { await registry.close() }
             try await group.shutdownGracefully()
             throw error
         }
     }
 
     public func close() async throws {
+        // Stop accepts first, then close children and await their offline commits.
         try await channel.close()
+        if let commandRegistry { await commandRegistry.close() }
         try await group.shutdownGracefully()
     }
 }
@@ -157,6 +187,17 @@ private final class ConnectHandler: ChannelInboundHandler, Sendable {
                 let write = channel.writeAndFlush(buffer)
                 if closeAfter {
                     write.whenComplete { _ in channel.close(promise: nil) }
+                } else if let json = outcome.contextJSON {
+                    write.whenComplete { result in
+                        guard case .success = result else { channel.close(promise: nil); return }
+                        // Legacy handshake channels remain independent, and their
+                        // exact HTTP prelude is flushed before the frame encoder.
+                        do {
+                            try channel.pipeline.syncOperations.addHandler(WebSocketFrameEncoder())
+                            MachineCommandWebSocket.write(opcode: 1, payload: Array(json.utf8), channel: channel)
+                                .whenFailure { _ in channel.close(promise: nil) }
+                        } catch { channel.close(promise: nil) }
+                    }
                 }
             }
         }
@@ -200,7 +241,7 @@ private final class ConnectHandler: ChannelInboundHandler, Sendable {
                     serverId: machine.serverId,
                     capabilities: capabilities
                 )
-                return MachineConnectOutcome(bytes: Array(prelude.utf8) + websocketTextFrame(context), machine: machine)
+                return MachineConnectOutcome(bytes: Array(prelude.utf8), machine: machine, contextJSON: context)
             }
         } catch {
             return MachineConnectOutcome(bytes: Array((machineUpgradeFailurePrelude(.failure(error)) ?? "").utf8), machine: nil)
@@ -211,4 +252,5 @@ private final class ConnectHandler: ChannelInboundHandler, Sendable {
 private struct MachineConnectOutcome: Sendable {
     var bytes: [UInt8]
     var machine: MatchedMachine?
+    var contextJSON: String? = nil
 }

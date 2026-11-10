@@ -1,0 +1,177 @@
+name: raft
+
+x-application: &application
+  platform: linux/amd64
+  image: raft-server-swift:${RAFT_RELEASE_SHA:?Run scripts/init-deployment.sh first}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      RAFT_RELEASE_SHA: ${RAFT_RELEASE_SHA:?Run scripts/init-deployment.sh first}
+      RAFT_BUILD_AT: ${RAFT_BUILD_AT:?Run scripts/init-deployment.sh first}
+      RAFT_RELEASE_BRANCH: ${RAFT_RELEASE_BRANCH:?Run scripts/init-deployment.sh first}
+  environment: &application-environment
+    NODE_ENV: production
+    JWT_SECRET: ${JWT_SECRET:?Run scripts/init-deployment.sh first}
+    CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Generate an independent 32-byte base64 key without replacing existing secrets}
+    RAFT_EMAIL_PROVIDER: ${RAFT_EMAIL_PROVIDER:-resend}
+    RESEND_API_KEY: ${RESEND_API_KEY:-}
+    CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+    CLOUDFLARE_EMAIL_API_TOKEN: ${CLOUDFLARE_EMAIL_API_TOKEN:-}
+    FROM_EMAIL: ${FROM_EMAIL:-}
+    ATTACHMENT_STORAGE_PROVIDER: ${ATTACHMENT_STORAGE_PROVIDER:-s3}
+    S3_BUCKET: ${S3_BUCKET:?Configure the attachment bucket}
+    S3_REGION: ${S3_REGION:-auto}
+    S3_KEY_PREFIX: ${S3_KEY_PREFIX:-attachments/}
+    S3_ENDPOINT: ${S3_ENDPOINT:-}
+    S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:?Configure independent attachment credentials}
+    S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:?Configure independent attachment credentials}
+    ATTACHMENT_ENCRYPTION_KEY: ${ATTACHMENT_ENCRYPTION_KEY:?Preserve an independent 32-byte base64 encryption key}
+    DATABASE_URL: postgresql://raft:${POSTGRES_PASSWORD:?Run scripts/init-deployment.sh first}@postgres:5432/raft?sslmode=disable
+    REDIS_URL: redis://:${REDIS_PASSWORD:?Run scripts/init-deployment.sh first}@redis:6379/0
+    SERVER_URL: ${SERVER_URL:-https://raft.example.com}
+    APP_URL: ${APP_URL:-https://raft.example.com}
+    SLOCK_E2E_AUTO_VERIFY_EMAIL: "0"
+    HTTP_HOST: ${HTTP_HOST:-0.0.0.0}
+    PORT: "8080"
+    SOCKET_PORT: "8082"
+    DAEMON_CONNECT_PORT: "8081"
+    SOCKET_HOST: 0.0.0.0
+    DAEMON_CONNECT_HOST: 0.0.0.0
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+    user: postgres
+    environment:
+      POSTGRES_USER: raft
+      POSTGRES_DB: raft
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init-deployment.sh first}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+      - /var/run/postgresql:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+  redis:
+    image: redis:7.4-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    user: redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run scripts/init-deployment.sh first}
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077
+        printf 'appendonly yes\nappendfsync everysec\ndir /data\nrequirepass %s\n' "$${REDIS_PASSWORD}" > /tmp/redis.conf
+        exec redis-server /tmp/redis.conf
+    volumes:
+      - redis-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli --no-auth-warning ping | grep -qx PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+  # Fail closed until the source migration CLI is integrated and verified.
+  migrate:
+    <<: *application
+    command: ["--migrate-only"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    <<: *application
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${RAFT_BIND_ADDRESS:-127.0.0.1}:${RAFT_HTTP_PORT:-8080}:8080"
+      - "${RAFT_BIND_ADDRESS:-127.0.0.1}:${RAFT_DAEMON_PORT:-8081}:8081"
+      - "${RAFT_BIND_ADDRESS:-127.0.0.1}:${RAFT_SOCKET_PORT:-8082}:8082"
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  # Optional template only. Never enable on a host already serving ports 80/443
+  # until DNS, certificate issuance and routing have been accepted.
+  caddy:
+    image: caddy:2.10.2-alpine
+    profiles: ["tls"]
+    user: "10001:10001"
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "${CADDY_BIND_ADDRESS:-127.0.0.1}:${CADDY_HTTP_PORT:-80}:8080"
+      - "${CADDY_BIND_ADDRESS:-127.0.0.1}:${CADDY_HTTPS_PORT:-443}:8443"
+    volumes:
+      - type: bind
+        source: ./deploy/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/caddy-data
+        target: /data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/caddy-config
+        target: /config
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  postgres-data:
+  redis-data:

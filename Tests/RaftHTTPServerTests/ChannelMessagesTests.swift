@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -40,13 +41,16 @@ private let authHeaders: HTTPFields = [
 ]
 
 @Test func malformedChannelMessageIdIsAClean404() async throws {
+    let accounts = publicServerAuthAccounts([(userId: "11111111-1111-4111-8111-111111111111", token: "token")])
+    accounts.oauth.addOwnedServer(id: "33333333-3333-4333-8333-333333333333", slug: "malformed-channel-read", name: "Malformed Channel Read", ownerId: "11111111-1111-4111-8111-111111111111")
     let messageId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
     let swallowed = messageId + "这条你是不是没收到"
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {}
+            pingDatabase: {},
+            emailAccounts: accounts
         ))
         try await app.testing { client in
             for path in [

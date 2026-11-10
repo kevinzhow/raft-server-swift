@@ -14,6 +14,16 @@ private func exactBodyText(_ response: ClientResponse) -> String {
     response.body.string ?? ""
 }
 
+private func expectExactJSONHeaderPolicy(
+    _ response: ClientResponse, sourceLocation: SourceLocation = #_sourceLocation
+) {
+    // Complete app.ts:290 default; reactions and delivery ACKs do not override it.
+    #expect(response.headers[HTTPField.Name("Cache-Control")!] == "private, no-store", sourceLocation: sourceLocation)
+    #expect(response.headers[.contentType] == "application/json; charset=utf-8", sourceLocation: sourceLocation)
+    #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow", sourceLocation: sourceLocation)
+    #expect(response.headers[.contentLength] == String(exactBodyText(response).utf8.count), sourceLocation: sourceLocation)
+}
+
 private func exactPost(
     _ client: any Client,
     _ path: String,
@@ -98,6 +108,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 serverId: fixture.serverId
             )
             #expect(response.status == .ok)
+            expectExactJSONHeaderPolicy(response)
             #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
             #expect(response.headers[.contentType] == "application/json; charset=utf-8")
             #expect(exactBodyText(response) == """
@@ -125,7 +136,8 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 serverId: fixture.serverId
             )
             #expect(unauthenticated.status == .unauthorized)
-            #expect(unauthenticated.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            expectExactJSONHeaderPolicy(unauthenticated)
+            #expect(unauthenticated.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
             #expect(exactBodyText(unauthenticated) == """
             {"error":"Missing or invalid Authorization header","code":"auth_required"}
             """)
@@ -139,6 +151,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 serverId: fixture.serverId
             )
             #expect(noEmoji.status == .badRequest)
+            expectExactJSONHeaderPolicy(noEmoji)
             #expect(exactBodyText(noEmoji) == #"{"error":"A valid emoji is required"}"#)
 
             let missing = try await exactPost(
@@ -149,6 +162,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 serverId: fixture.serverId
             )
             #expect(missing.status == .notFound)
+            expectExactJSONHeaderPolicy(missing)
             #expect(exactBodyText(missing) == #"{"error":"Message not found"}"#)
         }
     }
@@ -181,6 +195,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 to: URI(string: "/api/messages/\(fixture.messageId)/reactions/actors?emoji=%F0%9F%91%80")
             )
             #expect(page.status == .ok)
+            expectExactJSONHeaderPolicy(page)
             #expect(exactBodyText(page) == """
             {"discussion":{"root":{"kind":"message","serverId":"\(fixture.serverId)","id":"\(fixture.messageId)"},"relation":{"kind":"reactionActors","emoji":"👀"},"parentScope":{"serverId":"\(fixture.serverId)","scopeKind":"channel","scopeId":"\(fixture.channelId)"}},"discussionVersion":1,"actors":[{"actorRef":{"kind":"user","id":"\(fixture.ownerId)"}}],"nextCursor":null}
             """)
@@ -216,6 +231,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 authorization: "Bearer \(key)"
             )
             #expect(delivered.status == .ok)
+            expectExactJSONHeaderPolicy(delivered)
             #expect(exactBodyText(delivered) == #"{"ok":true,"delivered":0}"#)
 
             let empty = try await exactPost(
@@ -225,6 +241,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 authorization: "Bearer \(key)"
             )
             #expect(empty.status == .badRequest)
+            expectExactJSONHeaderPolicy(empty)
             #expect(exactBodyText(empty) == """
             {"error":"eventIds must be a non-empty array","code":"event_ids_invalid"}
             """)
@@ -236,6 +253,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 authorization: "Bearer \(key)"
             )
             #expect(malformed.status == .badRequest)
+            expectExactJSONHeaderPolicy(malformed)
             #expect(exactBodyText(malformed) == """
             {"error":"eventIds must contain third-party event ids","code":"event_ids_invalid"}
             """)
@@ -246,6 +264,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
                 body: "{\"eventIds\":[\"00000000-0000-4000-8000-000000000920\"]}"
             )
             #expect(unauthenticated.status == .unauthorized)
+            expectExactJSONHeaderPolicy(unauthenticated)
             #expect(exactBodyText(unauthenticated) == """
             {"error":"Missing or invalid Authorization header","code":"auth_required"}
             """)

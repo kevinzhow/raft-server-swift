@@ -71,7 +71,7 @@ private func json(_ text: String?) -> [String: Any] {
                 let response = try await client.send(.post, headers: fixture.headers(), to: URI(string: "/api/tasks/channel/\(channelId)")) { request in
                     request.body = .init(string: String(decoding: payload, as: UTF8.self))
                 }
-                return try #require(json(response.body.string)["taskIds"] as? [String])
+                return try #require(json(response.body.string)["tasks"] as? [[String: Any]]).map { try #require($0["id"] as? String) }
             }
             let gamma = try await createChannel("gamma")
             let beta = try await createChannel("beta")
@@ -121,7 +121,7 @@ private func json(_ text: String?) -> [String: Any] {
             let created = try await client.send(.post, headers: fixture.headers(), to: URI(string: "/api/tasks/channel/\(channelId)")) { request in
                 request.body = .init(string: String(decoding: payload, as: UTF8.self))
             }
-            let ids = try #require(json(created.body.string)["taskIds"] as? [String])
+            let ids = try #require(json(created.body.string)["tasks"] as? [[String: Any]]).map { try #require($0["id"] as? String) }
             _ = try await client.send(.patch, headers: fixture.headers(), to: URI(string: "/api/tasks/\(ids[0])/claim"))
 
             let summary = try await client.get(URI(string: "/api/tasks/server?detail=summary&limit=10"), headers: fixture.headers())

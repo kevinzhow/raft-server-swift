@@ -103,17 +103,11 @@ extension AgentsRuntimeStore {
         }
     }
 
-    /// A claimed mention action reaches its agent target: an `add` joins the
-    /// agent to the channel roster and the delivery is appended, both under one
-    /// lock.
-    func recordMentionDelivery(agentId: String, messageId: String, joiningChannelId: String?) {
-        return withState { state in
-            if let joiningChannelId {
-                var agents = state.channelAgentMembers[joiningChannelId] ?? []
-                agents.insert(agentId)
-                state.channelAgentMembers[joiningChannelId] = agents
-            }
-            state.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: "channel"))
+    /// OAuth is the membership authority. This writes only its existing local
+    /// projection; real delivery is staged through AgentExecutionService.
+    func recordMentionMembership(channelId: String, agentId: String) {
+        withState { state in
+            _ = state.channelAgentMembers[channelId, default: []].insert(agentId)
         }
     }
 }

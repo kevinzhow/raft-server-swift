@@ -11,7 +11,7 @@ Sources/RaftHTTP/Services/DirectoryServiceAccessors+ManagedMCP.swift	1
 Sources/RaftHTTP/Services/DirectoryServiceAccessors.swift	1
 Sources/RaftHTTP/Services/JoinLinksAndInvitesService.swift	1
 Sources/RaftHTTP/Services/RuntimeUsageAndAttestationsService.swift	1
-Sources/RaftHTTP/Services/SocketMembershipService.swift	2
+Sources/RaftHTTP/Services/SocketMembershipService.swift	1
 Sources/RaftHTTP/Stores/AgentsRuntimeStore.swift	3
 Sources/RaftHTTP/Stores/AuthProfileStore.swift	6
 Sources/RaftHTTP/Stores/FeedbackStore.swift	3

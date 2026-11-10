@@ -4,7 +4,8 @@ import Foundation
 /// and the server create/details/analytics routes.
 ///
 /// The service owns the orchestration and returns the published
-/// `JSONBodyConvertible` DTOs; every refusal is a `ManagedMCPLifecycleError`.
+/// `JSONBodyConvertible` DTOs; refusals are typed domain errors, including the
+/// shared human admission before server creation.
 /// It builds no HTTP reply, header set or response body. The conversation
 /// read-all and the read-mutation admission are one store critical section
 /// each (`MessagesAndThreadsStore`), and profile completion is one
@@ -274,11 +275,8 @@ public struct ManagedMCPLifecycleService: Sendable {
         authorization: String?,
         body: LenientJSONObjectRequest?
     ) throws -> ServerCreatedResponse {
-        let userId = try requireUser(authorization)
-        let account = profiles.account(userId: userId)
-        if let account, account.emailVerified && account.profileSetupCompletedAt == nil {
-            throw ManagedMCPLifecycleError.profileSetupRequired
-        }
+        let userId = try AuthCoreService(store: profiles, now: now)
+            .admitHuman(authorization: authorization).userId
         guard let object = body,
               let rawName = object["name"]?.legacyString,
               let rawSlug = object["slug"]?.legacyString
@@ -296,6 +294,10 @@ public struct ManagedMCPLifecycleService: Sendable {
         guard slug.count >= 5 else { throw ManagedMCPLifecycleError.slugTooShort }
         let serverId = UUID().uuidString.lowercased()
         oauth.addOwnedServer(id: serverId, slug: slug, name: name, ownerId: userId)
+        // The implicit public channel participates in this same creation UoW.
+        if let allChannelId = oauth.allChannelId(serverId: serverId) {
+            channels.insertOwnedChannel(channelId: allChannelId, serverId: serverId, userId: userId, name: "all")
+        }
         return ServerCreatedResponse(id: serverId, name: name, slug: slug, role: "owner")
     }
 

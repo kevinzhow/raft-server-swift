@@ -55,7 +55,8 @@ import VaporTesting
             headers[.contentType] = "application/json"
             headers[HTTPField.Name("X-Server-Id")!] = serverId
 
-            // 1. The attachment URL refuses an unauthenticated caller first.
+            // 1. Node app.ts:578 mounts flex auth for this serving leaf before
+            // the later human attachment mount at :756. Missing auth is 35 bytes.
             var unauthenticated = headers
             unauthenticated[.authorization] = nil
             let unauthorized = try await client.send(
@@ -64,10 +65,22 @@ import VaporTesting
                 to: "/api/attachments/44444444-4444-4444-8444-000001109001/url"
             )
             #expect(unauthorized.status == .unauthorized)
-            #expect(unauthorized.body.string == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(unauthorized.body.string == #"{"error":"Authentication required"}"#)
             #expect(unauthorized.headers[HTTPField.Name("X-Robots-Tag")!] == AppFallback.robotsTag)
             #expect(unauthorized.headers[.contentType] == AppFallback.jsonContentType)
-            #expect(unauthorized.headers[.contentLength] == String("{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}".utf8.count))
+            #expect(unauthorized.headers[.contentLength] == "35")
+            #expect(unauthorized.headers[.cacheControl] == "private, no-store")
+
+            // The earlier narrow upload-session router has its own human auth
+            // per matched route (app.ts:556, attachmentUploadSessions.ts:217).
+            // This same-prefix negative control must retain the 74-byte refusal.
+            let narrowUnauthorized = try await client.send(
+                .get, headers: unauthenticated, to: "/api/attachments/upload-capabilities"
+            )
+            #expect(narrowUnauthorized.status == .unauthorized)
+            #expect(narrowUnauthorized.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(narrowUnauthorized.headers[.contentLength] == "74")
+            #expect(narrowUnauthorized.headers[.cacheControl] == "private, no-store")
 
             // 2. A malformed attachment id publishes `code` before `error`.
             let invalidID = try await client.send(
@@ -112,7 +125,7 @@ import VaporTesting
             #expect(stale.status == .ok)
             #expect(stale.body.string == "{\"ok\":true,\"restored\":false}")
 
-            // 4. An unauthenticated follower write publishes the bare 401.
+            // 4. The outer requireAuth gate rejects an anonymous follower write.
             var anonymous = headers
             anonymous[.authorization] = nil
             let anonymousRemoval = try await client.send(
@@ -121,7 +134,9 @@ import VaporTesting
                 to: "/api/channels/threads/\(threadId)/followers/agents/\(agentId)"
             )
             #expect(anonymousRemoval.status == .unauthorized)
-            #expect(anonymousRemoval.body.string == "{\"error\":\"Unauthorized\"}")
+            #expect(anonymousRemoval.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(anonymousRemoval.headers[.contentLength] == "74")
+            #expect(anonymousRemoval.headers[.cacheControl] == "private, no-store")
         }
     }
 }

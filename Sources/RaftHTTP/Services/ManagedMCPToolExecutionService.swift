@@ -223,7 +223,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
                 throw ManagedMCPToolExecutionError.agentNotFoundInServer
             }
-            let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId)
+            let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: userId, secondUserId: agentId, secondKind: .agent)
             oauth.addChannelAgent(channelId: channelId, agentId: agentId)
             channels.upsertDirectChannel(serverId: serverId, channelId: channelId, memberIds: [userId, agentId])
             let payload = OrderedJSON.object([OrderedJSONField("channelId", channelId)]).render()

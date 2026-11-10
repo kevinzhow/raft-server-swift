@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -38,7 +39,7 @@ private func psSeed(_ rollout: Bool = true, guestRollout: Bool = true, publicVis
 @Test func publicRolloutOffFailsClosedAtOwnerAndAnonymousBoundaries() async throws {
     let directory = psSeed(false, publicVisible: true)
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])))
         try await app.testing { client in
             let ownerRead = try await psSend(client, .get, "/api/servers/srv/public-visibility", token: "owner-token")
             #expect(ownerRead.status == .notFound)
@@ -55,7 +56,7 @@ private func psSeed(_ rollout: Bool = true, guestRollout: Bool = true, publicVis
 @Test func publicVisibilityIsOwnerOnlyAndExposesTheChannelList() async throws {
     let directory = psSeed(publicVisible: false)
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])))
         try await app.testing { client in
             for method in [HTTPRequest.Method.get, .patch] {
                 let denied = try await psSend(client, method, "/api/servers/srv/public-visibility", token: "admin-token", body: "{\"publiclyVisible\":true}")
@@ -79,7 +80,7 @@ private func psSeed(_ rollout: Bool = true, guestRollout: Bool = true, publicVis
 @Test func publicGuestAdmissionIsOwnerOnlyAndClearedWhenPublicTurnsOff() async throws {
     let directory = psSeed(publicVisible: false)
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])))
         try await app.testing { client in
             let before = try await psSend(client, .patch, "/api/servers/srv/public-guest-join", token: "owner-token", body: "{\"publicGuestJoinEnabled\":true}")
             #expect(before.status == .conflict)
@@ -102,7 +103,7 @@ private func psSeed(_ rollout: Bool = true, guestRollout: Bool = true, publicVis
     directory.addEmailInvite(serverId: "srv", email: "invitee@slock.test", role: "guest", rawToken: "invite-token", expiresAt: Date().addingTimeInterval(3600))
     directory.addAccount(id: "invitee", email: "invitee@slock.test", token: "invitee-token")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: publicServerAuthAccounts([("invitee", "invitee-token")], emails: ["invitee": "invitee@slock.test"])))
         try await app.testing { client in
             let accepted = try await psSend(client, .post, "/api/auth/accept-invite", token: "invitee-token", body: "{\"token\":\"invite-token\"}")
             #expect(accepted.status == .ok)
@@ -118,7 +119,7 @@ private func psSeed(_ rollout: Bool = true, guestRollout: Bool = true, publicVis
     visits.addUser(PublicVisitUser(id: "owner", shareUsageData: nil, analyticsId: nil))
     visits.addToken("owner-token", userId: "owner")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicVisits: visits))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicVisits: visits, emailAccounts: publicServerAuthAccounts([("owner", "owner-token")])))
         try await app.testing { client in
             let response = try await psSend(client, .get, "/api/servers", token: "owner-token")
             #expect(response.status == .ok)

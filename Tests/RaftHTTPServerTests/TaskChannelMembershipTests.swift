@@ -56,7 +56,7 @@ private func taskHeaders(_ token: String, _ serverId: String) -> HTTPFields {
                 request.body = .init(string: "{\"tasks\":[{\"title\":\"readonly task\"}]}")
             }
             let createdBody = try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any]
-            let taskId = (createdBody?["taskIds"] as? [String])?.first ?? ""
+            let taskId = ((createdBody?["tasks"] as? [[String: Any]])?.first?["id"] as? String) ?? ""
             let message = try await client.send(.post, headers: ownerHeaders, to: "/api/messages") { request in
                 request.body = .init(string: "{\"channelId\":\"\(channel)\",\"content\":\"convert me\"}")
             }
@@ -126,7 +126,7 @@ private func taskHeaders(_ token: String, _ serverId: String) -> HTTPFields {
             let created = try await client.send(.post, headers: memberHeaders, to: "/api/tasks/channel/\(channel)") { request in
                 request.body = .init(string: "{\"tasks\":[{\"title\":\"private task\"}]}")
             }
-            let taskId = ((try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any])?["taskIds"] as? [String])?.first ?? ""
+            let taskId = ((try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any])?["tasks"] as? [[String: Any]])?.first?["id"] as? String ?? ""
             let message = try await client.send(.post, headers: memberHeaders, to: "/api/messages") { request in
                 request.body = .init(string: "{\"channelId\":\"\(channel)\",\"content\":\"private convert target\"}")
             }

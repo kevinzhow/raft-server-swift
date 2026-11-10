@@ -259,6 +259,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime
 
 HTTP_PORT = int(os.environ["SMOKE_HTTP_PORT"])
 SOCKET_PORT = int(os.environ["SMOKE_SOCKET_PORT"])
@@ -379,6 +380,53 @@ def check_version():
     die(f"GET /api/version: expected 200 or 503, got {status}: {raw[:400]!r}")
 
 
+def complete_profile(token, registered_user, email, display_name, label):
+    """Use the normal profile endpoint; registration's name is only a suggestion."""
+    if not isinstance(registered_user, dict) or registered_user.get("emailVerified") is not True:
+        die(f"{label}: registration did not publish verified user facts")
+    user_id = registered_user.get("id")
+    pending_name = registered_user.get("name")
+    if not isinstance(user_id, str) or not user_id or registered_user.get("email") != email:
+        die(f"{label}: registration user identity is missing or mismatched")
+    if not isinstance(pending_name, str) or not pending_name.lower().startswith("pending_"):
+        die(f"{label}: registration must retain a pending profile")
+    if "profileSetupCompletedAt" not in registered_user or registered_user["profileSetupCompletedAt"] is not None:
+        die(f"{label}: registration completion stamp must be explicit null")
+    status, raw, parsed = http_json(
+        "POST", "/api/servers", token=token,
+        body={"name": "Admission Probe", "slug": "smoke-admission-probe"},
+    )
+    blocked = expect_json(status, raw, parsed, 403, label + " pending-profile business refusal")
+    if blocked.get("code") != "PROFILE_SETUP_REQUIRED":
+        die(f"{label}: verified pending profile was not refused by the profile gate")
+    name = "smoke-profile-" + uuid.uuid4().hex[:12]
+    status, raw, parsed = http_json(
+        "POST", "/api/auth/me/complete-profile", token=token,
+        body={"name": name, "displayName": display_name},
+    )
+    completed = expect_json(status, raw, parsed, 200, label + " complete-profile")
+    stamp = completed.get("profileSetupCompletedAt")
+    if completed.get("name") != name or completed.get("displayName") != display_name or not isinstance(stamp, str):
+        die(f"{label}: complete-profile public fields do not match the request")
+    try:
+        if datetime.fromisoformat(stamp.replace("Z", "+00:00")).tzinfo is None:
+            raise ValueError("missing timezone")
+    except ValueError:
+        die(f"{label}: completion timestamp is not a timezone-qualified ISO date")
+    if "user" in completed:
+        die(f"{label}: complete-profile must return the flat public user without a nested wrapper")
+    user = completed
+    expected = {"id": user_id, "email": email, "name": name, "displayName": display_name,
+                "emailVerified": True, "profileSetupCompletedAt": stamp}
+    if not isinstance(user, dict) or any(user.get(key) != value for key, value in expected.items()):
+        die(f"{label}: complete-profile flat user does not match persisted admission facts")
+    status, raw, parsed = http_json("GET", "/api/auth/me", token=token)
+    persisted = expect_json(status, raw, parsed, 200, label + " completed GET /api/auth/me")
+    if persisted != user:
+        die(f"{label}: GET /api/auth/me differs from the completed public user")
+    ok(label + " POST /api/auth/me/complete-profile -> 200 stored verified profile")
+
+
 def check_register():
     state = load_state()
     email = f"smoke-{uuid.uuid4().hex[:12]}@slock.test"
@@ -389,12 +437,14 @@ def check_register():
         "acceptTerms": True,
         "termsVersion": "2026-05-12",
         "privacyVersion": "2026-05-12",
+        "__e2eAutoVerify": True,
     }
     status, raw, parsed = http_json("POST", "/api/auth/register", body=body)
     parsed = expect_json(status, raw, parsed, 200, "POST /api/auth/register")
     token = parsed.get("accessToken")
     if not isinstance(token, str) or not token:
         die(f"POST /api/auth/register: no accessToken in {raw[:400]!r}")
+    complete_profile(token, parsed.get("user"), email, "Smoke Owner", "smoke owner")
     state.update({"token": token, "email": email})
     save_state(state)
     ok("POST /api/auth/register -> 200 accessToken")
@@ -522,9 +572,26 @@ def check_agent_send():
 
 def check_human_send_gate():
     state = load_state()
-    token, server_id, channel_id = state.get("token"), state.get("serverId"), state.get("channelId")
-    if not token or not server_id or not channel_id:
+    server_id, channel_id = state.get("serverId"), state.get("channelId")
+    if not server_id or not channel_id:
         die("POST /api/messages: incomplete state")
+    # The owner now completes admission. Keep this negative on a distinct real
+    # registration with an explicit false request opt-in under the same test env.
+    email = f"smoke-unverified-{uuid.uuid4().hex[:12]}@slock.test"
+    status, raw, parsed = http_json("POST", "/api/auth/register", body={
+        "email": email, "password": "password123", "name": "Unverified Human",
+        "acceptTerms": True, "termsVersion": "2026-05-12", "privacyVersion": "2026-05-12",
+        "__e2eAutoVerify": False,
+    })
+    registered = expect_json(status, raw, parsed, 200, "unverified-human register")
+    token = registered.get("accessToken")
+    user = registered.get("user")
+    if not isinstance(token, str) or not token or not isinstance(user, dict) or user.get("emailVerified") is not False:
+        die("unverified-human register did not retain the explicit non-opt-in verification state")
+    status, raw, parsed = http_json("GET", "/api/auth/me", token=token)
+    persisted = expect_json(status, raw, parsed, 200, "unverified-human GET /api/auth/me")
+    if persisted.get("emailVerified") is not False or persisted.get("id") != user.get("id"):
+        die("unverified-human GET /api/auth/me did not retain the registered identity and false verification")
     status, raw, parsed = http_json(
         "POST",
         "/api/messages",
@@ -582,6 +649,7 @@ def check_verified_human_roundtrip():
     if parsed.get("emailVerified") is not True:
         die(f"verified-human GET /api/auth/me: emailVerified is not true: {raw[:500]!r}")
     ok("POST /api/auth/register (SLOCK_E2E_AUTO_VERIFY_EMAIL=1 + __e2eAutoVerify) -> 200 verified human")
+    complete_profile(token, user, email, "Verified Human", "verified human")
 
     # Join the owner's server with a real join link, then join the channel.
     status, raw, parsed = http_json(
@@ -934,28 +1002,41 @@ def check_daemon_with_key():
     if not api_key or not machine_id or not server_id:
         die("/daemon/connect: missing machine credentials in state")
     sock = socket.create_connection(("127.0.0.1", DAEMON_PORT), timeout=5)
-    request = (
-        "GET /daemon/connect HTTP/1.1\r\n"
-        "Host: 127.0.0.1\r\n"
-        "Connection: Upgrade\r\n"
-        "Upgrade: websocket\r\n"
-        "Sec-WebSocket-Version: 13\r\n"
-        f"Sec-WebSocket-Key: {WS_KEY}\r\n"
-        f"Authorization: Bearer {api_key}\r\n"
-        "\r\n"
-    )
-    sock.sendall(request.encode("utf-8"))
-    data = read_available(sock, seconds=5.0, stop_marker=b"machine:context")
-    sock.close()
-    text = data.decode("latin-1", "replace")
-    if not text.startswith("HTTP/1.1 101 Switching Protocols"):
-        die(f"/daemon/connect: expected 101, got {text[:300]!r}")
-    if '"type":"machine:context"' not in text:
-        die(f'/daemon/connect: no machine:context frame; got {text[:500]!r}')
-    if f'"machineId":"{machine_id}"' not in text:
-        die(f"/daemon/connect: machine:context missing machineId {machine_id}: {text[:500]!r}")
-    if f'"serverId":"{server_id}"' not in text:
-        die(f"/daemon/connect: machine:context missing serverId {server_id}: {text[:500]!r}")
+    try:
+        request = (
+            "GET /daemon/connect HTTP/1.1\r\n"
+            "Host: 127.0.0.1\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: websocket\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            f"Sec-WebSocket-Key: {WS_KEY}\r\n"
+            f"Authorization: Bearer {api_key}\r\n"
+            "\r\n"
+        )
+        sock.sendall(request.encode("utf-8"))
+        data = read_until(sock, b"\r\n\r\n")
+        text = data.decode("latin-1", "replace")
+        if not text.startswith("HTTP/1.1 101 Switching Protocols"):
+            die(f"/daemon/connect: expected 101, got {text[:300]!r}")
+        if b"\r\n\r\n" not in data:
+            die(f"/daemon/connect: incomplete HTTP upgrade prelude {text[:300]!r}")
+        ws = WebSocket(sock)
+        ws.buffer = data.split(b"\r\n\r\n", 1)[1]
+        opcode, payload = ws.read_frame()
+        if opcode != 0x1:
+            die(f"/daemon/connect: expected a text context frame, got opcode {opcode}")
+        text = payload.decode("utf-8")
+        if '"type":"machine:context"' not in text:
+            die(f'/daemon/connect: no machine:context frame; got {text[:500]!r}')
+        if f'"machineId":"{machine_id}"' not in text:
+            die(f"/daemon/connect: machine:context missing machineId {machine_id}: {text[:500]!r}")
+        if f'"serverId":"{server_id}"' not in text:
+            die(f"/daemon/connect: machine:context missing serverId {server_id}: {text[:500]!r}")
+        context = json.loads(text)
+        if not isinstance(context, dict) or context.get("type") != "machine:context" or context.get("machineId") != machine_id or context.get("serverId") != server_id:
+            die(f"/daemon/connect: malformed or mismatched context object {text[:500]!r}")
+    finally:
+        sock.close()
     ok("/daemon/connect with machine key -> 101 + machine:context frame")
 
 

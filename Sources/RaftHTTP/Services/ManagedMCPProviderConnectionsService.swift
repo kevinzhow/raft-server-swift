@@ -23,17 +23,34 @@ public struct ManagedMCPProviderConnectionsService: Sendable {
     private let oauth: OAuthLedger
     private let providers: ManagedMCPAndCardsStore
     private let now: @Sendable () -> Date
+    private let credentialMasterKey: @Sendable () throws -> Data
 
     init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
         oauth: OAuthLedger,
         providers: ManagedMCPAndCardsStore,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        credentialMasterKey: @escaping @Sendable () throws -> Data = {
+            try ProviderCredentialVault.configuredMasterKey()
+        }
     ) {
         self.sessionUserId = sessionUserId
         self.oauth = oauth
         self.providers = providers
         self.now = now
+        self.credentialMasterKey = credentialMasterKey
+    }
+
+    /// Binds one external in-memory credential master without changing owners or clocks.
+    /// The caller must keep the key out of persisted state, responses and diagnostics.
+    public func bindingCredentialMasterKey(_ masterKey: Data) throws -> Self {
+        guard masterKey.count == 32 else {
+            throw ProviderCredentialError.encryptionKeyUnavailable
+        }
+        return Self(
+            sessionUserId: sessionUserId, oauth: oauth, providers: providers, now: now,
+            credentialMasterKey: { masterKey }
+        )
     }
 
     /// The enabled-surface and owner/admin gate every provider route shares.
@@ -95,7 +112,10 @@ public struct ManagedMCPProviderConnectionsService: Sendable {
             createdAt: created,
             updatedAt: created
         )
-        providers.insertProviderConnection(connection)
+        let credential = try ProviderCredentialVault(masterKey: credentialMasterKey()).seal(
+            apiKey, serverId: serverId, connectionId: connection.id
+        )
+        try providers.insertProviderConnection(connection, credential: credential)
         return ProviderConnectionBody(connection: connection)
     }
 
@@ -121,7 +141,7 @@ public struct ManagedMCPProviderConnectionsService: Sendable {
         if object["apiKey"] != nil, object["providerId"] != nil {
             throw ManagedMCPLifecycleError.rotateCredentialSeparately
         }
-        var patch = ProviderConnectionPatch(rotatesCredential: false)
+        var patch = ProviderConnectionPatch(credential: nil)
         if let name = object["name"]?.legacyString,
            !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             patch.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -129,9 +149,11 @@ public struct ManagedMCPProviderConnectionsService: Sendable {
         patch.endpointUrl = object["endpointUrl"]?.legacyString
         patch.supportsImageInput = object["supportsImageInput"]?.legacyBool
         if let apiKey = object["apiKey"]?.legacyString, !apiKey.isEmpty {
-            patch.rotatesCredential = true
+            patch.credential = try encryptedCredentialForExistingConnection(
+                apiKey, serverId: serverId, connectionId: connectionId
+            )
         }
-        guard let updated = providers.patchProviderConnection(
+        guard let updated = try providers.patchProviderConnection(
             id: connectionId, serverId: serverId, patch: patch, now: now()
         ) else { throw ManagedMCPLifecycleError.providerConnectionNotFound }
         return ProviderConnectionBody(connection: updated)
@@ -149,10 +171,44 @@ public struct ManagedMCPProviderConnectionsService: Sendable {
         guard let apiKey = body?["apiKey"]?.legacyString, !apiKey.isEmpty else {
             throw ManagedMCPLifecycleError.apiKeyRequired
         }
-        guard let updated = providers.rotateProviderCredential(
-            id: connectionId, serverId: serverId, now: now()
+        let credential = try encryptedCredentialForExistingConnection(
+            apiKey, serverId: serverId, connectionId: connectionId
+        )
+        guard let updated = try providers.rotateProviderCredential(
+            id: connectionId, serverId: serverId, credential: credential, now: now()
         ) else { throw ManagedMCPLifecycleError.providerConnectionNotFound }
         return ProviderConnectionBody(connection: updated)
+    }
+
+    /// Internal outbound-provider use only: no route or response DTO exposes this value.
+    /// The caller must keep the returned key out of responses, diagnostics and logs.
+    /// Uses the same live session, enabled-surface and owner/admin gates as management.
+    public func providerCredentialForRequest(
+        authorization: String?, serverId: String, connectionId: String
+    ) throws -> String {
+        try requireManager(authorization, serverId: serverId)
+        guard providers.containsProviderConnection(id: connectionId, serverId: serverId) else {
+            throw ManagedMCPLifecycleError.providerConnectionNotFound
+        }
+        guard let credential = providers.providerCredential(id: connectionId, serverId: serverId) else {
+            throw ProviderCredentialError.credentialUnavailable
+        }
+        return try ProviderCredentialVault(masterKey: credentialMasterKey()).open(
+            credential, serverId: serverId, connectionId: connectionId
+        )
+    }
+
+    private func encryptedCredentialForExistingConnection(
+        _ apiKey: String, serverId: String, connectionId: String
+    ) throws -> ProviderCredentialEnvelope {
+        // Preserve the existing body-validation -> scoped not-found order even if
+        // this process has no usable encryption master. No metadata is changed here.
+        guard providers.containsProviderConnection(id: connectionId, serverId: serverId) else {
+            throw ManagedMCPLifecycleError.providerConnectionNotFound
+        }
+        return try ProviderCredentialVault(masterKey: credentialMasterKey()).seal(
+            apiKey, serverId: serverId, connectionId: connectionId
+        )
     }
 
     // MARK: - GET /api/provider-connections/:id/agents

@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -38,7 +39,7 @@ final class FeedbackStore: Sendable {
         var marketplaceReviewerOverride: Set<String>? = nil
     }
 
-    private let storage = Mutex(State())
+    let storage = TransactionalState(State())
 
     /// The whole owned state. A read or a write is one locked critical section.
     var state: State {

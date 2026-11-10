@@ -92,6 +92,7 @@ private func receiptRequest(
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
         try await app.testing { client in
             let countBefore = f.accounts.messageCountForTesting(channelId: f.receiptChannelId)
+            let allMessagesBefore = f.accounts.humanMessageCount
             for route in ["/internal/agent-api/send", "/internal/agent-api/v2/send"] {
                 let sent = try await receiptRequest(
                     client, key: f.agentKey, method: .post, path: route,
@@ -109,6 +110,7 @@ private func receiptRequest(
                 body: "{\"target\":\"\(f.target)\",\"content\":\"hi\"}"
             )
             #expect(other.status == .notFound)
+            #expect(f.accounts.humanMessageCount == allMessagesBefore, "receipt refusal must not post in another namespace")
         }
     }
 }

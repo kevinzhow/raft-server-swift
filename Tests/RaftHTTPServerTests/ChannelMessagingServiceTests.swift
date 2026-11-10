@@ -3,6 +3,7 @@ import Foundation
 import HTTPTypes
 import RaftHTTP
 import RaftHTTPServer
+import RaftRealtime
 import Testing
 import Vapor
 import VaporTesting
@@ -14,26 +15,14 @@ import VaporTesting
 /// upstream contract is the exact reply JSON, the usual JSON headers, and the
 /// `channel:<id>` / `task:created` frame whose payload is sorted-key JSON.
 
-private struct CapturedFrame: Sendable, Equatable {
-    let room: String
-    let event: String
-    let payloadJSON: String
-}
-
-private final class FrameCapture: @unchecked Sendable {
-    private let lock = NSLock()
-    private var frames: [CapturedFrame] = []
-
-    func record(room: String, event: String, payload: String?) {
-        lock.lock()
-        frames.append(CapturedFrame(room: room, event: event, payloadJSON: payload ?? ""))
-        lock.unlock()
-    }
-
-    var recorded: [CapturedFrame] {
-        lock.lock()
-        defer { lock.unlock() }
-        return frames
+private struct ChannelMessagingSocketAuth: RealtimeAuthorizing {
+    let core: AuthCoreService
+    let membership: SocketMembershipService
+    func userId(forAccessToken token: String) -> String? { core.sessionIdentity(accessToken: token)?.userId }
+    func sessionFamilyId(forAccessToken token: String) -> String? { core.sessionIdentity(accessToken: token)?.familyId }
+    func serverRole(serverId: String, userId: String) -> String? { membership.serverRole(serverId: serverId, userId: userId) }
+    func visibleChannelIds(serverId: String, userId: String) -> [String] {
+        membership.visibleChannelIds(serverId: serverId, userId: userId).channelIds
     }
 }
 
@@ -55,13 +44,6 @@ private func channelMessagingHeaders(_ token: String, _ serverId: String) -> HTT
     return headers
 }
 
-private func sortedJSON(_ value: some Encodable) -> String {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.sortedKeys]
-    guard let data = try? encoder.encode(value) else { return "" }
-    return String(decoding: data, as: UTF8.self)
-}
-
 @Test func createChannelTasksPublishesTheTypedTaskCreatedFrame() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111772001"
@@ -73,10 +55,16 @@ private func sortedJSON(_ value: some Encodable) -> String {
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "builder")
     accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
 
-    let capture = FrameCapture()
-    accounts.realtimeRelay.install { room, event, payload in
-        capture.record(room: room, event: event, payload: payload)
-    }
+    let realtime = try await RealtimeServer.start(auth: ChannelMessagingSocketAuth(core: accounts.authCore, membership: accounts.socketMembership))
+    let socket = try await SocketIOTestClient(port: realtime.port)
+    defer { socket.close(); Task { try? await realtime.close() } }
+    _ = try #require(await socket.waitForText { $0.hasPrefix("0") })
+    let socketToken = accounts.mintAccessTokenForTesting(userId: ownerId)
+    socket.send("40{\"token\":\"\(socketToken)\",\"serverId\":\"\(serverId)\"}")
+    _ = try #require(await socket.waitForText { $0 == "42[\"rooms:joined\"]" })
+    let frameStart = socket.textFrames.count
+    let hub = realtime.hub
+    accounts.realtimeRelay.install { room, event, payload in hub.emit(room: room, event: event, payloadJSON: payload) }
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -95,29 +83,60 @@ private func sortedJSON(_ value: some Encodable) -> String {
             #expect(created.headers[.contentType] == "application/json; charset=utf-8")
             #expect(created.headers[HTTPField.Name("X-Robots-Tag")!] == "noindex, nofollow")
             let body = created.body.string ?? ""
-            #expect(body.hasPrefix("{\"taskIds\":[\""))
+            #expect(body.hasPrefix(#"{"tasks":[{"#))
             #expect(created.headers[.contentLength] == String(body.utf8.count))
+            let response = try #require(try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+            #expect(Set(response.keys) == ["tasks"])
+            let tasks = try #require(response["tasks"] as? [[String: Any]])
+            #expect(tasks.count == 1)
+            let task = try #require(tasks.first)
+            #expect(task["title"] as? String == "ship it")
+            #expect(task["description"] as? String == "with tests")
+            #expect(task["status"] as? String == "todo")
+            let hostId = try #require(task["messageId"] as? String)
+            #expect(task["id"] as? String != hostId)
+            let fence = #"42["test:task68-fence",{}]"#
+            hub.emit(room: "user:\(ownerId)", event: "test:task68-fence", payloadJSON: "{}")
+            _ = try #require(await socket.waitForText { $0 == fence })
+            let frames = socket.textFrames.dropFirst(frameStart).prefix { $0 != fence }
+            #expect(frames.count == 3)
+            let decoded = try frames.map { try #require(try JSONSerialization.jsonObject(with: Data($0.dropFirst(2).utf8)) as? [Any]) }
+            #expect(decoded.compactMap { $0.first as? String } == ["message:new", "task:created", "message:new"])
+            let host = try #require(decoded.first?[1] as? [String: Any])
+            #expect(host["id"] as? String == hostId)
+            #expect(host["content"] as? String == "ship it")
+            #expect(host["channelId"] as? String == channelId)
+            #expect(host["senderId"] as? String == ownerId)
+            #expect(host["messageType"] as? String == "chat")
+            let hostSeq = try #require(host["seq"] as? Int)
+            #expect(hostSeq > 0)
+            let board = try #require(decoded[1][1] as? [String: Any])
+            #expect(Set(board.keys) == ["channelId", "tasks"])
+            #expect(board["channelId"] as? String == channelId)
+            let boardTasks = try #require(board["tasks"] as? [[String: Any]])
+            let omitted: Set<String> = ["createdByMembershipStatus", "requiresResourceReceipt", "resourceReceipt", "resourceReceiptRecordedAt", "resourceTeardownOwnerAgentId", "resourceExpiryFollowupId"]
+            #expect(boardTasks.count == 1)
+            #expect(NSDictionary(dictionary: try #require(boardTasks.first)) == NSDictionary(dictionary: task.filter { !omitted.contains($0.key) }))
+            let summary = try #require(decoded.last?[1] as? [String: Any])
+            #expect(summary["messageType"] as? String == "system")
+            #expect(summary["senderType"] as? String == "user")
+            #expect(summary["senderId"] as? String == "system")
+            #expect(summary["senderName"] as? String == "System")
+            #expect(summary["senderDescription"] is NSNull)
+            #expect(summary["senderMembershipStatus"] is NSNull)
+            #expect((summary["attachments"] as? [Any])?.isEmpty == true)
+            #expect((summary["mentions"] as? [Any])?.isEmpty == true)
+            #expect((summary["reactions"] as? [Any])?.isEmpty == true)
+            #expect(summary["commentRef"] is NSNull)
+            #expect(summary["externalAuthor"] is NSNull)
+            #expect(summary["causalActorType"] as? String == "user")
+            #expect(summary["causalActorId"] as? String == ownerId)
+            #expect(summary["systemSubtype"] as? String == "task.created_summary")
+            #expect(summary["conversationContext"] as? [String: String] == ["channelType": "channel"])
+            #expect(try #require(summary["seq"] as? Int) > hostSeq)
+            #expect(boardTasks.allSatisfy { $0["seq"] == nil })
+            #expect(summary["content"] as? String == #"📋 1 new task created: #1 "ship it""#)
 
-            let taskIds = try #require(
-                (try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])?["taskIds"] as? [String]
-            )
-            #expect(taskIds.count == 1)
-
-            let frames = capture.recorded
-            #expect(frames.count == 1)
-            let frame = try #require(frames.first)
-            #expect(frame.room == "channel:\(channelId)")
-            #expect(frame.event == "task:created")
-            let expectedPayload = sortedJSON(TaskCreatedPayload(
-                channelId: channelId,
-                tasks: [TaskCreatedItemDTO(
-                    id: try #require(taskIds.first),
-                    channelId: channelId,
-                    title: "ship it",
-                    status: "todo"
-                )]
-            ))
-            #expect(frame.payloadJSON == expectedPayload)
         }
     }
 }
@@ -158,7 +177,7 @@ private func sortedJSON(_ value: some Encodable) -> String {
                 request.body = .init(string: "{\"tasks\":[{\"title\":\"nope\"}]}")
             }
             #expect(unauthorized.status == .unauthorized)
-            #expect(unauthorized.body.string == "{\"error\":\"Unauthorized\"}")
+            #expect(unauthorized.body.string == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
 
             // Not a server member: 403.
             accounts.oauth.removeMember(serverId: serverId, userId: memberId)
@@ -181,7 +200,7 @@ private func sortedJSON(_ value: some Encodable) -> String {
                 request.body = .init(string: "{\"tasks\":[{\"title\":\"nope\"}]}")
             }
             #expect(readOnly.status == .forbidden)
-            #expect(readOnly.body.string == "{\"error\":\"Join the channel to change tasks\"}")
+            #expect(readOnly.body.string == "{\"error\":\"You must join this channel to modify tasks\"}")
 
             // Archived channel: 409 with the machine-readable code.
             accounts.oauth.setChannelArchived(id: channelId, archivedAt: Date())
@@ -193,18 +212,23 @@ private func sortedJSON(_ value: some Encodable) -> String {
             accounts.oauth.setChannelArchived(id: channelId, archivedAt: nil)
 
             // Malformed and empty task lists keep the 400.
-            for bodyJSON in ["{}", "{\"tasks\":[]}", "{\"tasks\":[\"nope\"]}", "{\"tasks\":null}"] {
+            for (bodyJSON, error) in [
+                ("{}", "tasks array is required"),
+                ("{\"tasks\":[]}", "tasks array is required"),
+                ("{\"tasks\":[\"nope\"]}", "Each task must have a non-empty title"),
+                ("{\"tasks\":null}", "tasks array is required"),
+            ] {
                 let invalid = try await client.send(.post, headers: headers, to: "/api/tasks/channel/\(channelId)") { request in
                     request.body = .init(string: bodyJSON)
                 }
                 #expect(invalid.status == .badRequest, "expected 400 for \(bodyJSON)")
-                #expect(invalid.body.string == "{\"error\":\"Invalid task list\"}")
+                #expect(invalid.body.string == "{\"error\":\"\(error)\"}")
             }
         }
     }
 }
 
-@Test func createChannelTasksSkipsUntitledAndWrongTypedTitleRowsLikeTheRawParser() async throws {
+@Test func createChannelTasksRejectsTheEntireBatchForAnInvalidTitle() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111772004"
     let serverId = "33333333-3333-4333-8333-333333772003"
@@ -226,15 +250,14 @@ private func sortedJSON(_ value: some Encodable) -> String {
             let token = try await channelMessagingLogin(client, email: "channel-messaging-lenient@slock.test")
             let headers = channelMessagingHeaders(token, serverId)
             let created = try await client.send(.post, headers: headers, to: "/api/tasks/channel/\(channelId)") { request in
-                // Empty and wrong-typed titles are dropped by the raw parser
-                // before it writes; the batch itself is still valid.
+                // Node rejects the whole batch before writing any task or message.
                 request.body = .init(string: "{\"tasks\":[{\"title\":\"\"},{\"title\":5},{\"title\":\"kept\"}]}")
             }
-            #expect(created.status == .ok)
-            let taskIds = try #require(
-                (try JSONSerialization.jsonObject(with: Data((created.body.string ?? "").utf8)) as? [String: Any])?["taskIds"] as? [String]
-            )
-            #expect(taskIds.count == 1)
+            #expect(created.status == .badRequest)
+            #expect(created.body.string == "{\"error\":\"Each task must have a non-empty title\"}")
+            let listed = try await client.get(URI(string: "/api/tasks/channel/\(channelId)"), headers: headers)
+            #expect(listed.body.string == "{\"tasks\":[]}")
+
         }
     }
 }

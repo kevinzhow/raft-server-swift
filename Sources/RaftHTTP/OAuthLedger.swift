@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 public struct ThirdPartyEventMessage: Sendable {
     public var id: String
@@ -51,13 +52,13 @@ public struct OAuthClientRejection: Error, Sendable {
 /// The signing secret stays independent so JWT signing runs after redemption
 /// releases the record-table transaction.
 public final class OAuthLedger: Sendable {
-    private let signingSecret = Mutex("test-jwt-secret")
+    private let signingSecret = TransactionalState("test-jwt-secret")
 
     public var jwtSecret: String {
         get { signingSecret.withLock { $0 } }
         set { signingSecret.withLock { $0 = newValue } }
     }
-    let state = Mutex(State())
+    let state = TransactionalState(State())
 
     struct State: Sendable {
         var servers: [String: Server] = [:]

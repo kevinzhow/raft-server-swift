@@ -157,7 +157,7 @@ private func serverApiObject(_ response: ClientResponse) throws -> [String: Any]
     }
 }
 
-@Test func serverGrokRuntimeGateAndModelOutcomes() async throws {
+@Test func serverRuntimeModelsWithoutProductionBridgeReturnClosedFailure() async throws {
     let accounts = EmailLoginDirectory()
     let serverId = "33333333-3333-4333-8333-000001020005"
     let ownerId = "11111111-1111-4111-8111-000001020005"
@@ -166,61 +166,18 @@ private func serverApiObject(_ response: ClientResponse) throws -> [String: Any]
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "grok-gate", name: "Grok Gate", ownerId: ownerId)
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "grok-machine")
-    accounts.setMachineRuntimesForTesting(machineId: machine, runtimes: ["codex", "grok"])
-    let probe = RuntimeProbeCounter()
-    accounts.machinesAndComputersStore.machineRuntimeModelProbe = { _, _, _ in probe.next() }
-
+    // All accepted Grok gate/model outcomes are in the real PG/NIO scene.
+    // An unbound HTTP fixture reports a closed failure, never cached "live".
     try await withApp { app in
-        configure(app, services: FallbackServices(
-            nodeEnv: "test",
-            tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {},
-            emailAccounts: accounts
-        ))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {}, emailAccounts: accounts))
         try await app.testing { client in
             let owner = try await serverApiLogin(client, email: ownerEmail)
-            let headers = serverApiHeaders(owner, serverId)
-            let base = "/api/servers/\(serverId)/machines/\(machine)"
-            func options() async throws -> [[String: Any]] {
-                let response = try await client.get(URI(string: "\(base)/runtime-options"), headers: headers)
-                #expect(response.status == .ok)
-                return try serverApiObject(response)["options"] as? [[String: Any]] ?? []
-            }
-            #expect(try await options().contains { $0["runtimeId"] as? String == "grok" } == false)
-            accounts.enableGrokRuntimeForTesting(serverId: serverId)
-            #expect(try await options().contains { $0["runtimeId"] as? String == "grok" } == true)
-
-            probe.outcome = .models(models: [RuntimeModelProbeModel(id: "grok-4.5", label: "Grok 4.5")], default: "grok-4.5")
-            let live = try await client.get(URI(string: "\(base)/runtime-models/grok"), headers: headers)
-            #expect(live.status == .ok)
-            let liveBody = try serverApiObject(live)
-            #expect(liveBody["models"] as? [[String: String]] == [["id": "grok-4.5", "label": "Grok 4.5"]])
-            #expect(liveBody["default"] as? String == "grok-4.5")
-            #expect(probe.calls == 1)
-
-            probe.outcome = .missingConfig
-            #expect(try serverApiObject(try await client.get(URI(string: "\(base)/runtime-models/codex"), headers: headers)) as NSDictionary == ["kind": "missing_config", "recovery": "kimi_login"] as NSDictionary)
-            probe.outcome = .noModels
-            #expect(try serverApiObject(try await client.get(URI(string: "\(base)/runtime-models/codex"), headers: headers)) as NSDictionary == ["kind": "no_models"] as NSDictionary)
-            probe.outcome = .unsupported
-            #expect(try serverApiObject(try await client.get(URI(string: "\(base)/runtime-models/codex"), headers: headers)) as NSDictionary == ["kind": "unsupported"] as NSDictionary)
-            probe.outcome = .error(code: "", retryable: true)
-            #expect(try serverApiObject(try await client.get(URI(string: "\(base)/runtime-models/codex"), headers: headers)) as NSDictionary == ["kind": "error", "retryable": true] as NSDictionary)
-            probe.outcome = .error(code: "detect_timeout", retryable: true)
-            #expect(try serverApiObject(try await client.get(URI(string: "\(base)/runtime-models/codex"), headers: headers)) as NSDictionary == ["kind": "error", "retryable": true, "code": "detect_timeout"] as NSDictionary)
+            let response = try await client.get(URI(string: "/api/servers/\(serverId)/machines/\(machine)/runtime-models/codex"),
+                headers: serverApiHeaders(owner, serverId))
+            #expect(response.status == .ok)
+            #expect(try serverApiObject(response) as NSDictionary == ["kind": "error", "retryable": true, "code": "computer_offline"] as NSDictionary)
         }
-    }
-}
-
-private final class RuntimeProbeCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storedCalls = 0
-    var outcome: RuntimeModelProbeOutcome = .missingConfig
-    var calls: Int {
-        lock.lock(); defer { lock.unlock() }; return storedCalls
-    }
-    func next() -> RuntimeModelProbeOutcome {
-        lock.lock(); storedCalls += 1; let value = outcome; lock.unlock(); return value
     }
 }
 

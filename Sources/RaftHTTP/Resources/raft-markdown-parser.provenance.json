@@ -1,0 +1,1135 @@
+{
+  "format": 1,
+  "bundleSHA256": "26283441eb1313982b33d42d273b334bff6d4fc7ca6f0f38c4f8355a3c0d4921",
+  "sourceEntry": "Tools/MarkdownParser/entry.mjs",
+  "referenceTag": "v1.21.23-source.1",
+  "referenceSourceSHA256": {
+    "raftRefs.ts": "53da54b630a0f9c30188a9421106e3cd38887dc82f9a6b79654c1941f3253195",
+    "markdownRanges.ts": "bddd0aaae92de44e113003f930b869afeac79ca8818ebfebbc7090e57cf1b173"
+  },
+  "referenceLockSHA256": "848dd51eb7b8b99c561445e258be5525d6f3fa9ae23980ff14af55aa2fa80aff",
+  "buildTools": {
+    "nodeVersion": "v24.22.2",
+    "esbuildVersion": "0.28.2",
+    "esbuildPackageSHA256": "9d0bc453f4e791553c4cc2298ba023b409241fd9801e494741666eb0f6051490",
+    "esbuildJSSHA256": "61ec0ba144ff93f4bf0e96ad6fab6f430ede0aa13e27ace8063ed63ba416b3cd",
+    "esbuildLinuxX64BinarySHA256": "e1698a3d5c6c0798fee4fd3b5cc816651f460c63d390a7a26ea4beb0b1884100",
+    "entrySHA256": "970ca301a468bffea1ff651a2e212ce568db2cbfc5a9c1f5122a8fd6bdb45250",
+    "bundleSHA256": "26283441eb1313982b33d42d273b334bff6d4fc7ca6f0f38c4f8355a3c0d4921",
+    "bundleBytes": 116538,
+    "options": {
+      "platform": "neutral",
+      "format": "iife",
+      "conditions": [
+        "node"
+      ],
+      "mainFields": [
+        "module",
+        "main"
+      ],
+      "target": [
+        "es2020"
+      ],
+      "minify": true,
+      "sourcemap": false,
+      "legalComments": "none",
+      "charset": "ascii",
+      "define": {
+        "process.env.NODE_ENV": "\"production\""
+      }
+    },
+    "packageCount": 49,
+    "inputCount": 158
+  },
+  "runtime": "In-process system JavaScriptCore public C API; original UTF16 input, no host IO",
+  "requiredLinuxSONAME": "libjavascriptcoregtk-4.1.so.0",
+  "profile": "GFM plus disabled indented code, matching pinned reference",
+  "packages": [
+    {
+      "name": "ccount",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "007abbcac7038e503a221330fac2515793aa0dfba231b2d54734d2af76b32ed9"
+    },
+    {
+      "name": "character-entities",
+      "version": "2.0.2",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "3eaa974f1a9ede7187797d85eb1c799616144cd5ff75d094d30a44bec7d07d88"
+    },
+    {
+      "name": "decode-named-character-reference",
+      "version": "1.3.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "b034b006d03650d0995148196898eac08012de40712cb984e968c7b99d96b55e"
+    },
+    {
+      "name": "devlop",
+      "version": "1.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "fbb56102cf3bd0e07a8075bfda80825b3ccd78a37642c92cef54a55fbed709dd"
+    },
+    {
+      "name": "escape-string-regexp",
+      "version": "5.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "6d7ae0240943e38cb8a8dd35242584b2c3415a2bca83aa86497d3b7b1bef08ef"
+    },
+    {
+      "name": "longest-streak",
+      "version": "3.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "fe48cd537de554b59fcb057d28c4b10cfef569817040ae61beb8a9b323bf82df"
+    },
+    {
+      "name": "markdown-table",
+      "version": "3.0.4",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "545694864e591196ed1cfc43b5b973b1662722cd081d3d113b25f298ac6d02f9"
+    },
+    {
+      "name": "mdast-util-find-and-replace",
+      "version": "3.0.2",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "7257228953a3a5577a5dbabe7946af43975751ff0b9fd77309e5fecd63972288"
+    },
+    {
+      "name": "mdast-util-from-markdown",
+      "version": "2.0.3",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "4f7c4700c78d6781af46eb12b2f908b0503d8beefa8b2cea0fbfe9de8444e438"
+    },
+    {
+      "name": "mdast-util-gfm",
+      "version": "3.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "5d3d27f68e6aac77039850c2587d49b2d8047f1fb46914d1f67eaec0a52c8fe1"
+    },
+    {
+      "name": "mdast-util-gfm-autolink-literal",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "aaf24f25ff1d5dee2b19c2da3704f98fbc67ac2bdf9424858aeb19430649c50b"
+    },
+    {
+      "name": "mdast-util-gfm-footnote",
+      "version": "2.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "b91f4521e33413134bda4b3a481b165c764efd453cb7fb379f5b71b09309e11a"
+    },
+    {
+      "name": "mdast-util-gfm-strikethrough",
+      "version": "2.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "58a2747007773f1d8b95bbb233589e6be6bdbdfe23612522d58ffeec1c7c98b2"
+    },
+    {
+      "name": "mdast-util-gfm-table",
+      "version": "2.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "8ab7c1402602e721347f377b537374d4f2dfdef7794f4c7b0711ad1f39e2239f"
+    },
+    {
+      "name": "mdast-util-gfm-task-list-item",
+      "version": "2.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "156ef1ae561ef1558f5e3210c41f238a4707d9f451eecda92d832ef821d5e7f1"
+    },
+    {
+      "name": "mdast-util-phrasing",
+      "version": "4.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "c020a54303d9d422c9def6ba5416db74c0f30b2783f2a84b7248b0d61c2ac113"
+    },
+    {
+      "name": "mdast-util-to-markdown",
+      "version": "2.1.2",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "79a01b2e7f0c1bdf3f3b1a2a9ba40d8d9d3378eba98b2909bddda41a90d870d1"
+    },
+    {
+      "name": "mdast-util-to-string",
+      "version": "4.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "0acb725dee2ee1c9d374b240c7a972da04cc94d13663b58fa52be009c3271a13"
+    },
+    {
+      "name": "micromark",
+      "version": "4.0.2",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "e2423e9665ea6d21d78cb520e812249cdbce2428bd6a6e9b38438a2569b05f2d"
+    },
+    {
+      "name": "micromark-core-commonmark",
+      "version": "2.0.3",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "f6b039e198e40c6ede380cc41da4c840555c18fd5f2be43a559fb5c4221c034d"
+    },
+    {
+      "name": "micromark-extension-gfm",
+      "version": "3.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "f0c6ffb3bbbf52b1e5d939566b8d68097cbdd061598f09fde72af8a38c948bee"
+    },
+    {
+      "name": "micromark-extension-gfm-autolink-literal",
+      "version": "2.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "778b72859fb329cbca8ea93653b8b11da652f93147e2752773eef42b9091eaca"
+    },
+    {
+      "name": "micromark-extension-gfm-footnote",
+      "version": "2.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "6d01f1d739fa38fbe2784fcb9143554b2f19e4c1193f7d62efae46fb7d3b36d6"
+    },
+    {
+      "name": "micromark-extension-gfm-strikethrough",
+      "version": "2.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "5a115643dd899a6c828ab236bbeab6aaf2108276f5cbc989662d6204f5ab677a"
+    },
+    {
+      "name": "micromark-extension-gfm-table",
+      "version": "2.1.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "77614bfc3e826a49007c78569df530d2a0832188cce1b54dd4fe81b056540dc2"
+    },
+    {
+      "name": "micromark-extension-gfm-tagfilter",
+      "version": "2.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "6ae932bac51e13e4b1fe4071c2a60f567b68e7a26ef60649d6401bab94bdf0b4"
+    },
+    {
+      "name": "micromark-extension-gfm-task-list-item",
+      "version": "2.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "2497c18c449db1459392e6e70bca781256cab6a69b3a35fc55acbd0360ceb85c"
+    },
+    {
+      "name": "micromark-factory-destination",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "71e61f23d5e171525c8934e9a8ac51e649107e4658082938d19dab172533b483"
+    },
+    {
+      "name": "micromark-factory-label",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "2c1c73d0087a1195a34bff62b47d5119a49f210636b3759c6d459886b559ee5e"
+    },
+    {
+      "name": "micromark-factory-space",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "26349d7f4aa3c2a4eb91fca569e2b5f70cfc8df1517d360542f8b99ab61a6961"
+    },
+    {
+      "name": "micromark-factory-title",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "5b7d184aeb5ff4fa8b63a338800e80400a631ee594ff0d698a5a4668eddc9a16"
+    },
+    {
+      "name": "micromark-factory-whitespace",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "ea0cbec4d722111585387048046a248ce272e3c587e228cc3cf98fe4919e48c6"
+    },
+    {
+      "name": "micromark-util-character",
+      "version": "2.1.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "bf43c5df782cf1cf985d89a8f01fd1a7b7b4bae9bf2b9c07e633c2379b1dbd7f"
+    },
+    {
+      "name": "micromark-util-chunked",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "20e4e68a94fb62188c9139721be97740ec32f77464b23c40677a89aee72584f6"
+    },
+    {
+      "name": "micromark-util-classify-character",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "f84c7e2b5f54a05fa725645d31810ad8531c278901d661c714d114ad978e634d"
+    },
+    {
+      "name": "micromark-util-combine-extensions",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "43686ee41cc83e2460aaa49821d7f36b0b7fd525e88b253e10b1556520196554"
+    },
+    {
+      "name": "micromark-util-decode-numeric-character-reference",
+      "version": "2.0.2",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "b4eda7dc69734392cf0c79313423b21dacfe03ae43002e5fc18151613f37f532"
+    },
+    {
+      "name": "micromark-util-decode-string",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "3fde5acb664658ceef73bd64e17041e9762819a06ccee998d058d04e8ec34a2e"
+    },
+    {
+      "name": "micromark-util-encode",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "1758618d3101cb94280c1ddb827bb329790f7d95058cdc616d50352811c7d5ba"
+    },
+    {
+      "name": "micromark-util-html-tag-name",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "d541066042522d8c5247964225d3a9f08f7b902b75682ab57ceecfeee45ed90c"
+    },
+    {
+      "name": "micromark-util-normalize-identifier",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "b22a2066064ff412b8f9ded011a14d3fac87c37c696da2d8e8a57a0c9c88dea0"
+    },
+    {
+      "name": "micromark-util-resolve-all",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "f786149ff20e6ab653b42ddf8109d4f14e839b80800513698f7de790b3819628"
+    },
+    {
+      "name": "micromark-util-sanitize-uri",
+      "version": "2.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "a694d9800a68d5d52916675f9231c16bf7e764658a9045d86b74c29736b59dd6"
+    },
+    {
+      "name": "micromark-util-subtokenize",
+      "version": "2.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "8dd7a96c44ac602941d16b0078cef059821871b047a6f6309ffd61bb470cd420"
+    },
+    {
+      "name": "unist-util-is",
+      "version": "6.0.1",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "0838fa706c4cbda37f47ac4c915fab0b6be3c99aeeb81060d22ec6532fae6272"
+    },
+    {
+      "name": "unist-util-stringify-position",
+      "version": "4.0.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "2fb7e8fcbf4e701e62f07887bd9f16e699e29c87a19acd128c11788fb9e27c0e"
+    },
+    {
+      "name": "unist-util-visit",
+      "version": "5.1.0",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "98bf89a2331cae3cb26b4ad27a1cc78cb0f00edb9a7534491b111a34423e9a8a"
+    },
+    {
+      "name": "unist-util-visit-parents",
+      "version": "6.0.2",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "6b00f27056337866d9206719b72a62c299a11903cdf622f307c92059723845e1"
+    },
+    {
+      "name": "zwitch",
+      "version": "2.0.4",
+      "declaredLicense": "MIT",
+      "packageJSONSHA256": "01d215553746b3bd19ae5b31cab656830d38e40b6edea656b9b18256916cda0a"
+    }
+  ],
+  "inputs": [
+    {
+      "path": "adapter/entry.mjs",
+      "sha256": "970ca301a468bffea1ff651a2e212ce568db2cbfc5a9c1f5122a8fd6bdb45250",
+      "bytes": 1825
+    },
+    {
+      "path": "ccount@2.0.1/index.js",
+      "sha256": "cbba065a9f66c5909d49f740a64f12cfde03220303a845b2273d54af59e70af9",
+      "bytes": 619
+    },
+    {
+      "path": "character-entities@2.0.2/index.js",
+      "sha256": "a5f982520e46458dd306fe9320ac62665cc611117dda7f3d074ec27cec63ba60",
+      "bytes": 37342
+    },
+    {
+      "path": "decode-named-character-reference@1.3.0/index.js",
+      "sha256": "94977edf16af953166332d05480fc0bc3883eb9c1a5feee7ca670eebc87bee01",
+      "bytes": 634
+    },
+    {
+      "path": "devlop@1.1.0/lib/default.js",
+      "sha256": "702fcb7d6bfdfe7b673b8bb7fa9d531d9b7d02693bed89f8dbb0a2c461604cf6",
+      "bytes": 133
+    },
+    {
+      "path": "escape-string-regexp@5.0.0/index.js",
+      "sha256": "af2065ad2f2d2b91946c2121e21618daa3f4b18787af9226f8c953ca54cca2f5",
+      "bytes": 469
+    },
+    {
+      "path": "longest-streak@3.1.0/index.js",
+      "sha256": "41d5da657563b0bf09d2e5235349195276e9246e1239370d98416e27a85b989c",
+      "bytes": 823
+    },
+    {
+      "path": "markdown-table@3.0.4/index.js",
+      "sha256": "2dd3014e8ce92317dfd819fc678217d8fdf47086a4607cc49566f0dee02b832a",
+      "bytes": 10270
+    },
+    {
+      "path": "mdast-util-find-and-replace@3.0.2/index.js",
+      "sha256": "7a4656d4f6e259733e75f160544e681c1250180db6f099907dde936bce1d8c7b",
+      "bytes": 516
+    },
+    {
+      "path": "mdast-util-find-and-replace@3.0.2/lib/index.js",
+      "sha256": "b171699f61c99a82565a6d6f8f3a1348d7d37756f889be30def0337caa9dbe2f",
+      "bytes": 6692
+    },
+    {
+      "path": "mdast-util-from-markdown@2.0.3/index.js",
+      "sha256": "b5ac1d75a898f7e28ae90ce26ab937b5f574bd5b4e8c17745bd15ba78a4a33f5",
+      "bytes": 89
+    },
+    {
+      "path": "mdast-util-from-markdown@2.0.3/lib/index.js",
+      "sha256": "2b19a9873232679ef08429e08c5836c865a54d8113ae5d58cb9409a60863727b",
+      "bytes": 29022
+    },
+    {
+      "path": "mdast-util-gfm-autolink-literal@2.0.1/index.js",
+      "sha256": "c3c1073e83ac96d470b41a7ace9636321578659a83e1d14d4c8ac7f7f85db8a8",
+      "bytes": 98
+    },
+    {
+      "path": "mdast-util-gfm-autolink-literal@2.0.1/lib/index.js",
+      "sha256": "4965bd92f22009a0fd0fa4f7af73903e4d793165634c26ab5827fe5386fbcff2",
+      "bytes": 6709
+    },
+    {
+      "path": "mdast-util-gfm-footnote@2.1.0/index.js",
+      "sha256": "b94bca85a6eefc173cd3a68381c45bfdc75643ed8f901a428d311d5a01575678",
+      "bytes": 127
+    },
+    {
+      "path": "mdast-util-gfm-footnote@2.1.0/lib/index.js",
+      "sha256": "47f5f97e3698325187eff57567e05f0a63162506cdd95f8f6468f2a7bbf69eff",
+      "bytes": 5112
+    },
+    {
+      "path": "mdast-util-gfm-strikethrough@2.0.0/index.js",
+      "sha256": "0156f05d678b6885b4e2a41248ac1366232e51e92bb0b6fc561c209062f5a721",
+      "bytes": 132
+    },
+    {
+      "path": "mdast-util-gfm-strikethrough@2.0.0/lib/index.js",
+      "sha256": "808441e33c8419430429dba66470f34367636fac752cb89d1fb5473bc4d29d83",
+      "bytes": 2661
+    },
+    {
+      "path": "mdast-util-gfm-table@2.0.0/index.js",
+      "sha256": "9cc7b5b80a5b94d6c0803936b9a120c272e32a63f802cb960de7c6c59907ee65",
+      "bytes": 114
+    },
+    {
+      "path": "mdast-util-gfm-table@2.0.0/lib/index.js",
+      "sha256": "5f5fc1551fe95d4e4e5a8729e52391abb9a053c0a618aa79dfb0364728299be8",
+      "bytes": 8185
+    },
+    {
+      "path": "mdast-util-gfm-task-list-item@2.0.0/index.js",
+      "sha256": "38e8209a8b251e633588fd16ad1152c33daced7ff21be821827c29be7bf37d3f",
+      "bytes": 92
+    },
+    {
+      "path": "mdast-util-gfm-task-list-item@2.0.0/lib/index.js",
+      "sha256": "1986b0f334e23659909982bc930ebc11784212d9331ef97efa14f268af01d852",
+      "bytes": 3741
+    },
+    {
+      "path": "mdast-util-gfm@3.1.0/index.js",
+      "sha256": "f6d345b843a3b44d74a5e8ee123f90c7d16f0c670542810c8b06367c44a01b50",
+      "bytes": 104
+    },
+    {
+      "path": "mdast-util-gfm@3.1.0/lib/index.js",
+      "sha256": "0ead64b5f705ade5818adf7059c62c34353f00aaf4528549aceccd342004297e",
+      "bytes": 1903
+    },
+    {
+      "path": "mdast-util-phrasing@4.1.0/index.js",
+      "sha256": "f87bb5f2c3fe0f98bd2802db6438ecf751f051c64fe502377444067a9c59ce6e",
+      "bytes": 40
+    },
+    {
+      "path": "mdast-util-phrasing@4.1.0/lib/index.js",
+      "sha256": "cfba43614dcc2d644d7f0b2a83a172b6119aa70ba10a504f03528a0fb4c873eb",
+      "bytes": 1072
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/index.js",
+      "sha256": "424f094d7793c73a0a94e6b11bc747d122fa409037cf13e48ac490c2e283c03a",
+      "bytes": 154
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/configure.js",
+      "sha256": "e5264debb8cb4bbe153339e366aa790ddd2d271ae864a712eacb61e10dc11656",
+      "bytes": 1429
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/blockquote.js",
+      "sha256": "b6dd851a1714f34fabdefb0cdacc77443326c9b6b8f5e83a90cada5d3bc71354",
+      "bytes": 645
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/break.js",
+      "sha256": "7bd4f6ce61d3b082fc679aba40b8c7944637ac1ae202d54857e5480d075fc120",
+      "bytes": 705
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/code.js",
+      "sha256": "628bbd3ac2d8027d6c532689d0022e4f4c97740228bb7d13717b0c487bb4ce9d",
+      "bytes": 1757
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/definition.js",
+      "sha256": "83a7f5799a2622ae6256d5ee8a9612ebb1335809ffe63729cf57822816d33383",
+      "bytes": 1761
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/emphasis.js",
+      "sha256": "bea3469e986f837b2b07deb2d6018394d84d3e6ce87f5df0155b3f4b099177b5",
+      "bytes": 1671
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/heading.js",
+      "sha256": "16e615ef320f6e1f1244366abc52df0916ee7e904dc3294b5461ebd00251a35b",
+      "bytes": 2033
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/html.js",
+      "sha256": "07aae47b1697513c04efedc45f2cf10047e680d7af3c7e517ec126578a092d83",
+      "bytes": 237
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/image-reference.js",
+      "sha256": "8da0d0564cefefdc0442961c72d33c7e8bf924f1933be9fe646ccffc5545c438",
+      "bytes": 1647
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/image.js",
+      "sha256": "6ca9becc1bc294a246d6134ad546591580eb641a38c3120ff149cf090ed1ec69",
+      "bytes": 1853
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/index.js",
+      "sha256": "490a5bac7d713e0c0576cde3bad5e18a581836540f62c2bb08ec6ecb01fd6c83",
+      "bytes": 1040
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/inline-code.js",
+      "sha256": "82024330cc4f32d476d81f572ce2c760bc43975bb1030d73c064a391df694971",
+      "bytes": 2146
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/link-reference.js",
+      "sha256": "27f4e01096422e1b897b65d3f2511240e518550968ed3e2f20a15f5459093ac6",
+      "bytes": 1652
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/link.js",
+      "sha256": "7c1f94738795ca9988655a7425ddb4bfaa1671884a598b639766608938278830",
+      "bytes": 2663
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/list-item.js",
+      "sha256": "1d386f2d5cb3af88f88ab6ae52384f64d52726b4107206782d9ea3d3c3a1f75f",
+      "bytes": 1614
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/list.js",
+      "sha256": "226202457c9f1da831f98dde5c9824b85087d61a04024eb1915f10278ea11013",
+      "bytes": 2961
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/paragraph.js",
+      "sha256": "777de9e03969c3e98ec5b1df78de243954be4008eeab44d77ee873900e397e00",
+      "bytes": 467
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/root.js",
+      "sha256": "9689eed04d6cce3d528882e780d94e3a9932e2409a70f53ce26f28f20cf63af8",
+      "bytes": 575
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/strong.js",
+      "sha256": "a4c417b138d263546b5e2e5f4105db9fdf64e39cd5bf32ca51ebca2bfc8f1f98",
+      "bytes": 1665
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/text.js",
+      "sha256": "82c7802143c42efbb86f81ae026ea8b21bb6181a79b5a179db668deabed42c39",
+      "bytes": 320
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/handle/thematic-break.js",
+      "sha256": "e6ba03c46587555d686a3d9d707be2b94ecc0c4d08df302cb19aa76391e0dc27",
+      "bytes": 571
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/index.js",
+      "sha256": "00c783f8e7168233253e04066aa9e06753754e916eacaa636e1f76e2ef8c7c38",
+      "bytes": 4808
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/join.js",
+      "sha256": "4bbacdff9179436225a16583a30a428415a106005058a3d315468526cd53cedc",
+      "bytes": 1093
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/unsafe.js",
+      "sha256": "748691eabb03fb76b35f43690f510eb23902397cc2cb2ce75371aae177857b13",
+      "bytes": 5518
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/association.js",
+      "sha256": "a7059dc12cccb03befe1d118d062240b0f08201be9da238f2056f4cfe5d3ba53",
+      "bytes": 1113
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-bullet-ordered.js",
+      "sha256": "e5b643295c4d28ca25a58701b0acf19873032ee6385d8e7bf92298cfb3010df2",
+      "bytes": 472
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-bullet-other.js",
+      "sha256": "b5c1d4e8085dec4551dc27d79cc37995b5da2c9a620798e70a708713a27d8906",
+      "bytes": 853
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-bullet.js",
+      "sha256": "c9e29e954a8976cf2b86b93414e4a4d40ba904fef02ba47dea4ca3790dcfdfc5",
+      "bytes": 468
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-emphasis.js",
+      "sha256": "ed8cbf60a71d9cd433dd1af38bb690afafc45c7c657fc62cba8e161a8aee6878",
+      "bytes": 456
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-fence.js",
+      "sha256": "2319c48816ce3d363ab42687621d64824dafabb2747540396192806e5a51992d",
+      "bytes": 443
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-list-item-indent.js",
+      "sha256": "2966c2cae70ef1dc0a71b84cf821c65a12fb4d41da76aae3de5e33eba6265d09",
+      "bytes": 512
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-quote.js",
+      "sha256": "ce4b9514ae41379d7156ffedd44b15e421fd0518ee8668c1914bf5baf3a0985a",
+      "bytes": 442
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-rule-repetition.js",
+      "sha256": "ed3e4bec7a04ea73d842017a8164915e5b35f9b37470f4be99ecfe7eacaf8321",
+      "bytes": 480
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-rule.js",
+      "sha256": "95ab8adc95f1e590e3433d739c79d2132833b3397fcc833db9c79aee582ea988",
+      "bytes": 460
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/check-strong.js",
+      "sha256": "65a9dcd6c2e771b10c524a85ea72e985e64362f001317a4e90d7318644551bd5",
+      "bytes": 446
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/compile-pattern.js",
+      "sha256": "cc5942773ca68186c628ae956e7734709376dbf94df3c57ef5e7be276e4ba7a6",
+      "bytes": 577
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/container-flow.js",
+      "sha256": "462a5ba7f6fbeb0e21f5021a4f07961c0e93108660dda27b559cad88eb09dc66",
+      "bytes": 1828
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/container-phrasing.js",
+      "sha256": "9172b7a8114cf4123e6a67ccf1de5d8c6d4492fa760217fad8c04a7dcf703675",
+      "bytes": 3668
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/encode-character-reference.js",
+      "sha256": "a1aacc0ea2e4cd7fb84deaa115a5deaf4576e0701dd9441d5d6ffa70386c5dfd",
+      "bytes": 272
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/encode-info.js",
+      "sha256": "919824b727823671cf6188fb17e5c012a29059d88e821135371e5309c103f03d",
+      "bytes": 3216
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/format-code-as-indented.js",
+      "sha256": "875735363c778c12d8a760e77420d636b7d2e111c955c2002168ba744e12d30b",
+      "bytes": 568
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/format-heading-as-setext.js",
+      "sha256": "7efc6b494ee952b1831053decae18e702be275ec0ff93ea3069c8730f65ecb73",
+      "bytes": 746
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/format-link-as-autolink.js",
+      "sha256": "f7ae2fab97bc8541829b81eb84f9e5e6dffec2ed38172b8242d4e7876f0a346b",
+      "bytes": 1002
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/indent-lines.js",
+      "sha256": "1f0fdb29bf49d7c189d161f16c7d3f91a9d8ce625f5a6aeaad9de9810bd93782",
+      "bytes": 613
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/pattern-in-scope.js",
+      "sha256": "be9c737be3309735314d3b20d73afebff1d9d8d6681d43fe517fa573a193d255",
+      "bytes": 771
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/safe.js",
+      "sha256": "8a8db3e41daf6c810cb289406fb9e46dde2dfaf4a0789c7193db90de3cfdfa77",
+      "bytes": 4649
+    },
+    {
+      "path": "mdast-util-to-markdown@2.1.2/lib/util/track.js",
+      "sha256": "a7254e9fa9b1c92e349e2fde6bbacfc9b2453806f9cf06f16ff735fdde900f8e",
+      "bytes": 1263
+    },
+    {
+      "path": "mdast-util-to-string@4.0.0/index.js",
+      "sha256": "46fb60d03aacb0a3f66c7be7f7c93e85013076f59d595c7220554b05027d8ada",
+      "bytes": 104
+    },
+    {
+      "path": "mdast-util-to-string@4.0.0/lib/index.js",
+      "sha256": "53015b2b0b7a72aed1c2d880d3c2aaed73972241f968d4a206a18d92fbe57b21",
+      "bytes": 2626
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/index.js",
+      "sha256": "67211c138962eb4153158d185781612cb5a4f811a7f26f98863d03e7560595b6",
+      "bytes": 1151
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/attention.js",
+      "sha256": "0c4d5d13b7c56ed8e3c7b4617a1a2624c827576e652e65140478c47545526314",
+      "bytes": 7172
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/autolink.js",
+      "sha256": "d0762261ea02440fbc81b5facf994bc42ba1561d4c7bf822dd9d09a7c05a69ed",
+      "bytes": 4817
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/blank-line.js",
+      "sha256": "ef542164abcf6a5e6806720105146feba7e340a1f6d8c08c840707208ca76d69",
+      "bytes": 1165
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/block-quote.js",
+      "sha256": "dc87caa801ada12890767e83534b15746097b3cc6c9d5a99c046c1a252632366",
+      "bytes": 2731
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/character-escape.js",
+      "sha256": "8fd107627d4f0363999adf68fadd375a17a7536da8eee96799c805e3e57b3fe4",
+      "bytes": 1173
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/character-reference.js",
+      "sha256": "cc8138483321def7b2f4304df0e76ee2bcea84bb1bc5bc603534063b30ddd959",
+      "bytes": 3300
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/code-fenced.js",
+      "sha256": "ad089ec3656e37e3adbcda1fa873a8377d0b4143d556e279424b65b49f0d209f",
+      "bytes": 9281
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/code-indented.js",
+      "sha256": "179e7327f4c7565b0f1f74042e8fca37f232750f52e8bb4064a8f7602abce01c",
+      "bytes": 4038
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/code-text.js",
+      "sha256": "6e59e9b77a76a825c8cd142b0a2f0495aa5122da271770cb09322456a5207451",
+      "bytes": 4840
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/content.js",
+      "sha256": "86fe007055efee6edaecfbb2ccebb9bdd1e7887a45d1c5881bcaa7ed6a973b77",
+      "bytes": 3290
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/definition.js",
+      "sha256": "800e7ef9f722e2536dc5e9774d0e22b0dcc58770d7a8011dc2c205f5fd263009",
+      "bytes": 5653
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/hard-break-escape.js",
+      "sha256": "a84fdfcc8ad17557345f074d2cc61ac902349ae4666a86c934be7914029a80bd",
+      "bytes": 984
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/heading-atx.js",
+      "sha256": "963cbe1d91fcbd825cb452cea673e1ca874a7533a31a5c48b674cb4817799b40",
+      "bytes": 4386
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/html-flow.js",
+      "sha256": "907e1b73e4eb1e51e818ab74698872906f3163788aeea7232b36d0d30aafedd0",
+      "bytes": 18627
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/html-text.js",
+      "sha256": "017f2b1f7be2303f4b849394f29430f4daea803dbb7eaf4ce82bb63e42e6c47c",
+      "bytes": 13364
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/label-end.js",
+      "sha256": "0fb2b950e1ed066cc1af4072bb4ff841a640aa8e02a43dc6de288ea8044e67e4",
+      "bytes": 12658
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/label-start-image.js",
+      "sha256": "60877f46d816d25fe11d86e24b703b4501240cdb89d63f7cc978d39af500abb8",
+      "bytes": 1945
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/label-start-link.js",
+      "sha256": "ffdab4c9eb7c16743e91f3b20711cdded335413c279aa4fa76d2d98d515cc0ec",
+      "bytes": 1116
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/line-ending.js",
+      "sha256": "3fa206316adeeb5a76e93c52d044f9ed32c1c1aad3a25346b913fec375ada089",
+      "bytes": 676
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/list.js",
+      "sha256": "86115cefb14f3d7076cfe28a6f06dd805ae4e024b0897eaa897d64db1966c7e4",
+      "bytes": 6251
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/setext-underline.js",
+      "sha256": "36d333f33ee829a005a116ff464f7be89e2311650a36f3837bc20915c2d2d6c9",
+      "bytes": 4282
+    },
+    {
+      "path": "micromark-core-commonmark@2.0.3/lib/thematic-break.js",
+      "sha256": "0249d3b4ed750ed74d7b9cdcf7b0ad07048a6fcf735c22a41c43d6f54c8d4a10",
+      "bytes": 1873
+    },
+    {
+      "path": "micromark-extension-gfm-autolink-literal@2.1.0/index.js",
+      "sha256": "df8add1053d02f32b6fbbd72d5d7fb213590ea32d666bc15c7f4e69467d021be",
+      "bytes": 109
+    },
+    {
+      "path": "micromark-extension-gfm-autolink-literal@2.1.0/lib/html.js",
+      "sha256": "531d28a41ae6add3cdb04ecf8be50bace69bd334df9271cd146907ac4c5eb685",
+      "bytes": 1346
+    },
+    {
+      "path": "micromark-extension-gfm-autolink-literal@2.1.0/lib/syntax.js",
+      "sha256": "2b45c68982c1f80daf125b709faba88803b131a0d710b0374dd309495a74efeb",
+      "bytes": 20276
+    },
+    {
+      "path": "micromark-extension-gfm-footnote@2.1.0/index.js",
+      "sha256": "9f2dd0393871a1d2db494fd4e5502ede219eda13ac05fea9ea6dd9c8ccf8dff6",
+      "bytes": 164
+    },
+    {
+      "path": "micromark-extension-gfm-footnote@2.1.0/lib/html.js",
+      "sha256": "eb300069225e67d6a71c96d16c7e69c64d14ba54c42c2ea7a3bfb5a8012d83b3",
+      "bytes": 6371
+    },
+    {
+      "path": "micromark-extension-gfm-footnote@2.1.0/lib/syntax.js",
+      "sha256": "5fd8d63fcbb9918a0f7b92f2ba6adea3845e9cbf7f1e74ee239f4d018943ef6b",
+      "bytes": 12479
+    },
+    {
+      "path": "micromark-extension-gfm-strikethrough@2.1.0/index.js",
+      "sha256": "0ee76753d9416266808227424eac60626edd98daeb27b74df4da71d2444c147c",
+      "bytes": 152
+    },
+    {
+      "path": "micromark-extension-gfm-strikethrough@2.1.0/lib/html.js",
+      "sha256": "6230e158b586049d3ba5612c7a2cd781bb48af69e5f3985339519d0720a7eeea",
+      "bytes": 551
+    },
+    {
+      "path": "micromark-extension-gfm-strikethrough@2.1.0/lib/syntax.js",
+      "sha256": "293e9b13a554fe569efd096cd7f1c3f4d6da861f30bba701e8b923f621181250",
+      "bytes": 4763
+    },
+    {
+      "path": "micromark-extension-gfm-table@2.1.1/index.js",
+      "sha256": "bfdd4285a9f61faa334ced8f98fbbd1c3ba35f00a1613839c23c30c0786dcc97",
+      "bytes": 89
+    },
+    {
+      "path": "micromark-extension-gfm-table@2.1.1/lib/edit-map.js",
+      "sha256": "47e082373ee2022e2569ea4c0d7e05dbeae0a55885a6b5fb7efce65436b9bd82",
+      "bytes": 5284
+    },
+    {
+      "path": "micromark-extension-gfm-table@2.1.1/lib/html.js",
+      "sha256": "e01378aaa7ce1f99b772f486606e3fa6fc1e48839ce6c79c4586127ccfc69852",
+      "bytes": 3820
+    },
+    {
+      "path": "micromark-extension-gfm-table@2.1.1/lib/infer.js",
+      "sha256": "c2a038479872bd8026d513d528e56717fa266f09905f53192c6b5a0da6bc9ea7",
+      "bytes": 1511
+    },
+    {
+      "path": "micromark-extension-gfm-table@2.1.1/lib/syntax.js",
+      "sha256": "45aac9771cc150aa2e3b62ae12fc370c07b72732d84e847b47e09dd17b3a7bfe",
+      "bytes": 20730
+    },
+    {
+      "path": "micromark-extension-gfm-tagfilter@2.0.0/index.js",
+      "sha256": "11a91af64d788b9cef27855f6dad3cd2bf5f5b7a5b0ce3ba6794ef587699675f",
+      "bytes": 48
+    },
+    {
+      "path": "micromark-extension-gfm-tagfilter@2.0.0/lib/index.js",
+      "sha256": "ea626eefc8e4c741e450f31eed8476eeb1b344ea0db00363ad176c117a845a35",
+      "bytes": 1482
+    },
+    {
+      "path": "micromark-extension-gfm-task-list-item@2.1.0/index.js",
+      "sha256": "9642f1c0386a40107895796c2207e55f981c762614887835e56ad18849f24788",
+      "bytes": 103
+    },
+    {
+      "path": "micromark-extension-gfm-task-list-item@2.1.0/lib/html.js",
+      "sha256": "8a90e3c2badc4eb1f640f7ae84d9ec5c6835c17c39aaec9a08c0014fdcad1623",
+      "bytes": 657
+    },
+    {
+      "path": "micromark-extension-gfm-task-list-item@2.1.0/lib/syntax.js",
+      "sha256": "b819eb327b98387d58b3c254df11324b9291420e7b59306cc41d8a25b0820385",
+      "bytes": 3563
+    },
+    {
+      "path": "micromark-extension-gfm@3.0.0/index.js",
+      "sha256": "66b05551c6efe3d6a1c75bca914c192139bc3c998fdb2b0d0784ab6685934bbc",
+      "bytes": 2031
+    },
+    {
+      "path": "micromark-factory-destination@2.0.1/index.js",
+      "sha256": "8ef4475091af9f26c98ef6ee0fcccc8964fcbf60c7654b9f3d4af34da2adaa4b",
+      "bytes": 4398
+    },
+    {
+      "path": "micromark-factory-label@2.0.1/index.js",
+      "sha256": "011484772e200ea32f3139c0a258627af573dcabd78bd4eb514a34495cb4aea0",
+      "bytes": 3210
+    },
+    {
+      "path": "micromark-factory-space@2.0.1/index.js",
+      "sha256": "0325d6a34aeb0f069e764ea25a48874c5c1f95b70a35590b9767eef0e66a2617",
+      "bytes": 1514
+    },
+    {
+      "path": "micromark-factory-title@2.0.1/index.js",
+      "sha256": "1556b0f5d6f04b32d7178ea89b6381b936d7b8a18c92f4ca2844c4c062ed7a89",
+      "bytes": 3063
+    },
+    {
+      "path": "micromark-factory-whitespace@2.0.1/index.js",
+      "sha256": "8cdbba455b8ff17dee625a111eab27ccf3966ac3840e66a8b21aa0d800c639d4",
+      "bytes": 1203
+    },
+    {
+      "path": "micromark-util-character@2.1.1/index.js",
+      "sha256": "0ec487160ae3fa7f375698f9f951a0c5d7d752800bca2e3b1de15e3a07ee0417",
+      "bytes": 7068
+    },
+    {
+      "path": "micromark-util-chunked@2.0.1/index.js",
+      "sha256": "0776986647dd83ca16594bc02984a288f11e4c8a2d6f81b2487b3c9ef3a34f94",
+      "bytes": 2334
+    },
+    {
+      "path": "micromark-util-classify-character@2.0.1/index.js",
+      "sha256": "fa7b4a93bc117a88844216e2bb8fef3483825bac1d9186126048ca42f1ed3e57",
+      "bytes": 803
+    },
+    {
+      "path": "micromark-util-combine-extensions@2.0.1/index.js",
+      "sha256": "b2aaec9f3549d92afb610d41b4f5ab73293fbeab0d2b6080ad7a8bd3518e46e1",
+      "bytes": 3318
+    },
+    {
+      "path": "micromark-util-decode-numeric-character-reference@2.0.2/index.js",
+      "sha256": "74d2139b3651d79a7f4c1d3b21159d9c89459256e12b263ed2eb6b4fce599f87",
+      "bytes": 1061
+    },
+    {
+      "path": "micromark-util-decode-string@2.0.1/index.js",
+      "sha256": "d38b07736ff9de94721153d910fd2966608bf8cd423f2dad9c091acf8ef3377d",
+      "bytes": 1250
+    },
+    {
+      "path": "micromark-util-encode@2.0.1/index.js",
+      "sha256": "323cc4fbd190cdcb56be068ff98e104aa2f431ea1039d7e967f3f7891cb859f0",
+      "bytes": 757
+    },
+    {
+      "path": "micromark-util-html-tag-name@2.0.1/index.js",
+      "sha256": "da74ea4080075b3f45a13eda9a05789e7038e1560954aff6979daafa68d0f096",
+      "bytes": 1680
+    },
+    {
+      "path": "micromark-util-normalize-identifier@2.0.1/index.js",
+      "sha256": "6def6e2422ac8905df740d27603d8eaa5d2fdbe41122c40958ac785ff0c8dfe3",
+      "bytes": 1248
+    },
+    {
+      "path": "micromark-util-resolve-all@2.0.1/index.js",
+      "sha256": "fa3b71cedce7b6f31ae68720dccfd561b7191e3d7280663cee1400a2dd38698c",
+      "bytes": 784
+    },
+    {
+      "path": "micromark-util-sanitize-uri@2.0.1/index.js",
+      "sha256": "c8c100c6e730dd6b19ecaa70ef9f1da99c10c415dc9b6539820d41756c0fc197",
+      "bytes": 3159
+    },
+    {
+      "path": "micromark-util-subtokenize@2.1.0/index.js",
+      "sha256": "a70e48d4652be4f956606dcda3e4c13707952dc74b86f6f71990eba88d4a1e79",
+      "bytes": 6851
+    },
+    {
+      "path": "micromark-util-subtokenize@2.1.0/lib/splice-buffer.js",
+      "sha256": "addce56cc7eccc0cb0ba10f7f8eab4c902f5ddf55ff43e0fb2907815ea63440e",
+      "bytes": 7617
+    },
+    {
+      "path": "micromark@4.0.2/index.js",
+      "sha256": "0abeeca43ffae89b3d911da05de284f4ea6b80bde67ee8f30d7bc9655f4dad97",
+      "bytes": 1893
+    },
+    {
+      "path": "micromark@4.0.2/lib/compile.js",
+      "sha256": "8bf26920007f3a8886c120cd863872d1372d30ccee99bfb549a15135a698e471",
+      "bytes": 26755
+    },
+    {
+      "path": "micromark@4.0.2/lib/constructs.js",
+      "sha256": "afecd299e4b5e7edb3ecba007000c311ed2b7c86e4e28729f9783da9021da2cf",
+      "bytes": 1964
+    },
+    {
+      "path": "micromark@4.0.2/lib/create-tokenizer.js",
+      "sha256": "fb3354e4cf38590a70e83f8556e96d717800b4f20e4e30949ae50d8c36ed09d1",
+      "bytes": 15175
+    },
+    {
+      "path": "micromark@4.0.2/lib/initialize/content.js",
+      "sha256": "a1e1ad9cb372cc3ad2caa172de2f0658a9d38cde01a3f1109041a8b1ea83345e",
+      "bytes": 1721
+    },
+    {
+      "path": "micromark@4.0.2/lib/initialize/document.js",
+      "sha256": "a27b0a34fe26d7000ed4e5dfbde302a3dd01eb01d20aaa74c2033694b7b9cac8",
+      "bytes": 10860
+    },
+    {
+      "path": "micromark@4.0.2/lib/initialize/flow.js",
+      "sha256": "36a507211b00526d6ec1e9d9cca7547d26a5b01db61bb6d0d94d625d2babe66f",
+      "bytes": 1507
+    },
+    {
+      "path": "micromark@4.0.2/lib/initialize/text.js",
+      "sha256": "c0e5b3edbad427ce44aac1b33ed78361c85fc521e52e534cdd43873a0d8e7982",
+      "bytes": 5566
+    },
+    {
+      "path": "micromark@4.0.2/lib/parse.js",
+      "sha256": "a8e110b17213a26a212332b2c8c39d31c302735c810bb0078e00b752f00552d9",
+      "bytes": 1435
+    },
+    {
+      "path": "micromark@4.0.2/lib/postprocess.js",
+      "sha256": "0faf397c79cefaa71f92b00aa11c5b2e954aa7560ceb1c93d85d21853136b5d6",
+      "bytes": 314
+    },
+    {
+      "path": "micromark@4.0.2/lib/preprocess.js",
+      "sha256": "b582f16d9bc04d93d388004544be9c5293fda614eb86f8d02b97c3e57b9409e1",
+      "bytes": 3063
+    },
+    {
+      "path": "unist-util-is@6.0.1/index.js",
+      "sha256": "037c062d404356c6bbb8dad28d39445165d23e84ac35a63496a98d40aaa8d645",
+      "bytes": 217
+    },
+    {
+      "path": "unist-util-is@6.0.1/lib/index.js",
+      "sha256": "ce90bad6b772a7e1115d76e4cc53bfade1ee1fe8ac1b8880f48b0e1512ffba44",
+      "bytes": 8989
+    },
+    {
+      "path": "unist-util-stringify-position@4.0.0/index.js",
+      "sha256": "7b80d608db2ab15251da8c71c4ed8029102b16677d80f4977487136e6b9e5774",
+      "bytes": 49
+    },
+    {
+      "path": "unist-util-stringify-position@4.0.0/lib/index.js",
+      "sha256": "9d66941cf43fa4f4faa5912019ad9dae3f1ea3395b0c2fe64c2bcd5c2d4b2c28",
+      "bytes": 2123
+    },
+    {
+      "path": "unist-util-visit-parents@6.0.2/index.js",
+      "sha256": "6e3e10026230a33197e56422a2d95fc1815528c0bde7c1c790fd1a733b04bd39",
+      "bytes": 108
+    },
+    {
+      "path": "unist-util-visit-parents@6.0.2/lib/color.node.js",
+      "sha256": "34b9001e424a12a5a436293affcd0cf92533e120b77144c2b1f1ea39fb8d6d3a",
+      "bytes": 120
+    },
+    {
+      "path": "unist-util-visit-parents@6.0.2/lib/index.js",
+      "sha256": "8789a4f20d3e3c82bcaeec9628697752d662461bf6237ecfba61cfcc00f30bf7",
+      "bytes": 11752
+    },
+    {
+      "path": "unist-util-visit@5.1.0/index.js",
+      "sha256": "0bd7a392932d4578d13e0ab49705ba1488ecaad56fa4cf865f85dac64d34de91",
+      "bytes": 101
+    },
+    {
+      "path": "unist-util-visit@5.1.0/lib/index.js",
+      "sha256": "83779ce32216704c4a7593fd350c48a6570f445b1bb583cbe6d1da12d86cc4bd",
+      "bytes": 9582
+    },
+    {
+      "path": "zwitch@2.0.4/index.js",
+      "sha256": "81f592d700aff8042238e7cab8e03c002e689117ecf15844ed753e08825a2873",
+      "bytes": 3787
+    }
+  ]
+}

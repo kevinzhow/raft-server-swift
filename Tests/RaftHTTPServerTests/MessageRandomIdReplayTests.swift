@@ -91,7 +91,7 @@ private func randomIdObject(_ response: ClientResponse) throws -> [String: Any] 
                 client,
                 token: token,
                 serverId: fixture.serverId,
-                body: "{\"channelId\":\"\(fixture.channelId)\",\"content\":\"same payload after lost response\",\"randomId\":\"\(randomId)\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(fixture.targetId)\",\"name\":\"\(fixture.targetName)\"}]}"
+                body: "{\"channelId\":\"\(fixture.channelId)\",\"content\":\"same payload after lost response @\(fixture.targetName)\",\"randomId\":\"\(randomId)\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(fixture.targetId)\",\"name\":\"\(fixture.targetName)\"}]}"
             )
             #expect(first.status == .ok)
             let firstBody = try randomIdObject(first)

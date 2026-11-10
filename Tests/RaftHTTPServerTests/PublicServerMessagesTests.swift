@@ -1052,7 +1052,8 @@ private func postJSON(_ client: any Client, _ path: String, body: String) async 
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            publicVisits: directory
+            publicVisits: directory,
+            emailAccounts: publicServerAuthAccounts([(memberId, "member-token"), (guestId, "guest-token")])
         ))
         try await app.testing { client in
             func list(token: String) async throws -> [String: Any] {

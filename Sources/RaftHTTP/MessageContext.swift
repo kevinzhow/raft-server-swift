@@ -89,11 +89,35 @@ public enum MessageContext {
         callerId: String? = nil,
         serverId: String? = nil
     ) -> HTTPReply {
+        switch resolve(messageId: messageId, channelId: channelId, catalog: catalog, callerId: callerId, serverId: serverId) {
+        case .found(let target): return found(target.message, thread: target.thread)
+        case .refused(let refusal): return error(refusal.status, refusal.message)
+        }
+    }
+
+    /// Pure target selection shared by permission admission and the renderer.
+    struct Target {
+        let message: ContextMessage
+        let sourceChannelId: String
+        let thread: JointThreadProjection?
+    }
+    struct Refusal {
+        let status: Int
+        let message: String
+    }
+
+    enum Resolution {
+        case found(Target)
+        case refused(Refusal)
+    }
+
+    static func resolve(messageId: String, channelId: String?, catalog: MessageContextCatalog,
+                        callerId: String?, serverId: String?) -> Resolution {
         if !ServerScope.isUUID(messageId) && !isShortId(messageId) {
-            return error(400, "Invalid message id")
+            return .refused(.init(status: 400, message: "Invalid message id"))
         }
         if let channelId, !ServerScope.isUUID(channelId) {
-            return error(400, "Invalid channel id")
+            return .refused(.init(status: 400, message: "Invalid channel id"))
         }
         if let channelId,
            let serverId,
@@ -101,11 +125,12 @@ public enum MessageContext {
                same($0.localChannelId, channelId) && same($0.serverId, serverId)
            }) {
             guard let callerId, joint.memberIds.contains(where: { same($0, callerId) }) else {
-                return error(404, "Message not found")
+                return .refused(.init(status: 404, message: "Message not found"))
             }
             if var target = find(messageId: messageId, channelId: joint.canonicalChannelId, catalog: catalog) {
+                let source = target.channelId
                 target.channelId = joint.localChannelId
-                return found(target)
+                return .found(Target(message: target, sourceChannelId: source, thread: nil))
             }
             let threadHits = catalog.jointThreads.compactMap { projection -> (ContextMessage, JointThreadProjection)? in
                 guard same(projection.localParentChannelId, joint.localChannelId),
@@ -118,12 +143,13 @@ public enum MessageContext {
                 return (message, projection)
             }
             guard threadHits.count == 1 else {
-                return error(404, "Message not found")
+                return .refused(.init(status: 404, message: "Message not found"))
             }
             var reply = threadHits[0].0
             let projection = threadHits[0].1
+            let source = reply.channelId
             reply.channelId = projection.localThreadChannelId
-            return found(reply, thread: projection)
+            return .found(Target(message: reply, sourceChannelId: source, thread: projection))
         }
         if let channelId,
            let serverId,
@@ -131,18 +157,19 @@ public enum MessageContext {
                same($0.localThreadChannelId, channelId) && same($0.localServerId, serverId)
            }) {
             guard let callerId, projection.memberIds.contains(where: { same($0, callerId) }) else {
-                return error(404, "Message not found")
+                return .refused(.init(status: 404, message: "Message not found"))
             }
             guard var target = find(messageId: messageId, channelId: projection.canonicalThreadChannelId, catalog: catalog) else {
-                return error(404, "Message not found")
+                return .refused(.init(status: 404, message: "Message not found"))
             }
+            let source = target.channelId
             target.channelId = projection.localThreadChannelId
-            return found(target, thread: projection)
+            return .found(Target(message: target, sourceChannelId: source, thread: projection))
         }
         guard let target = find(messageId: messageId, channelId: channelId, catalog: catalog) else {
-            return error(404, "Message not found")
+            return .refused(.init(status: 404, message: "Message not found"))
         }
-        return found(target)
+        return .found(Target(message: target, sourceChannelId: target.channelId, thread: nil))
     }
 
     public static func isShortId(_ value: String) -> Bool {

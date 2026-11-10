@@ -266,7 +266,7 @@ private func createAgentBody(_ client: any Client, token: String, serverId: Stri
 
             let patched = try await client.send(.patch, headers: createHeaders(f.ownerToken, f.serverId), to: URI(string: "/api/agents/\(agentId)")) { request in
                 request.body = .init(string: """
-                {"displayName":"Runtime Renamed","runtime":"codex","model":"gpt-5.6-sol","reasoningEffort":"high","restartMode":"session"}
+                {"displayName":"Runtime Renamed","runtime":"codex","model":"gpt-5.6-sol","runtimeConfig":{"version":1,"runtime":"codex","model":{"kind":"preset","id":"gpt-5.6-sol"},"mode":{"kind":"default"},"reasoningEffort":"high","envVars":null},"reasoningEffort":"high","restartMode":"session"}
                 """)
             }
             #expect(patched.status == .ok)
@@ -307,6 +307,112 @@ private func createAgentBody(_ client: any Client, token: String, serverId: Stri
             let model = try #require(config["model"] as? [String: Any])
             #expect(model["kind"] as? String == "preset")
             #expect(model["id"] as? String == "gpt-5.6-sol")
+        }
+    }
+}
+
+@Test func agentRuntimePatchRejectsInvalidRestartValuesBeforeProfileWrites() async throws {
+    let f = makeAgentCreateFixture("007")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let created = try await createAgentBody(client, token: f.ownerToken, serverId: f.serverId, body: """
+            {"name":"restart-type-agent-007","runtimeConfig":{"version":1,"runtime":"codex","model":{"kind":"preset","id":"gpt-5.6-sol"},"mode":{"kind":"default"},"reasoningEffort":"high","envVars":null}}
+            """)
+            #expect(created.status == .ok)
+            let createdObject = try createJSON(created)
+            let agentId = try #require(createdObject["id"] as? String)
+            let path = URI(string: "/api/agents/\(agentId)")
+            let baseline = try await client.get(path, headers: createHeaders(f.ownerToken, f.serverId))
+            #expect(baseline.status == .ok)
+            let baselineObject = try createJSON(baseline)
+            let originalName = try #require(baselineObject["displayName"] as? String)
+            let originalConfig = try #require(baselineObject["runtimeConfig"] as? [String: Any])
+            #expect(originalConfig["runtime"] as? String == "codex")
+            let coercionFailures: [(String, String)] = [
+                ("restartMode", #"{"toString":null}"#),
+                ("restartMode", #"{"toString":false}"#),
+                ("restartMode", #"{"toString":0}"#),
+                ("restartMode", #"{"toString":"session"}"#),
+                ("restartMode", #"{"toString":[]}"#),
+                ("restartMode", #"{"toString":{}}"#),
+                ("restartMode", #"[{"toString":null}]"#),
+                ("restartMode", #"[null,["ok",{"toString":"x"}]]"#),
+                ("reasoningEffort", #"{"toString":null}"#),
+            ]
+            for (index, sample) in coercionFailures.enumerated() {
+                let body = "{\"\(sample.0)\":\(sample.1),\"displayName\":\"coercion-must-not-commit-\(index)\"}"
+                let failed = try await client.send(.patch, headers: createHeaders(f.ownerToken, f.serverId), to: path) { request in
+                    request.body = .init(string: body)
+                }
+                #expect(failed.status == .internalServerError)
+                let failureObject = try createJSON(failed)
+                #expect(failureObject["error"] as? String == "Failed to update agent")
+                #expect(failureObject["code"] == nil)
+                #expect(Set(failureObject.keys) == Set(["error", "correlationId"]))
+                let correlationId = failureObject["correlationId"] as? String
+                #expect(!(correlationId ?? "").isEmpty)
+                #expect(failed.headers[HTTPField.Name("X-Slock-Error-Id")!] == correlationId)
+                let after = try await client.get(path, headers: createHeaders(f.ownerToken, f.serverId))
+                #expect(after.status == .ok)
+                let afterObject = try createJSON(after)
+                #expect(afterObject["displayName"] as? String == originalName)
+                let afterConfig = try #require(afterObject["runtimeConfig"] as? [String: Any])
+                #expect(try jsonEquals(afterConfig, originalConfig))
+            }
+            let agentsBefore = try await client.get("/api/agents", headers: createHeaders(f.ownerToken, f.serverId))
+            #expect(agentsBefore.status == .ok)
+            let createFailure = try await createAgentBody(client, token: f.ownerToken, serverId: f.serverId, body: #"{"name":"coercion-create-agent-007","runtime":"claude","model":"sonnet","reasoningEffort":{"toString":null}}"#)
+            #expect(createFailure.status == .internalServerError)
+            let createFailureObject = try createJSON(createFailure)
+            #expect(createFailureObject["error"] as? String == "Failed to create agent")
+            #expect(createFailureObject["code"] == nil)
+            #expect(Set(createFailureObject.keys) == Set(["error", "correlationId"]))
+            let createCorrelationId = createFailureObject["correlationId"] as? String
+            #expect(!(createCorrelationId ?? "").isEmpty)
+            #expect(createFailure.headers[HTTPField.Name("X-Slock-Error-Id")!] == createCorrelationId)
+            let agentsAfter = try await client.get("/api/agents", headers: createHeaders(f.ownerToken, f.serverId))
+            #expect(agentsAfter.status == .ok)
+            #expect(agentsAfter.body.string == agentsBefore.body.string)
+            // Preserve raw JSON number literals so Node Number rounding is observable.
+            let invalidModes: [(String, String)] = [
+                ("null", "null"), ("false", "false"), ("0", "0"),
+                ("[]", ""), ("[\"session\"]", "session"), ("{}", "[object Object]"),
+                ("1e-7", "1e-7"), ("1e-6", "0.000001"),
+                ("1e20", "100000000000000000000"), ("1e21", "1e+21"),
+                ("9007199254740993", "9007199254740992"),
+                ("9223372036854775807", "9223372036854776000"),
+                ("-0", "0"), ("0.125", "0.125"),
+                (#""bad\"mode""#, #"bad"mode"#),
+                (#""bad\\mode""#, #"bad\mode"#),
+                (#""bad\nmode""#, "bad\nmode"),
+                (#"["a\"b",null,["x\\y","\n"]]"#, "a\"b,,x\\y,\n"),
+                (#""bad/path""#, "bad/path"),
+                (#"" restart ""#, " restart "), (#"["restart"]"#, "restart"),
+                (#"{"valueOf":null}"#, "[object Object]"),
+                (#"{"nested":{"toString":null}}"#, "[object Object]"),
+                (#"{"__proto__":{"toString":null}}"#, "[object Object]"),
+                (#"[{"valueOf":null},{"nested":{"toString":false}}]"#, "[object Object],[object Object]"),
+                (#"{"ToString":null}"#, "[object Object]"),
+            ]
+            for (index, sample) in invalidModes.enumerated() {
+                let body = "{\"restartMode\":\(sample.0),\"displayName\":\"must-not-commit-\(index)\"}"
+                let refused = try await client.send(.patch, headers: createHeaders(f.ownerToken, f.serverId), to: path) { request in
+                    request.body = .init(string: body)
+                }
+                #expect(refused.status == .badRequest)
+                let message = "Invalid restart mode: " + sample.1
+                let expected = try JSONSerialization.data(withJSONObject: ["error": message], options: [.withoutEscapingSlashes])
+                #expect(refused.body.string == String(decoding: expected, as: UTF8.self))
+                let refusedObject = try createJSON(refused)
+                #expect(refusedObject["error"] as? String == message)
+                let after = try await client.get(path, headers: createHeaders(f.ownerToken, f.serverId))
+                #expect(after.status == .ok)
+                let afterObject = try createJSON(after)
+                #expect(afterObject["displayName"] as? String == originalName)
+                let afterConfig = try #require(afterObject["runtimeConfig"] as? [String: Any])
+                #expect(try jsonEquals(afterConfig, originalConfig))
+            }
         }
     }
 }

@@ -25,7 +25,7 @@ private struct SearchMentionsFixture {
     var ownerAuthorization: String { "Bearer \(ownerToken)" }
 }
 
-private func makeSearchMentionsFixture() -> SearchMentionsFixture {
+private func makeSearchMentionsFixture(ownerMention: Bool = false) -> SearchMentionsFixture {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-000001470001"
     let serverId = "33333333-3333-4333-8333-000001470001"
@@ -48,7 +48,7 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
         id: messageId,
         channelId: channelId,
         senderId: ownerId,
-        content: "needle body"
+        content: ownerMention ? "needle body @\(ownerName)" : "needle body"
     )
     let contextMessageId = "bbbbbbbb-1111-4111-8111-000001470001"
     accounts.insertHumanMessage(
@@ -84,7 +84,7 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
         serverId: fixture.serverId
     )
     #expect(response.jsonBody.render() == """
-    {"results":[{"id":"\(fixture.messageId)","senderId":"\(fixture.ownerId)","senderType":"user","channelId":"\(fixture.channelId)","parentChannelId":"\(fixture.channelId)","content":"needle body","snippet":"needle body","channelArchivedAt":null}],"hasMore":false}
+    {"results":[{"id":"\(fixture.messageId)","senderId":"\(fixture.ownerId)","senderType":"user","channelId":"\(fixture.channelId)","channelType":"channel","parentChannelId":"\(fixture.channelId)","parentChannelType":"channel","content":"needle body","snippet":"needle body","channelArchivedAt":null}],"hasMore":false}
     """)
 }
 
@@ -118,9 +118,9 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
 
 @Test func storedMessageContextRendersThePublishedBytes() throws {
     let fixture = makeSearchMentionsFixture()
-    let seq = try #require(
-        fixture.accounts.messagesAndThreadsStore.humanMessageRow(id: fixture.contextMessageId)?.seq
-    )
+    let message = try #require(fixture.accounts.messagesAndThreadsStore.humanMessageRow(id: fixture.contextMessageId))
+    let seq = message.seq
+    let createdAt = DateText.isoString(message.createdAt)
     let response = try #require(fixture.service.humanMessageContext(
         messageId: fixture.contextMessageId,
         channelId: fixture.channelId,
@@ -130,11 +130,11 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
         after: "0"
     ))
     #expect(response.jsonBody.render() == """
-    {"channelId":"\(fixture.channelId)","targetMessageId":"\(fixture.contextMessageId)","hasOlder":true,"hasNewer":false,"messages":[{"id":"\(fixture.contextMessageId)","channelId":"\(fixture.channelId)","content":"context body","seq":\(seq),"attachments":[]}],"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
+    {"channelId":"\(fixture.channelId)","targetMessageId":"\(fixture.contextMessageId)","hasOlder":true,"hasNewer":false,"messages":[{"id":"\(fixture.contextMessageId)","channelId":"\(fixture.channelId)","content":"context body","seq":\(seq),"attachments":[],"senderId":"\(fixture.ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(createdAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[],"senderName":"\(fixture.ownerName)","senderHandle":"\(fixture.ownerName)","senderDisplayName":"\(fixture.ownerName)","conversationContext":{"channelType":"channel"}}],"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
     """)
 }
 
-@Test func threadReplyContextOmitsAttachmentsAndRendersTheCanonicalTarget() throws {
+@Test func threadReplyContextCarriesCompleteFactsAndRendersTheCanonicalTarget() throws {
     let fixture = makeSearchMentionsFixture()
     let parentId = "cccccccc-1111-4111-8111-000001470001"
     fixture.accounts.insertHumanMessage(
@@ -158,6 +158,10 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
         senderId: fixture.ownerId,
         content: "thread reply"
     )
+    let reply = try #require(fixture.accounts.messagesAndThreadsStore.humanMessageRow(id: replyId))
+    let replySeq = reply.seq
+    let replyCreatedAt = DateText.isoString(reply.createdAt)
+    #expect(replySeq > 1)
     let response = try #require(fixture.service.humanMessageContext(
         messageId: replyId,
         channelId: fixture.channelId,
@@ -165,7 +169,7 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
         serverId: fixture.serverId
     ))
     #expect(response.jsonBody.render() == """
-    {"channelId":"\(threadId)","targetMessageId":"\(replyId)","hasOlder":false,"hasNewer":false,"messages":[{"id":"\(replyId)","channelId":"\(threadId)","content":"thread reply","seq":1}],"canonicalTarget":{"kind":"thread","channelId":"\(fixture.channelId)","messageId":"\(replyId)","threadParentMessageId":"\(parentId)","threadChannelId":"\(threadId)"},"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
+    {"channelId":"\(threadId)","targetMessageId":"\(replyId)","hasOlder":false,"hasNewer":false,"messages":[{"id":"\(replyId)","channelId":"\(threadId)","content":"thread reply","seq":\(replySeq),"attachments":[],"senderId":"\(fixture.ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(replyCreatedAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[],"senderName":"\(fixture.ownerName)","senderHandle":"\(fixture.ownerName)","senderDisplayName":"\(fixture.ownerName)","conversationContext":{"channelType":"thread","parentChannelId":"\(fixture.channelId)","parentMessageId":"\(parentId)","parentChannelType":"channel"}}],"canonicalTarget":{"kind":"thread","channelId":"\(fixture.channelId)","messageId":"\(replyId)","threadParentMessageId":"\(parentId)","threadChannelId":"\(threadId)"},"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
     """)
 }
 
@@ -233,13 +237,16 @@ private func makeSearchMentionsFixture() -> SearchMentionsFixture {
 }
 
 @Test func concurrentMemberMentionRegistrationIsVisibleOnceThroughMentionSearch() throws {
-    let fixture = makeSearchMentionsFixture()
+    let fixture = makeSearchMentionsFixture(ownerMention: true)
     let registrar = fixture.accounts.messageMentions
     let messageId = fixture.messageId
     let channelId = fixture.channelId
     let member = MentionInput(type: "user", id: fixture.ownerId, name: fixture.ownerName)
+    let host = try #require(fixture.accounts.messagesAndThreadsStore.state.humanMessageRows.first { $0.id == messageId })
+    let resolution = try registrar.resolve(serverId: fixture.serverId, channelId: channelId, senderId: fixture.ownerId,
+        content: host.content, typed: [member, member], warnUnresolved: false)
     DispatchQueue.concurrentPerform(iterations: 64) { _ in
-        registrar.register(messageId: messageId, channelId: channelId, mentions: [member, member])
+        registrar.register(messageId: messageId, channelId: channelId, resolution: resolution)
     }
     let rows = fixture.accounts.messageMentionRows(messageId: messageId)
     #expect(rows.count == 1)

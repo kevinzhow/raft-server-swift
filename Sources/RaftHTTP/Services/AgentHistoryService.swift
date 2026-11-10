@@ -269,9 +269,9 @@ public struct AgentHistoryService: Sendable {
                 throw AgentHistoryError.dmTargetInvalidPeerKind(kind: kind)
             case .notFound:
                 throw AgentHistoryError.channelNotVisible
-            case .resolved(let peerId, _, _):
+            case .resolved(let peerId, let peerKind, let peerName):
                 guard let dmId = actionCardPrepare.dmChannelId(
-                    serverId: agent.serverId, agentId: agent.id, peerId: peerId
+                    serverId: agent.serverId, agentId: agent.id, peerId: peerId, peerKind: peerKind, peerName: peerName
                 ) else { throw AgentHistoryError.channelNotVisible }
                 guard let suffix, !suffix.isEmpty else {
                     resolved.channelId = dmId

@@ -1,9 +1,16 @@
 import Foundation
 import RaftShared
 
+enum MentionActionAgentOutcome: Sendable {
+    case success(agentId: String)
+    case missingAuthorization
+    case invalidCredential
+    case capabilityNotAuthorized
+}
+
 /// Typed collaborators for human sends, mentions and forward reads.
 struct HumanMessageCreateDependencies: Sendable {
-    var agentReadOutcome: @Sendable (_ authorization: String?) -> ProfileAgentReadOutcome
+    var agentReadOutcome: @Sendable (_ authorization: String?) -> MentionActionAgentOutcome
     var storeHumanMessage: @Sendable (
         _ channelId: String,
         _ senderId: String,
@@ -15,15 +22,18 @@ struct HumanMessageCreateDependencies: Sendable {
     ) -> HumanMessageWrite
     var resolveMentions: @Sendable (
         _ serverId: String,
+        _ channelId: String,
         _ senderId: String,
         _ content: String,
         _ typed: [MentionInput],
         _ warnUnresolved: Bool
-    ) -> ResolvedMentions
+    ) throws -> ResolvedMentions
+    var recordThreadReplyFollows: @Sendable (_ messageId: String, _ channelId: String,
+        _ serverId: String, _ senderId: String, _ resolution: ResolvedMentions) -> Void
     var recordMemberMentionRows: @Sendable (
         _ messageId: String,
         _ channelId: String,
-        _ mentions: [MentionInput]
+        _ resolution: ResolvedMentions
     ) -> Void
     var jointLocalChannelId: @Sendable (
         _ canonicalChannelId: String,
@@ -46,15 +56,22 @@ extension HumanMessageCreateDependencies {
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.init(
-            agentReadOutcome: { credentials.profileReadOutcome($0) },
+            agentReadOutcome: { authorization in
+                guard let authorization, authorization.hasPrefix("Bearer ") else { return .missingAuthorization }
+                guard let credential = credentials.agentCredentialAgent(authorization),
+                      let actor = mentions.oauth.agentRuntimeInfo(id: credential.agentId), !actor.deleted else { return .invalidCredential }
+                guard credential.scopes.contains("mentions") else { return .capabilityNotAuthorized }
+                return .success(agentId: credential.agentId)
+            },
             storeHumanMessage: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
                 writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
                     attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions)
             },
-            resolveMentions: { serverId, senderId, content, typed, warn in
-                mentions.resolve(serverId: serverId, senderId: senderId, content: content, typed: typed, warnUnresolved: warn)
+            resolveMentions: { serverId, channelId, senderId, content, typed, warn in
+                try mentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId, content: content, typed: typed, warnUnresolved: warn)
             },
-            recordMemberMentionRows: { mentions.register(messageId: $0, channelId: $1, mentions: $2) },
+            recordThreadReplyFollows: mentions.recordThreadReplyFollows,
+            recordMemberMentionRows: { mentions.register(messageId: $0, channelId: $1, resolution: $2) },
             jointLocalChannelId: { MessageChannelFacts(channels.state).localChannel(canonical: $0, serverId: $1, userId: $2) },
             messageVisibleToUser: { search.messageVisible(messageChannelId: $0, serverId: $1, viewer: .user($2)) },
             renderForwardItem: { MessageForwardProjection.forwardItemJSON($0) },

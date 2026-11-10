@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -42,7 +43,8 @@ private let serverId = "33333333-3333-4333-8333-333333333333"
         configure(app, services: FallbackServices(
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {}
+            pingDatabase: {},
+            emailAccounts: publicServerAuthAccounts([("member-profile-reader", "token")])
         ))
         try await app.testing { client in
             let headers: HTTPFields = [

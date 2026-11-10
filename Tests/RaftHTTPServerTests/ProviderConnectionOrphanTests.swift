@@ -16,7 +16,9 @@ import VaporTesting
     accounts.setProviderConnectionsEnabled(serverId: serverId, enabled: true)
     let agentId = accounts.oauth.createAgent(serverId: serverId, name: "orphaned-provider-agent")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try configureProviderConnectionsTestApp(
+            app, accounts: accounts, credentialMasterKey: Data((32..<64).map { UInt8($0) })
+        )
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"
@@ -63,7 +65,9 @@ import VaporTesting
     accounts.setProviderConnectionsEnabled(serverId: serverId, enabled: true)
     let agentId = accounts.oauth.createAgent(serverId: serverId, name: "orphan-listed-agent")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try configureProviderConnectionsTestApp(
+            app, accounts: accounts, credentialMasterKey: Data((32..<64).map { UInt8($0) })
+        )
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.contentType] = "application/json"

@@ -54,8 +54,12 @@ extension EmailLoginDirectory {
                 agentHistoryThread: { [serversAndChannelsStore] parentId, anchorMessageId in
                     serversAndChannelsStore.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)
                 },
-                recordMemberMentionRows: { [self] messageId, channelId, mentions in
-                    messageMentions.register(messageId: messageId, channelId: channelId, mentions: mentions)
+                resolveMentions: { [self] serverId, channelId, senderId, content, typed, warn, surface in
+                    try messageMentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId,
+                        content: content, typed: typed, warnUnresolved: warn, surface: surface)
+                },
+                recordMemberMentionRows: { [self] messageId, channelId, resolution in
+                    messageMentions.register(messageId: messageId, channelId: channelId, resolution: resolution)
                 }
             )
         )
@@ -98,7 +102,7 @@ extension EmailLoginDirectory {
 
     var messageReadProjection: MessageReadProjection {
         MessageReadProjection(messages: messagesAndThreadsStore, channels: serversAndChannelsStore,
-            profiles: authProfileStore, agents: agentsRuntimeStore, oauth: oauth)
+            profiles: authProfileStore, agents: agentsRuntimeStore, oauth: oauth, tasks: tasksAndRemindersStore)
     }
 
     var messageMentions: MessageMentionsService {

@@ -52,27 +52,61 @@ import VaporTesting
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "deleted-attach-room", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "deleted-attach-room")
     accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
-    let message = accounts.addChannelMessageForTesting(channelId: channelId, content: "lorem deletedmarker ipsum", senderId: ownerId)
-    let attachment = accounts.addChannelAttachment(
-        channelId: channelId, uploaderId: ownerId, filename: "deleted.txt", mimeType: "text/plain",
-        sizeBytes: 7, messageId: message
-    )
-    try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
-        try await app.testing { client in
-            var headers = HTTPFields()
-            headers[.authorization] = "Bearer \(accounts.mintAccessTokenForTesting(userId: ownerId))"
-            headers[HTTPField.Name("X-Server-Id")!] = serverId
-            let before = try await client.get(URI(string: "/api/attachments/\(attachment)/url"), headers: headers)
-            #expect(before.status == .ok, "fixture attachment must be readable before deletion")
-            let deleted = try await client.delete(URI(string: "/api/channels/\(channelId)"), headers: headers)
-            #expect(deleted.status == .ok)
-            #expect(deleted.body.string == "{\"ok\":true}")
-            let search = try await client.get(URI(string: "/api/messages/search?q=deletedmarker"), headers: headers)
-            #expect(search.status == .ok)
-            #expect(!(search.body.string ?? "").contains(channelId), "deleted channel search hits are excluded")
-            let after = try await client.get(URI(string: "/api/attachments/\(attachment)/url"), headers: headers)
-            #expect(after.status == .notFound, "deleted channel attachments are cloaked")
+    let authorization = "Bearer \(accounts.mintAccessTokenForTesting(userId: ownerId))"
+    let bytes = Data("deleted".utf8)
+    try await withSingleURLStorage { storage in
+        accounts.configureAttachmentStorage(storage.storage)
+        try await withApp { app in
+            configure(app, services: singleURLServices(accounts))
+            try await app.testing(.running, options: .live(clientOptions: .init(timeout: .seconds(10)))) { client in
+                let port = try #require(client.port)
+                var headers = singleURLHeaders(authorization, serverId)
+                headers[HTTPField.Name("Host")!] = "127.0.0.1:\(port)"
+                let attachment = try await singleURLUpload(client, authorization: authorization, server: serverId,
+                    channel: channelId, filename: "deleted.txt", mime: "text/plain", bytes: bytes)
+                var messageHeaders = headers
+                messageHeaders[.contentType] = "application/json"
+                let posted = try await client.send(.post, headers: messageHeaders, to: "/api/messages") { request in
+                    request.body = .init(string: "{\"channelId\":\"\(channelId)\",\"content\":\"lorem deletedmarker ipsum\",\"attachmentIds\":[\"\(attachment)\"]}")
+                }
+                #expect(posted.status == .ok)
+                let postedBytes = try await attachmentPreviewBody(posted)
+                let postedMessage = try #require(JSONSerialization.jsonObject(with: postedBytes) as? [String: Any])
+                _ = try #require(postedMessage["id"] as? String)
+                let before = try await client.get(URI(string: "/api/attachments/\(attachment)/url"), headers: headers)
+                #expect(before.status == .ok, "fixture attachment must be readable before deletion")
+                let wire = try await singleURLWire(before)
+                let origin = try #require(URLComponents(string: wire.url))
+                #expect(origin.scheme == "http")
+                #expect(origin.host == "127.0.0.1")
+                #expect(origin.port == port)
+                let download = try await client.get(URI(string: wire.url))
+                #expect(download.status == .ok)
+                let plaintext = try await attachmentPreviewBody(download)
+                #expect(plaintext == bytes)
+                #expect(download.headers[.contentLength] == String(bytes.count))
+                #expect(download.headers[.contentType] == "text/plain; charset=utf-8")
+                let sealed = storage.state.value.withLock { Array($0.ciphertext.values) }
+                #expect(sealed.count == 1)
+                #expect(sealed.first != bytes)
+                #expect(sealed.first?.count == bytes.count + 28)
+                let deleted = try await client.delete(URI(string: "/api/channels/\(channelId)"), headers: headers)
+                #expect(deleted.status == .ok)
+                let deletedBody = String(decoding: try await attachmentPreviewBody(deleted), as: UTF8.self)
+                #expect(deletedBody == "{\"ok\":true}")
+                let search = try await client.get(URI(string: "/api/messages/search?q=deletedmarker"), headers: headers)
+                #expect(search.status == .ok)
+                let searchBody = String(decoding: try await attachmentPreviewBody(search), as: UTF8.self)
+                #expect(!searchBody.contains(channelId), "deleted channel search hits are excluded")
+                let after = try await client.get(URI(string: "/api/attachments/\(attachment)/url"), headers: headers)
+                #expect(after.status == .notFound, "deleted channel attachments are cloaked")
+                let afterBody = try await attachmentPreviewBody(after)
+                #expect(afterBody == Data(#"{"error":"Attachment not found"}"#.utf8))
+                let remembered = try await client.get(URI(string: wire.url))
+                #expect(remembered.status == .notFound, "the previously issued URL must also cloak the deleted channel")
+                let rememberedBody = try await attachmentPreviewBody(remembered)
+                #expect(rememberedBody == Data(#"{"error":"Attachment not found"}"#.utf8))
+            }
         }
     }
 }

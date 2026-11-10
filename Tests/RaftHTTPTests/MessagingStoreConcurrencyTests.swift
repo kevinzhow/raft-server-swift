@@ -58,7 +58,7 @@ import Testing
         #expect(Set(discussion.rows.map(\.reactorId)).count == 100)
     }
 
-    @Test func pendingMentionAndNotifyClaimAreIdempotentAcrossWriters() {
+    @Test func pendingMentionAndNotifyClaimAreIdempotentAcrossWriters() throws {
         let store = MessagesAndThreadsStore()
         store.humanMessageRows = [StoredHumanMessage(id: "m", channelId: "c", senderId: "u", content: "hello", randomId: nil)]
         let identifiers = Mutex(Set<String>())
@@ -71,16 +71,29 @@ import Testing
         let ids = identifiers.withLock { Array($0) }
         #expect(ids.count == 1)
         #expect(store.storedMentions.count == 1)
-        let effects = Mutex(0)
+        let resolutionId = try #require(ids.first)
+        let claims = Mutex([MentionActionClaim]())
         DispatchQueue.concurrentPerform(iterations: 80) { _ in
-            let steps = store.applyUserMentionActions(
-                ids: ids, action: "notify", userId: "u", now: Date(),
-                inScope: { _ in true }, targetCanRead: { _ in true }, senderStillInChannel: { _ in true }
-            )
-            effects.withLock { $0 += steps.flatMap(\.effects).count }
+            if let claim = store.claimMentionGroup(
+                resolutionId: resolutionId, action: "notify", actorType: "user", actorId: "u", now: Date()
+            ) {
+                claims.withLock { $0.append(claim) }
+            }
         }
-        #expect(effects.withLock { $0 } == 1)
+        let results = claims.withLock { $0 }
+        #expect(results.count == 80)
+        // This is the real owner's atomic claim; actual cross-owner delivery is
+        // verified through the public HTTP/BPR PostgreSQL acceptance case.
+        #expect(results.filter(\.newlyClaimed).count == 1)
+        #expect(results.filter { $0.result.reason == "already_queued" }.count == 79)
+        #expect(results.allSatisfy {
+            $0.result.status == "queued" && $0.result.resolutionId == resolutionId
+                && $0.result.messageId == "m" && $0.result.channelId == "c"
+                && $0.result.targetType == "agent" && $0.result.targetId == "a"
+        })
         #expect(store.storedMentions.first?.notifiedAction == "notify_only")
+        #expect(store.storedMentions.first?.notifiedByType == "user")
+        #expect(store.storedMentions.first?.notifiedById == "u")
     }
 
     @Test func concurrentFollowWritesNeverExposeFollowAndSuppressionTogether() {

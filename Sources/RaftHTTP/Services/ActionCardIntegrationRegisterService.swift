@@ -584,8 +584,13 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             throw ActionCardIntegrationRegisterError.invalidActionCardRequest
         }
         let peer = accounts.firstAccount(exactName: raw)
-        var dmId = peer.flatMap { account in
-            channels.actionCardDMChannel(agentId: identity.agentId, peerId: account.id)
+        var dmId = peer.flatMap { account -> String? in
+            guard let id = oauth.directChannelId(serverId: identity.serverId, firstUserId: identity.agentId,
+                secondUserId: account.id, firstKind: .agent),
+                  let channel = channels.postableChannel(id: id), channel.serverId == identity.serverId,
+                  channel.kind == "dm", channel.deletedAt == nil,
+                  channel.memberIds.contains(identity.agentId), channel.memberIds.contains(account.id) else { return nil }
+            return id
         }
         let anchorId = dmId.flatMap { dm -> String? in
             if let fromLedger = oauth.historyMessages(channelId: dm)
@@ -609,7 +614,8 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             let created = oauth.createDirectChannel(
                 serverId: identity.serverId,
                 firstUserId: identity.agentId,
-                secondUserId: peerId
+                secondUserId: peerId,
+                firstKind: .agent
             )
             dependencies.addPostableChannel(
                 identity.serverId, created, identity.agentId, "dm", nil, nil, "dm"

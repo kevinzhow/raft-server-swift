@@ -66,7 +66,7 @@ public struct AgentsLifecycleService: Sendable {
 
     private static let bearerPrefix = "Bearer "
 
-    private static func bearerToken(_ authorization: String?) -> String? {
+    static func bearerToken(_ authorization: String?) -> String? {
         guard let authorization, authorization.hasPrefix(bearerPrefix) else { return nil }
         return String(authorization.dropFirst(bearerPrefix.count))
     }
@@ -78,7 +78,7 @@ public struct AgentsLifecycleService: Sendable {
         try? AuthCoreService(store: profiles).authenticate(authorization)
     }
 
-    private func requireUser(_ authorization: String?) throws -> String {
+    func requireUser(_ authorization: String?) throws -> String {
         guard let userId = sessionUserId(authorization: authorization) else {
             throw AgentsLifecycleError.unauthorized
         }
@@ -86,19 +86,19 @@ public struct AgentsLifecycleService: Sendable {
     }
 
     /// The bearer credential of an agent, marking its use.
-    private func agentCredential(_ authorization: String?) -> (agentId: String, scopes: [String])? {
+    func agentCredential(_ authorization: String?) -> (agentId: String, scopes: [String])? {
         guard let token = Self.bearerToken(authorization) else { return nil }
         return agents.useAgentCredential(token: token, now: dependencies.now())
     }
 
-    private func requireUploadsEnabled() throws {
+    func requireUploadsEnabled() throws {
         let gate = (dependencies.environment()["ATTACHMENT_UPLOAD_ENABLED"] ?? "true")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         if ["false", "0", "off"].contains(gate) { throw AgentsLifecycleError.uploadsDisabled }
     }
 
-    private func uploadLimit(serverId: String) -> Int {
+    func uploadLimit(serverId: String) -> Int {
         let plan = oauth.serverProfile(id: serverId)?.plan ?? "free"
         return plan == "free" ? 50 * 1024 * 1024 : 200 * 1024 * 1024
     }
@@ -165,6 +165,9 @@ public struct AgentsLifecycleService: Sendable {
         sizeBytes: Int,
         bytes: Data
     ) throws -> AgentAttachmentUploadResponse {
+        guard !messages.withState({ $0.requiresDurableAttachmentStorage }) else {
+            throw AttachmentContentError.uploadFailed
+        }
         try requireUploadsEnabled()
         guard let credential = agentCredential(authorization),
               let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted,
@@ -215,6 +218,9 @@ public struct AgentsLifecycleService: Sendable {
         channelId: String,
         files: [AttachmentUploadFile]
     ) throws -> AttachmentUploadListResponse {
+        guard !messages.withState({ $0.requiresDurableAttachmentStorage }) else {
+            throw AttachmentContentError.uploadFailed
+        }
         try requireUploadsEnabled()
         let userId = try requireUser(authorization)
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
@@ -256,6 +262,9 @@ public struct AgentsLifecycleService: Sendable {
         mimeType: String?,
         sizeBytes: Int
     ) throws -> AttachmentUploadListResponse {
+        guard !messages.withState({ $0.requiresDurableAttachmentStorage }) else {
+            throw AttachmentContentError.uploadFailed
+        }
         try requireUploadsEnabled()
         guard let token = Self.bearerToken(authorization) else { throw AgentsLifecycleError.unauthorized }
         let machine = machines.machines.first { $0.apiKey == token }
@@ -540,46 +549,8 @@ public struct AgentsLifecycleService: Sendable {
         return AttachmentStreamBody(body: body)
     }
 
-    /// `GET /api/attachments/:id/html-preview`.
-    public func attachmentHTMLPreview(
-        attachmentId: String,
-        serverId: String,
-        previewToken: String?,
-        bearerQuery: String?
-    ) throws -> AttachmentHTMLPreview {
-        if bearerQuery != nil { throw AgentsLifecycleError.forbidden }
-        guard let previewToken,
-              AttachmentPreviewTokens().verify(
-                  previewToken,
-                  attachmentId: attachmentId,
-                  serverId: serverId
-              ) != nil
-        else {
-            throw AgentsLifecycleError.unauthorized
-        }
-        guard let original = messages.attachmentPreviewBody?(attachmentId) else {
-            throw AgentsLifecycleError.attachmentNotFound
-        }
-        // The stored document streams unmodified with the bridge appended. An
-        // attachment-supplied CSP meta tag keeps governing the document: the
-        // bridge goes immediately before it, since meta CSP only applies to the
-        // content parsed after it.
-        var body = original
-        let bridge = AttachmentPreviewBridge.script
-        if let metaRange = Self.cspMetaTagRange(in: original) {
-            body = String(original[..<metaRange.lowerBound]) + bridge + String(original[metaRange.lowerBound...])
-        } else {
-            body += bridge
-        }
-        let origin = dependencies.environment()["APP_URL"] ?? "http://127.0.0.1:4173"
-        return AttachmentHTMLPreview(body: body, headers: [
-            "Content-Type": "text/html; charset=utf-8",
-            "Content-Security-Policy": "frame-ancestors 'self' \(origin); connect-src 'none'; form-action 'none'; object-src 'none'",
-            "Cache-Control": "private, no-store",
-        ])
-    }
-
-    /// Range of the attachment's own CSP meta tag, if it supplies one.
+    /// Legacy range helper retained for existing service callers. Production
+    /// previews use the bounded byte scanner in the HTTP response transport.
     static func cspMetaTagRange(in html: String) -> Range<String.Index>? {
         let lower = html.lowercased()
         guard let metaStart = lower.range(of: "<meta"),
@@ -589,12 +560,9 @@ public struct AgentsLifecycleService: Sendable {
         return metaStart.lowerBound..<tagEnd.upperBound
     }
 
-    /// `GET /api/attachments/:id` and `…/html-preview-url`.
+    /// Synchronous metadata admission used by ordinary byte downloads.
     public func readAttachment(
-        authorization: String?,
-        serverId: String?,
-        attachmentId: String,
-        kind: AttachmentReadKind
+        authorization: String?, serverId: String?, attachmentId: String
     ) throws -> AttachmentReadResponse {
         guard ServerScope.isUUID(attachmentId) else { throw AgentsLifecycleError.invalidAttachmentId }
         if let token = Self.bearerToken(authorization), authorization?.hasPrefix("Bearer sk_computer_") == true {
@@ -604,38 +572,19 @@ public struct AgentsLifecycleService: Sendable {
             guard let computerServer else { throw AgentsLifecycleError.unauthorized }
             let requested = serverId ?? computerServer
             guard requested == computerServer else { throw AgentsLifecycleError.notAMember }
-            guard let attachment, channelServer == requested else {
-                throw AgentsLifecycleError.attachmentNotFound
-            }
+            guard let attachment, channelServer == requested else { throw AgentsLifecycleError.attachmentNotFound }
             return .metadata(metadata(of: attachment))
         }
         let userId = try requireUser(authorization)
-        guard profiles.account(userId: userId)?.retiredAt == nil else {
-            throw AgentsLifecycleError.unauthorized
-        }
+        guard profiles.account(userId: userId)?.retiredAt == nil else { throw AgentsLifecycleError.unauthorized }
         guard let serverId, !serverId.isEmpty else { throw AgentsLifecycleError.serverIdRequired }
         if !oauth.memberIds(serverId: serverId).isEmpty,
-           oauth.memberRole(serverId: serverId, userId: userId) == nil {
-            throw AgentsLifecycleError.notAMember
-        }
+           oauth.memberRole(serverId: serverId, userId: userId) == nil { throw AgentsLifecycleError.notAMember }
         guard let attachment = messages.channelAttachments[attachmentId],
-              canSeeAttachment(userId: userId, serverId: serverId, attachment: attachment)
-        else {
+              canSeeAttachment(userId: userId, serverId: serverId, attachment: attachment) else {
             throw AgentsLifecycleError.attachmentNotFound
         }
-        switch kind {
-        case .htmlPreviewURL:
-            let previewToken = AttachmentPreviewTokens().mint(
-                attachmentId: attachmentId,
-                serverId: serverId,
-                actorId: userId
-            )
-            let url = "/api/attachments/\(attachmentId)/html-preview?serverId=\(serverId)&previewToken=\(previewToken)"
-            let expiresAt = DateText.isoString(dependencies.now().addingTimeInterval(300))
-            return .htmlPreviewURL(AttachmentHTMLPreviewURLResponse(url: url, expiresAt: expiresAt))
-        case .metadata:
-            return .metadata(metadata(of: attachment))
-        }
+        return .metadata(metadata(of: attachment))
     }
 
     private func metadata(of attachment: ChannelAttachment) -> AttachmentMetadataResponse {

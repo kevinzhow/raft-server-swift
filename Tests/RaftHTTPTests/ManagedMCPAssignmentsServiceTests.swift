@@ -143,7 +143,7 @@ private func body(_ error: any DomainError) -> String {
         (.protectedServerRole, 403, #"{"error":"Server role is managed separately","code":"protected_server_role"}"#),
         (.channelAdminSelfDemote, 409, #"{"error":"A channel admin cannot demote themselves","code":"channel_admin_self_demote_forbidden"}"#),
         (.taskNotFound, 404, #"{"error":"Task not found"}"#),
-        (.joinChannelToChangeTasks, 403, #"{"error":"Join the channel to change tasks"}"#),
+        (.joinChannelToChangeTasks, 403, #"{"error":"You must join this channel to modify tasks"}"#),
         (.onlyCreatorCanDeleteTask, 403, #"{"error":"Only the task creator can delete it"}"#),
         (.channelDeletedClaimForbidden, 409, #"{"error":"This channel was deleted; the task can only be closed","code":"channel_deleted_terminal_only"}"#),
         (.channelDeletedTerminalOnly, 409, #"{"error":"This channel was deleted; only terminal task statuses are allowed","code":"channel_deleted_terminal_only"}"#),
@@ -362,9 +362,9 @@ private func body(_ error: any DomainError) -> String {
     }
 
     let claimed = try service.claimTask(authorization: f.ownerAuthorization, serverId: f.serverId, taskId: taskId)
-    #expect(claimed.status == "in_progress")
-    #expect(claimed.claimedById == f.ownerId)
-    #expect(claimed.revision == 1)
+    #expect(claimed.task.status == "in_progress")
+    #expect(claimed.task.claimedById == f.ownerId)
+    #expect(claimed.task.revision == 1)
     expect(.onlyAssigneeCanReturnToTodo) {
         f.accounts.oauth.addChannelHuman(channelId: f.channelId, userId: f.memberId)
         f.accounts.addPostableChannel(serverId: f.serverId, channelId: f.channelId, memberId: f.memberId, name: "assign-005")
@@ -373,8 +373,8 @@ private func body(_ error: any DomainError) -> String {
         )
     }
     let unclaimed = try service.unclaimTask(authorization: f.ownerAuthorization, serverId: f.serverId, taskId: taskId)
-    #expect(unclaimed.claimedById == nil)
-    #expect(unclaimed.revision == 2)
+    #expect(unclaimed.task.claimedById == nil)
+    #expect(unclaimed.task.revision == 2)
     #expect(f.accounts.tasksAndRemindersStore.assigneeChangeEvents.count == 1)
 
     let converted = try service.convertMessageToTask(
@@ -383,10 +383,11 @@ private func body(_ error: any DomainError) -> String {
             channelId: f.channelId, content: "make me a task", senderId: f.ownerId
         ))
     )
-    #expect(converted.taskIds.count == 1)
-    #expect(converted.jsonBody.render() == #"{"taskIds":["\#(converted.taskIds[0])"]}"#)
-    let convertedTask = try #require(f.accounts.tasksAndRemindersStore.task(id: converted.taskIds[0]))
-    #expect(convertedTask.title == "Converted message")
+    #expect(converted.task.id != converted.task.messageId)
+    let convertedObject = try #require(try JSONSerialization.jsonObject(with: Data(converted.jsonBody.render().utf8)) as? [String: Any])
+    #expect(Set(convertedObject.keys) == ["task"])
+    let convertedTask = try #require(f.accounts.tasksAndRemindersStore.task(id: converted.task.id))
+    #expect(convertedTask.title == "make me a task")
     #expect(convertedTask.taskNumber == 2)
     #expect(convertedTask.creatorId == f.ownerId)
 
@@ -454,7 +455,7 @@ private func body(_ error: any DomainError) -> String {
 
 // MARK: - Atomic store sections
 
-@Test func concurrentClaimsLoseNoRevisionBump() {
+@Test func concurrentClaimsAdmitOneOwnerWithoutStealing() {
     let store = TasksAndRemindersStore()
     let channels = ServersAndChannelsStore()
     channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
@@ -466,7 +467,7 @@ private func body(_ error: any DomainError) -> String {
         _ = store.claimForUser(taskId: taskId, userId: "user-\(index)", channelDeletion: channelDeletion, now: Date())
     }
     let task = store.task(id: taskId)
-    #expect(task?.revision == writers, "every claim is one complete read-modify-write")
+    #expect(task?.revision == 1, "one claim wins; rejected contenders do not steal or burn revisions")
     #expect(task?.status == "in_progress")
     #expect(task?.assigneeType == "user")
     #expect(task?.claimedAt != nil)
@@ -551,7 +552,7 @@ private func body(_ error: any DomainError) -> String {
     }
 }
 
-@Test func concurrentUnclaimsRecordOneAssigneeEventEach() {
+@Test func concurrentUnclaimsRecordOnlyTheSuccessfulClear() {
     let store = TasksAndRemindersStore()
     let channels = ServersAndChannelsStore()
     channels.addPostableChannel(serverId: "s", channelId: "c", memberId: "owner")
@@ -563,9 +564,9 @@ private func body(_ error: any DomainError) -> String {
         _ = store.unclaimForUser(taskId: taskId, userId: "user-\(index)")
     }
     let task = store.task(id: taskId)
-    #expect(task?.revision == writers + 1)
+    #expect(task?.revision == 2)
     #expect(task?.assigneeId == nil)
-    #expect(store.assigneeChangeEvents.count == writers, "the revision bump and the event are one section")
+    #expect(store.assigneeChangeEvents.count == 1, "the one real clear and its event are one section")
     #expect(store.assigneeChangeEvents.filter { $0.previousAssigneeId == "first" }.count == 1)
 }
 
@@ -616,7 +617,9 @@ private func body(_ error: any DomainError) -> String {
     let store = TasksAndRemindersStore()
     let writers = 64
     DispatchQueue.concurrentPerform(iterations: writers) { index in
-        _ = store.appendConvertedMessageTask(channelId: "c", messageId: "m-\(index)", creatorId: "u")
+        _ = store.appendConvertedMessageTask(channelId: "c", messageId: "m-\(index)",
+            title: "conversion-\(index)", creatorId: "u", legacyMessageMaxNumber: 0,
+            now: Date(timeIntervalSince1970: 0))
     }
     let rows = store.taskRecords
     #expect(rows.count == writers)

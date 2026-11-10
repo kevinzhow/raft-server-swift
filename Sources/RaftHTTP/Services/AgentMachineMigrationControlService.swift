@@ -57,15 +57,16 @@ enum BuiltinModelCatalogAdmission {
 /// throws `AgentMigrationControlError`. The migration, binding and archive rows
 /// are decided inside `AgentsRuntimeStore`; the service never holds a lock.
 public struct AgentMachineMigrationControlService: Sendable {
-    private let agents: AgentsRuntimeStore
-    private let machines: MachinesAndComputersStore
+    let agents: AgentsRuntimeStore
+    let machines: MachinesAndComputersStore
     private let channels: ServersAndChannelsStore
     private let messages: MessagesAndThreadsStore
     private let tasks: TasksAndRemindersStore
-    private let oauth: OAuthLedger
+    let oauth: OAuthLedger
     private let dependencies: AgentMachineMigrationControlDependencies
     private let now: @Sendable () -> Date
     private let newGeneration: @Sendable () -> String
+    private let execution: AgentExecutionService?
 
     init(
         agents: AgentsRuntimeStore,
@@ -75,6 +76,7 @@ public struct AgentMachineMigrationControlService: Sendable {
         tasks: TasksAndRemindersStore,
         oauth: OAuthLedger,
         dependencies: AgentMachineMigrationControlDependencies,
+        execution: AgentExecutionService? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         newGeneration: @escaping @Sendable () -> String = { "generation-" + UUID().uuidString.lowercased() }
     ) {
@@ -85,6 +87,7 @@ public struct AgentMachineMigrationControlService: Sendable {
         self.tasks = tasks
         self.oauth = oauth
         self.dependencies = dependencies
+        self.execution = execution
         self.now = now
         self.newGeneration = newGeneration
     }
@@ -489,7 +492,7 @@ public struct AgentMachineMigrationControlService: Sendable {
     // MARK: - Workspace tree and read
 
     /// The caller's authority over a live or archived agent's workspace.
-    private func workspaceAuthority(
+    func workspaceAuthority(
         _ authorization: String?,
         serverId: String,
         agentId: String
@@ -668,6 +671,11 @@ public struct AgentMachineMigrationControlService: Sendable {
         return OkResponse()
     }
 
+    public func bindingExecution(_ execution: AgentExecutionService?) -> Self {
+        Self(agents: agents, machines: machines, channels: channels, messages: messages, tasks: tasks,
+             oauth: oauth, dependencies: dependencies, execution: execution, now: now, newGeneration: newGeneration)
+    }
+
     // MARK: - Runtime verbs
 
     /// `POST /api/agents/:id/start`.
@@ -680,7 +688,12 @@ public struct AgentMachineMigrationControlService: Sendable {
         if actor.info.runtime == "external" { throw AgentMigrationControlError.externalAgentsHaveNoRuntimeLifecycle }
         guard let machineId = agents.agentMachineIds[agentId] else { throw AgentMigrationControlError.noMachineAssigned }
         guard machines.machineOnline[machineId] == true else { throw AgentMigrationControlError.startMachineOffline }
-        agents.agentStartControlDispatch?(agentId, "human_start")
+        guard let execution else { throw AgentExecutionProducerError(operation: "start agent", underlying: .dispatchUnavailable) }
+        do {
+            _ = try execution.requestStart(.init(serverId: actor.info.serverId, agentId: agentId, control: .humanStart))
+        } catch let error as AgentExecutionError {
+            throw AgentExecutionProducerError(operation: "start agent", underlying: error)
+        }
         return OkResponse()
     }
 
@@ -689,10 +702,16 @@ public struct AgentMachineMigrationControlService: Sendable {
         authorization: String?,
         agentId: String,
         serverId: String
-    ) throws -> OkResponse {
+    ) throws -> AgentExecutionStopResponse {
         let actor = try lifecycleActor(authorization, agentId: agentId, serverId: serverId, capability: .controlRuntime)
         if actor.info.runtime == "external" { throw AgentMigrationControlError.externalAgentsHaveNoRuntimeLifecycle }
-        return OkResponse()
+        guard let execution else { throw AgentExecutionProducerError(operation: "stop agent", underlying: .dispatchUnavailable) }
+        do {
+            let admitted = try execution.requestStop(.init(serverId: actor.info.serverId, agentId: agentId))
+            return AgentExecutionStopResponse(appliesOnReconnect: admitted.requiresMachineDispatch)
+        } catch let error as AgentExecutionError {
+            throw AgentExecutionProducerError(operation: "stop agent", underlying: error)
+        }
     }
 
     /// `POST /api/agents/:id/reset`.
@@ -716,7 +735,13 @@ public struct AgentMachineMigrationControlService: Sendable {
             guard mayReset else { throw AgentMigrationControlError.resetWorkspaceDenied }
         }
         if actor.info.runtime == "external" { throw AgentMigrationControlError.externalAgentsHaveNoRuntimeLifecycle }
-        agents.agentResetDispatch?(agentId, mode, "human_reset")
+        guard let execution else { throw AgentExecutionProducerError(operation: "reset agent", underlying: .dispatchUnavailable) }
+        do {
+            _ = try execution.requestReset(.init(serverId: actor.info.serverId, agentId: agentId,
+                                                 mode: AgentExecutionResetMode(rawValue: mode) ?? .session))
+        } catch let error as AgentExecutionError {
+            throw AgentExecutionProducerError(operation: "reset agent", underlying: error)
+        }
         return AgentAcceptedResponse()
     }
 
@@ -779,6 +804,7 @@ public struct AgentMachineMigrationControlService: Sendable {
         if let hostedModel, hostedModel != HostedModelPolicy.hostedDefaultModel, !facts.modelPickerEnabled {
             throw AgentMigrationControlError.hostedModelPickerDisabled
         }
+        guard !agents.hasActiveReset(agentId: info.id) else { throw AgentMigrationControlError.resetInProgress }
         let supportRef = Self.supportRef()
         let record = HostedMigrationRecord(
             agentId: info.id,
@@ -788,8 +814,10 @@ public struct AgentMachineMigrationControlService: Sendable {
             state: "preparing",
             sourceMachineId: facts.machineId
         )
-        guard agents.insertHostedMigrationIfIdle(record) else {
-            throw AgentMigrationControlError.migrationAlreadyInProgress
+        switch agents.admitHostedMigrationIfIdle(record) {
+        case .inserted: break
+        case .activeMigration: throw AgentMigrationControlError.migrationAlreadyInProgress
+        case .activeReset: throw AgentMigrationControlError.resetInProgress
         }
         emitMigrationUpdated(
             serverId: serverId,
@@ -869,6 +897,7 @@ public struct AgentMachineMigrationControlService: Sendable {
         ) {
             throw AgentMigrationControlError.builtinCatalogUnavailable
         }
+        guard !agents.hasActiveReset(agentId: info.id) else { throw AgentMigrationControlError.resetInProgress }
         let sessionId: String
         if let provisioner = snapshot.machineMigrationProvisioner {
             guard let provided = provisioner(sourceMachineId, targetMachineId) else {
@@ -899,8 +928,10 @@ public struct AgentMachineMigrationControlService: Sendable {
                 OrderedJSONField("agentId", info.id),
             ])),
         ]).render()
-        guard agents.insertMachineMigrationIfIdle(record) else {
-            throw AgentMigrationControlError.computerMigrationAlreadyInProgress
+        switch agents.admitMachineMigrationIfIdle(record) {
+        case .inserted: break
+        case .activeMigration: throw AgentMigrationControlError.computerMigrationAlreadyInProgress
+        case .activeReset: throw AgentMigrationControlError.resetInProgress
         }
         machines.machineMigrationLeaseDispatch?(sourceMachineId, "source", supportRef)
         machines.machineMigrationLeaseDispatch?(targetMachineId, "target", supportRef)

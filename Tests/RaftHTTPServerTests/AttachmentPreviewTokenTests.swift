@@ -9,6 +9,7 @@ import VaporTesting
 
 @Test func htmlPreviewTokenIsScopedExpiringAndFramed() async throws {
     let accounts = EmailLoginDirectory()
+    accounts.oauth.jwtSecret = attachmentPreviewFixtureSigningSecret
     let serverId = "33333333-3333-4333-8333-000001017001"
     let ownerId = "11111111-1111-4111-8111-000001017001"
     let ownerEmail = "preview-token-owner@slock.test"
@@ -17,10 +18,9 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "preview-token", name: "Preview Token", ownerId: ownerId)
     let channel = accounts.oauth.createChannel(serverId: serverId, name: "preview-token-room", creatorUserId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: ownerId, name: "preview-token-room")
-    let first = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "first.html", mimeType: "text/html", sizeBytes: 64)
-    let second = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "second.html", mimeType: "text/html", sizeBytes: 64)
     let html = "<!doctype html><html><body>ok</body></html>"
-    accounts.messagesAndThreadsStore.attachmentPreviewBody = { id in id == first ? html : nil }
+    let first = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "first.html", mimeType: "text/html", sizeBytes: html.utf8.count, bytes: Data(html.utf8))
+    let second = accounts.addChannelAttachment(channelId: channel, uploaderId: ownerId, filename: "second.html", mimeType: "text/html", sizeBytes: html.utf8.count, bytes: Data(html.utf8))
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -77,15 +77,23 @@ import VaporTesting
                 #expect(try await client.get(URI(string: path)).status == .unauthorized)
             }
 
-            let expired = AttachmentPreviewTokens().mint(attachmentId: first, serverId: serverId, actorId: ownerId, expiresIn: -1)
+            let expired = try await AttachmentPreviewTokens(secret: accounts.oauth.jwtSecret).mint(attachmentId: first, serverId: serverId, actorId: ownerId, expiresIn: -1)
             let expiredResponse = try await client.get(
                 URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(expired)")
             )
             #expect(expiredResponse.status == .unauthorized)
-            let wrongAudience = AttachmentPreviewTokens().mint(attachmentId: first, serverId: serverId, actorId: ownerId, audience: "attachment-download")
+            let wrongAudience = try await AttachmentPreviewTokens(secret: accounts.oauth.jwtSecret).mint(attachmentId: first, serverId: serverId, actorId: ownerId, audience: "attachment-download")
             #expect(try await client.get(URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(wrongAudience)")).status == .unauthorized)
-            let wrongType = AttachmentPreviewTokens().mint(attachmentId: first, serverId: serverId, actorId: ownerId, type: "access")
+            let wrongType = try await AttachmentPreviewTokens(secret: accounts.oauth.jwtSecret).mint(attachmentId: first, serverId: serverId, actorId: ownerId, type: "access")
             #expect(try await client.get(URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(wrongType)")).status == .unauthorized)
+            for actorId in ["", UUID().uuidString.lowercased()] {
+                let invalidActor = try await AttachmentPreviewTokens(secret: accounts.oauth.jwtSecret).mint(attachmentId: first, serverId: serverId, actorId: actorId)
+                let refused = try await client.get(URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&previewToken=\(invalidActor)"))
+                #expect(refused.status == (actorId.isEmpty ? .unauthorized : .forbidden))
+                let expected = actorId.isEmpty ? #"{"error":"Authentication required"}"# : #"{"error":"Not a member of this server"}"#
+                #expect(try await collectedBody(refused) == expected)
+            }
+            #expect(try await client.get(URI(string: "/api/attachments/\(first)/html-preview?serverId=\(UUID().uuidString.lowercased())&previewToken=\(firstMint.previewToken)")).status == .forbidden)
 
             let leaked = try await client.get(
                 URI(string: "/api/attachments/\(first)/html-preview?serverId=\(serverId)&token=\(token)")

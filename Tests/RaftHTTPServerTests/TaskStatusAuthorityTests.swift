@@ -70,7 +70,9 @@ import VaporTesting
                 request.body = .init(string: "{\"status\":\"todo\"}")
             }
             #expect(selfDemotion.status == .ok)
-            let demoted = try JSONSerialization.jsonObject(with: Data((selfDemotion.body.string ?? "").utf8)) as? [String: Any]
+            let demotedEnvelope = try #require(try JSONSerialization.jsonObject(with: Data((selfDemotion.body.string ?? "").utf8)) as? [String: Any])
+            #expect(Set(demotedEnvelope.keys) == ["task"])
+            let demoted: [String: Any]? = try #require(demotedEnvelope["task"] as? [String: Any])
             #expect(demoted?["status"] as? String == "todo")
             #expect(demoted?["claimedById"] as? String == memberId)
             #expect(demoted?["claimedAt"] == nil || demoted?["claimedAt"] is NSNull)
@@ -79,7 +81,9 @@ import VaporTesting
                 request.body = .init(string: "{\"status\":\"in_progress\"}")
             }
             #expect(selfStart.status == .ok)
-            let started = try JSONSerialization.jsonObject(with: Data((selfStart.body.string ?? "").utf8)) as? [String: Any]
+            let startedEnvelope = try #require(try JSONSerialization.jsonObject(with: Data((selfStart.body.string ?? "").utf8)) as? [String: Any])
+            #expect(Set(startedEnvelope.keys) == ["task"])
+            let started: [String: Any]? = try #require(startedEnvelope["task"] as? [String: Any])
             #expect(started?["claimedAt"] is String)
         }
     }

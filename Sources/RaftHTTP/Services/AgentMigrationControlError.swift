@@ -30,6 +30,9 @@ public enum AgentMigrationControlError: DomainError, Equatable {
     case agentNotExternal
     case builtinCatalogUnavailable
     case assignAlreadyInProgress
+    case assignmentExecutionRequiresRecovery
+    case resetInProgress
+    case resetMigrationInProgress
     case agentScopesUnsupported
     case invalidReplicaReplaySignature
     case machineOfflineOwnerNotLocal
@@ -198,6 +201,10 @@ public enum AgentMigrationControlError: DomainError, Equatable {
             )
         case .assignAlreadyInProgress:
             .codeFirst(409, "MIGRATION_ALREADY_IN_PROGRESS", "Agent already has an active migration")
+        case .assignmentExecutionRequiresRecovery:
+            .codeFirst(409, "agent_execution_recovery_required", "Agent execution history requires recovery before changing its machine")
+        case .resetInProgress: .codeFirst(409, "agent_reset_in_progress", "Agent reset is in progress")
+        case .resetMigrationInProgress: .codeFirst(409, "agent_migration_in_progress", "Agent migration is in progress")
         case .agentScopesUnsupported:
             .codeFirst(422, "agent_scopes_unsupported", "Agent scopes are managed for external agents only")
         case .invalidReplicaReplaySignature:

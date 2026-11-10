@@ -8,11 +8,11 @@ import Vapor
 import VaporTesting
 @testable import RaftHTTPServer
 
-/// Byte-exact pins for the Feature/middleware replies that used to be hand
-/// built (`HTTPReply` literals, JSON string concatenation). The expectations
-/// were captured from the pre-migration handlers.
-private func shot(_ response: ClientResponse) -> String {
+/// Byte-exact pins for Feature/middleware replies, including the complete
+/// Node app's outer auth and default-cache phases before the routed handlers.
+private func shot(_ response: ClientResponse, excludingDefaultAPIHeader: Bool = false) -> String {
     let headers = response.headers
+        .filter { !excludingDefaultAPIHeader || $0.name != .cacheControl }
         .map { "\($0.name.rawName.lowercased()): \($0.value)" }
         .sorted()
         .joined(separator: "\n")
@@ -84,7 +84,10 @@ struct FeatureReplyBytesTests {
                 if cli { headers[HTTPField.Name("X-Raft-Client")!] = "cli" }
                 if caps { headers[HTTPField.Name("X-Raft-Client-Capabilities")!] = "manual-context-v1" }
                 let res = try await client.get(URI(string: path), headers: headers)
-                var text = shot(res)
+                // Keep the established body/header digests strict while asserting
+                // the newly restored app-level header independently.
+                #expect(res.headers[.cacheControl] == "private, no-store")
+                var text = shot(res, excludingDefaultAPIHeader: true)
                 if text.utf8.count > 700 {
                     let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
                     text = "<\(text.utf8.count) bytes sha256 \(digest)>\n" + text.prefix(400)
@@ -295,6 +298,37 @@ struct FeatureReplyBytesTests {
     }
 }
 
+@Test func globalDeclaredJSONLimitPrecedesAccountAdmissionAndCacheButNotSpecialCredentials() async throws {
+    try await withDefaultApp { client in
+        func post(_ path: String, count: Int) async throws -> ClientResponse {
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            return try await client.send(.post, headers: headers, to: URI(string: path)) { request in
+                request.body = .init(string: "{\"padding\":\"" + String(repeating: "x", count: count) + "\"}")
+            }
+        }
+        // An anonymous protected endpoint must hit the global parser limit
+        // before account admission, store access or the raw API cache mount.
+        for path in ["/api/auth/login", "/api/servers", "/api/%73ervers"] {
+            let denied = try await post(path, count: 180_000)
+            #expect(denied.status == .contentTooLarge)
+            #expect(denied.body.string == #"{"error":"Request body is too large","code":"request_body_too_large"}"#)
+            #expect(denied.headers[.contentLength] == "69")
+            #expect(denied.headers[.contentType] == "application/json")
+            #expect(denied.headers[.cacheControl] == nil)
+        }
+        // These credential-gated parsers remain within the existing business
+        // boundary and retain their earlier auth-required response.
+        for path in ["/internal/machine/scope-attestation", "/internal/computer/agent-migrations/by-id/m1/resumable/control"] {
+            let denied = try await post(path, count: 1_100_000)
+            #expect(denied.status == .unauthorized)
+            #expect(denied.body.string == #"{"error":"Unauthorized","code":"auth_required"}"#)
+            #expect(denied.headers[.contentLength] == "47")
+            #expect(denied.headers[.cacheControl] == nil)
+        }
+    }
+}
+
 private final class StaticKeys: PublicSearchServiceKeyProviding, @unchecked Sendable {
     private let lock = NSLock()
     private var rows: [PublicSearchServiceKey]
@@ -319,6 +353,7 @@ private let featureReplySnapshots: [String] = [
     #"""
     GET /api/avatars/pixel/a.png
     400
+    cache-control: private, no-store
     content-length: 36
     content-type: application/json; charset=utf-8
     x-robots-tag: noindex, nofollow
@@ -328,6 +363,7 @@ private let featureReplySnapshots: [String] = [
     #"""
     GET /api/avatars/pixel/%21.svg
     400
+    cache-control: private, no-store
     content-length: 36
     content-type: application/json; charset=utf-8
     x-robots-tag: noindex, nofollow
@@ -337,6 +373,7 @@ private let featureReplySnapshots: [String] = [
     #"""
     GET /api/avatars/pixel/eA.svg
     404
+    cache-control: private, no-store
     content-length: 34
     content-type: application/json; charset=utf-8
     x-robots-tag: noindex, nofollow
@@ -355,59 +392,73 @@ private let featureReplySnapshots: [String] = [
     """#,
     #"""
     GET /api/servers/abc/public-visibility
-    404
-    content-length: 21
+    401
+    cache-control: private, no-store
+    content-length: 74
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Not found"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     PATCH /api/servers/abc/public-guest-join
-    404
-    content-length: 21
+    401
+    cache-control: private, no-store
+    content-length: 74
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Not found"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     PATCH /api/servers/abc/public-visibility
-    404
-    content-length: 21
+    401
+    cache-control: private, no-store
+    content-length: 74
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Not found"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     PATCH /api/servers/abc/public-search
-    404
-    content-length: 21
+    401
+    cache-control: private, no-store
+    content-length: 74
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Not found"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     GET /api/channels/activity/snapshot
-    400
-    access-control-expose-headers: X-Raft-Contract
-    content-length: 26
+    401
+    cache-control: private, no-store
+    content-length: 74
     content-type: application/json; charset=utf-8
-    x-raft-contract: raft.activity-sync;revision=2
+    x-robots-tag: noindex, nofollow
 
-    {"error":"invalid contract"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     GET /api/channels/activity/difference
-    400
-    access-control-expose-headers: X-Raft-Contract
-    content-length: 26
+    401
+    cache-control: private, no-store
+    content-length: 74
     content-type: application/json; charset=utf-8
-    x-raft-contract: raft.activity-sync;revision=2
+    x-robots-tag: noindex, nofollow
 
-    {"error":"invalid contract"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     POST migration-export
-    410
-    content-length: 76
-    content-type: application/json
+    401
+    cache-control: private, no-store
+    content-length: 74
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Migration action cards are no longer supported","code":"migration_action_card_not_supported"}
+    {"error":"Missing or invalid Authorization header","code":"auth_required"}
     """#,
     #"""
     GET /oidc/BAD_SCOPE/.well-known/openid-configuration
@@ -430,37 +481,52 @@ private let featureReplySnapshots: [String] = [
     #"""
     GET /api/attachments/abc/url?previewToken=x
     401
-    content-length: 24
+    cache-control: private, no-store
+    content-length: 35
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Unauthorized"}
+    {"error":"Authentication required"}
     """#,
     #"""
     GET /api/attachments/abc?previewToken=x
     401
-    content-length: 24
+    cache-control: private, no-store
+    content-length: 35
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Unauthorized"}
+    {"error":"Authentication required"}
     """#,
     #"""
     GET /api/attachments/abc/html-preview-url?previewToken=x
     401
-    content-length: 24
+    cache-control: private, no-store
+    content-length: 35
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Unauthorized"}
+    {"error":"Authentication required"}
     """#,
     #"""
     POST attachments/upload
-    400
-    content-length: 36
+    401
+    cache-control: private, no-store
+    content-length: 35
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Invalid multipart upload"}
+    {"error":"Authentication required"}
     """#,
     #"""
     POST agent-api/upload
-    400
-    content-length: 36
+    401
+    cache-control: private, no-store
+    content-length: 59
+    content-type: application/json; charset=utf-8
+    x-robots-tag: noindex, nofollow
 
-    {"error":"Invalid multipart upload"}
+    {"error":"Invalid or expired token","code":"auth_required"}
     """#,
 ]
 
@@ -640,6 +706,7 @@ private let middlewareReplySnapshots: [String] = [
     #"""
     GET gate agent-api
     503
+    cache-control: private, no-store
     content-length: 111
     content-type: application/json
     sec-slock-api-version: 1
@@ -649,6 +716,7 @@ private let middlewareReplySnapshots: [String] = [
     #"""
     POST gate computer
     503
+    cache-control: private, no-store
     content-length: 111
     content-type: application/json
     sec-slock-api-version: 1

@@ -47,7 +47,7 @@ private func foundationRuntimeConfigJSON(_ object: [String: Any]) throws -> Stri
 }
 
 @Test func supportHelperRuntimeConfigNormalizationAndProviderMergePreserveNumbers() throws {
-    let source = #"{"runtime":"claude","number":9223372036854775808,"number":18446744073709551615,"provider":{"kind":"custom","apiKey":"","apiUrl":"https://a/b"},"envVars":{"KEEP":"a/b","ANTHROPIC_DROP":"secret"},"flag":true}"#
+    let source = #"{"runtime":"claude","number":9223372036854775808,"number":18446744073709551615,"provider":{"kind":"custom","apiKey":"","apiUrl":"https://a/b"},"envVars":{"KEEP":"a/b","ANTHROPIC_API_KEY":"secret"},"flag":true}"#
     let previous = AgentRuntimeConfigDocument(storedJSON: #"{"provider":{"apiKey":"first","apiKey":"previous"}}"#)
     var document = AgentRuntimeConfigDocument(storedJSON: source).normalized()
     document.preserveProviderAPIKey(from: previous)

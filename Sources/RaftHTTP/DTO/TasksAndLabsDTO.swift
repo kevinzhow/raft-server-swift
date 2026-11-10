@@ -266,7 +266,7 @@ public struct AgentCreateChannelRequest: Decodable, Sendable, Equatable {
 
 /// `GET /api/tasks/channel/:channelId`: `{"tasks":[…]}`.
 public struct ChannelTaskListResponse: JSONBodyConvertible, Sendable, Equatable {
-    public var tasks: [ActionCardTaskPayload]
+    public var tasks: [TaskReadProjection]
 
     public var jsonBody: OrderedJSON {
         .object([OrderedJSONField("tasks", .array(tasks.map(\.jsonBody)))])
@@ -275,7 +275,7 @@ public struct ChannelTaskListResponse: JSONBodyConvertible, Sendable, Equatable 
 
 /// `GET /api/tasks/channel/:channelId/number/:taskNumber`: `{"task":{…}}`.
 public struct ChannelTaskResponse: JSONBodyConvertible, Sendable, Equatable {
-    public var task: ActionCardTaskPayload
+    public var task: TaskReadProjection
 
     public var jsonBody: OrderedJSON {
         .object([OrderedJSONField("task", task.jsonBody)])

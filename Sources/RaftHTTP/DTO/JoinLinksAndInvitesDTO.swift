@@ -493,68 +493,67 @@ public struct ServerInviteCreateResponseDTO: Codable, Sendable, Equatable, JSONB
 
 // MARK: - Server setup projection
 
-/// The server setup projection. `revokedComputers` is present only on the
-/// reset reply, which appends it after the shared projection.
+/// Facts and decisions supplied by the setup service; serialization has no Store access.
+/// `revokedComputers` is appended only by the reset reply.
 public struct SetupProjectionResponseDTO: Codable, Sendable, Equatable, JSONBodyConvertible {
-    public var phase: String
-    public var isOwnerOrAdmin: Bool
-    public var revokedComputers: Int?
-
-    public init(phase: String, isOwnerOrAdmin: Bool, revokedComputers: Int? = nil) {
-        self.phase = phase
-        self.isOwnerOrAdmin = isOwnerOrAdmin
-        self.revokedComputers = revokedComputers
+    public struct RuntimeOption: Codable, Sendable, Equatable {
+        public var runtimeId: String
+        public var capabilityStatus: String
+        public var formDefinitionSchemaVersion: String?
+        var jsonBody: OrderedJSON {
+            MachineRuntimeOptionsResponse.Option(runtimeId: runtimeId, capabilityStatus: capabilityStatus,
+                canSelectInThisContext: capabilityStatus == "available", runtimeFormV2: false,
+                formDefinitionSchemaVersion: formDefinitionSchemaVersion).jsonBody
+        }
     }
+    public struct OfflineComputer: Codable, Sendable, Equatable {
+        public var id: String
+        public var name: String
+        public var lastHeartbeat: String?
+        var jsonBody: OrderedJSON {
+            .object([OrderedJSONField("id", id), OrderedJSONField("name", name),
+                OrderedJSONField("lastHeartbeat", optional: lastHeartbeat), OrderedJSONField("isComputer", true)])
+        }
+    }
+    public var surface: String = "none"
+    public var phase: String? = nil
+    public var currentStep: String? = nil
+    public var blocksChat: Bool = false
+    public var allowedExits: [String] = ["return_to_server"]
+    public var transitionsEnabled: Bool = false
+    public var completionEnabled: Bool = false
+    public var gateReason: String? = "insufficient_permission"
+    public var computerStatus: String = "unknown"
+    public var runtimeStatus: String = "unknown"
+    public var runtimeOptions: [RuntimeOption] = []
+    public var hasConnectedComputer: Bool = false
+    public var offlineComputers: [OfflineComputer] = []
+    public var revokedComputers: Int? = nil
 
     public var jsonBody: OrderedJSON {
         var body = OrderedJSONObject()
-        if isOwnerOrAdmin {
-            body.append("surface", "computer_runtime")
-            body.append("phase", phase)
-            body.append("currentStep", "computer_runtime")
-            body.append("blocksChat", true)
-            body.append("allowedExits", .array([.string("reset"), .string("return_to_server")]))
-            body.append("sideEffectState", Self.enabledTransitions)
-            body.append("gateReason", "computer_offline")
-            body.append("computerStatus", "offline")
-        } else {
-            body.append("surface", "none")
-            body.append("phase", .null)
-            body.append("currentStep", .null)
-            body.append("blocksChat", false)
-            body.append("allowedExits", .array([.string("return_to_server")]))
-            body.append("sideEffectState", Self.disabledTransitions)
-            body.append("gateReason", "insufficient_permission")
-            body.append("computerStatus", "unknown")
-        }
-        body.append("runtimeStatus", "unknown")
-        body.append("runtimeOptions", .array([]))
-        body.append("hasConnectedComputer", false)
-        body.append("offlineComputers", .array([]))
-        body.append("postSetup", Self.pendingNothing)
+        body.append("surface", surface)
+        body.append("phase", optional: phase)
+        body.append("currentStep", optional: currentStep)
+        body.append("blocksChat", blocksChat)
+        body.append("allowedExits", .array(allowedExits.map(OrderedJSON.string)))
+        body.append("sideEffectState", .object([
+            OrderedJSONField("transitions", transitionsEnabled ? "enabled" : "disabled"),
+            OrderedJSONField("completion", completionEnabled ? "enabled" : "disabled"),
+        ]))
+        body.append("gateReason", optional: gateReason)
+        body.append("computerStatus", computerStatus)
+        body.append("runtimeStatus", runtimeStatus)
+        body.append("runtimeOptions", .array(runtimeOptions.map(\.jsonBody)))
+        body.append("hasConnectedComputer", hasConnectedComputer)
+        body.append("offlineComputers", .array(offlineComputers.map(\.jsonBody)))
+        // The existing owner has no completionReason / survey history. Do not
+        // manufacture an owed personal workflow from an absent persistence fact.
+        body.append("postSetup", .object([
+            OrderedJSONField("surveyPending", false), OrderedJSONField("handoffPending", false),
+        ]))
         body.append("revokedComputers", ifPresent: revokedComputers)
         return body.json
-    }
-
-    private static var enabledTransitions: OrderedJSON {
-        .object([
-            OrderedJSONField("transitions", "enabled"),
-            OrderedJSONField("completion", "disabled"),
-        ])
-    }
-
-    private static var disabledTransitions: OrderedJSON {
-        .object([
-            OrderedJSONField("transitions", "disabled"),
-            OrderedJSONField("completion", "disabled"),
-        ])
-    }
-
-    private static var pendingNothing: OrderedJSON {
-        .object([
-            OrderedJSONField("surveyPending", false),
-            OrderedJSONField("handoffPending", false),
-        ])
     }
 }
 

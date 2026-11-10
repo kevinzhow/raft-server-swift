@@ -52,7 +52,9 @@ import VaporTesting
             #expect(row["claimedById"] as? String == ownerId)
             let unclaim = try await client.send(.patch, headers: headers, to: "/api/tasks/\(id)/unclaim")
             #expect(unclaim.status.code == 200)
-            let unclaimBody = try JSONSerialization.jsonObject(with: Data((unclaim.body.string ?? "").utf8)) as? [String: Any]
+            let unclaimEnvelope = try #require(try JSONSerialization.jsonObject(with: Data((unclaim.body.string ?? "").utf8)) as? [String: Any])
+            #expect(Set(unclaimEnvelope.keys) == ["task"])
+            let unclaimBody: [String: Any]? = try #require(unclaimEnvelope["task"] as? [String: Any])
             #expect(unclaimBody?["claimedById"] == nil || unclaimBody?["claimedById"] is NSNull)
         }
     }

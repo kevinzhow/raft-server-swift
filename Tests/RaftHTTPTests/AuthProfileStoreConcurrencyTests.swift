@@ -108,9 +108,10 @@ private func raceAuthStore<T: Sendable>(
     #expect(store.pendingSocialLinks["pending"]?.consumed == true)
 }
 
-@Test func authStoreConcurrentMobileHandoffCommitsAccountLegalIdentityAndSessionTogether() async {
+@Test func authStoreConcurrentMobileHandoffCommitsAccountLegalIdentityAndSessionTogether() async throws {
     let store = AuthProfileStore()
     let flows = OAuthFlowsStore(profiles: store)
+    let passwordPlaceholder = try await PasswordWork.hash(AuthTokenCodec.randomHex(32))
     let verifier = String(repeating: "v", count: 43)
     flows.insertMobileRequest(MobileOAuthRequest(
         id: "request", provider: "github", mode: "login", status: "provider_completed",
@@ -121,7 +122,8 @@ private func raceAuthStore<T: Sendable>(
     let winners = await raceAuthStore { _ -> Bool in
         if case .signedIn = flows.completeMobile(
             code: "handoff", verifier: verifier, pendingLinkToken: nil, acceptTerms: true,
-            termsVersion: AuthLegalPolicy.termsVersion, privacyVersion: AuthLegalPolicy.privacyVersion, now: isolationNow
+            termsVersion: AuthLegalPolicy.termsVersion, privacyVersion: AuthLegalPolicy.privacyVersion, now: isolationNow,
+            passwordPlaceholder: passwordPlaceholder
         ) { return true }
         return false
     }

@@ -23,54 +23,54 @@ extension HumanMessageCreateService {
         guard let request else { throw HumanMessageCreateError.forwardInvalidRequest }
         let destinationChannelId: String
         if case .string(let raw)? = request.destinationChannelId {
-            destinationChannelId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            destinationChannelId = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
         } else if case .string(let raw)? = request.channelId {
-            destinationChannelId = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            destinationChannelId = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
         } else {
             destinationChannelId = ""
         }
-        let note: String?
+        let note: String
         switch request.note {
-        case nil, .null?:
-            note = ""
+        case nil, .null?: note = ""
+        case .string(let raw)?: note = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
+        case .some: throw HumanMessageCreateError.forwardInvalidRequest
+        }
+        guard let sourceIds = Self.forwardSourceIds(request.sourceMessageIds) else {
+            throw HumanMessageCreateError.forwardInvalidRequest
+        }
+        let requestId: String?
+        switch request.requestId {
+        case nil, .null?: requestId = nil
         case .string(let raw)?:
-            note = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        case .some:
-            note = nil
+            let value = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
+            guard ServerScope.isUUID(value) else { throw HumanMessageCreateError.forwardInvalidRequest }
+            requestId = value
+        case .some: throw HumanMessageCreateError.forwardInvalidRequest
         }
-        let sourceIds = Self.forwardSourceIds(request.sourceMessageIds)
-        if request.destinationChannelIds != nil {
-            guard let sourceIds, let note else { throw HumanMessageCreateError.forwardInvalidRequest }
-            if note.count > 32_000 { throw HumanMessageCreateError.messageTooLong }
-            return try forwardToMany(
-                request: request,
-                sourceIds: sourceIds,
-                note: note,
-                authorization: authorization,
-                serverId: serverId
-            )
-        }
-        guard !destinationChannelId.isEmpty, let sourceIds, let note else {
-            throw HumanMessageCreateError.forwardInvalidRequest
-        }
-        if note.count > 32_000 { throw HumanMessageCreateError.messageTooLong }
-        let randomId: String
+        let suppliedRandomId: String?
         switch request.randomId {
-        case nil, .null?:
-            randomId = "forward-\(UUID().uuidString.lowercased())"
-        case .string(let raw)? where !raw.isEmpty && raw.count <= 128:
-            randomId = raw
-        case .some:
+        case nil: suppliedRandomId = nil
+        case .string(let raw)? where !raw.isEmpty && raw.utf16.count <= 128: suppliedRandomId = raw
+        case .some: throw HumanMessageCreateError.forwardInvalidRequest
+        }
+        // Node validates both scalars even when a batch requestId wins over randomId.
+        if request.destinationChannelIds != nil {
+            guard Self.forwardDestinationIds(request.destinationChannelIds) != nil, requestId != nil else {
+                throw HumanMessageCreateError.forwardInvalidRequest
+            }
+        } else if destinationChannelId.isEmpty {
             throw HumanMessageCreateError.forwardInvalidRequest
         }
-        return try forwardOne(
-            userId: userId,
-            serverId: serverId,
-            destinationChannelId: destinationChannelId,
-            sourceIds: sourceIds,
-            note: note,
-            randomId: randomId
-        )
+        if note.utf16.count > 32_000 { throw HumanMessageCreateError.messageTooLong }
+        if request.destinationChannelIds != nil {
+            return try forwardToMany(request: request, sourceIds: sourceIds, note: note,
+                                     authorization: authorization, serverId: serverId)
+        }
+        let randomId = requestId.map { "forward:\($0):\(destinationChannelId)" }
+            ?? suppliedRandomId ?? "forward-\(UUID().uuidString.lowercased())"
+        return try forwardOne(userId: userId, serverId: serverId,
+                              destinationChannelId: destinationChannelId, sourceIds: sourceIds,
+                              note: note, randomId: randomId)
     }
 
     /// A batch keeps one result per distinct destination. A denial or conflict
@@ -87,8 +87,11 @@ extension HumanMessageCreateService {
         else {
             throw HumanMessageCreateError.forwardInvalidRequest
         }
-        let requestId = rawRequestId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestId = MessageMentionRules.trimmingJavaScriptWhitespace(rawRequestId)
         guard ServerScope.isUUID(requestId) else { throw HumanMessageCreateError.forwardInvalidRequest }
+        // Source refusal belongs to the whole request, before destination rows.
+        let userId = try requireUser(authorization)
+        _ = try prepareForwardSources(userId: userId, serverId: serverId, sourceIds: sourceIds)
         var results: [ForwardBatchResult] = []
         var successes = 0
         var replays = 0
@@ -146,50 +149,34 @@ extension HumanMessageCreateService {
         return .batch(results, outcome: outcome)
     }
 
-    /// One destination: replay check, source selection, bundle metadata, the
-    /// message insert and the commit.
-    private func forwardOne(
-        userId: String,
-        serverId: String,
-        destinationChannelId: String,
-        sourceIds: [String],
-        note: String,
-        randomId: String
-    ) throws -> HumanMessageForwardResponse {
-        let content = note.isEmpty
-            ? "Forwarded \(sourceIds.count) message\(sourceIds.count == 1 ? "" : "s")"
-            : note
+    /// Resolve the complete source snapshot before destination checks and replay.
+    /// The shared strict read port remains authoritative, including joint sources.
+    private func prepareForwardSources(
+        userId: String, serverId: String, sourceIds: [String]
+    ) throws -> [(PendingForwardSource, ForwardSourceContext)] {
         let messageState = messages.state
-        if let existing = messageState.humanMessageRows.first(where: {
-            $0.senderId == userId && $0.randomId == randomId
-        }) {
-            if existing.channelId == destinationChannelId,
-               existing.content == content,
-               let record = messageState.forwardRecords[existing.id],
-               record.sourceIds == sourceIds {
-                return .message(forwardedMessage(existing, record), outcome: "idempotent_replay")
-            }
-            throw HumanMessageCreateError.forwardIdempotencyConflict
-        }
         let channelState = channels.state
         let postable = channelState.postableChannels
-        guard let destination = postable[destinationChannelId],
-              destination.serverId == serverId,
-              destination.deletedAt == nil
-        else {
-            throw HumanMessageCreateError.channelNotFound
-        }
-        guard destination.memberIds.contains(userId) else { throw HumanMessageCreateError.mustJoinChannel }
         var pending: [PendingForwardSource] = []
         for id in sourceIds {
-            guard let message = messageState.humanMessageRows.first(where: { $0.id == id }) else {
-                throw HumanMessageCreateError.sourceMessageNotFound
+            guard let message = messageState.humanMessageRows.first(where: { $0.id == id }),
+                  let storage = postable[message.channelId] else {
+                throw HumanMessageCreateError.forwardMessageNotFound
             }
+            let inJointServer = channelState.jointProjections.contains {
+                ($0.canonicalChannelId == message.channelId || $0.localChannelId == message.channelId)
+                    && $0.serverId == serverId && $0.status == "active"
+            }
+            guard storage.serverId == serverId || inJointServer else {
+                throw HumanMessageCreateError.forwardMessageNotFound
+            }
+            guard storage.deletedAt == nil else { throw HumanMessageCreateError.forwardCrossServerSource }
             let jointLocalId = dependencies.jointLocalChannelId(message.channelId, serverId, userId)
-            let channel = jointLocalId.flatMap { postable[$0] }
-                ?? (dependencies.messageVisibleToUser(message.channelId, serverId, userId)
-                    ? postable[message.channelId] : nil)
-            guard let channel else { throw HumanMessageCreateError.sourceMessageNotFound }
+            guard dependencies.messageVisibleToUser(message.channelId, serverId, userId) else {
+                throw HumanMessageCreateError.forwardSourceNotFound
+            }
+            guard let channel = jointLocalId.flatMap({ postable[$0] }) ?? postable[message.channelId],
+                  channel.deletedAt == nil else { throw HumanMessageCreateError.forwardCrossServerSource }
             if message.actionKind == "forwarded-bundle" || messageState.forwardedBundles[message.id] != nil {
                 throw HumanMessageCreateError.forwardedSourceNotSupported
             }
@@ -200,23 +187,72 @@ extension HumanMessageCreateService {
                 .filter { $0.messageId == message.id }
                 .sorted { ($0.messagePosition ?? 0) < ($1.messagePosition ?? 0) }
             pending.append(PendingForwardSource(
-                messageId: message.id,
-                content: message.content,
-                createdAt: message.createdAt,
-                channelId: jointLocalId ?? message.channelId,
-                channelKind: channel.kind,
-                channelName: channel.name,
-                parentChannelId: channel.parentChannelId,
-                senderId: message.senderId,
-                attachments: attachments
+                messageId: message.id, content: message.content, createdAt: message.createdAt,
+                channelId: jointLocalId ?? message.channelId, channelKind: channel.kind,
+                channelName: channel.name, parentChannelId: channel.parentChannelId,
+                senderId: message.senderId, attachments: attachments
             ))
         }
         let selectedThreads = Set(pending.filter { $0.channelKind == "thread" }.map(\.channelId))
-        let prepared = pending.map { source in
-            (source, Self.forwardContext(source: source, selectedThreads: selectedThreads, channels: postable))
+        let prepared = try pending.map { original in
+            var source = original
+            if source.channelKind == "thread" {
+                let storage = messageState.humanMessageRows.first { $0.id == source.messageId }
+                    .flatMap { postable[$0.channelId] }
+                let parentId = storage?.parentMessageId ?? postable[source.channelId]?.parentMessageId
+                guard let parentId,
+                      let parent = messageState.humanMessageRows.first(where: { $0.id == parentId }),
+                      let parentStorage = postable[parent.channelId], parentStorage.deletedAt == nil,
+                      parentStorage.kind != "thread" else { throw HumanMessageCreateError.forwardUnsupportedSource }
+                let localParentId = dependencies.jointLocalChannelId(parent.channelId, serverId, userId)
+                    ?? parent.channelId
+                guard let visibleParent = postable[localParentId], visibleParent.serverId == serverId,
+                      visibleParent.deletedAt == nil, visibleParent.kind != "thread" else {
+                    throw HumanMessageCreateError.forwardUnsupportedSource
+                }
+                source.parentChannelId = localParentId
+            }
+            return (source, Self.forwardContext(source: source, selectedThreads: selectedThreads, channels: postable))
         }
         if Set(prepared.map { $0.1.bundleSourceId }).count != 1 {
             throw HumanMessageCreateError.crossSourceBundle
+        }
+        return prepared
+    }
+
+    /// Revalidate source and destination before any idempotent acknowledgement.
+    /// A successful replay retains its original immutable snapshots and IDs.
+    private func forwardOne(
+        userId: String, serverId: String, destinationChannelId: String,
+        sourceIds: [String], note: String, randomId: String
+    ) throws -> HumanMessageForwardResponse {
+        let prepared = try prepareForwardSources(userId: userId, serverId: serverId, sourceIds: sourceIds)
+        let channelState = channels.state
+        let postable = channelState.postableChannels
+        guard let destination = postable[destinationChannelId], destination.serverId == serverId,
+              destination.deletedAt == nil else { throw HumanMessageCreateError.forwardDestinationNotFound }
+        guard destination.memberIds.contains(userId) else {
+            throw HumanMessageCreateError.forwardDestinationMembershipRequired
+        }
+        // Retained messages use canonical storage; the request and reply use
+        // the selected local projection. Reuse the same mapping for replay.
+        let storageChannelId = channelState.jointProjections
+            .first { $0.localChannelId == destinationChannelId }?.canonicalChannelId ?? destinationChannelId
+        let content = note.isEmpty
+            ? "Forwarded \(sourceIds.count) message\(sourceIds.count == 1 ? "" : "s")" : note
+        let messageState = messages.state
+        if let existing = messageState.humanMessageRows.first(where: {
+            $0.senderId == userId && $0.randomId == randomId
+        }) {
+            if existing.channelId == storageChannelId,
+               existing.content.utf16.elementsEqual(content.utf16),
+               let record = messageState.forwardRecords[existing.id], record.sourceIds == sourceIds,
+               record.destinationTargetId == destinationChannelId {
+                var response = existing
+                response.channelId = destinationChannelId
+                return .message(forwardedMessage(response, record), outcome: "idempotent_replay")
+            }
+            throw HumanMessageCreateError.forwardIdempotencyConflict
         }
         let ordered = prepared.sorted { lhs, rhs in
             if lhs.1.sourceIsThreadParent != rhs.1.sourceIsThreadParent {
@@ -275,8 +311,6 @@ extension HumanMessageCreateService {
                 attachmentPolicy: snapshots.isEmpty ? "excluded" : "projected"
             ))
         }
-        let storageChannelId = channelState.jointProjections
-            .first { $0.localChannelId == destinationChannelId }?.canonicalChannelId ?? destinationChannelId
         let record = StoredForwardRecord(
             sourceIds: sourceIds,
             items: itemRecords,
@@ -322,7 +356,7 @@ extension HumanMessageCreateService {
         var seen = Set<String>()
         for row in rows {
             guard case .string(let raw) = row else { return nil }
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let id = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
             guard ServerScope.isUUID(id) else { return nil }
             if seen.insert(id).inserted {
                 ids.append(id)
@@ -339,7 +373,7 @@ extension HumanMessageCreateService {
         var ids: [String] = []
         for row in rows {
             guard case .string(let raw) = row else { return nil }
-            let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let id = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
             guard ServerScope.isUUID(id), !ids.contains(id) else { return nil }
             ids.append(id)
         }

@@ -31,6 +31,7 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
             "DAEMON_CONNECT_PORT": String(daemonPort),
             "SOCKET_PORT": String(socketPort),
             "NODE_ENV": "test",
+            "SLOCK_E2E_AUTO_VERIFY_EMAIL": "1",
             "JWT_SECRET": "test-jwt-secret",
             "SERVER_URL": "http://127.0.0.1:\(httpPort)",
         ]
@@ -69,11 +70,15 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
         port: httpPort,
         method: "POST",
         path: "/api/auth/register",
-        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Startup Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\"}"
+        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Startup Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\",\"__e2eAutoVerify\":true}"
     )
     #expect(registerStatus == 200)
     let token = try jsonObject(registerBody)["accessToken"] as? String ?? ""
     #expect(!token.isEmpty)
+    try await completeStartupProfile(
+        port: httpPort, token: token, registrationBody: registerBody,
+        email: email, displayName: "Startup Owner"
+    )
 
     let slug = "startup-\(UUID().uuidString.lowercased().prefix(8))"
     let (createStatus, createBody) = try await http(
@@ -134,24 +139,53 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
         serverId: serverId,
         body: "{\"tasks\":[{\"title\":\"socket task\"}]}"
     )
-    #expect(taskStatus == 200)
-    let taskIds = (try jsonObject(taskBody)["taskIds"] as? [String]) ?? []
-    #expect(taskIds.count == 1)
+    try #require(taskStatus == 200)
+    let taskReply = try jsonObject(taskBody)
+    let createdTasks = try #require(taskReply["tasks"] as? [[String: Any]])
+    try #require(createdTasks.count == 1)
+    let createdTask = try #require(createdTasks.first)
+    let taskId = try #require(createdTask["id"] as? String)
+    try #require(UUID(uuidString: taskId) != nil)
+    #expect(createdTask["title"] as? String == "socket task")
+    #expect(createdTask["channelId"] as? String == channelId)
+    #expect(createdTask["status"] as? String == "todo")
+    let creatorId = try #require(createdTask["createdById"] as? String)
+    try #require(!creatorId.isEmpty)
     let taskEvent = try #require(await socket.waitForText { $0.contains("\"task:created\"") })
     #expect(taskEvent.contains("\"title\":\"socket task\""))
-    #expect(taskEvent.contains(taskIds[0]))
+    #expect(taskEvent.contains(taskId))
+    let createdPayload = try startupEventPayload(taskEvent, event: "task:created")
+    #expect(createdPayload["channelId"] as? String == channelId)
+    let eventTasks = try #require(createdPayload["tasks"] as? [[String: Any]])
+    try #require(eventTasks.count == 1)
+    let eventTask = try #require(eventTasks.first)
+    #expect(eventTask["id"] as? String == taskId)
+    #expect(eventTask["title"] as? String == "socket task")
 
-    let (claimStatus, _) = try await http(
+    let (claimStatus, claimBody) = try await http(
         port: httpPort,
         method: "PATCH",
-        path: "/api/tasks/\(taskIds[0])/claim",
+        path: "/api/tasks/\(taskId)/claim",
         token: token,
         serverId: serverId
     )
-    #expect(claimStatus == 200)
+    try #require(claimStatus == 200)
+    let claimReply = try jsonObject(claimBody)
+    let claimedTask = try #require(claimReply["task"] as? [String: Any])
+    #expect(claimedTask["id"] as? String == taskId)
+    #expect(claimedTask["title"] as? String == "socket task")
+    #expect(claimedTask["channelId"] as? String == channelId)
+    #expect(claimedTask["status"] as? String == "in_progress")
+    #expect(claimedTask["claimedByType"] as? String == "user")
+    #expect(claimedTask["claimedById"] as? String == creatorId)
     let taskUpdate = try #require(await socket.waitForText { $0.contains("\"task:updated\"") })
-    #expect(taskUpdate.contains(taskIds[0]))
+    #expect(taskUpdate.contains(taskId))
     #expect(taskUpdate.contains("\"status\":\"in_progress\""))
+    let updatedPayload = try startupEventPayload(taskUpdate, event: "task:updated")
+    #expect(updatedPayload["channelId"] as? String == channelId)
+    let updatedTask = try #require(updatedPayload["task"] as? [String: Any])
+    #expect(updatedTask["id"] as? String == taskId)
+    #expect(updatedTask["status"] as? String == "in_progress")
 
     let accepted = try await probeDaemonConnect(port: daemonPort, authorization: "Bearer \(apiKey)")
     let acceptedText = String(decoding: accepted, as: UTF8.self)
@@ -203,15 +237,22 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
         ]
     )
     defer { daemon.stop() }
+    let daemonFramePosition = socket.framePosition()
     try daemon.start()
-    guard await daemon.waitForOutput("daemon connected", timeout: 15) else {
+    guard await daemon.waitForOutput("daemon connected machine=\(machineId) server=\(serverId)", timeout: 15) else {
         Issue.record("daemon did not connect: \(daemon.output.text)")
         return
     }
-    let online = try #require(await socket.waitForText {
+    #expect(daemon.output.text.contains("daemon connected machine=\(machineId) server=\(serverId)"))
+    let online = try #require(await socket.waitForText({
         $0.contains("\"machine:status\"") && $0.contains(machineId) && $0.contains("\"status\":\"online\"")
-    })
+    }, after: daemonFramePosition))
     #expect(online.contains("\"statusVersion\":"))
+    let onlinePayload = try startupEventPayload(online, event: "machine:status")
+    #expect(onlinePayload["machineId"] as? String == machineId)
+    #expect(onlinePayload["status"] as? String == "online")
+    let statusVersion = try #require(onlinePayload["statusVersion"] as? Int)
+    #expect(statusVersion > 0)
 }
 
 @Test(.enabled(if: e2eEnabled), .serialized)
@@ -235,6 +276,7 @@ func twoRaftServerProcessesStartAndStayIndependent() async throws {
                 "DAEMON_CONNECT_PORT": String(daemonPort),
                 "SOCKET_PORT": String(socketPort),
                 "NODE_ENV": "test",
+                "SLOCK_E2E_AUTO_VERIFY_EMAIL": "1",
                 "JWT_SECRET": "test-jwt-secret",
                 "SERVER_URL": "http://127.0.0.1:\(httpPort)",
             ]
@@ -274,11 +316,15 @@ func twoRaftServerProcessesStartAndStayIndependent() async throws {
         port: httpA,
         method: "POST",
         path: "/api/auth/register",
-        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Two Server Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\"}"
+        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Two Server Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\",\"__e2eAutoVerify\":true}"
     )
     #expect(registerStatus == 200)
     let token = try jsonObject(registerBody)["accessToken"] as? String ?? ""
     #expect(!token.isEmpty)
+    try await completeStartupProfile(
+        port: httpA, token: token, registrationBody: registerBody,
+        email: email, displayName: "Two Server Owner"
+    )
     let slug = "two-server-\(UUID().uuidString.lowercased().prefix(8))"
     let (createStatus, _) = try await http(
         port: httpA,
@@ -307,6 +353,57 @@ func twoRaftServerProcessesStartAndStayIndependent() async throws {
     print("two-RaftServer gate complete: A=http://127.0.0.1:\(httpA) B=http://127.0.0.1:\(httpB)")
 }
 
+/// Complete the same published profile flow as a new browser account. The
+/// register name is only a suggestion; it never substitutes for this request.
+private func completeStartupProfile(
+    port: Int, token: String, registrationBody: Data, email: String, displayName: String
+) async throws {
+    let registration = try jsonObject(registrationBody)
+    let pending = try #require(registration["user"] as? [String: Any])
+    let userId = try #require(pending["id"] as? String)
+    #expect(pending["email"] as? String == email)
+    try #require(pending["emailVerified"] as? Bool == true)
+    #expect((pending["name"] as? String)?.lowercased().hasPrefix("pending_") == true)
+    #expect(pending["profileSetupCompletedAt"] is NSNull)
+
+    // Auto-verification does not bypass profile admission to business routes.
+    let (blockedStatus, blockedBody) = try await http(
+        port: port, method: "POST", path: "/api/servers", token: token,
+        body: "{\"name\":\"Admission Probe\",\"slug\":\"startup-admission-probe\"}"
+    )
+    try #require(blockedStatus == 403)
+    #expect(try jsonObject(blockedBody)["code"] as? String == "PROFILE_SETUP_REQUIRED")
+
+    let name = "startup-owner-\(UUID().uuidString.lowercased().prefix(8))"
+    let (status, body) = try await http(
+        port: port, method: "POST", path: "/api/auth/me/complete-profile", token: token,
+        body: "{\"name\":\(json(name)),\"displayName\":\(json(displayName))}"
+    )
+    try #require(status == 200)
+    let completion = try jsonObject(body)
+    #expect(completion["name"] as? String == name)
+    #expect(completion["displayName"] as? String == displayName)
+    let completedAt = try #require(completion["profileSetupCompletedAt"] as? String)
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    #expect(formatter.date(from: completedAt) != nil)
+    try #require(!completion.keys.contains("user"))
+    let user = completion
+    #expect(user["id"] as? String == userId)
+    #expect(user["email"] as? String == email)
+    #expect(user["name"] as? String == name)
+    #expect(user["displayName"] as? String == displayName)
+    #expect(user["emailVerified"] as? Bool == true)
+    #expect(user["profileSetupCompletedAt"] as? String == completedAt)
+
+    let (meStatus, meBody) = try await http(port: port, method: "GET", path: "/api/auth/me", token: token)
+    try #require(meStatus == 200)
+    let persisted = try jsonObject(meBody)
+    let completedJSON = try JSONSerialization.data(withJSONObject: user, options: [.sortedKeys])
+    let persistedJSON = try JSONSerialization.data(withJSONObject: persisted, options: [.sortedKeys])
+    #expect(completedJSON == persistedJSON)
+}
+
 private func repositoryRoot() -> URL {
     URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -322,6 +419,14 @@ private func json(_ value: String) -> String {
 
 private func jsonObject(_ data: Data) throws -> [String: Any] {
     try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+}
+
+private func startupEventPayload(_ text: String, event expectedEvent: String) throws -> [String: Any] {
+    try #require(text.hasPrefix("42"))
+    let decoded = try JSONSerialization.jsonObject(with: Data(text.dropFirst(2).utf8))
+    let event = try #require(decoded as? [Any])
+    try #require((event.first as? String) == expectedEvent)
+    return try #require(event.dropFirst().first as? [String: Any])
 }
 
 private func freePort() async throws -> Int {
@@ -395,14 +500,15 @@ private func probeDaemonConnect(port: Int, authorization: String?) async throws 
         .channelInitializer { channel in
             channel.pipeline.addHandler(DaemonProbeHandler(promise: promise))
         }
-    let channel = try await bootstrap.connect(host: "127.0.0.1", port: port).get()
-    var buffer = channel.allocator.buffer(capacity: text.utf8.count)
-    buffer.writeString(text)
-    try await channel.writeAndFlush(buffer).get()
-    let data: Data
+    var channel: (any Channel)?
     do {
-        data = try await withThrowingTaskGroup(of: Data.self) { group in
-            group.addTask { try await promise.futureResult.get() }
+        let connected = try await bootstrap.connect(host: "127.0.0.1", port: port).get()
+        channel = connected
+        var buffer = connected.allocator.buffer(capacity: text.utf8.count)
+        buffer.writeString(text)
+        try await connected.writeAndFlush(buffer).get()
+        let data = try await withThrowingTaskGroup(of: Data.self) { group in
+            group.addTask { try await promise.futureResult.getAbandoningOnCancel() }
             group.addTask {
                 try await Task.sleep(for: .seconds(5))
                 throw StartupTestError.timeout
@@ -411,14 +517,15 @@ private func probeDaemonConnect(port: Int, authorization: String?) async throws 
             group.cancelAll()
             return first
         }
+        try? await connected.close()
+        try? await group.shutdownGracefully()
+        return data
     } catch {
-        try? await channel.close()
+        promise.fail(error)
+        if let channel { try? await channel.close() }
         try? await group.shutdownGracefully()
         throw error
     }
-    try? await channel.close()
-    try? await group.shutdownGracefully()
-    return data
 }
 
 private struct StartupTestError: Error {
@@ -447,11 +554,11 @@ private final class DaemonProbeHandler: ChannelInboundHandler, @unchecked Sendab
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        finish(result: .success(collected))
+        finish(result: complete() ? .success(collected) : .failure(StartupTestError.timeout))
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        finish(result: collected.isEmpty ? .failure(error) : .success(collected))
+        finish(result: complete() ? .success(collected) : .failure(error))
     }
 
     private func finish(result: Result<Data, Error>) {
@@ -472,11 +579,8 @@ private final class DaemonProbeHandler: ChannelInboundHandler, @unchecked Sendab
             return true
         }
         guard header.hasPrefix("HTTP/1.1 101") else { return false }
-        let rest = collected[headerEnd.upperBound...]
-        guard rest.count >= 2 else { return false }
-        let length = Int(rest[rest.startIndex + 1])
-        guard length < 126 else { return rest.count >= 4 }
-        return rest.count >= 2 + length
+        var bytes = Array(collected[headerEnd.upperBound...])
+        return startupReadFrame(&bytes) != nil
     }
 }
 
@@ -514,13 +618,17 @@ private final class StartupSocketClient: @unchecked Sendable {
         channel.writeAndFlush(buffer, promise: nil)
     }
 
-    func waitForText(_ predicate: (String) -> Bool, timeout: TimeInterval = 5) async -> String? {
+    func framePosition() -> Int {
+        collector.frames.count
+    }
+
+    func waitForText(_ predicate: (String) -> Bool, after position: Int = 0, timeout: TimeInterval = 5) async -> String? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if let frame = collector.frames.first(where: predicate) { return frame }
+            if let frame = collector.frames.dropFirst(position).first(where: predicate) { return frame }
             try? await Task.sleep(for: .milliseconds(10))
         }
-        return collector.frames.first(where: predicate)
+        return collector.frames.dropFirst(position).first(where: predicate)
     }
 
     func close() {

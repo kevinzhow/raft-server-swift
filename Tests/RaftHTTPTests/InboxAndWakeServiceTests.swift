@@ -51,7 +51,6 @@ private func makeInboxService(
     authorize: @escaping @Sendable (String?) -> InboxAuthorization = { _ in .user(serviceOwnerId) },
     isEmailVerified: @escaping @Sendable (String) -> Bool = { _ in true },
     attachmentCommentsEnabled: @escaping @Sendable (String, String?) -> Bool = { _, _ in false },
-    channelProbeAccess: @escaping @Sendable (String, String, String) -> InboxChannelProbe = { _, _, _ in .allowed },
     forwardMetadata: @escaping @Sendable (String, String, String?) -> OrderedJSON? = { _, _, _ in nil }
 ) -> InboxAndWakeService {
     var dependencies = InboxAndWakeDependencies(
@@ -66,15 +65,13 @@ private func makeInboxService(
     dependencies.authorize = authorize
     dependencies.isEmailVerified = isEmailVerified
     dependencies.attachmentCommentsEnabled = attachmentCommentsEnabled
-    dependencies.channelProbeAccess = channelProbeAccess
     dependencies.forwardMetadata = forwardMetadata
-    dependencies.reactions = { _ in .array([]) }
     dependencies.actionCardMetadata = { _ in nil }
-    dependencies.threadSummaries = { _, _ in .object([]) }
     return InboxAndWakeService(
         messages: accounts.messagesAndThreadsStore,
         channels: accounts.serversAndChannelsStore,
         oauth: accounts.oauth,
+        flags: accounts.agentsRuntimeStore,
         dependencies: dependencies
     )
 }
@@ -89,8 +86,10 @@ private func makeInboxService(
         serverId: serviceServerId
     )
 
+    let persisted = try #require(accounts.messagesAndThreadsStore.humanMessageRows.first { $0.id == serviceMessageId })
+    let createdAt = DateText.isoString(persisted.createdAt)
     #expect(page.jsonBody.render() == """
-    {"messages":[{"id":"\(serviceMessageId)","senderId":"\(serviceOwnerId)","senderType":"user","senderMembershipStatus":"active","content":"unit page","attachments":[{"id":"att-9","commentCount":0}],"reactions":[],"mentions":[{"type":"user","id":"\(servicePeerId)","name":""}]}],"historyLimited":false,"messageWindow":{"schemaVersion":1,"domain":"receiver_visible_messages_v1","serverId":"\(serviceServerId)","receiverKind":"user","receiverId":"\(serviceOwnerId)","scopeId":"\(serviceChannelId)","coveredFromSeq":1,"coveredAfterSeq":0,"coveredThroughSeq":1,"remoteHighWaterSeq":1,"hasGap":false,"hasNewer":false,"completeThroughLatest":true},"threadSummariesByParentMessageId":{}}
+    {"messages":[{"id":"\(serviceMessageId)","seq":1,"senderId":"\(serviceOwnerId)","senderType":"user","senderMembershipStatus":"active","messageType":"chat","content":"unit page","createdAt":"\(createdAt)","attachments":[{"id":"att-9","commentCount":0}],"reactions":[],"mentions":[{"type":"user","id":"\(servicePeerId)","name":""}],"channelId":"\(serviceChannelId)","senderAvatarUrl":null,"randomId":null,"threadId":null,"senderName":"inbox-service","senderHandle":"inbox-service","senderDisplayName":"inbox-service","conversationContext":{"channelType":"channel"}}],"historyLimited":false,"messageWindow":{"schemaVersion":1,"domain":"receiver_visible_messages_v1","serverId":"\(serviceServerId)","receiverKind":"user","receiverId":"\(serviceOwnerId)","scopeId":"\(serviceChannelId)","coveredFromSeq":1,"coveredAfterSeq":0,"coveredThroughSeq":1,"remoteHighWaterSeq":1,"hasGap":false,"hasNewer":false,"completeThroughLatest":true},"threadSummariesByParentMessageId":{}}
     """)
 
     let sync = try service.syncChannelMessages(
@@ -100,30 +99,39 @@ private func makeInboxService(
         serverId: serviceServerId
     )
     #expect(sync.jsonBody.render() == """
-    [{"id":"\(serviceMessageId)","channelId":"\(serviceChannelId)","seq":1,"content":"unit page","attachments":[{"id":"att-9","commentCount":0}]}]
+    [{"id":"\(serviceMessageId)","channelId":"\(serviceChannelId)","seq":1,"content":"unit page","attachments":[{"id":"att-9","commentCount":0}],"senderId":"\(serviceOwnerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(createdAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[{"type":"user","id":"\(servicePeerId)","name":""}],"senderName":"inbox-service","senderHandle":"inbox-service","senderDisplayName":"inbox-service","conversationContext":{"channelType":"channel"}}]
     """)
 }
 
 @Test func inboxServiceThrowsItsTypedRefusals() throws {
     let accounts = makeInboxFixture()
 
-    // A channel id that is not a UUID is refused before the credential check.
-    let anonymous = makeInboxService(accounts, authorize: { _ in .missingAuthorization })
+    // The leaf refusals require a real active actor/server membership first.
+    accounts.oauth.addMember(serverId: serviceServerId, userId: servicePeerId, role: "member")
+    let admitted = makeInboxService(accounts)
     #expect(throws: InboxAndWakeError.invalidChannelId) {
-        try anonymous.syncChannelMessages(
+        try admitted.syncChannelMessages(
             channelId: "not-a-uuid",
             sinceSeq: "0",
-            authorization: nil,
+            authorization: "Bearer any",
             serverId: serviceServerId
         )
     }
     #expect(throws: InboxAndWakeError.invalidSyncCursor) {
-        try anonymous.syncChannelMessages(
+        try admitted.syncChannelMessages(
             channelId: serviceChannelId,
             sinceSeq: "soon",
-            authorization: nil,
+            authorization: "Bearer any",
             serverId: serviceServerId
         )
+    }
+    // Shared admission precedes malformed channel/cursor leaf validation.
+    let anonymous = makeInboxService(accounts, authorize: { _ in .missingAuthorization })
+    for (channelId, cursor) in [("not-a-uuid", "0"), (serviceChannelId, "soon")] {
+        #expect(throws: InboxAndWakeError.missingAuthorization) {
+            try anonymous.syncChannelMessages(channelId: channelId, sinceSeq: cursor,
+                authorization: nil, serverId: serviceServerId)
+        }
     }
     #expect(throws: InboxAndWakeError.missingAuthorization) {
         try anonymous.syncChannelMessages(
@@ -144,6 +152,11 @@ private func makeInboxService(
         )
     }
 
+    #expect(throws: InboxAndWakeError.invalidAccessToken) {
+        try revoked.syncChannelMessages(channelId: "not-a-uuid", sinceSeq: "soon",
+            authorization: "Bearer missing", serverId: serviceServerId)
+    }
+
     let unverified = makeInboxService(accounts, isEmailVerified: { _ in false })
     #expect(throws: InboxAndWakeError.emailVerificationRequired) {
         try unverified.syncChannelMessages(
@@ -154,12 +167,18 @@ private func makeInboxService(
         )
     }
 
-    let residue = makeInboxService(accounts, channelProbeAccess: { _, _, _ in .residue })
-    #expect(throws: InboxAndWakeError.forbidden) {
+    // Current membership is not a denial witness. A retained cursor at zero is.
+    let residueChannelId = UUID().uuidString.lowercased()
+    accounts.addPostableChannel(serverId: serviceServerId, channelId: residueChannelId,
+        memberId: serviceOwnerId, kind: "private", name: "prior-read-private")
+    accounts.oauth.addChannelHuman(channelId: residueChannelId, userId: serviceOwnerId)
+    accounts.oauth.setChannelReadCursor(channelId: residueChannelId, userId: servicePeerId, seq: 0)
+    let residue = makeInboxService(accounts, authorize: { _ in .user(servicePeerId) })
+    #expect(throws: InboxAndWakeError.channelSyncForbidden) {
         try residue.syncChannelMessages(
-            channelId: serviceChannelId,
+            channelId: residueChannelId,
             sinceSeq: "0",
-            authorization: "Bearer any",
+            authorization: "Bearer peer",
             serverId: serviceServerId
         )
     }
@@ -174,7 +193,8 @@ private func makeInboxService(
         )
     }
 
-    #expect(throws: InboxAndWakeError.unauthorized) {
+    // doneInbox now shares the same typed authentication admission.
+    #expect(throws: InboxAndWakeError.missingAuthorization) {
         try makeInboxService(accounts, authorize: { _ in .missingAuthorization })
             .doneInbox(authorization: nil, serverId: serviceServerId)
     }

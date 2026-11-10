@@ -21,17 +21,28 @@ import Foundation
 public struct InboxAttachmentChipDTO: Sendable, Equatable, JSONBodyConvertible {
     public let id: String
     public let commentCount: Int
+    public let filename: String?
+    public let mimeType: String?
+    public let sizeBytes: Int?
+    public let width: Int?
+    public let height: Int?
 
-    public init(id: String, commentCount: Int) {
-        self.id = id
-        self.commentCount = commentCount
+    public init(id: String, commentCount: Int, filename: String? = nil, mimeType: String? = nil,
+                sizeBytes: Int? = nil, width: Int? = nil, height: Int? = nil) {
+        self.id = id; self.commentCount = commentCount; self.filename = filename
+        self.mimeType = mimeType; self.sizeBytes = sizeBytes; self.width = width; self.height = height
     }
 
     public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("id", id),
-            OrderedJSONField("commentCount", commentCount),
-        ])
+        var body = OrderedJSONObject()
+        body.append("id", id); body.append("commentCount", commentCount)
+        body.append("filename", ifPresent: filename)
+        body.append("mimeType", ifPresent: mimeType)
+        if let sizeBytes { body.append("sizeBytes", sizeBytes) }
+        if filename != nil {
+            body.append("width", optional: width); body.append("height", optional: height)
+        }
+        return body.json
     }
 }
 
@@ -58,21 +69,25 @@ public struct InboxCommentSourceDTO: Sendable, Equatable {
 /// Scoped attachment-comment chip carried by a served message row.
 public struct InboxCommentRefDTO: Sendable, Equatable {
     public let attachmentId: String
+    public let filename: String?
     public let hostMessageId: String
     public let hostSource: InboxCommentSourceDTO
 
-    public init(attachmentId: String, hostMessageId: String, hostSource: InboxCommentSourceDTO) {
+    public init(attachmentId: String, hostMessageId: String, hostSource: InboxCommentSourceDTO, filename: String? = nil) {
         self.attachmentId = attachmentId
+        self.filename = filename
         self.hostMessageId = hostMessageId
         self.hostSource = hostSource
     }
 
     var jsonBody: OrderedJSON {
-        .object([
+        var fields = [
             OrderedJSONField("attachmentId", attachmentId),
             OrderedJSONField("hostMessageId", hostMessageId),
             OrderedJSONField("hostSource", hostSource.jsonBody),
-        ])
+        ]
+        if let filename { fields.append(OrderedJSONField("filename", filename)) }
+        return .object(fields)
     }
 }
 
@@ -107,6 +122,7 @@ public struct InboxMentionDTO: Sendable, Equatable {
 /// does.
 public struct InboxSyncMessageDTO: Sendable, Equatable, JSONBodyConvertible {
     public let id: String
+    public let facts: MessageReadFactsDTO?
     public let channelId: String
     public let seq: Int
     public let content: String
@@ -121,9 +137,11 @@ public struct InboxSyncMessageDTO: Sendable, Equatable, JSONBodyConvertible {
         content: String,
         attachments: [InboxAttachmentChipDTO],
         commentRef: InboxCommentRefDTO?,
-        actionMetadata: OrderedJSON? = nil
+        actionMetadata: OrderedJSON? = nil,
+        facts: MessageReadFactsDTO? = nil
     ) {
         self.id = id
+        self.facts = facts
         self.channelId = channelId
         self.seq = seq
         self.content = content
@@ -146,7 +164,8 @@ public struct InboxSyncMessageDTO: Sendable, Equatable, JSONBodyConvertible {
         if let actionMetadata {
             fields.append(OrderedJSONField("actionMetadata", actionMetadata))
         }
-        return .object(fields)
+        let body = OrderedJSON.object(fields)
+        return facts?.merging(into: body) ?? body
     }
 }
 
@@ -165,18 +184,17 @@ public struct InboxSyncPageDTO: Sendable, Equatable, JSONBodyConvertible {
 
 // MARK: - GET /api/messages/channel/:channelId
 
-/// One row of the channel message page.
-///
-/// Member order is the legacy string: `id`, `senderId`, `senderType`,
-/// `senderMembershipStatus`, `content`, `attachments`, `reactions`, `mentions`,
-/// then the optional `commentRef` and `actionMetadata`. `reactions` and
-/// `actionMetadata` are pre-rendered by their owning domains and placed
-/// verbatim (see the file comment).
+/// One channel history row, including its persisted sequence, message kind and
+/// creation time. Reactions and action metadata remain domain-owned fragments.
 public struct InboxChannelMessageRowDTO: Sendable, Equatable, JSONBodyConvertible {
     public let id: String
+    public let facts: MessageReadFactsDTO?
+    public let seq: Int
+    public let messageType: String
+    public let createdAt: String
     public let senderId: String
     public let senderType: String
-    public let senderMembershipStatus: String
+    public let senderMembershipStatus: String?
     public let content: String
     public let attachments: [InboxAttachmentChipDTO]
     public let reactions: OrderedJSON
@@ -186,17 +204,25 @@ public struct InboxChannelMessageRowDTO: Sendable, Equatable, JSONBodyConvertibl
 
     public init(
         id: String,
+        seq: Int,
+        messageType: String,
+        createdAt: String,
         senderId: String,
         senderType: String,
-        senderMembershipStatus: String,
+        senderMembershipStatus: String?,
         content: String,
         attachments: [InboxAttachmentChipDTO],
         reactions: OrderedJSON,
         mentions: [InboxMentionDTO],
         commentRef: InboxCommentRefDTO?,
-        actionMetadata: OrderedJSON?
+        actionMetadata: OrderedJSON?,
+        facts: MessageReadFactsDTO? = nil
     ) {
         self.id = id
+        self.facts = facts
+        self.seq = seq
+        self.messageType = messageType
+        self.createdAt = createdAt
         self.senderId = senderId
         self.senderType = senderType
         self.senderMembershipStatus = senderMembershipStatus
@@ -211,10 +237,13 @@ public struct InboxChannelMessageRowDTO: Sendable, Equatable, JSONBodyConvertibl
     public var jsonBody: OrderedJSON {
         var fields: [OrderedJSONField] = [
             OrderedJSONField("id", id),
+            OrderedJSONField("seq", seq),
             OrderedJSONField("senderId", senderId),
             OrderedJSONField("senderType", senderType),
-            OrderedJSONField("senderMembershipStatus", senderMembershipStatus),
+            OrderedJSONField("senderMembershipStatus", optional: senderMembershipStatus),
+            OrderedJSONField("messageType", messageType),
             OrderedJSONField("content", content),
+            OrderedJSONField("createdAt", createdAt),
             OrderedJSONField("attachments", .array(attachments.map(\.jsonBody))),
             OrderedJSONField("reactions", reactions),
             OrderedJSONField("mentions", .array(mentions.map(\.jsonBody))),
@@ -225,7 +254,8 @@ public struct InboxChannelMessageRowDTO: Sendable, Equatable, JSONBodyConvertibl
         if let actionMetadata {
             fields.append(OrderedJSONField("actionMetadata", actionMetadata))
         }
-        return .object(fields)
+        let body = OrderedJSON.object(fields)
+        return facts?.merging(into: body) ?? body
     }
 }
 

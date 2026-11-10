@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Owns the machine, Computer and migration rows that used to be stored inline on
 /// `EmailLoginDirectory`.
@@ -40,13 +41,15 @@ final class MachinesAndComputersStore: Sendable {
         var agentRuntimeModelsForMachine: (@Sendable (_ machineId: String, _ runtime: String) -> [String]?)? = nil
         var runtimeAccountUsageManualRefresh: (@Sendable (String, String) -> RuntimeAccountUsageManualResult)? = nil
         var machineRuntimeModelProbe: (@Sendable (_ machineId: String, _ runtimeId: String, _ force: Bool) -> RuntimeModelProbeOutcome)? = nil
+        // Transient handle; intentionally excluded from persistence DTOs.
+        var machineQueries: (any MachineQuerying)? = nil
         var machineRoutedLocally: (@Sendable (_ machineId: String) -> Bool)? = nil
         var builtinCatalogMode: String = "supported"
         var computerAttachEnabledOverride: Bool? = nil
         var computerUpgradeSender: (@Sendable (_ machineId: String, _ targetVersion: String, _ requestId: String) -> Bool)? = nil
     }
 
-    let storage = Mutex(State())
+    let storage = TransactionalState(State())
 
     /// A copied snapshot of every owned row. Whole-state replacement is retained
     /// for deterministic setup; field setters below update only their own field.

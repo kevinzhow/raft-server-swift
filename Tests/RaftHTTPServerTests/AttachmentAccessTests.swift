@@ -26,8 +26,10 @@ import VaporTesting
     accounts.setChannelPostablePrivateForTesting(channelId: privateChannel)
     let publicAttachment = UUID().uuidString.lowercased()
     let privateAttachment = UUID().uuidString.lowercased()
-    accounts.addChannelAttachmentForTesting(channelId: publicChannel, id: publicAttachment, uploaderId: ownerId, filename: "public.txt")
-    accounts.addChannelAttachmentForTesting(channelId: privateChannel, id: privateAttachment, uploaderId: ownerId, filename: "private.txt")
+    let publicBytes = Data("public attachment bytes\n".utf8)
+    let privateBytes = Data("private attachment bytes\n".utf8)
+    accounts.addChannelAttachmentForTesting(channelId: publicChannel, id: publicAttachment, uploaderId: ownerId, filename: "public.txt", bytes: publicBytes)
+    accounts.addChannelAttachmentForTesting(channelId: privateChannel, id: privateAttachment, uploaderId: ownerId, filename: "private.txt", bytes: privateBytes)
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -52,9 +54,13 @@ import VaporTesting
             #expect((publicFiles.body.string ?? "").contains("public.txt"))
             #expect(try await client.send(.get, headers: headers, to: "/api/channels/\(privateChannel)/files").status == .notFound)
 
-            #expect(try await client.send(.get, headers: headers, to: "/api/attachments/\(publicAttachment)").status == .ok)
+            let publicDownload = try await client.send(.get, headers: headers, to: "/api/attachments/\(publicAttachment)")
+            #expect(publicDownload.status == .ok)
+            #expect(publicDownload.body.data == publicBytes)
+            #expect(publicDownload.headers[.contentType] == "text/plain; charset=utf-8")
+            #expect(publicDownload.headers[.contentLength] == String(publicBytes.count))
             #expect(try await client.send(.get, headers: headers, to: "/api/attachments/\(privateAttachment)").status == .notFound)
-            #expect(try await client.send(.get, headers: headers, to: "/api/attachments/\(publicAttachment)/html-preview-url").status == .ok)
+            #expect(try await client.send(.get, headers: headers, to: "/api/attachments/\(publicAttachment)/html-preview-url").status == .unsupportedMediaType)
             #expect(try await client.send(.get, headers: headers, to: "/api/attachments/\(privateAttachment)/html-preview-url").status == .notFound)
         }
     }

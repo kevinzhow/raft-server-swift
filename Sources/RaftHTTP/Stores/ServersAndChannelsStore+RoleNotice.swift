@@ -10,7 +10,11 @@ struct RoleNoticeLedgerPort: Sendable {
     }
 
     func directChannel(serverId: String, actorUserId: String, agentId: String) -> String {
-        oauth.createDirectChannel(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId)
+        oauth.createDirectChannel(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId, secondKind: .agent)
+    }
+
+    func existingDirectChannel(serverId: String, actorUserId: String, agentId: String) -> String? {
+        oauth.directChannelId(serverId: serverId, firstUserId: actorUserId, secondUserId: agentId, secondKind: .agent)
     }
 
     func bindMembers(channelId: String, actorUserId: String, agentId: String) {
@@ -31,11 +35,10 @@ extension ServersAndChannelsStore {
         ledger: RoleNoticeLedgerPort
     ) -> String {
         mutex.withLock { state in
-            if let existing = state.postableChannels.first(where: { _, channel in
-                channel.serverId == serverId && channel.kind == "dm"
-                    && channel.memberIds.contains(actorUserId) && channel.memberIds.contains(agentId)
-            }) {
-                return existing.key
+            if let id = ledger.existingDirectChannel(serverId: serverId, actorUserId: actorUserId, agentId: agentId),
+               let channel = state.postableChannels[id], channel.serverId == serverId, channel.kind == "dm",
+               channel.deletedAt == nil, channel.memberIds.contains(actorUserId), channel.memberIds.contains(agentId) {
+                return id
             }
             let channelId = ledger.directChannel(serverId: serverId, actorUserId: actorUserId, agentId: agentId)
             state.postableChannels[channelId] = PostableChannel(

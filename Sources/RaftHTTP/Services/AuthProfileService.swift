@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 /// Domain failure shared by the account-profile operations. The feature layer
 /// owns the wire encoding; this type owns the status and published message.
@@ -57,20 +58,30 @@ public struct AuthProfileService: Sendable {
     private let now: @Sendable () -> Date
     private let makeToken: @Sendable () -> String
     private let hashToken: @Sendable (String) -> String
-    private let hashPassword: @Sendable (String) -> String
+    private let hashPassword: @Sendable (String) throws -> String
+    private let transactionalEmail: TransactionalEmailIntentPort
 
     init(
         store: AuthProfileStore,
         now: @escaping @Sendable () -> Date = { Date() },
         makeToken: @escaping @Sendable () -> String = { AuthTokenCodec.randomHex(32) },
         hashToken: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) },
-        hashPassword: @escaping @Sendable (String) -> String = { AuthTokenCodec.sha256($0) }
+        hashPassword: @escaping @Sendable (String) throws -> String = { try PasswordCredential.hash($0) },
+        transactionalEmail: TransactionalEmailIntentPort = .developmentOnly
     ) {
         self.store = store
         self.now = now
         self.makeToken = makeToken
         self.hashToken = hashToken
         self.hashPassword = hashPassword
+        self.transactionalEmail = transactionalEmail
+    }
+
+    public func bindingTransactionalEmail(_ port: TransactionalEmailIntentPort) -> Self {
+        Self(
+            store: store, now: now, makeToken: makeToken, hashToken: hashToken,
+            hashPassword: hashPassword, transactionalEmail: port
+        )
     }
 
     /// `POST /api/auth/forgot-password`. A missing or empty address is the only
@@ -80,12 +91,26 @@ public struct AuthProfileService: Sendable {
         guard let email = request.email, !email.isEmpty else {
             throw AuthProfileError.emailRequired
         }
-        store.insertResetTokenIfAccountExists(
+        try transactionalEmail.requireReady(in: store.state.domain)
+        let token = makeToken()
+        let tokenHash = hashToken(token)
+        let current = now()
+        // The raw token is retained until its typed intent has been staged.
+        // Unknown addresses still insert nothing and return the same response.
+        let recipient = store.transactionalEmailRecipient(email: email)
+        let inserted = store.insertResetTokenIfAccountExists(
             email: email,
-            tokenHash: hashToken(makeToken()),
-            now: now(),
+            tokenHash: tokenHash,
+            now: current,
             ttl: Self.resetTokenLifetime
         )
+        if inserted {
+            guard let recipient else { throw TransactionalEmailError.durableOutboxUnavailable }
+            try transactionalEmail.passwordReset(
+                recipientEmail: recipient.email, name: recipient.name,
+                rawToken: token, issuedAt: current
+            )
+        }
         return ForgotPasswordResponse()
     }
 
@@ -101,21 +126,38 @@ public struct AuthProfileService: Sendable {
     /// `POST /api/auth/reset-password`. The token consume and the password write
     /// are one store critical section, so only one concurrent request wins.
     public func resetPassword(_ request: ResetPasswordRequest) throws -> OkResponse {
+        let input = try resetInput(request)
+        _ = try finishReset(input.candidate, tokenHash: input.tokenHash, encoded: hashPassword(input.password))
+        return OkResponse()
+    }
+
+    public func resetPasswordAsync(
+        _ request: ResetPasswordRequest,
+        onSessionsRevoked: @escaping @Sendable (PasswordSessionRevocation) -> Void
+    ) async throws -> OkResponse {
+        let input = try resetInput(request)
+        let hasher = hashPassword
+        let encoded = try await PasswordWork.run { try hasher(input.password) }
+        let revocation = try finishReset(input.candidate, tokenHash: input.tokenHash, encoded: encoded)
+        DeferredEffects.emit(in: store.state.domain) { onSessionsRevoked(revocation) }
+        return OkResponse()
+    }
+
+    private func resetInput(_ request: ResetPasswordRequest) throws -> (candidate: PasswordCredentialCandidate, tokenHash: String, password: String) {
         guard let token = request.token, !token.isEmpty,
-              let password = request.password, !password.isEmpty
-        else {
-            throw AuthProfileError.missingResetCredentials
-        }
-        switch store.consumeResetToken(
-            tokenHash: hashToken(token),
-            passwordHash: hashPassword(password),
-            now: now()
-        ) {
-        case .reset:
-            return OkResponse()
-        case .invalidOrExpiredToken:
+              let password = request.password, !password.isEmpty else { throw AuthProfileError.missingResetCredentials }
+        let tokenHash = hashToken(token)
+        guard let candidate = store.resetPasswordCandidate(tokenHash: tokenHash, now: now()) else {
             throw AuthProfileError.invalidOrExpiredResetToken
         }
+        return (candidate, tokenHash, password)
+    }
+
+    private func finishReset(_ candidate: PasswordCredentialCandidate, tokenHash: String, encoded: String) throws -> PasswordSessionRevocation {
+        guard let revocation = store.commitPasswordReset(candidate: candidate, tokenHash: tokenHash, newHash: encoded, now: now()) else {
+            throw AuthProfileError.invalidOrExpiredResetToken
+        }
+        return revocation
     }
 
     /// `POST /api/auth/me/timezone-observation`. Authentication runs before the

@@ -20,16 +20,21 @@ struct AgentSendDependencies: Sendable {
     var selfCausedExempt: @Sendable (_ message: StoredHumanMessage, _ agentId: String) -> Bool
     var resolvedMentions: @Sendable (
         _ serverId: String,
+        _ channelId: String,
         _ senderId: String,
         _ content: String,
         _ typed: [MentionInput],
-        _ warnUnresolved: Bool
-    ) -> (mentions: [MentionInput], unresolved: [String])
+        _ warnUnresolved: Bool,
+        _ surface: MessageMentionSurface
+    ) throws -> ResolvedMentions
+    var recordThreadReplyFollows: @Sendable (_ messageId: String, _ channelId: String,
+        _ serverId: String, _ senderId: String, _ resolution: ResolvedMentions) -> Void
     var recordMemberMentionRows: @Sendable (
         _ messageId: String,
         _ channelId: String,
-        _ mentions: [MentionInput]
+        _ resolution: ResolvedMentions
     ) -> Void
+    var targetAvatar: @Sendable (_ type: String, _ id: String) -> String?
     var recordAttestedSendEvent: @Sendable (
         _ eventType: String,
         _ agentId: String,
@@ -47,7 +52,7 @@ struct AgentSendDependencies: Sendable {
         _ attachmentIds: [String],
         _ channelId: String,
         _ uploaderId: String
-    ) -> AgentSendAppendOutcome
+    ) throws -> AgentSendAppendOutcome
 }
 
 extension AgentSendDependencies {
@@ -89,18 +94,24 @@ extension AgentSendDependencies {
             selfCausedExempt: { message, agentId in
                 AgentSendFreshnessPolicy.isSelfCausedExempt(message, agentId: agentId)
             },
-            resolvedMentions: { serverId, senderId, content, typed, warn in
-                let resolved = mentionService.resolve(
+            resolvedMentions: { serverId, channelId, senderId, content, typed, warn, surface in
+                try mentionService.resolve(
                     serverId: serverId,
+                    channelId: channelId,
                     senderId: senderId,
                     content: content,
                     typed: typed,
-                    warnUnresolved: warn
+                    warnUnresolved: warn,
+                    surface: surface
                 )
-                return (resolved.mentions, resolved.unresolved)
             },
-            recordMemberMentionRows: { messageId, channelId, mentions in
-                mentionService.register(messageId: messageId, channelId: channelId, mentions: mentions)
+            recordThreadReplyFollows: mentionService.recordThreadReplyFollows,
+            recordMemberMentionRows: { messageId, channelId, resolution in
+                mentionService.register(messageId: messageId, channelId: channelId, resolution: resolution)
+            },
+            targetAvatar: { type, id in
+                type == "user" ? mentionService.profiles.account(userId: id)?.avatarUrl
+                    : mentionService.oauth.agentRuntimeInfo(id: id)?.avatarUrl
             },
             recordAttestedSendEvent: { eventType, agentId, messageId, metadata in
                 messages.recordAttestedSendEvent(AttestedSendEventRecord(
@@ -119,10 +130,19 @@ extension AgentSendDependencies {
                 )
             },
             commitAgentSend: { message, attachmentIds, channelId, uploaderId in
-                messages.commitAgentSend(
+                let outcome = messages.commitAgentSend(
                     message, attachmentIds: attachmentIds, channelId: channelId,
                     uploaderId: uploaderId, ledger: ledger
                 )
+                if case .committed(let seq) = outcome {
+                    var committed = message
+                    committed.seq = seq
+                    let relay = RealtimeRelayService(messages: messages)
+                    try AgentExecutionPublication.publish(room: "channel:\(channelId)", event: "message:new", identity: message.id,
+                        payloadJSON: AgentExecutionPublication.messagePayload(committed, senderName: mentionService.oauth.agentRuntimeInfo(id: message.senderId).map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? "Unknown", includeAttachments: true),
+                        emit: { relay.emit($0, $1, $2) })
+                }
+                return outcome
             }
         )
     }

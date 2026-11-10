@@ -7,7 +7,7 @@ import TestSupport
 import Vapor
 import VaporTesting
 
-@Test func machineWorkspacesAreScopedToTheServerAndItsAgents() async throws {
+@Test func machineWorkspaceScanNeverInventsFilesystemFactsWithoutDaemon() async throws {
     let accounts = EmailLoginDirectory()
     let ownerId = "11111111-1111-4111-8111-111111111648"
     let memberId = "11111111-1111-4111-8111-111111111649"
@@ -56,6 +56,7 @@ import VaporTesting
             func workspaces(_ bearer: String, _ machineId: String = machine) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get("/api/servers/\(serverId)/machines/\(machineId)/workspaces", headers: headers)
             }
             let owner = try await token("workspace-owner@slock.test")
@@ -63,25 +64,30 @@ import VaporTesting
 
             #expect(try await workspaces(member).status == .forbidden)
             let response = try await workspaces(owner)
-            #expect(response.status == .ok)
-            let rows = try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [[String: Any]] ?? []
-            #expect(rows.count == 2)
-            #expect(Set(rows.compactMap { $0["directoryName"] as? String }) == Set([live, deleted]))
-            #expect(rows.first { $0["directoryName"] as? String == live }?["status"] as? String == "active")
-            #expect(rows.first { $0["directoryName"] as? String == deleted }?["status"] as? String == "deleted")
-            #expect(rows.first { $0["directoryName"] as? String == deleted }?["agentName"] as? String == "a-gone")
-            #expect(!rows.contains { $0["directoryName"] as? String == other })
+            #expect(response.status == .internalServerError)
+            let failure = try #require(try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])
+            #expect(failure["error"] as? String == "Failed to scan workspaces")
+            #expect(failure["code"] as? String == "machine_workspace_scan_failed")
+            let correlation = try #require(failure["correlationId"] as? String)
+            #expect(UUID(uuidString: correlation) != nil)
+            #expect(response.headers[HTTPField.Name("X-Slock-Error-Id")!] == correlation)
+            #expect(failure["directoryName"] == nil && failure["rows"] == nil)
             #expect(try await workspaces(owner, otherMachine).status == .notFound)
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(owner)"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
             let foreignDelete = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(machine)/workspaces/\(other)")
             #expect(foreignDelete.status == .notFound)
-            let ownDelete = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(machine)/workspaces/\(deleted)")
-            #expect(ownDelete.status == .ok)
+            let unknownDelete = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(machine)/workspaces/\(UUID().uuidString.lowercased())")
+            #expect(unknownDelete.status == .notFound)
+            for owned in [live, deleted] {
+                let ownDelete = try await client.send(.delete, headers: headers, to: "/api/servers/\(serverId)/machines/\(machine)/workspaces/\(owned)")
+                #expect(ownDelete.status == .serviceUnavailable)
+                #expect(ownDelete.body.string == #"{"error":"Machine workspace deletion is unavailable","code":"machine_workspace_delete_unavailable","retryable":false}"#)
+            }
             let after = try await workspaces(owner)
-            let afterRows = try JSONSerialization.jsonObject(with: Data((after.body.string ?? "").utf8)) as? [[String: Any]] ?? []
-            #expect(afterRows.compactMap { $0["directoryName"] as? String } == [live])
+            #expect(after.status == .internalServerError)
         }
     }
 }

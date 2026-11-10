@@ -143,7 +143,7 @@ private struct SearchRefFixture {
             }
             #expect(converted.status == .ok, Comment(rawValue: converted.body.string ?? ""))
             let convertedBody = (try? JSONSerialization.jsonObject(with: Data((converted.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-            let convertedTaskId = try #require((convertedBody["taskIds"] as? [String])?.first)
+            let convertedTaskId = try #require((convertedBody["task"] as? [String: Any])?["id"] as? String)
             let taskNumber = try #require(accounts.taskNumberForTaskIdForTesting(taskId: convertedTaskId))
             accounts.amendTaskForTesting(taskId: convertedTaskId, title: "intermediate premise", description: "intermediate details", amendedByName: "search-ref-owner")
             accounts.amendTaskForTesting(taskId: convertedTaskId, title: "final current premise", description: "final current details", amendedByName: "search-ref-owner")

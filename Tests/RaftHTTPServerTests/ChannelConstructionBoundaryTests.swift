@@ -68,7 +68,7 @@ import VaporTesting
             }
             #expect(revokedMembers.status == .unauthorized)
             #expect(revokedMembers.body.string == #"{"error":"Invalid or expired token","code":"auth_required"}"#)
-            #expect(revokedMembers.headers[.cacheControl] == "no-store")
+            #expect(revokedMembers.headers[.cacheControl] == "private, no-store")
         }
     }
 }

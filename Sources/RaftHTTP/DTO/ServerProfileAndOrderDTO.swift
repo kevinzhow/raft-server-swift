@@ -280,25 +280,49 @@ public struct ServerOrderResponse: Sendable, Equatable, JSONBodyConvertible {
     }
 }
 
-/// One `GET /api/servers` row for a caller that has a stored switcher order.
+/// Member-visible `GET /api/servers` facts, in pinned Node field order.
+/// Creation/downgrade timestamps remain omitted until their owner stores facts.
 public struct OrderedServerListEntry: Sendable, Equatable, JSONBodyConvertible {
     public var id: String
+    public var name: String
+    public var avatarUrl: String?
     public var slug: String
+    public var ownerId: String
+    public var onboardingAgentId: String?
+    public var hideHumansFromMembers: Bool
+    public var plan: String
     public var role: String
+    public var serverPushMuted: Bool
     public var serverOrderVersion: Int
 
-    public init(id: String, slug: String, role: String, serverOrderVersion: Int) {
+    public init(id: String, name: String, avatarUrl: String?, slug: String, ownerId: String,
+                onboardingAgentId: String?, hideHumansFromMembers: Bool, plan: String,
+                role: String, serverPushMuted: Bool, serverOrderVersion: Int) {
         self.id = id
+        self.name = name
+        self.avatarUrl = avatarUrl
         self.slug = slug
+        self.ownerId = ownerId
+        self.onboardingAgentId = onboardingAgentId
+        self.hideHumansFromMembers = hideHumansFromMembers
+        self.plan = plan
         self.role = role
+        self.serverPushMuted = serverPushMuted
         self.serverOrderVersion = serverOrderVersion
     }
 
     public var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("id", id),
+            OrderedJSONField("name", name),
+            OrderedJSONField("avatarUrl", optional: avatarUrl),
             OrderedJSONField("slug", slug),
+            OrderedJSONField("ownerId", ownerId),
+            OrderedJSONField("onboardingAgentId", optional: onboardingAgentId),
+            OrderedJSONField("hideHumansFromMembers", hideHumansFromMembers),
+            OrderedJSONField("plan", plan),
             OrderedJSONField("role", role),
+            OrderedJSONField("serverPushMuted", serverPushMuted),
             OrderedJSONField("serverOrderVersion", serverOrderVersion),
             OrderedJSONField("publicPageLive", false),
         ])

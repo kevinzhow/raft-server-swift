@@ -36,11 +36,16 @@ private func encodeURIComponent(_ value: String) -> String {
 }
 
 private func services(catalog: MessageContextCatalog = MessageContextCatalog()) -> FallbackServices {
-    FallbackServices(
+    let accounts = publicServerAuthAccounts([("context-reader", "token")])
+    let serverId = "33333333-3333-4333-8333-333333333333"
+    accounts.oauth.addOwnedServer(id: serverId, slug: "catalog-context", name: "Catalog Context", ownerId: "context-reader")
+    accounts.addPostableChannel(serverId: serverId, channelId: "22222222-2222-4222-8222-222222222222", memberId: "context-reader", name: "context-link")
+    return FallbackServices(
         nodeEnv: "test",
         tracker: DbLivenessTracker(ping: {}),
         pingDatabase: {},
-        messageContext: catalog
+        messageContext: catalog,
+        emailAccounts: accounts
     )
 }
 
@@ -139,8 +144,16 @@ private let authHeaders: HTTPFields = [
     let messageId = "a1b2c3d4-5555-4555-8555-555555555555"
     let content = "joint permalink target"
     accounts.addAccount(id: hostOwner, email: "joint-link-host@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: hostOwner)
     accounts.addAccount(id: guestOwner, email: "joint-link-guest@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: guestOwner)
     accounts.addAccount(id: outsider, email: "joint-link-outsider@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: outsider)
+    accounts.oauth.addOwnedServer(id: guestServer, slug: "catalog-joint-context", name: "Joint Context", ownerId: guestOwner)
+    accounts.oauth.addMember(serverId: guestServer, userId: outsider, role: "member")
+    accounts.addPostableChannel(serverId: guestServer, channelId: guestChannel, memberId: guestOwner, kind: "joint", name: "joint-context")
+    accounts.oauth.addChannelHuman(channelId: guestChannel, userId: guestOwner)
+    accounts.addJointChannelProjection(localChannelId: guestChannel, canonicalChannelId: hostChannel, serverId: guestServer)
     let catalog = MessageContextCatalog(
         messages: [ContextMessage(id: messageId, channelId: hostChannel, content: content, seq: 1)],
         jointProjections: [JointChannelProjection(
@@ -213,6 +226,13 @@ private let authHeaders: HTTPFields = [
     let replyId = "c1b2c3d4-7777-4777-8777-777777777777"
     let reply = "joint thread reply target"
     accounts.addAccount(id: guestOwner, email: "joint-thread-link-guest@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: guestOwner)
+    accounts.oauth.addOwnedServer(id: guestServer, slug: "catalog-joint-thread-context", name: "Joint Thread Context", ownerId: guestOwner)
+    accounts.addPostableChannel(serverId: guestServer, channelId: guestChannel, memberId: guestOwner, kind: "joint", name: "joint-context")
+    accounts.oauth.addChannelHuman(channelId: guestChannel, userId: guestOwner)
+    accounts.addJointChannelProjection(localChannelId: guestChannel, canonicalChannelId: hostChannel, serverId: guestServer)
+    accounts.addThreadChannel(serverId: guestServer, threadChannelId: localThread, parentChannelId: guestChannel, parentMessageId: parentId, memberId: guestOwner)
+    accounts.addJointChannelProjection(localChannelId: localThread, canonicalChannelId: canonicalThread, serverId: guestServer)
     let catalog = MessageContextCatalog(
         messages: [
             ContextMessage(id: parentId, channelId: hostChannel, content: "joint thread parent", seq: 1),
@@ -304,6 +324,10 @@ private let authHeaders: HTTPFields = [
     accounts.addAccount(id: recipientId, email: "dm-link-recipient@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: recipientId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "dm-context-scope", name: "DM Context", ownerId: ownerId)
+    accounts.oauth.addMember(serverId: serverId, userId: recipientId, role: "member")
+    accounts.oauth.addChannelHuman(channelId: dmId, userId: ownerId)
+    accounts.oauth.addChannelHuman(channelId: dmId, userId: recipientId)
     accounts.addDirectMessage(serverId: serverId, channelId: dmId, participantIds: [ownerId, recipientId])
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -360,6 +384,7 @@ private let authHeaders: HTTPFields = [
     let threadChannelId = "22222222-2222-4222-8222-22222222224a"
     accounts.addAccount(id: ownerId, email: "thread-context-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "thread-reply-context-scope", name: "Thread Context", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: parentChannelId, memberId: ownerId)
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -428,6 +453,7 @@ private let authHeaders: HTTPFields = [
     let parentContent = "thread-channel-id parent"
     accounts.addAccount(id: ownerId, email: "thread-channel-ref-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "thread-channel-context-scope", name: "Thread Context", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: parentChannelId, memberId: ownerId)
     try await withApp { app in
         configure(app, services: FallbackServices(

@@ -165,7 +165,8 @@ private func makePrepareFixture() -> (accounts: EmailLoginDirectory, key: String
     for member in [ownerId, agentId] {
         f.accounts.addPostableChannel(serverId: f.serverId, channelId: dmId, memberId: member, kind: "dm", name: "dm")
     }
-    f.accounts.oauth.addChannelHuman(channelId: dmId, userId: agentId)
+    f.accounts.oauth.removeChannelHuman(channelId: dmId, userId: agentId)
+    f.accounts.oauth.addChannelAgent(channelId: dmId, agentId: agentId)
     let parentId = UUID().uuidString.lowercased()
     f.accounts.insertHumanMessage(id: parentId, channelId: dmId, senderId: ownerId, content: "dm thread action-card parent")
 

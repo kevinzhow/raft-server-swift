@@ -13,6 +13,7 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
 
 @Test func mobilePkceConflictAnswersAccountLinkRequiredAndPasswordCompletesIt() async throws {
     let accounts = EmailLoginDirectory()
+    accounts.configureOAuthForTesting { $0.socialAuthStateSecret = AuthJWTFixture.socialSigningSecret }
     let existingId = "11111111-1111-4111-8111-000001085001"
     accounts.addAccount(id: existingId, email: "mobile@pending-link.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)
@@ -87,6 +88,7 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
 
 @Test func mobileConflictWithoutOptInReportsAccountConflict() async throws {
     let accounts = EmailLoginDirectory()
+    accounts.configureOAuthForTesting { $0.socialAuthStateSecret = AuthJWTFixture.socialSigningSecret }
     let existingId = "11111111-1111-4111-8111-000001085011"
     accounts.addAccount(id: existingId, email: "mobile2@pending-link.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)
@@ -119,6 +121,7 @@ private func profile(_ sub: String, _ email: String) -> MobileProviderProfile {
 
 @Test func mobileAnotherLinkedProviderCompletesThePendingGoogleLink() async throws {
     let accounts = EmailLoginDirectory()
+    accounts.configureOAuthForTesting { $0.socialAuthStateSecret = AuthJWTFixture.socialSigningSecret }
     let existingId = "11111111-1111-4111-8111-000001085021"
     accounts.addAccount(id: existingId, email: "mobile3@pending-link.test", password: "password123")
     accounts.markEmailVerified(userId: existingId)

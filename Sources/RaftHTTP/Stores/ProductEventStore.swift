@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 /// Owns product/client event facts behind its own lock.
 ///
@@ -7,13 +8,13 @@ import Synchronization
 /// decisions; this store only owns the ledger rows and the client-event
 /// idempotency set, so event traffic no longer shares the directory lock.
 final class ProductEventStore: Sendable {
-    private struct State: Sendable {
+    struct State: Sendable {
         var productEvents: [RecordedProductEvent] = []
         var clientEvents: [ClientEventRecord] = []
         var seenClientEventIDs: Set<String> = []
     }
 
-    private let state = Mutex(State())
+    let state = TransactionalState(State())
 
     func append(_ event: RecordedProductEvent) {
         state.withLock { $0.productEvents.append(event) }

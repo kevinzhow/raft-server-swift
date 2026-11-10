@@ -43,6 +43,7 @@ import VaporTesting
             let ownerToken = (try JSONSerialization.jsonObject(with: Data((login.body.string ?? "").utf8)) as? [String: Any])?["accessToken"] as? String ?? ""
             var ownerHeaders = HTTPFields()
             ownerHeaders[.authorization] = "Bearer \(ownerToken)"
+            ownerHeaders[HTTPField.Name("X-Server-Id")!] = serverId
             ownerHeaders[.contentType] = "application/json"
             var readHeaders = HTTPFields()
             readHeaders[.authorization] = "Bearer \(readKey)"

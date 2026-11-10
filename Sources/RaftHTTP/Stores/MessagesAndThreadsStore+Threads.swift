@@ -101,36 +101,56 @@ extension MessagesAndThreadsStore {
         now: Date
     ) {
         withState { state in
-            let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
-            if follow {
-                state.threadFollows[key] = (
-                    serverId: serverId,
-                    userId: userId,
-                    threadChannelId: threadChannelId,
-                    parentMessageId: parentMessageId
-                )
-                if state.threadFollowStarts[key] == nil {
-                    state.threadFollowStarts[key] = now
-                }
-                state.threadUnfollows.removeValue(forKey: key)
-                return
-            }
-            state.threadFollows.removeValue(forKey: key)
-            let startedAt = state.threadFollowStarts.removeValue(forKey: key) ?? .distantPast
-            let frozen = state.humanMessageRows
-                .filter { $0.channelId == threadChannelId && $0.createdAt >= startedAt }
-                .map { (id: $0.id, content: $0.content) }
-            state.threadUnfollows[key] = ThreadUnfollowRecord(
+            Self.applyThreadFollow(in: &state, serverId: serverId, userId: userId,
+                threadChannelId: threadChannelId, parentMessageId: parentMessageId, follow: follow, now: now)
+        }
+    }
+
+    /// A new real follow/unfollow transition makes every earlier managed undo
+    /// token for this recipient obsolete. No timestamp or schema is invented.
+    static func retireManagedThreadFollowerRemovals(in state: inout State,
+        serverId: String, threadId: String, agentId: String) {
+        let tokens = state.threadFollowerRemovals.compactMap { token, record in
+            record.serverId == serverId && record.threadChannelId == threadId && record.agentId == agentId ? token : nil
+        }
+        for token in tokens {
+            state.threadFollowerRemovals.removeValue(forKey: token)
+            state.staleThreadFollowerUndoTokens.insert(token)
+        }
+    }
+
+    private static func applyThreadFollow(in state: inout State, serverId: String, userId: String,
+        threadChannelId: String, parentMessageId: String, follow: Bool, now: Date) {
+        let key = "\(serverId)\n\(userId)\n\(threadChannelId)"
+        retireManagedThreadFollowerRemovals(in: &state, serverId: serverId, threadId: threadChannelId, agentId: userId)
+        if follow {
+            state.threadFollows[key] = (
                 serverId: serverId,
                 userId: userId,
                 threadChannelId: threadChannelId,
-                parentMessageId: parentMessageId,
-                unfollowedAt: now,
-                latestMessageId: frozen.last?.id ?? parentMessageId,
-                replyCount: frozen.count,
-                frozenMessages: frozen
+                parentMessageId: parentMessageId
             )
+            if state.threadFollowStarts[key] == nil {
+                state.threadFollowStarts[key] = now
+            }
+            state.threadUnfollows.removeValue(forKey: key)
+            return
         }
+        state.threadFollows.removeValue(forKey: key)
+        let startedAt = state.threadFollowStarts.removeValue(forKey: key) ?? .distantPast
+        let frozen = state.humanMessageRows
+            .filter { $0.channelId == threadChannelId && $0.createdAt >= startedAt }
+            .map { (id: $0.id, content: $0.content) }
+        state.threadUnfollows[key] = ThreadUnfollowRecord(
+            serverId: serverId,
+            userId: userId,
+            threadChannelId: threadChannelId,
+            parentMessageId: parentMessageId,
+            unfollowedAt: now,
+            latestMessageId: frozen.last?.id ?? parentMessageId,
+            replyCount: frozen.count,
+            frozenMessages: frozen
+        )
     }
 
     /// Follows the creator (and, when a different live member wrote the
@@ -168,14 +188,26 @@ extension MessagesAndThreadsStore {
         serverId: String,
         threadId: String,
         agentId: String,
-        undoToken: String
+        undoToken: String,
+        now: Date = Date()
     ) -> ThreadFollowerRemovalWrite {
         withState { state in
+            let key = "\(serverId)\n\(agentId)\n\(threadId)"
             if let existing = state.threadFollowerRemovals.first(where: {
-                $0.value.threadChannelId == threadId && $0.value.agentId == agentId
+                $0.value.serverId == serverId && $0.value.threadChannelId == threadId && $0.value.agentId == agentId
             }) {
-                return .replay(undoToken: existing.key)
+                if state.threadFollows[key] == nil || state.threadUnfollows[key] != nil {
+                    return .replay(undoToken: existing.key)
+                }
+                // A retained active follow supersedes an older compatibility token.
+                Self.retireManagedThreadFollowerRemovals(in: &state, serverId: serverId, threadId: threadId, agentId: agentId)
             }
+            if let follow = state.threadFollows[key] {
+                Self.applyThreadFollow(in: &state, serverId: serverId, userId: agentId,
+                    threadChannelId: threadId, parentMessageId: follow.parentMessageId, follow: false, now: now)
+            }
+            // Legacy rows without a retained follow keep their existing token/body
+            // contract; no canonical parent/follow is manufactured for them.
             state.threadFollowerRemovals[undoToken] = (
                 serverId: serverId,
                 threadChannelId: threadId,
@@ -198,13 +230,23 @@ extension MessagesAndThreadsStore {
     func restoreThreadFollower(
         threadId: String,
         agentId: String,
-        undoToken: String
+        undoToken: String,
+        now: Date = Date()
     ) -> ThreadFollowerRestoreWrite {
         withState { state in
             guard let record = state.threadFollowerRemovals[undoToken],
                   record.threadChannelId == threadId,
                   record.agentId == agentId
             else { return .notRemoved }
+            let key = "\(record.serverId)\n\(agentId)\n\(threadId)"
+            if let unfollow = state.threadUnfollows[key] {
+                Self.applyThreadFollow(in: &state, serverId: record.serverId, userId: agentId,
+                    threadChannelId: threadId, parentMessageId: unfollow.parentMessageId, follow: true, now: now)
+            } else if state.threadFollows[key] != nil {
+                // An actual reply/mention/manual follow already reactivated this
+                // recipient; an earlier removal cannot restore a later state.
+                return .notRemoved
+            }
             state.threadFollowerRemovals.removeValue(forKey: undoToken)
             state.staleThreadFollowerUndoTokens.insert(undoToken)
             return .restored

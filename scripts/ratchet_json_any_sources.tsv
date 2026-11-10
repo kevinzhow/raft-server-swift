@@ -8,8 +8,6 @@ Sources/RaftHTTP/ReleaseNotes.swift	2
 Sources/RaftHTTP/Stores/ManagedMCPAndCardsStore.swift	2
 Sources/RaftHTTP/Support/AgentConnectionProviderPayload.swift	10
 Sources/RaftHTTP/Support/AgentRuntimeConfigDocument.swift	20
-Sources/RaftHTTP/Support/AttachmentPreviewTokens.swift	1
-Sources/RaftHTTP/Support/AuthTokenCodec.swift	10
 Sources/RaftHTTP/Support/FeedbackRouting.swift	9
 Sources/RaftHTTP/Support/LegacySortedJSON.swift	1
 Sources/RaftHTTP/Support/MessagePageCursor.swift	2

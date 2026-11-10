@@ -497,8 +497,12 @@ public struct AgentHostedMigrationService: Sendable {
            ) {
             throw AgentMigrationControlError.builtinCatalogUnavailable
         }
-        guard agents.assignMachine(agentId: agentId, machineId: machineId) else {
-            throw AgentMigrationControlError.assignAlreadyInProgress
+        let targetServerId = machineId.flatMap { machines.machine(id: $0)?.serverId }
+        switch agents.assignMachineWithExecutionFence(serverId: managed.serverId, agentId: agentId,
+            machineId: machineId, targetServerId: targetServerId) {
+        case .assigned: break
+        case .activeMigration: throw AgentMigrationControlError.assignAlreadyInProgress
+        case .executionRequiresRecovery: throw AgentMigrationControlError.assignmentExecutionRequiresRecovery
         }
         return OkResponse()
     }

@@ -12,6 +12,7 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
     /// A bearer header that does not resolve to a live session.
     case invalidAccessToken
     case channelNotFound
+    case contextMessageNotFound
     case forbidden
     case invalidSearchSort
     case invalidSenderType
@@ -44,7 +45,7 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             401
         case .forbidden, .capabilityNotAuthorized:
             403
-        case .channelNotFound, .memberNotFound:
+        case .channelNotFound, .contextMessageNotFound, .memberNotFound:
             404
         case .ambiguousMemberHandle, .ambiguousMemberReference:
             409
@@ -63,6 +64,8 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             "Invalid or expired token"
         case .channelNotFound:
             "Channel not found"
+        case .contextMessageNotFound:
+            "Message not found"
         case .forbidden:
             "Forbidden"
         case .invalidSearchSort:
@@ -98,7 +101,7 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             "auth_required"
         case .capabilityNotAuthorized:
             "capability_not_authorized"
-        case .channelNotFound, .forbidden, .invalidSearchSort, .invalidSenderType,
+        case .channelNotFound, .contextMessageNotFound, .forbidden, .invalidSearchSort, .invalidSenderType,
              .invalidMentionTarget, .memberNotFound, .ambiguousMemberHandle,
              .ambiguousMemberReference, .agentSearchMissingOffset,
              .agentSearchInvalidInstant, .agentApiMissingOffset, .agentApiInvalidDate:
@@ -128,7 +131,7 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             ])
         case .missingAuthorization, .invalidAccessToken,
              .agentSearchMissingAuthorization, .agentSearchInvalidToken,
-             .channelNotFound, .forbidden, .invalidSearchSort, .invalidSenderType,
+             .channelNotFound, .contextMessageNotFound, .forbidden, .invalidSearchSort, .invalidSenderType,
              .invalidMentionTarget, .capabilityNotAuthorized:
             return nil
         }
@@ -191,6 +194,11 @@ public struct SearchMentionsService: Sendable {
     /// domains call through the directory accessor; it used to live in the
     /// search extension.
     func messageVisible(messageChannelId: String, serverId: String?, viewer: SearchViewer) -> Bool {
+        if case .user(let userId) = viewer {
+            guard let serverId else { return false }
+            return HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+                .authority(channelId: messageChannelId, serverId: serverId, userId: userId, origin: .storedMessage) != nil
+        }
         return Self.visible(
             messageChannelId: messageChannelId,
             serverId: serverId,
@@ -249,10 +257,12 @@ public struct SearchMentionsService: Sendable {
         senderType: String? = nil,
         mentionTarget: String? = nil
     ) throws -> HumanMessageSearchResponse {
-        guard let userId = dependencies.sessionUserId(authorization) else {
-            throw authorization?.hasPrefix("Bearer ") == true
-                ? SearchMentionsError.invalidAccessToken
-                : SearchMentionsError.missingAuthorization
+        let scope = try requireHumanReadScope(authorization: authorization, serverId: serverId)
+        let userId = scope.userId
+        let readAccess = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+        if let channelId, !channelId.isEmpty,
+           readAccess.authority(channelId: channelId, serverId: scope.serverId, userId: userId) == nil {
+            throw SearchMentionsError.channelNotFound
         }
         let sortMode: String
         if let sort, !sort.isEmpty {
@@ -295,27 +305,13 @@ public struct SearchMentionsService: Sendable {
             return HumanMessageSearchResponse(results: [], hasMore: false)
         }
         let effectiveSort = queryTokens.isEmpty ? "recent" : sortMode
-        let channelState = channels.state
         let messageState = messages.state
-        if let scopedChannel {
-            guard let channel = channelState.postableChannels[scopedChannel],
-                  channel.serverId == serverId,
-                  channel.deletedAt == nil,
-                  channel.kind == "channel" || channel.memberIds.contains(userId)
-            else {
-                throw SearchMentionsError.channelNotFound
-            }
-        }
-        let channelAgentMembers = agents.channelAgentMembers
+        let searchableChannels = HumanMessageSearchAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+            .channelFacts(serverId: scope.serverId, userId: userId)
+        let searchableParents = searchableChannels.mapValues(\.parentChannelId)
+        guard !searchableParents.isEmpty else { return HumanMessageSearchResponse(results: [], hasMore: false) }
         func accepts(_ message: StoredHumanMessage) -> Bool {
-            guard Self.visible(
-                messageChannelId: message.channelId,
-                serverId: serverId,
-                viewer: .user(userId),
-                channels: channelState.postableChannels,
-                channelAgentMembers: channelAgentMembers,
-                oauth: oauth
-            ) else { return false }
+            guard let parentId = searchableParents[message.channelId] else { return false }
             if let scopedSender, message.senderId != scopedSender { return false }
             if let scopedSenderType, message.senderType != scopedSenderType { return false }
             if mentionSelf && !messageState.storedMentions.contains(where: {
@@ -323,11 +319,7 @@ public struct SearchMentionsService: Sendable {
             }) {
                 return false
             }
-            if let scopedChannel {
-                if message.channelId == scopedChannel { return true }
-                let channel = channelState.postableChannels[message.channelId]
-                return channel?.kind == "thread" && channel?.parentChannelId == scopedChannel
-            }
+            if let scopedChannel { return message.channelId == scopedChannel || parentId == scopedChannel }
             return true
         }
         var strict: [(StoredHumanMessage, Int)] = []
@@ -359,10 +351,10 @@ public struct SearchMentionsService: Sendable {
         let page = hits.prefix(pageLimit)
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let results = page.map { pair -> HumanMessageSearchRowDTO in
+        let results = page.compactMap { pair -> HumanMessageSearchRowDTO? in
             let message = pair.0
-            let channel = channelState.postableChannels[message.channelId]
-            let parentId = (channel?.kind == "thread" ? channel?.parentChannelId : nil) ?? message.channelId
+            guard let channelFacts = searchableChannels[message.channelId] else { return nil }
+            let parentId = channelFacts.parentChannelId
             let snippet = MessageSearchText.searchSnippet(message.content)
             let archivedAt = oauth.channelArchivedAt(id: parentId).map { formatter.string(from: $0) }
             return HumanMessageSearchRowDTO(
@@ -370,7 +362,9 @@ public struct SearchMentionsService: Sendable {
                 senderId: message.senderId,
                 senderType: message.senderType,
                 channelId: message.channelId,
+                channelType: channelFacts.channelType,
                 parentChannelId: parentId,
+                parentChannelType: channelFacts.parentChannelType,
                 content: message.content,
                 snippet: snippet,
                 channelArchivedAt: archivedAt
@@ -712,6 +706,27 @@ public struct SearchMentionsService: Sendable {
         return AgentApiSearchResponse(results: results, hasMore: hasMore)
     }
 
+    private func requireHumanReadScope(authorization: String?, serverId: String?) throws -> HumanChannelReadAccessQuery.ServerScope {
+        guard let userId = dependencies.sessionUserId(authorization) else {
+            throw authorization?.hasPrefix("Bearer ") == true
+                ? SearchMentionsError.invalidAccessToken : SearchMentionsError.missingAuthorization
+        }
+        return try HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+            .requireServerScope(serverId: serverId, userId: userId)
+    }
+
+    /// The public handler invokes this before either legacy catalog or stored
+    /// context lookup. Catalog message coordinates never grant channel authority.
+    public func authorizeHumanContextRead(messageId: String, channelId: String?, authorization: String?,
+                                          serverId: String?, catalog: MessageContextCatalog) throws {
+        let scope = try requireHumanReadScope(authorization: authorization, serverId: serverId)
+        if case .found(let target) = MessageContext.resolve(messageId: messageId, channelId: channelId,
+            catalog: catalog, callerId: scope.userId, serverId: scope.serverId) {
+            try HumanMessageContextAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+                .authorize(target: target, scope: scope)
+        }
+    }
+
     // MARK: - GET /api/messages/context/:messageId stored fallback
 
     /// Context for a human message that is not in the permalink catalog. A DM
@@ -726,15 +741,17 @@ public struct SearchMentionsService: Sendable {
         after: String? = nil
     ) -> StoredMessageContextResponse? {
         guard MessageContext.isShortId(messageId) || ServerScope.isUUID(messageId) else { return nil }
-        guard let channelId, ServerScope.isUUID(channelId) else { return nil }
-        guard let userId = dependencies.sessionUserId(authorization) else { return nil }
-        let channelState = channels.state
+        guard let userId = dependencies.sessionUserId(authorization), let actualServerId = serverId,
+              oauth.activeRegularServerMember(serverId: actualServerId, userId: userId) else { return nil }
         let rows = messages.humanMessageRows
+        let requested = (channelId ?? rows.first(where: { MessageSearchText.messageIdMatches($0.id, messageId) })?.channelId)?.lowercased()
+        guard let requested, ServerScope.isUUID(requested) else { return nil }
+        let readAccess = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+        guard let authority = readAccess.authority(channelId: requested, serverId: actualServerId, userId: userId, origin: .storedMessage),
+              let channelId = authority.channelPath.first else { return nil }
+        let channelState = channels.state
         guard let channel = channelState.postableChannels[channelId],
-              channel.serverId == serverId,
-              channel.deletedAt == nil,
-              channel.kind == "channel" || channel.memberIds.contains(userId)
-        else { return nil }
+              channel.serverId == serverId, channel.deletedAt == nil else { return nil }
         let storageChannelId = channelState.jointProjections.first {
             $0.localChannelId == channelId
         }?.canonicalChannelId ?? channelId
@@ -754,14 +771,16 @@ public struct SearchMentionsService: Sendable {
                 )
                 let metadata = dependencies.forwardMetadata(row.id, userId, serverId)
                     ?? dependencies.actionCardMetadataJSON(row.id).map(OrderedJSON.raw)
+                let facts = dependencies.readFacts(row, channelId, commentsVisible, serverId, userId)
                 return MessageContextMessageDTO(
-                    id: row.id,
-                    channelId: channelId,
-                    content: row.content,
-                    seq: row.seq,
-                    attachmentChips: dependencies.attachmentChips(row.attachmentIds, commentsVisible),
+                    id: facts.id,
+                    channelId: facts.channelId,
+                    content: facts.content,
+                    seq: facts.seq,
+                    attachmentChips: facts.attachments,
                     commentRef: commentsVisible ? dependencies.commentRef(row.id) : nil,
-                    actionMetadata: metadata
+                    actionMetadata: metadata,
+                    facts: facts
                 )
             }
             let windowIds = scopedRows[start..<end].map(\.id)
@@ -772,32 +791,33 @@ public struct SearchMentionsService: Sendable {
                 hasNewer: end < scopedRows.count,
                 messages: parts,
                 canonicalTarget: nil,
-                threadSummariesByParentMessageId: dependencies.threadSummaries(channelId, windowIds),
+                threadSummariesByParentMessageId: dependencies.threadSummaries(channelId, windowIds, userId, serverId),
                 channelArchived: channel.archived
             )
         }
-        for link in channelState.jointProjections where link.serverId == serverId {
+        for link in channelState.jointProjections where link.serverId == serverId && link.status == "active" {
             guard let localThread = channelState.postableChannels[link.localChannelId],
                   localThread.kind == "thread",
                   localThread.parentChannelId == channelId,
                   localThread.deletedAt == nil,
-                  localThread.memberIds.contains(userId)
+                  readAccess.authority(channelId: link.localChannelId, serverId: actualServerId, userId: userId) != nil
             else { continue }
             guard let reply = rows.first(where: {
                 $0.channelId == link.canonicalChannelId && MessageSearchText.messageIdMatches($0.id, messageId)
             }) else { continue }
+            guard let parentMessageId = localThread.parentMessageId, !parentMessageId.isEmpty else { continue }
             let canonicalThreadId = link.localChannelId
             return StoredMessageContextResponse(
                 channelId: canonicalThreadId,
                 targetMessageId: reply.id,
                 hasOlder: false,
                 hasNewer: false,
-                messages: [Self.singleMessage(reply, channelId: canonicalThreadId, seq: 1)],
+                messages: [singleMessage(reply, channelId: canonicalThreadId, userId: userId, serverId: serverId)],
                 canonicalTarget: MessageContextCanonicalTargetDTO(
                     kind: "thread",
                     channelId: channelId,
                     messageId: reply.id,
-                    threadParentMessageId: localThread.parentMessageId ?? "",
+                    threadParentMessageId: parentMessageId,
                     threadChannelId: canonicalThreadId
                 ),
                 threadSummariesByParentMessageId: .object([]),
@@ -810,6 +830,7 @@ public struct SearchMentionsService: Sendable {
                   thread.kind == "thread",
                   thread.serverId == serverId,
                   thread.deletedAt == nil,
+                  readAccess.authority(channelId: row.channelId, serverId: actualServerId, userId: userId) != nil,
                   let parentMessageId = thread.parentMessageId,
                   let parent = rows.first(where: { $0.id == parentMessageId }),
                   parent.channelId == channelId
@@ -818,20 +839,19 @@ public struct SearchMentionsService: Sendable {
         }
         if replies.count == 1,
            let reply = replies.first,
-           let thread = channelState.postableChannels[reply.channelId] {
-            let threadRows = rows.filter { $0.channelId == reply.channelId }
-            let seq = (threadRows.firstIndex { $0.id == reply.id } ?? 0) + 1
+           let thread = channelState.postableChannels[reply.channelId],
+           let parentMessageId = thread.parentMessageId, !parentMessageId.isEmpty {
             return StoredMessageContextResponse(
                 channelId: reply.channelId,
                 targetMessageId: reply.id,
                 hasOlder: false,
                 hasNewer: false,
-                messages: [Self.singleMessage(reply, channelId: reply.channelId, seq: seq)],
+                messages: [singleMessage(reply, channelId: reply.channelId, userId: userId, serverId: serverId)],
                 canonicalTarget: MessageContextCanonicalTargetDTO(
                     kind: "thread",
                     channelId: channelId,
                     messageId: reply.id,
-                    threadParentMessageId: thread.parentMessageId ?? "",
+                    threadParentMessageId: parentMessageId,
                     threadChannelId: reply.channelId
                 ),
                 threadSummariesByParentMessageId: .object([]),
@@ -842,6 +862,7 @@ public struct SearchMentionsService: Sendable {
             thread.kind == "thread"
                 && thread.serverId == serverId
                 && thread.deletedAt == nil
+                && readAccess.authority(channelId: id, serverId: actualServerId, userId: userId) != nil
                 && MessageSearchText.messageIdMatches(id, messageId)
                 && thread.parentMessageId.flatMap { parentId in
                     rows.first { $0.id == parentId && $0.channelId == channelId }
@@ -851,13 +872,12 @@ public struct SearchMentionsService: Sendable {
               let parentMessageId = threadChannels.values.first?.parentMessageId,
               let parent = rows.first(where: { $0.id == parentMessageId && $0.channelId == channelId })
         else { return nil }
-        let seq = (scopedRows.firstIndex { $0.id == parent.id } ?? 0) + 1
         return StoredMessageContextResponse(
             channelId: parent.channelId,
             targetMessageId: parent.id,
             hasOlder: false,
             hasNewer: false,
-            messages: [Self.singleMessage(parent, channelId: parent.channelId, seq: seq)],
+            messages: [singleMessage(parent, channelId: channelId, userId: userId, serverId: serverId)],
             canonicalTarget: nil,
             threadSummariesByParentMessageId: .object([]),
             channelArchived: channel.archived
@@ -901,33 +921,26 @@ public struct SearchMentionsService: Sendable {
     // MARK: - Projection helpers
 
     private static func taskProjection(_ task: TaskRecord) -> TaskCurrentProjectionDTO {
-        TaskCurrentProjectionDTO(
-            title: task.title,
-            description: task.description,
-            revision: task.revision,
-            superseded: task.superseded,
-            amendedAt: task.amendedAt.map { DateText.isoString($0) },
-            amendedByType: task.amendedByType,
-            amendedByName: task.amendedByName
-        )
+        TaskReadProjection.currentProjection(task)
     }
 
-    /// The single-message window the joint/thread fallbacks publish. It carries
-    /// no attachment, comment or action-metadata members, matching the legacy
-    /// `contextJSON` single-message path.
-    private static func singleMessage(
+    /// The same retained projection is used for canonical single-row redirects;
+    /// a row's actual seq is never replaced by its index inside a local window.
+    private func singleMessage(
         _ message: StoredHumanMessage,
         channelId: String,
-        seq: Int
+        userId: String,
+        serverId: String?
     ) -> MessageContextMessageDTO {
-        MessageContextMessageDTO(
-            id: message.id,
-            channelId: channelId,
-            content: message.content,
-            seq: seq,
-            attachmentChips: nil,
-            commentRef: nil,
-            actionMetadata: nil
+        let commentsVisible = dependencies.attachmentCommentsEnabled(serverId ?? "", userId)
+        let facts = dependencies.readFacts(message, channelId, commentsVisible, serverId, userId)
+        let metadata = dependencies.forwardMetadata(message.id, userId, serverId)
+            ?? dependencies.actionCardMetadataJSON(message.id).map(OrderedJSON.raw)
+        return MessageContextMessageDTO(
+            id: facts.id, channelId: facts.channelId, content: facts.content, seq: facts.seq,
+            attachmentChips: facts.attachments,
+            commentRef: commentsVisible ? dependencies.commentRef(message.id) : nil,
+            actionMetadata: metadata, facts: facts
         )
     }
 }

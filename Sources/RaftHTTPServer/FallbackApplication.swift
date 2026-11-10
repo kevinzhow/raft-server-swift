@@ -34,6 +34,8 @@ public struct FallbackServices: Sendable {
     public var publicAttachmentBudget: PublicAttachmentBudget
     public var publicTranslationBudget: PublicAttachmentBudget
     public var emailAccounts: EmailLoginDirectory
+    public var persistence: BusinessPersistenceRuntime?
+    public var transactionalEmail: TransactionalEmailIntentPort?
     public var realtime: RealtimeHub?
     /// Public share artifacts address themselves through one canonical page host
     /// and (optionally) a CDN host. Tests inject them; the process derives them
@@ -64,6 +66,8 @@ public struct FallbackServices: Sendable {
         publicAttachmentBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         publicTranslationBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         emailAccounts: EmailLoginDirectory = EmailLoginDirectory(),
+        persistence: BusinessPersistenceRuntime? = nil,
+        transactionalEmail: TransactionalEmailIntentPort? = nil,
         realtime: RealtimeHub? = nil,
         serverBaseURL: String? = nil,
         shareBaseURL: String? = nil,
@@ -90,6 +94,8 @@ public struct FallbackServices: Sendable {
         self.publicAttachmentBudget = publicAttachmentBudget
         self.publicTranslationBudget = publicTranslationBudget
         self.emailAccounts = emailAccounts
+        self.persistence = persistence
+        self.transactionalEmail = transactionalEmail
         self.realtime = realtime
         self.serverBaseURL = serverBaseURL
         self.shareBaseURL = shareBaseURL
@@ -104,7 +110,7 @@ public struct FallbackServices: Sendable {
         let hub = realtime
         return ChannelMessagingService(
             dependencies: ChannelMessagingDependencies(
-                auth: accounts.authCore, oauth: accounts.oauth, catalog: accounts.taskCatalog
+                auth: accounts.authCore, oauth: accounts.oauth, catalog: taskCatalog
             ),
             sink: ChannelRealtimeSink(emit: relay.emit)
         ).bindingUserDelivery(
@@ -238,6 +244,9 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 }
 
 public func configure(_ app: Application, services: FallbackServices) {
+    if services.nodeEnv == "production" {
+        services.emailAccounts.requireDurableAttachmentStorage()
+    }
     let internalSurface = InternalSurfaceBox()
     InternalAgentApiFeature(services: services).register(routes: app)
     InternalAdminFeature(services: services, internalSurface: internalSurface).register(routes: app)
@@ -288,14 +297,15 @@ public func configure(_ app: Application, services: FallbackServices) {
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)
     AuthFeature(
-        core: services.emailAccounts.authCore,
+        core: services.emailAccounts.authCore.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
         identities: services.emailAccounts.authIdentities,
         oauthFlows: services.emailAccounts.oauthFlows,
-        verification: services.emailAccounts.authVerification,
-        profile: services.emailAccounts.authProfile,
+        verification: services.emailAccounts.authVerification.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
+        profile: services.emailAccounts.authProfile.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
         invites: services.emailAccounts.joinLinksAndInvites,
         managedLifecycle: services.emailAccounts.managedMCPLifecycle,
-        publicServerDirectory: services.publicServerDirectory
+        publicServerDirectory: services.publicServerDirectory,
+        realtime: services.realtime
     ).register(routes: app)
     KnowledgeFeature(services: services).register(routes: app)
     let readReceipts = services.emailAccounts.managedMCPToolExecution
@@ -341,11 +351,30 @@ public func configure(_ app: Application, services: FallbackServices) {
     // The resumable control manifest is the one JSON surface allowed past the
     // 100 KB global parser: 512 KB manifest plus envelope headroom.
     var middleware = Middlewares()
+    // Global declared JSON overflow precedes Node's cache and auth mounts.
+    // Credential-gated special parsers remain inside the business boundary.
+    middleware.use(GlobalJSONLengthPreflightMiddleware())
+    // Keep Node's raw API freshness policy around the fail-closed mount guard.
+    // The router has already selected request.route; aliases must be rejected
+    // before acquiring the business writer or evaluating human/flex admission.
+    middleware.use(DefaultAPIResponseHeadersMiddleware())
+    middleware.use(RouterMountBoundaryMiddleware())
+    if let persistence = services.persistence {
+        middleware.use(BusinessPersistenceMiddleware(runtime: persistence))
+    }
     internalSurface.set(InternalSurfacePolicy.snapshot(routes: app.routes.all))
+    // The outer boundary protects admission and body collection. The inner
+    // boundary lets normal API failures pass through the Node cache defaults.
+    middleware.use(JSONErrorBoundaryMiddleware())
+    middleware.use(HumanAdmissionMiddleware(
+        auth: services.emailAccounts.authCore,
+        nativeNotifications: services.emailAccounts.nativeNotifications
+    ))
+    middleware.use(RequestBodyLimitMiddleware(runtimeForms: services.emailAccounts.runtimeFormsAndProbes))
     middleware.use(JSONErrorBoundaryMiddleware())
     middleware.use(ExperimentalSurfaceGate(policy: DirectoryRuntimePolicy(auth: services.emailAccounts.authCore)))
-    middleware.use(RequestBodyLimitMiddleware(runtimeForms: services.emailAccounts.runtimeFormsAndProbes))
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
+    middleware.use(AttachmentFlexAdmissionMiddleware(lifecycle: services.emailAccounts.agentsLifecycle))
     middleware.use(PublicSearchMiddleware(
         indexEnabled: services.publicSearchIndexEnabled,
         catalog: services.publicSearch,
@@ -425,7 +454,7 @@ private struct PublicSearchMiddleware: Middleware {
                 return serviceRefusal(503, "service_unavailable")
             }
             guard let serviceBucket else { return serviceRefusal(503, "service_unavailable") }
-            switch serviceBucket.consume(limit: serviceLimits.ratePerMinute) {
+            switch await serviceBucket.consume(limit: serviceLimits.ratePerMinute) {
             case .allowed: break
             case .rateLimited(let retryAfter): return serviceLimited(retryAfter)
             case .unavailable: return serviceRefusal(503, "service_unavailable")

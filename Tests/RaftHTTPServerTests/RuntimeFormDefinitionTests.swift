@@ -95,8 +95,9 @@ import VaporTesting
             #expect(v2.headers[HTTPField.Name("Vary")!] == "Accept-Language")
             let v2Body = try JSONSerialization.jsonObject(with: Data((v2.body.string ?? "").utf8)) as? [String: Any]
             #expect(v2Body?["protocolVersion"] as? Int == 2)
-            #expect((v2Body?["fields"] as? [[String: Any]])?.first?["key"] as? String == "providerId")
-            #expect((v2Body?["fields"] as? [[String: Any]])?.contains { $0["key"] as? String == "model" } == true)
+            let v2Properties = (v2Body?["dataSchema"] as? [String: Any])?["properties"] as? [String: [String: Any]]
+            #expect(v2Properties?["providerId"]?["x-optionSource"] as? String == "provider")
+            #expect(v2Properties?["model"]?["x-optionSource"] as? String == "model")
             let v2Source = try await get(owner, "\(base)/runtime-forms/v2/builtin/option-sources/provider")
             #expect(v2Source.status == .ok)
             #expect(try JSONSerialization.jsonObject(with: Data((v2Source.body.string ?? "").utf8)) as? [String: Any] != nil)
@@ -105,7 +106,8 @@ import VaporTesting
             #expect(zh.status == .ok)
             #expect(zh.headers[HTTPField.Name("Content-Language")!] == "zh-CN")
             let zhBody = try JSONSerialization.jsonObject(with: Data((zh.body.string ?? "").utf8)) as? [String: Any]
-            #expect((zhBody?["fields"] as? [[String: Any]])?.first?["label"] as? String == "提供方")
+            let zhCopy = (zhBody?["uiSchema"] as? [String: Any])?["localization"] as? [String: [String: Any]]
+            #expect(zhCopy?["providerId"]?["label"] as? String == "提供方")
         }
     }
 }

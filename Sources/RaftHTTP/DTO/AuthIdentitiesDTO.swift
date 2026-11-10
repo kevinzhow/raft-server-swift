@@ -309,23 +309,24 @@ public struct UnlinkIdentityResponse: JSONBodyConvertible, Equatable {
     }
 }
 
-/// `POST /api/auth/login`.
+/// `POST /api/auth/login`. The browser uses this user immediately, before
+/// any `/me` read, so it must carry the stored verification/profile projection.
 public struct LoginResponse: JSONBodyConvertible, Equatable {
-    public let userId: String
-    public let email: String
+    public let user: AuthUserDTO
     public let accessToken: String
     public let refreshToken: String
     public let linkedProvider: String?
 
+    public var userId: String { user.id }
+    public var email: String { user.email }
+
     public init(
-        userId: String,
-        email: String,
+        user: AuthUserDTO,
         accessToken: String,
         refreshToken: String,
         linkedProvider: String?
     ) {
-        self.userId = userId
-        self.email = email
+        self.user = user
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.linkedProvider = linkedProvider
@@ -333,10 +334,7 @@ public struct LoginResponse: JSONBodyConvertible, Equatable {
 
     public var jsonBody: OrderedJSON {
         .object([
-            OrderedJSONField("user", .object([
-                OrderedJSONField("id", userId),
-                OrderedJSONField("email", email),
-            ])),
+            OrderedJSONField("user", user.jsonBody),
             OrderedJSONField("accessToken", accessToken),
             OrderedJSONField("refreshToken", refreshToken),
             OrderedJSONField("linkedProvider", optional: linkedProvider),

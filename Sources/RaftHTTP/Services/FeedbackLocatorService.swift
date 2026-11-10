@@ -177,6 +177,11 @@ public struct FeedbackLocatorService: Sendable {
         self.hashPayload = hashPayload
     }
 
+    /// Reads the retained app-owned surface identity, without a name guess.
+    func agentReminderSurfaceChannelId(agentId: String) -> String? {
+        feedback.agentReminderSurfaceChannelId(agentId: agentId)
+    }
+
     // MARK: - Credential and grant policy
 
     /// The credential/capability outcome: a missing or revoked credential is the

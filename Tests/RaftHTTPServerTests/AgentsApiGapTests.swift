@@ -198,14 +198,12 @@ private func withAgentsGapApp(
     fixture.accounts.installAgentActivityLogProviderForTesting { _, _ in .ok("[]") }
     fixture.accounts.installAgentActivitySummariesProviderForTesting { _, _, _, _ in .ok("{\"summaries\":[],\"next\":null}") }
     fixture.accounts.installAgentSkillsProviderForTesting { _ in .ok("{\"global\":[],\"workspace\":[]}") }
-    fixture.accounts.installAgentWorkspaceTreeProviderForTesting { _, _, _ in .ok("[]") }
     try await withAgentsGapApp(fixture) { client, ownerHeaders, creatorHeaders, adminHeaders in
         let viewer = try await agentsGapLogin(client, fixture.viewerEmail)
         let viewerHeaders = agentsGapHeaders(viewer, fixture.serverId)
         for route in [
             "/api/agents/\(fixture.agentId)/activity-log",
             "/api/agents/\(fixture.agentId)/activity-summaries",
-            "/api/agents/\(fixture.agentId)/workspace-files",
             "/api/agents/\(fixture.agentId)/skills",
         ] {
             let denied = try await client.get(URI(string: route), headers: viewerHeaders)
@@ -215,68 +213,39 @@ private func withAgentsGapApp(
                 #expect(allowed.status == .ok, "\(route) creator/admin")
             }
         }
+        // Successful owner/creator/admin workspace queries now use real PG/NIO.
+        let workspaceRoute = "/api/agents/\(fixture.agentId)/workspace-files"
+        #expect(try await client.get(URI(string: workspaceRoute), headers: viewerHeaders).status == .forbidden)
+        for headers in [ownerHeaders, creatorHeaders, adminHeaders] {
+            let unbound = try await client.get(URI(string: workspaceRoute), headers: headers)
+            #expect(unbound.status == .conflict)
+            #expect(agentsGapObject(unbound)["code"] as? String == "machine_offline")
+        }
     }
 }
 
 // MARK: - Workspace files (upstream 5288, 5327)
 
-@Test func agentWorkspaceFilesForwardsTreeOptionsAndClassifiesFailures() async throws {
+@Test func agentWorkspaceFilesWithoutProductionBridgeReturnTruthfulRefusals() async throws {
     let fixture = makeAgentsGapFixture(5203)
-    let recorder = AgentsGapRecorder()
-    fixture.accounts.installAgentWorkspaceTreeProviderForTesting { agentId, dirPath, includeHidden in
-        recorder.record("tree|\(agentId)|\(dirPath ?? "nil")|\(includeHidden)")
-        return .ok("[{\"name\":\".gitignore\",\"path\":\".gitignore\",\"isDirectory\":false,\"size\":12,\"isHidden\":true}]")
-    }
+    // Successful hidden-tree/read and real timeout responses moved to the one
+    // production PG/NIO scene; no legacy callback stands in for a connection.
     try await withAgentsGapApp(fixture) { client, _, creatorHeaders, _ in
-        let listed = try await client.get(
-            URI(string: "/api/agents/\(fixture.agentId)/workspace-files?dirPath=notes&includeHidden=true"),
-            headers: creatorHeaders
-        )
-        #expect(listed.status == .ok)
-        let files = agentsGapObject(listed)["files"] as? [[String: Any]] ?? []
-        #expect(files.first?["name"] as? String == ".gitignore")
-        #expect(files.first?["isHidden"] as? Bool == true)
-        #expect(recorder.recorded == ["tree|\(fixture.agentId)|notes|true"])
-
-        fixture.accounts.installAgentWorkspaceTreeProviderForTesting { _, _, _ in .machineUnassigned }
-        let unassigned = try await client.get(
-            URI(string: "/api/agents/\(fixture.agentId)/workspace-files"),
-            headers: creatorHeaders
-        )
+        let route = "/api/agents/\(fixture.agentId)/workspace-files"
+        let offline = try await client.get(URI(string: route), headers: creatorHeaders)
+        #expect(offline.status == .conflict)
+        #expect(agentsGapObject(offline)["code"] as? String == "machine_offline")
+        #expect(agentsGapObject(offline)["error"] as? String == "Agent has no connected machine")
+        let missingPath = try await client.get(URI(string: route + "/read"), headers: creatorHeaders)
+        #expect(missingPath.status == .badRequest)
+        #expect(agentsGapObject(missingPath)["error"] as? String == "path query parameter is required")
+        let readOffline = try await client.get(URI(string: route + "/read?path=MEMORY.md"), headers: creatorHeaders)
+        #expect(readOffline.status == .conflict)
+        #expect(agentsGapObject(readOffline)["code"] as? String == "machine_offline")
+        fixture.accounts.agentsRuntimeStore.agentMachineIds.removeValue(forKey: fixture.agentId)
+        let unassigned = try await client.get(URI(string: route), headers: creatorHeaders)
         #expect(unassigned.status == .conflict)
         #expect(agentsGapObject(unassigned)["code"] as? String == "machine_unassigned")
-
-        fixture.accounts.installAgentWorkspaceTreeProviderForTesting { _, _, _ in .machineOffline }
-        let offline = try await client.get(
-            URI(string: "/api/agents/\(fixture.agentId)/workspace-files"),
-            headers: creatorHeaders
-        )
-        #expect(offline.status == .conflict)
-        let offlineBody = agentsGapObject(offline)
-        #expect(offlineBody["code"] as? String == "machine_offline")
-        #expect(offlineBody["error"] as? String == "Agent has no connected machine")
-
-        fixture.accounts.installAgentWorkspaceReadProviderForTesting { _, path in
-            recorder.record("read|\(path ?? "nil")")
-            return .ok("{\"content\":\"secret\",\"binary\":false,\"size\":6,\"mimeType\":\"text/plain\",\"encoding\":\"utf8\"}")
-        }
-        let read = try await client.get(
-            URI(string: "/api/agents/\(fixture.agentId)/workspace-files/read?path=MEMORY.md"),
-            headers: creatorHeaders
-        )
-        #expect(read.status == .ok)
-        #expect(agentsGapObject(read)["content"] as? String == "secret")
-        #expect(recorder.recorded.filter { $0.hasPrefix("read|") }.count == 1)
-
-        fixture.accounts.installAgentWorkspaceReadProviderForTesting { _, _ in .machineTimeout }
-        let timedOut = try await client.get(
-            URI(string: "/api/agents/\(fixture.agentId)/workspace-files/read?path=MEMORY.md"),
-            headers: creatorHeaders
-        )
-        #expect(timedOut.status == .init(code: 504, reasonPhrase: "Gateway Timeout"))
-        let timeoutBody = agentsGapObject(timedOut)
-        #expect(timeoutBody["code"] as? String == "daemon_timeout")
-        #expect(timeoutBody["error"] as? String == "Workspace file read request timed out")
     }
 }
 
@@ -366,62 +335,58 @@ private func withAgentsGapApp(
 
 // MARK: - RFC 071 human controls (upstream 6815)
 
-@Test func agentStartAndResetDispatchExplicitHumanControls() async throws {
+/// Unbound composition is a refusal test. Accepted human-control frames and
+/// durable reset modes are asserted by the real PG/NIO opt-in test.
+@Test func agentHumanControlsCannotReportSuccessWithoutDurableExecution() async throws {
     let fixture = makeAgentsGapFixture(5205)
-    let recorder = AgentsGapRecorder()
-    fixture.accounts.installAgentStartControlDispatchForTesting { agentId, control in
-        recorder.record("start|\(agentId)|\(control)")
-    }
-    fixture.accounts.installAgentResetDispatchForTesting { agentId, mode, control in
-        recorder.record("reset|\(agentId)|\(mode)|\(control)")
-    }
     try await withAgentsGapApp(fixture) { client, _, creatorHeaders, _ in
         let start = try await client.send(
-            .post,
-            headers: creatorHeaders,
+            .post, headers: creatorHeaders,
             to: URI(string: "/api/agents/\(fixture.agentId)/start")
         )
-        #expect(start.status == .ok)
-        #expect(recorder.recorded == ["start|\(fixture.agentId)|human_start"])
+        #expect(start.status == .internalServerError)
+        #expect(start.body.string == #"{"error":"Failed to start agent","code":"internal_error"}"#)
 
         let reset = try await client.send(
-            .post,
-            headers: creatorHeaders,
+            .post, headers: creatorHeaders,
             to: URI(string: "/api/agents/\(fixture.agentId)/reset")
         ) { request in
             request.body = .init(string: "{\"mode\":\"session\"}")
         }
-        #expect(reset.status == .accepted)
-        #expect(recorder.recorded.last == "reset|\(fixture.agentId)|session|human_reset")
+        #expect(reset.status == .internalServerError)
+        #expect(reset.body.string == #"{"error":"Failed to reset agent"}"#)
     }
 }
 
-@Test func agentPatchLiftsTerminalBreakerOnlyOnRealRuntimeChange() async throws {
+@Test func agentPatchCanonicalRuntimeValuesChangeOnlyThroughStructuredConfig() async throws {
     let fixture = makeAgentsGapFixture(5206)
-    let recorder = AgentsGapRecorder()
-    fixture.accounts.installAgentConfigLiftDispatchForTesting { agentId, changed in
-        recorder.record("lift|\(agentId)|\(changed)")
-    }
+    fixture.accounts.oauth.updateAgentRuntime(
+        id: fixture.agentId,
+        runtimeConfigJSON: "{\"version\":1,\"runtime\":\"codex\",\"model\":{\"kind\":\"preset\",\"id\":\"gpt-5.6-sol\"},\"mode\":{\"kind\":\"restart\"},\"reasoningEffort\":null,\"envVars\":{}}",
+        envVarsJSON: "{}"
+    )
     try await withAgentsGapApp(fixture) { client, _, creatorHeaders, _ in
         func patch(_ body: String) async throws -> ClientResponse {
             try await client.send(.patch, headers: creatorHeaders, to: URI(string: "/api/agents/\(fixture.agentId)")) { request in
                 request.body = .init(string: body)
             }
         }
-        // Presence alone is not a change.
-        fixture.accounts.oauth.updateAgentRuntime(
-            id: fixture.agentId,
-            runtimeConfigJSON: "{\"version\":1,\"runtime\":\"codex\",\"model\":{\"kind\":\"preset\",\"id\":\"gpt-5.6-sol\"},\"mode\":{\"kind\":\"restart\"},\"reasoningEffort\":null,\"envVars\":{}}",
-            envVarsJSON: "{}"
-        )
-        recorder.reset()
-        let sameModel = try await patch("{\"model\":\"gpt-5.6-sol\"}")
-        #expect(sameModel.status == .ok)
-        #expect(recorder.recorded.last == "lift|\(fixture.agentId)|false")
-
-        let changedEffort = try await patch("{\"reasoningEffort\":\"high\"}")
-        #expect(changedEffort.status == .ok)
-        #expect(recorder.recorded.last == "lift|\(fixture.agentId)|true")
+        // Stored canonical config takes precedence when runtimeConfig is omitted.
+        for body in ["{\"model\":\"gpt-5.6-sol\"}", "{\"reasoningEffort\":\"high\"}"] {
+            let same = try await patch(body)
+            #expect(same.status == .ok)
+            #expect(agentsGapObject(same)["model"] as? String == "gpt-5.6-sol")
+            #expect(agentsGapObject(same)["reasoningEffort"] is NSNull)
+        }
+        let changed = try await patch("{\"runtimeConfig\":{\"version\":1,\"runtime\":\"codex\",\"model\":{\"kind\":\"preset\",\"id\":\"gpt-5.6-sol\"},\"mode\":{\"kind\":\"restart\"},\"reasoningEffort\":\"high\",\"envVars\":{}}}")
+        #expect(changed.status == .ok)
+        #expect(agentsGapObject(changed)["reasoningEffort"] as? String == "high")
+        let detail = try await client.get(URI(string: "/api/agents/\(fixture.agentId)"), headers: creatorHeaders)
+        #expect(detail.status == .ok)
+        #expect(agentsGapObject(detail)["reasoningEffort"] as? String == "high")
+        #expect(agentsGapObject(detail)["model"] as? String == "gpt-5.6-sol")
+        // Actual breaker persistence and process/frame effects are qualified by
+        // postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks.
     }
 }
 
@@ -554,10 +519,22 @@ private func withAgentsGapApp(
                 request.body = .init(string: body)
             }
         }
+        // Node's upstream absent409 fixture explicitly enables the feature
+        // (agents.api.test.ts6807). This fixture keeps the real default off:
+        // malformed shape is400 before resolution; a valid ID is disabled404.
+        let before = try await client.get(URI(string: "/api/agents"), headers: creatorHeaders)
+        #expect(before.status == .ok)
+        let originalAgents = try #require(before.body.string)
         let malformed = try await create("connection:not-a-uuid")
         #expect(malformed.status == .badRequest)
+        #expect(malformed.body.string == "{\"error\":\"Runtime form values are invalid\",\"issues\":[{\"code\":\"connection_id_malformed\",\"pointer\":\"/formValues/providerId\"}]}")
+        let afterMalformed = try await client.get(URI(string: "/api/agents"), headers: creatorHeaders)
+        #expect(afterMalformed.status == .ok && afterMalformed.body.string == originalAgents)
         let absent = try await create("connection:11111111-1111-4111-8111-111111111111")
-        #expect(absent.status == .conflict)
+        #expect(absent.status == .notFound)
+        #expect(absent.body.string == "{\"error\":\"Provider connections are not enabled for this server\",\"code\":\"provider_connections_disabled\"}")
+        let afterDisabled = try await client.get(URI(string: "/api/agents"), headers: creatorHeaders)
+        #expect(afterDisabled.status == .ok && afterDisabled.body.string == originalAgents)
     }
 }
 
@@ -664,7 +641,7 @@ private func agentsGapBuiltinConfig(_ modelId: String) -> String {
         // PATCH model change: absence persists; unreadable catalog refuses with no write.
         let patch = { (model: String) async throws -> ClientResponse in
             try await client.send(.patch, headers: creatorHeaders, to: URI(string: "/api/agents/\(createdId)")) { request in
-                request.body = .init(string: "{\"model\":\"\(model)\"}")
+                request.body = .init(string: "{\"runtimeConfig\":\(agentsGapBuiltinConfig(model))}")
             }
         }
         fixture.accounts.installBuiltinModelCatalogCheckForTesting { _, _ in .catalogUnavailable }

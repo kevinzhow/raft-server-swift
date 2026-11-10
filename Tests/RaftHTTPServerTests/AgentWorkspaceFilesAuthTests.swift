@@ -51,7 +51,13 @@ import VaporTesting
             let ownerToken = try await login("workspace-owner@slock.test")
             let memberToken = try await login("workspace-member@slock.test")
             let closedToken = try await login("workspace-closed@slock.test")
-            #expect(try await client.send(.get, headers: headers(ownerToken, serverId), to: "/api/agents/\(agent)/workspace-files").status.code == 503)
+            // Node agents.ts returns 409 machine_unassigned before any RPC for
+            // this real unassigned fixture. Accepted owner/creator/admin workspace
+            // replies are asserted by postgresPublishedInventoryAndMachineQueries.
+            let unassigned = try await client.send(.get, headers: headers(ownerToken, serverId), to: "/api/agents/\(agent)/workspace-files")
+            #expect(unassigned.status == .conflict)
+            let body = try JSONSerialization.jsonObject(with: Data((unassigned.body.string ?? "").utf8)) as? [String: Any]
+            #expect(body?["code"] as? String == "machine_unassigned")
             #expect(try await client.send(.get, headers: headers(memberToken, serverId), to: "/api/agents/\(agent)/workspace-files").status == .forbidden)
             #expect(try await client.send(.get, headers: headers(memberToken, serverId), to: "/api/agents/\(agent)/workspace-files/read?path=MEMORY.md").status == .forbidden)
             #expect(try await client.send(.get, headers: headers(closedToken, otherServerId), to: "/api/agents/\(agent)/workspace-files").status == .notFound)

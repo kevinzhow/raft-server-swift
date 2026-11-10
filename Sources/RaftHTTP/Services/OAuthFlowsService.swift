@@ -64,7 +64,7 @@ public struct OAuthFlowsService: Sendable {
     // MARK: - Web start and link start
 
     /// `GET /api/auth/:provider/start`. Apple stays closed until its web platform rule is allowed.
-    public func startWebOAuth(provider: String, returnTo: String?, linkOnConflict: Bool = false) throws -> OAuthRedirect {
+    public func startWebOAuth(provider: String, returnTo: String?, linkOnConflict: Bool = false) async throws -> OAuthRedirect {
         guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
@@ -74,7 +74,7 @@ public struct OAuthFlowsService: Sendable {
         }
         let nonce = AuthTokenCodec.randomHex(16)
         let safeReturn = AuthRedirects.sanitizeReturnTo(returnTo)
-        let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
+        let state = try await AuthTokenCodec.signSocialAuthState(SocialAuthState(
             provider: provider,
             mode: "login",
             nonce: nonce,
@@ -83,7 +83,7 @@ public struct OAuthFlowsService: Sendable {
             desktopNonce: nil,
             returnTo: safeReturn,
             linkOnConflict: linkOnConflict
-        ))
+        ), secret: config.socialAuthStateSecret)
         return OAuthRedirect(
             location: Self.webAuthorizationURL(provider: provider, state: state, nonce: nonce, config: config),
             cookie: Self.stateCookie(provider: provider, nonce: nonce, config: config)
@@ -95,7 +95,7 @@ public struct OAuthFlowsService: Sendable {
         provider: String,
         body: WebOAuthLinkStartRequest,
         authorization: String?
-    ) throws -> WebOAuthLinkStarted {
+    ) async throws -> WebOAuthLinkStarted {
         guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
@@ -106,7 +106,7 @@ public struct OAuthFlowsService: Sendable {
         }
         let nonce = AuthTokenCodec.randomHex(16)
         let safeReturn = AuthRedirects.sanitizeReturnTo(body.returnTo)
-        let state = AuthTokenCodec.signSocialAuthState(SocialAuthState(
+        let state = try await AuthTokenCodec.signSocialAuthState(SocialAuthState(
             provider: provider,
             mode: "link",
             nonce: nonce,
@@ -115,7 +115,7 @@ public struct OAuthFlowsService: Sendable {
             desktopNonce: nil,
             returnTo: safeReturn,
             linkUserId: userId
-        ))
+        ), secret: config.socialAuthStateSecret)
         return WebOAuthLinkStarted(
             url: Self.webAuthorizationURL(provider: provider, state: state, nonce: nonce, config: config),
             cookie: Self.stateCookie(provider: provider, nonce: nonce, config: config)
@@ -129,22 +129,22 @@ public struct OAuthFlowsService: Sendable {
     /// The body is a form post (`application/x-www-form-urlencoded`), not JSON,
     /// and the legacy field parser does not fold `+` into a space, so it stays
     /// raw text rather than going through a typed content decoder.
-    public func webOAuthCallback(provider: String, body: String, cookie: String?) throws -> OAuthRedirect {
+    public func webOAuthCallback(provider: String, body: String, cookie: String?) async throws -> OAuthRedirect {
         guard AuthRedirects.socialProviders.contains(provider) else {
             throw OAuthFlowsError.notFound
         }
+        let config = store.config()
         let fields = FormPayload.formFields(body)
         if let stateToken = fields["state"],
-           let parsed = AuthTokenCodec.verifySocialAuthState(stateToken),
+           let parsed = await AuthTokenCodec.verifySocialAuthState(stateToken, secret: config.socialAuthStateSecret),
            parsed.kind == "mobile" {
-            return try mobileOAuthCallback(
+            return try await mobileOAuthCallback(
                 provider: provider,
                 code: fields["code"],
                 state: stateToken,
                 providerError: fields["error"]
             )
         }
-        let config = store.config()
         let appURL = config.appURL
         let invalid = OAuthRedirect(location: AuthRedirects.socialCallbackURL(
             appURL: appURL,
@@ -154,7 +154,7 @@ public struct OAuthFlowsService: Sendable {
             error: "This sign-in link is invalid or expired. Please try again."
         ))
         guard let stateToken = fields["state"],
-              let state = AuthTokenCodec.verifySocialAuthState(stateToken),
+              let state = await AuthTokenCodec.verifySocialAuthState(stateToken, secret: config.socialAuthStateSecret),
               state.kind != "mobile",
               state.provider == provider,
               state.mode == "login" || state.mode == "link"
@@ -223,7 +223,7 @@ public struct OAuthFlowsService: Sendable {
     // MARK: - Native Apple
 
     /// `POST /api/auth/mobile/oauth/apple/native/start`. No browser URL is returned. Link mode requires the owner before a row is written.
-    public func startNativeApple(_ body: NativeAppleStartRequest, authorization: String? = nil) throws -> NativeAppleStarted {
+    public func startNativeApple(_ body: NativeAppleStartRequest, authorization: String? = nil) async throws -> NativeAppleStarted {
         let config = store.config()
         guard Self.nativeAppleAvailable(config) else { throw OAuthFlowsError.appleNotConfigured }
         let appEnv = body.appEnv?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -250,6 +250,14 @@ public struct OAuthFlowsService: Sendable {
         }
         let id = UUID().uuidString.lowercased()
         let expiresAt = now().addingTimeInterval(600)
+        let token = try await AuthTokenCodec.signNativeAppleRequestToken(
+            secret: config.nativeAppleStateSecret,
+            requestId: id,
+            mode: mode,
+            codeChallenge: challenge,
+            expiresAt: expiresAt,
+            userId: linkUserId
+        )
         store.insertMobileRequest(MobileOAuthRequest(
             id: id,
             provider: "apple",
@@ -261,14 +269,6 @@ public struct OAuthFlowsService: Sendable {
             expiresAt: expiresAt,
             userId: linkUserId
         ))
-        let token = AuthTokenCodec.signNativeAppleRequestToken(
-            secret: config.nativeAppleStateSecret,
-            requestId: id,
-            mode: mode,
-            codeChallenge: challenge,
-            expiresAt: expiresAt,
-            userId: linkUserId
-        )
         return NativeAppleStarted(
             requestId: id,
             requestToken: token,
@@ -293,7 +293,7 @@ public struct OAuthFlowsService: Sendable {
             throw OAuthFlowsError.nativeAppleInvalidCredential
         }
         let claims: NativeAppleRequestClaims
-        switch AuthTokenCodec.verifyNativeAppleRequestToken(requestToken, secret: config.nativeAppleStateSecret) {
+        switch await AuthTokenCodec.verifyNativeAppleRequestToken(requestToken, secret: config.nativeAppleStateSecret) {
         case .expired:
             throw OAuthFlowsError.nativeAppleRequestExpired
         case .invalid:
@@ -335,8 +335,8 @@ public struct OAuthFlowsService: Sendable {
         )
         let exchangedToken = await config.exchangeNativeAppleCode?(exchange)
         guard let exchangedToken, !exchangedToken.isEmpty,
-              let supplied = AuthTokenCodec.parseAppleIdentity(identityToken, clientId: config.nativeAppleClientId),
-              let exchanged = AuthTokenCodec.parseAppleIdentity(exchangedToken, clientId: config.nativeAppleClientId),
+              let supplied = await AuthTokenCodec.verifyAppleIdentity(identityToken, clientId: config.nativeAppleClientId, trustedJWKS: config.nativeAppleTrustedJWKS),
+              let exchanged = await AuthTokenCodec.verifyAppleIdentity(exchangedToken, clientId: config.nativeAppleClientId, trustedJWKS: config.nativeAppleTrustedJWKS),
               supplied.subject == exchanged.subject,
               supplied.nonce == challenge,
               exchanged.nonce == challenge

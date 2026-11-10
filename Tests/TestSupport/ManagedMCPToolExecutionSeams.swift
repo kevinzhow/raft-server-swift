@@ -56,6 +56,8 @@ extension EmailLoginDirectory {
 
     public func seedDMForTesting(serverId: String, humanUserId: String, agentId: String, name: String = "dm") -> String {
         let channelId = oauth.createDirectChannel(serverId: serverId, firstUserId: humanUserId, secondUserId: agentId)
+        oauth.removeChannelHuman(channelId: channelId, userId: agentId)
+        oauth.addChannelAgent(channelId: channelId, agentId: agentId)
         serversAndChannelsStore.addPostableChannel(serverId: serverId, channelId: channelId, memberId: agentId, kind: "dm", name: name)
         serversAndChannelsStore.addPostableChannel(serverId: serverId, channelId: channelId, memberId: humanUserId, kind: "dm", name: name)
         oauth.addChannelHuman(channelId: channelId, userId: humanUserId)

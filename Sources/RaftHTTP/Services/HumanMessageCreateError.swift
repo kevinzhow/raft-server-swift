@@ -37,6 +37,13 @@ public enum HumanMessageCreateError: DomainError, Equatable {
     case forwardIdempotencyConflict
     case sourceMessageNotFound
     case mustJoinChannel
+    // Public ForwardRequestError codes belong only to the Forward path.
+    case forwardMessageNotFound
+    case forwardSourceNotFound
+    case forwardDestinationNotFound
+    case forwardDestinationMembershipRequired
+    case forwardCrossServerSource
+    case forwardUnsupportedSource
     case forwardedSourceNotSupported
     case unsupportedSourceMessage
     case crossSourceBundle
@@ -46,16 +53,19 @@ public enum HumanMessageCreateError: DomainError, Equatable {
         switch self {
         case .authRequired, .missingAuthorization, .invalidToken, .unauthorized:
             401
-        case .emailVerificationRequired, .notServerMember, .forbidden, .mustJoinChannel:
+        case .emailVerificationRequired, .notServerMember, .forbidden, .mustJoinChannel,
+             .forwardDestinationMembershipRequired:
             403
-        case .channelNotFound, .sourceMessageNotFound:
+        case .channelNotFound, .sourceMessageNotFound, .forwardMessageNotFound,
+             .forwardSourceNotFound, .forwardDestinationNotFound:
             404
         case .channelArchived, .forwardIdempotencyConflict:
             409
         case .invalidMessageBody, .referencesNotEnabled, .appNotInstalled, .mentionBindingConflict,
              .invalidRandomId, .actionMustBeNotifyOrAdd, .resolutionIdsRequired,
              .missingServerIdHeader, .forwardInvalidRequest, .messageTooLong,
-             .forwardedSourceNotSupported, .unsupportedSourceMessage, .crossSourceBundle:
+             .forwardedSourceNotSupported, .unsupportedSourceMessage, .crossSourceBundle,
+             .forwardCrossServerSource, .forwardUnsupportedSource:
             400
         case .messageWriteRejected(let status, _):
             status
@@ -78,7 +88,7 @@ public enum HumanMessageCreateError: DomainError, Equatable {
             "Not a member of this server"
         case .invalidMessageBody:
             "Invalid message request body"
-        case .channelNotFound:
+        case .channelNotFound, .forwardDestinationNotFound:
             "Channel not found"
         case .forbidden:
             "Forbidden"
@@ -104,10 +114,16 @@ public enum HumanMessageCreateError: DomainError, Equatable {
             "Message content exceeds maximum length of 32000 characters"
         case .forwardIdempotencyConflict:
             "This forward request id was already used for different content"
-        case .sourceMessageNotFound:
+        case .sourceMessageNotFound, .forwardSourceNotFound:
             "Source message not found"
-        case .mustJoinChannel:
+        case .forwardMessageNotFound:
+            "Message not found"
+        case .mustJoinChannel, .forwardDestinationMembershipRequired:
             "You must join this channel to send messages"
+        case .forwardCrossServerSource:
+            "Forwarding across servers is not supported"
+        case .forwardUnsupportedSource:
+            "Forwarding from this thread is not supported"
         case .forwardedSourceNotSupported:
             "Forwarded messages can't be forwarded. Select the original message instead."
         case .unsupportedSourceMessage:
@@ -135,6 +151,14 @@ public enum HumanMessageCreateError: DomainError, Equatable {
             "unsupported_source_message"
         case .crossSourceBundle:
             "cross_source_bundle"
+        case .forwardMessageNotFound, .forwardSourceNotFound:
+            "source_not_found"
+        case .forwardDestinationNotFound, .forwardDestinationMembershipRequired:
+            "destination_unavailable"
+        case .forwardCrossServerSource:
+            "cross_server_source"
+        case .forwardUnsupportedSource:
+            "unsupported_source"
         case .unauthorized, .emailVerificationRequired, .notServerMember, .invalidMessageBody,
              .channelNotFound, .forbidden, .referencesNotEnabled, .appNotInstalled,
              .invalidRandomId, .actionMustBeNotifyOrAdd, .resolutionIdsRequired,
@@ -155,7 +179,9 @@ public enum HumanMessageCreateError: DomainError, Equatable {
              .resolutionIdsRequired, .missingServerIdHeader, .forwardInvalidRequest,
              .messageTooLong, .forwardIdempotencyConflict, .sourceMessageNotFound,
              .mustJoinChannel, .forwardedSourceNotSupported, .unsupportedSourceMessage,
-             .crossSourceBundle:
+             .crossSourceBundle, .forwardMessageNotFound, .forwardSourceNotFound,
+             .forwardDestinationNotFound, .forwardDestinationMembershipRequired,
+             .forwardCrossServerSource, .forwardUnsupportedSource:
             nil
         }
     }
@@ -172,7 +198,9 @@ public enum HumanMessageCreateError: DomainError, Equatable {
              .actionMustBeNotifyOrAdd, .resolutionIdsRequired, .missingServerIdHeader,
              .forwardInvalidRequest, .messageTooLong, .forwardIdempotencyConflict,
              .sourceMessageNotFound, .mustJoinChannel, .forwardedSourceNotSupported,
-             .unsupportedSourceMessage, .crossSourceBundle, .messageWriteRejected:
+             .unsupportedSourceMessage, .crossSourceBundle, .messageWriteRejected,
+             .forwardMessageNotFound, .forwardSourceNotFound, .forwardDestinationNotFound,
+             .forwardDestinationMembershipRequired, .forwardCrossServerSource, .forwardUnsupportedSource:
             [:]
         }
     }

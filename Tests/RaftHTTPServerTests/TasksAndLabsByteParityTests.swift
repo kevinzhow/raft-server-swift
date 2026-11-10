@@ -62,7 +62,11 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             let row = (try JSONSerialization.jsonObject(with: Data((list.body.string ?? "").utf8))
                 as? [String: Any])?["tasks"] as? [[String: Any]]
             let messageId = row?.first?["messageId"] as? String ?? ""
-            let taskRow = "{\"id\":\"\(taskId)\",\"channelId\":\"\(channelId)\",\"messageId\":\"\(messageId)\",\"title\":\"Write bytes\",\"status\":\"todo\",\"taskNumber\":1,\"claimedById\":null,\"claimedByType\":null,\"claimedAt\":null,\"revision\":0}"
+            // Node canonical task reads always publish description, including
+            // null. Keep these literals source-derived, not captured Swift output.
+            let taskCreatedAt = try #require(row?.first?["createdAt"] as? String)
+            #expect(!taskCreatedAt.isEmpty)
+            let taskRow = #"{"id":"\#(taskId)","messageId":"\#(messageId)","channelId":"\#(channelId)","channelName":"tl-bytes","channelType":"channel","taskNumber":1,"title":"Write bytes","description":null,"status":"todo","createdByType":null,"createdById":null,"createdByName":null,"createdByMembershipStatus":null,"claimedByType":null,"claimedById":null,"claimedByName":null,"claimedAt":null,"completedAt":null,"requiresResourceReceipt":false,"resourceReceipt":null,"resourceReceiptRecordedAt":null,"resourceTeardownOwnerAgentId":null,"resourceExpiryFollowupId":null,"createdAt":"\#(taskCreatedAt)","updatedAt":null,"revision":0,"taskCurrentProjection":{"title":"Write bytes","description":null,"revision":0,"superseded":false,"amendedAt":null,"amendedByType":null,"amendedByName":null,"source":"tasks_current_projection"},"isLegacy":false}"#
             assertJSONHeaders(list, body: "{\"tasks\":[\(taskRow)]}")
 
             let number = try await client.send(.get, headers: headers, to: "/api/tasks/channel/\(channelId)/number/1")
@@ -78,7 +82,8 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             assertJSONHeaders(missingNumber, body: "{\"error\":\"Task not found\"}")
             let anonymous = try await client.send(.get, headers: HTTPFields(), to: "/api/tasks/channel/\(channelId)")
             #expect(anonymous.status == .unauthorized)
-            assertJSONHeaders(anonymous, body: "{\"error\":\"Unauthorized\"}")
+            assertJSONHeaders(anonymous, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(anonymous.headers[.cacheControl] == "private, no-store")
 
             // `PATCH /api/tasks/:id/assignee`: a stale revision names the current one.
             var json = headers
@@ -102,15 +107,17 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
                 request.body = .init(string: "{\"assignee\":{\"type\":\"user\",\"id\":\"\(memberId)\"},\"expectedRevision\":0}")
             }
             #expect(assigned.status == .ok)
-            assertJSONHeaders(
-                assigned,
-                body: "{\"id\":\"\(taskId)\",\"channelId\":\"\(channelId)\",\"messageId\":\"\(messageId)\",\"title\":\"Write bytes\",\"status\":\"todo\",\"taskNumber\":1,\"claimedById\":\"\(memberId)\",\"claimedByType\":\"user\",\"claimedAt\":null,\"revision\":1}"
-            )
+            let createdAt = jsonField(assigned, ["task", "createdAt"])
+            let updatedAt = jsonField(assigned, ["task", "updatedAt"])
+            #expect(!createdAt.isEmpty)
+            #expect(!updatedAt.isEmpty)
+            let expectedAssignment = #"{"task":{"id":"\#(taskId)","messageId":"\#(messageId)","channelId":"\#(channelId)","channelName":"tl-bytes","channelType":"channel","taskNumber":1,"title":"Write bytes","description":null,"status":"todo","createdByType":null,"createdById":null,"createdByName":null,"createdByMembershipStatus":null,"claimedByType":"user","claimedById":"\#(memberId)","claimedByName":"tl-bytes-member","claimedAt":null,"completedAt":null,"requiresResourceReceipt":false,"resourceReceipt":null,"resourceReceiptRecordedAt":null,"resourceTeardownOwnerAgentId":null,"resourceExpiryFollowupId":null,"createdAt":"\#(createdAt)","updatedAt":"\#(updatedAt)","revision":1,"taskCurrentProjection":{"title":"Write bytes","description":null,"revision":1,"superseded":false,"amendedAt":null,"amendedByType":null,"amendedByName":null,"source":"tasks_current_projection"},"isLegacy":false}}"#
+            assertJSONHeaders(assigned, body: expectedAssignment)
             let sameAssignee = try await client.send(.patch, headers: json, to: "/api/tasks/\(taskId)/assignee") { request in
                 request.body = .init(string: "{\"assignee\":{\"type\":\"user\",\"id\":\"\(memberId)\"}}")
             }
             #expect(sameAssignee.status == .ok)
-            #expect(sameAssignee.body.string?.hasSuffix("\"revision\":1}") == true)
+            assertJSONHeaders(sameAssignee, body: expectedAssignment)
         }
     }
 }
@@ -149,9 +156,8 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
 
             let anonymous = try await client.send(.post, headers: HTTPFields(), to: "/api/channels/\(channelId)/archive")
             #expect(anonymous.status == .unauthorized)
-            #expect(anonymous.body.string
-                == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
-            #expect(anonymous.headers[HTTPField.Name("Cache-Control")!] == "no-store")
+            assertJSONHeaders(anonymous, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(anonymous.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
             let stale = try await client.send(.post, headers: headers("bad-token"), to: "/api/channels/\(channelId)/archive")
             #expect(stale.body.string == "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
 

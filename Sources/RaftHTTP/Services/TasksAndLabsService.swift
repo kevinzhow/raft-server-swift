@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 /// Domain failure for the server task routes: the channel task reads, the
 /// assignee write and the agent task amend.
@@ -90,6 +91,7 @@ public struct TasksAndLabsService: Sendable {
     private let tasks: TasksAndRemindersStore
     private let agentTasks: ActionCardExecuteService
     private let feedbackLocators: FeedbackLocatorService
+    private let producer: AgentExecutionTaskProducer
     private let now: @Sendable () -> Date
 
     /// The session lookup belongs to the auth domain and enters as a closure; the
@@ -101,6 +103,11 @@ public struct TasksAndLabsService: Sendable {
         tasks: TasksAndRemindersStore,
         agentTasks: ActionCardExecuteService,
         feedbackLocators: FeedbackLocatorService,
+        messages: MessagesAndThreadsStore,
+        channels: ServersAndChannelsStore,
+        profiles: AuthProfileStore,
+        flags: AgentsRuntimeStore,
+        execution: AgentExecutionService? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.sessionUserId = sessionUserId
@@ -108,6 +115,7 @@ public struct TasksAndLabsService: Sendable {
         self.tasks = tasks
         self.agentTasks = agentTasks
         self.feedbackLocators = feedbackLocators
+        self.producer = AgentExecutionTaskProducer(messages: messages, channels: channels, profiles: profiles, oauth: oauth, flags: flags, execution: execution)
         self.now = now
     }
 
@@ -118,18 +126,18 @@ public struct TasksAndLabsService: Sendable {
     /// invisible.
     static func channelAccess(
         oauth: OAuthLedger,
+        channels: ServersAndChannelsStore,
+        messages: MessagesAndThreadsStore,
+        flags: AgentsRuntimeStore,
         serverId: String,
         channelId: String,
         userId: String
     ) -> TaskChannelAccess {
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
-            return .missing
-        }
-        if oauth.isChannelParticipant(channelId: channelId, userId: userId) {
-            return .write
-        }
-        let type = oauth.channelType(id: channelId) ?? "channel"
-        return type == "channel" ? .readOnly : .missing
+        let reads = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: flags)
+        guard reads.authority(channelId: channelId, serverId: serverId, userId: userId) != nil else { return .missing }
+        // Node authorizeTaskAction makes Guest read-only for every mutation.
+        if oauth.memberRole(serverId: serverId, userId: userId) == "guest" { return .readOnly }
+        return oauth.isChannelParticipant(channelId: channelId, userId: userId) ? .write : .readOnly
     }
 
     /// The `?status=` filter: no occurrence is no filter, more than one or an
@@ -158,7 +166,8 @@ public struct TasksAndLabsService: Sendable {
         rawQuery: String?
     ) throws -> ChannelTaskListResponse {
         guard let userId = sessionUserId(authorization) else { throw TasksAndLabsError.unauthorized }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+        guard !serverId.isEmpty else { throw MessageSendError.missingServerId }
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId) else {
             throw TasksAndLabsError.notAMember
         }
         let status: String?
@@ -166,12 +175,15 @@ public struct TasksAndLabsService: Sendable {
         case .invalid: throw TasksAndLabsError.invalidTaskStatus
         case .valid(let value): status = value
         }
-        switch Self.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId) {
+        switch Self.channelAccess(oauth: oauth, channels: producer.channels, messages: producer.messages, flags: producer.flags, serverId: serverId, channelId: channelId, userId: userId) {
         case .missing: throw TasksAndLabsError.channelNotFound
         case .readOnly, .write: break
         }
-        let rows = tasks.tasks(channelId: channelId, status: status)
-        return ChannelTaskListResponse(tasks: rows.map(ActionCardTaskPayload.init))
+        guard let surface = producer.surfaces(for: channelId).first(where: { $0.channelId == channelId && $0.serverId == serverId }) else {
+            throw TasksAndLabsError.channelNotFound
+        }
+        let rows = tasks.tasks(channelId: producer.storageChannelId(channelId), status: status)
+        return ChannelTaskListResponse(tasks: rows.map { producer.project($0, to: surface).projection })
     }
 
     // MARK: - GET /api/tasks/channel/:channelId/number/:taskNumber
@@ -183,17 +195,19 @@ public struct TasksAndLabsService: Sendable {
         taskNumber: Int
     ) throws -> ChannelTaskResponse {
         guard let userId = sessionUserId(authorization) else { throw TasksAndLabsError.unauthorized }
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+        guard !serverId.isEmpty else { throw MessageSendError.missingServerId }
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId) else {
             throw TasksAndLabsError.notAMember
         }
-        switch Self.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId) {
+        switch Self.channelAccess(oauth: oauth, channels: producer.channels, messages: producer.messages, flags: producer.flags, serverId: serverId, channelId: channelId, userId: userId) {
         case .missing: throw TasksAndLabsError.channelNotFound
         case .readOnly, .write: break
         }
-        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+        guard let surface = producer.surfaces(for: channelId).first(where: { $0.channelId == channelId && $0.serverId == serverId }),
+              let task = tasks.task(channelId: producer.storageChannelId(channelId), taskNumber: taskNumber) else {
             throw TasksAndLabsError.taskNotFound
         }
-        return ChannelTaskResponse(task: ActionCardTaskPayload(task))
+        return ChannelTaskResponse(task: producer.project(task, to: surface).projection)
     }
 
     // MARK: - POST /internal/agent-api/tasks/amend
@@ -244,6 +258,12 @@ public struct TasksAndLabsService: Sendable {
         return .amended(ActionCardTaskPayload(task))
     }
 
+    public func bindingExecution(_ execution: AgentExecutionService?) -> Self {
+        Self(sessionUserId: sessionUserId, oauth: oauth, tasks: tasks, agentTasks: agentTasks,
+             feedbackLocators: feedbackLocators, messages: producer.messages, channels: producer.channels,
+             profiles: producer.profiles, flags: producer.flags, execution: execution, now: now)
+    }
+
     // MARK: - PATCH /api/tasks/:taskId/assignee
 
     /// Reassigns (or clears) one task.
@@ -256,8 +276,22 @@ public struct TasksAndLabsService: Sendable {
         serverId: String,
         taskId: String,
         body: TaskAssigneePatchRequest?
-    ) throws -> ActionCardTaskPayload {
+    ) throws -> CanonicalTaskResponse {
         guard let userId = sessionUserId(authorization) else { throw TasksAndLabsError.unauthorized }
+        guard !serverId.isEmpty else { throw MessageSendError.missingServerId }
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId) else {
+            throw TasksAndLabsError.notAMember
+        }
+        guard let existing = tasks.task(id: taskId),
+              let local = producer.readableTaskSurface(existing, serverId: serverId, userId: userId)
+        else { throw TasksAndLabsError.taskNotFound }
+        if producer.channels.postableChannel(id: local.channelId)?.deletedAt != nil {
+            throw ManagedMCPAssignmentsError.channelDeletedTerminalOnly
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != "guest",
+              oauth.isChannelParticipant(channelId: local.channelId, userId: userId)
+        else { throw ManagedMCPAssignmentsError.joinChannelToChangeTasks }
+        guard oauth.channelArchivedAt(id: local.channelId) == nil else { throw ChannelMembershipError.channelArchived }
         guard let body else { throw TasksAndLabsError.invalidAssignment }
         let assignee: (type: String, id: String)?
         switch body.assignee {
@@ -271,36 +305,26 @@ public struct TasksAndLabsService: Sendable {
         case .value(let value): expectedRevision = value
         case .invalid: throw TasksAndLabsError.expectedRevisionNotInteger
         }
-        guard let existing = tasks.task(id: taskId) else { throw TasksAndLabsError.taskNotFound }
-        let channelId = existing.channelId
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            throw TasksAndLabsError.notAMember
-        }
-        if (oauth.channelType(id: channelId) ?? "channel") != "channel",
-           !oauth.isChannelParticipant(channelId: channelId, userId: userId) {
-            throw TasksAndLabsError.taskNotFound
-        }
+        let channelId = local.channelId
         if let assignee {
-            if assignee.type == "user" {
-                guard oauth.isChannelParticipant(channelId: channelId, userId: assignee.id),
-                      oauth.memberRole(serverId: serverId, userId: assignee.id) != nil
-                else {
-                    throw TasksAndLabsError.assigneeNotInChannel
-                }
-            } else {
-                guard let agent = oauth.agentRuntimeInfo(id: assignee.id),
-                      agent.serverId == serverId, !agent.deleted
-                else {
-                    throw TasksAndLabsError.assigneeNotInChannel
-                }
-            }
+            guard producer.assigneeEligible(type: assignee.type, id: assignee.id,
+                taskChannelId: existing.channelId, local: local)
+            else { throw TasksAndLabsError.assigneeNotInChannel }
+        }
+        guard let noticeSurface = producer.assignmentNoticeSurface(taskChannelId: existing.channelId,
+            assigneeType: assignee?.type, assigneeId: assignee?.id, caller: local)
+        else { throw TasksAndLabsError.assigneeNotInChannel }
+        let surfaces = producer.surfaces(for: channelId)
+        if let assignee, assignee.type == "agent", oauth.agentRuntimeInfo(id: assignee.id)?.runtime == "codex",
+           existing.assigneeId != assignee.id || existing.assigneeType != assignee.type {
+            try producer.requireDeliveryTransaction(surfaces: [], assigneeId: assignee.id)
         }
         switch tasks.reassign(
             taskId: taskId,
             assigneeId: assignee?.id,
             assigneeType: assignee?.type,
             expectedRevision: expectedRevision,
-            actorId: userId
+            actorId: userId, now: now()
         ) {
         case .notFound:
             throw TasksAndLabsError.taskNotFound
@@ -308,8 +332,25 @@ public struct TasksAndLabsService: Sendable {
             throw TasksAndLabsError.doneTaskCannotBeReassigned
         case .conflict(let currentRevision):
             throw TasksAndLabsError.taskChangedConcurrently(currentRevision: currentRevision)
-        case .unchanged(let task), .reassigned(let task):
-            return ActionCardTaskPayload(task)
+        case .unchanged(let task):
+            return CanonicalTaskResponse(task: producer.project(task, to: local))
+        case .reassigned(let task):
+            do {
+                let relay = RealtimeRelayService(messages: producer.messages)
+                for surface in surfaces {
+                    let payload = OrderedJSON.object([.init("channelId", surface.channelId), .init("task", producer.project(task, to: surface).jsonBody)])
+                    try AgentExecutionPublication.publish(room: "channel:\(surface.channelId)", event: "task:updated",
+                        identity: "\(task.id):\(task.revision)", payloadJSON: payload.render(), emit: { relay.emit($0, $1, $2) })
+                }
+                try producer.assignmentNotice(task: task, surface: noticeSurface, actorId: userId)
+            } catch {
+                DeferredEffects.markRollbackOnly()
+                if let error = error as? AgentExecutionError {
+                    throw AgentExecutionProducerError(operation: "assign task", underlying: error)
+                }
+                throw error
+            }
+            return CanonicalTaskResponse(task: producer.project(task, to: local))
         }
     }
 }

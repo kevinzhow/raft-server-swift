@@ -270,6 +270,8 @@ struct MachineRecord: Sendable {
         var hostname: String? = nil
         var lastSeenAt: Date? = nil
         var runtimes: [String] = []
+        var runtimeVersions: [String: String] = [:]
+        var runtimeDetection: MachineRuntimeDetectionFact? = nil
     }
 
 struct UserOnboarding: Sendable {

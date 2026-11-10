@@ -161,7 +161,9 @@ import VaporTesting
                 headers: headers(nil)
             )
             #expect(unauthenticated.status == .unauthorized)
-            #expect(unauthenticated.body.string == #"{"error":"Unauthorized"}"#)
+            #expect(unauthenticated.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(unauthenticated.headers[.contentLength] == "74")
+            #expect(unauthenticated.headers[.cacheControl] == "private, no-store")
 
             let denied = try await client.send(
                 .post,

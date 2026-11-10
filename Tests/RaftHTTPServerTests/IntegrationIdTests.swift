@@ -1,3 +1,4 @@
+import TestSupport
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -35,6 +36,7 @@ private func encodeURIComponent(_ value: String) -> String {
 }
 
 @Test func malformedIntegrationIdsAreClean404s() async throws {
+    let accounts = publicServerAuthAccounts([(userId: "11111111-1111-4111-8111-111111111111", token: "token")])
     let swallowed = encodeURIComponent("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee这条你是不是没收到")
     let headers: HTTPFields = [
         .authorization: "Bearer token",
@@ -51,7 +53,8 @@ private func encodeURIComponent(_ value: String) -> String {
         configure(app, services: FallbackServices(
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
-            pingDatabase: {}
+            pingDatabase: {},
+            emailAccounts: accounts
         ))
         try await app.testing { client in
             for bad in ["not-a-uuid", swallowed] {

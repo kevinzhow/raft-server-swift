@@ -1,3 +1,4 @@
+import TestSupport
 import Crypto
 import Foundation
 import HTTPTypes
@@ -83,7 +84,7 @@ private func publicBytesServices(
     let directory = PublicServerDirectory()
     _ = directory.addServer(id: "srv", name: "Settings", slug: "settings", ownerId: "owner", ownerToken: "owner-token")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: publicServerAuthAccounts([("owner", "owner-token")])))
         try await app.testing { client in
             for (body, expected) in [
                 (#"{"publiclyVisible":false,"publiclyVisible":1}"#, true),
@@ -105,8 +106,10 @@ private func publicBytesServices(
             let anonymous = try await client.send(.patch, headers: [.contentType: "application/json"], to: "/api/servers/srv/public-visibility") {
                 $0.body = .init(string: #"{"publiclyVisible":"invalid"}"#)
             }
-            #expect(anonymous.status == .forbidden)
-            #expect(anonymous.body.string == #"{"error":"Only the server owner can manage public visibility"}"#)
+            #expect(anonymous.status == .unauthorized)
+            #expect(anonymous.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(anonymous.headers[.contentLength] == "74")
+            #expect(anonymous.headers[.cacheControl] == "private, no-store")
         }
     }
 }

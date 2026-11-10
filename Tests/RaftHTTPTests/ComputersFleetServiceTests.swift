@@ -55,11 +55,13 @@ private func bearer(_ accounts: EmailLoginDirectory) -> String {
         id: "m", name: "n", userId: "u", description: "d", isComputer: true,
         computerAttachedByCurrentUser: false, agentCount: 2,
         creator: ServerMachineCreator(id: "u", name: "un", displayName: nil, avatarUrl: nil, gravatarHash: "h"),
+        status: "offline", statusVersion: 17,
         runtimes: ["claude"], computerUpgradeAvailable: false,
-        computerBroadcastPolicy: .raw(#"{"eligibility":"eligible"}"#)
+        computerBroadcastPolicy: .raw(#"{"eligibility":"eligible"}"#),
+        hostname: "stored-host", lastHeartbeat: "2026-01-01T00:00:00.000Z"
     )
     #expect(ServerMachinesResponse(machines: [entry], latestComputerVersion: "1.2.3", latestComputerReleaseNotesJSON: #"["a"]"#).jsonBody.render()
-        == #"{"machines":[{"id":"m","name":"n","userId":"u","description":"d","isComputer":true,"computerAttachedByCurrentUser":false,"agentCount":2,"creator":{"type":"human","id":"u","name":"un","displayName":null,"avatarUrl":null,"gravatarHash":"h"},"runtimes":["claude"],"computerUpgradeAvailable":false,"computerBroadcastPolicy":{"eligibility":"eligible"}}],"latestComputerVersion":"1.2.3","latestComputerReleaseNotes":["a"]}"#)
+        == #"{"machines":[{"id":"m","name":"n","userId":"u","description":"d","isComputer":true,"computerAttachedByCurrentUser":false,"agentCount":2,"creator":{"type":"human","id":"u","name":"un","displayName":null,"avatarUrl":null,"gravatarHash":"h"},"status":"offline","statusVersion":17,"runtimes":["claude"],"runtimeVersions":{},"runtimeDetection":null,"hostname":"stored-host","lastHeartbeat":"2026-01-01T00:00:00.000Z","computerUpgradeAvailable":false,"computerBroadcastPolicy":{"eligibility":"eligible"}}],"latestComputerVersion":"1.2.3","latestComputerReleaseNotes":["a"]}"#)
 }
 
 @Test func fleetErrorsKeepErrorThenCodeAndTheBroadcastPolicyBody() {

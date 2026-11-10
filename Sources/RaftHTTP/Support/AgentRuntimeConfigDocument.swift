@@ -145,22 +145,15 @@ struct AgentRuntimeConfigDocument {
 
     // MARK: Writes
 
-    /// `version`, `mode`, `reasoningEffort` and the sanitized `envVars`
-    /// (`ANTHROPIC_` keys are dropped from user input).
+    /// Defaults and user env with only this runtime's controlled mirrors removed.
     func normalized() -> AgentRuntimeConfigDocument {
         var config = storage
         if config["version"] == nil { config["version"] = 1 }
         if config["mode"] == nil { config["mode"] = ["kind": "default"] }
         if config["reasoningEffort"] == nil { config["reasoningEffort"] = NSNull() }
-        var userEnv: [String: String] = [:]
-        if let env = config["envVars"] as? [String: String] {
-            for (key, value) in env where !key.hasPrefix("ANTHROPIC_") {
-                userEnv[key] = value
-            }
-        }
-        config["envVars"] = userEnv
         var document = AgentRuntimeConfigDocument()
         document.storage = config
+        document.setUserEnv(config["envVars"] as? [String: String] ?? [:])
         return document
     }
 
@@ -176,6 +169,23 @@ struct AgentRuntimeConfigDocument {
 
     mutating func setEnv(_ env: [String: String]) {
         storage["envVars"] = env
+    }
+
+    /// Pinned Node getControlledRuntimeEnvKeys metadata. These are names, not
+    /// provider credentials or availability. Canonical launch derivation owns them.
+    mutating func setUserEnv(_ env: [String: String]) {
+        let controlled: Set<String>
+        switch runtime ?? "" {
+        case "claude":
+            controlled = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_MODEL_OPTION"]
+        case "pi":
+            controlled = ["DEEPSEEK_API_KEY"]
+        case "builtin":
+            controlled = ["DEEPSEEK_API_KEY", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY", "ZAI_API_KEY", "ZAI_CODING_CN_API_KEY", "MOONSHOT_API_KEY", "KIMI_API_KEY", "QWEN_TOKEN_PLAN_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "XAI_API_KEY", "XIAOMI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "ANTHROPIC_OAUTH_TOKEN"]
+        default:
+            controlled = []
+        }
+        storage["envVars"] = env.filter { !controlled.contains($0.key) }
     }
 
     mutating func setRuntime(_ runtime: String) {

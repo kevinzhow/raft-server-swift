@@ -15,6 +15,7 @@ import VaporTesting
     accounts.markEmailVerified(userId: ownerId)
     accounts.oauth.addOwnedServer(id: serverId, slug: "delete", name: "Delete", ownerId: ownerId)
     let channelId = accounts.oauth.createChannel(serverId: serverId, name: "delete-room", creatorUserId: ownerId)
+    accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "delete-room")
     let first = accounts.addTask(channelId: channelId, title: "first", description: nil)
     let second = accounts.addTask(channelId: channelId, title: "second", description: nil)
 

@@ -58,7 +58,7 @@ private func withRoutes(
         let plainBody = plain.body.string ?? ""
         let plainObject = try JSONSerialization.jsonObject(with: Data(plainBody.utf8)) as? [String: Any]
         let plainId = plainObject?["id"] as? String ?? ""
-        #expect(plainBody == "{\"id\":\"\(plainId)\",\"name\":\"byte-agent\",\"runtime\":\"claude\",\"model\":\"opus\",\"external\":false,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":{},\"runtimeConfig\":{\"envVars\":{},\"mode\":{\"kind\":\"default\"},\"model\":{\"id\":\"opus\",\"kind\":\"preset\"},\"reasoningEffort\":null,\"runtime\":\"claude\",\"version\":1},\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"},\"displayName\":\"byte-agent\",\"description\":null,\"avatarUrl\":null,\"serverRole\":\"member\"}")
+        #expect(plainBody == "{\"id\":\"\(plainId)\",\"name\":\"byte-agent\",\"runtime\":\"claude\",\"model\":\"opus\",\"external\":false,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":{},\"runtimeConfig\":{\"envVars\":{},\"mode\":{\"kind\":\"default\"},\"model\":{\"id\":\"opus\",\"kind\":\"preset\"},\"reasoningEffort\":null,\"runtime\":\"claude\",\"version\":1},\"serverId\":\"\(serverId)\",\"status\":\"inactive\",\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"},\"displayName\":\"byte-agent\",\"description\":null,\"avatarUrl\":null,\"serverRole\":\"member\"}")
         #expect(plain.headers[HTTPField.Name("Content-Length")!] == String(plainBody.utf8.count))
 
         // The stored config text keeps `JSONSerialization`'s slash escaping and
@@ -68,13 +68,13 @@ private func withRoutes(
         """)
         let customBody = custom.body.string ?? ""
         let customId = (try JSONSerialization.jsonObject(with: Data(customBody.utf8)) as? [String: Any])?["id"] as? String ?? ""
-        #expect(customBody == "{\"id\":\"\(customId)\",\"name\":\"byte-custom\",\"runtime\":\"claude\",\"model\":\"opus\",\"external\":false,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":{\"ANTHROPIC_API_KEY\":\"k-1\",\"ANTHROPIC_BASE_URL\":\"https:\\/\\/x.example\\/v1\"},\"runtimeConfig\":{\"envVars\":{},\"mode\":{\"kind\":\"default\"},\"model\":{\"id\":\"opus\",\"kind\":\"preset\"},\"provider\":{\"apiKey\":\"\",\"apiUrl\":\"https:\\/\\/x.example\\/v1\",\"kind\":\"custom\"},\"reasoningEffort\":null,\"runtime\":\"claude\",\"version\":1},\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"},\"displayName\":\"byte-custom\",\"description\":null,\"avatarUrl\":null,\"serverRole\":\"member\"}")
+        #expect(customBody == "{\"id\":\"\(customId)\",\"name\":\"byte-custom\",\"runtime\":\"claude\",\"model\":\"opus\",\"external\":false,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":{\"ANTHROPIC_API_KEY\":\"k-1\",\"ANTHROPIC_BASE_URL\":\"https:\\/\\/x.example\\/v1\"},\"runtimeConfig\":{\"envVars\":{},\"mode\":{\"kind\":\"default\"},\"model\":{\"id\":\"opus\",\"kind\":\"preset\"},\"provider\":{\"apiKey\":\"\",\"apiUrl\":\"https:\\/\\/x.example\\/v1\",\"kind\":\"custom\"},\"reasoningEffort\":null,\"runtime\":\"claude\",\"version\":1},\"serverId\":\"\(serverId)\",\"status\":\"inactive\",\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"},\"displayName\":\"byte-custom\",\"description\":null,\"avatarUrl\":null,\"serverRole\":\"member\"}")
         #expect(accounts.agentRuntimeConfigForTesting(agentId: customId)?.contains("\"apiKey\":\"k-1\"") == true)
 
         let external = try await call(.post, "/api/agents", "{\"name\":\"byte-external\",\"external\":true}")
         let externalBody = external.body.string ?? ""
         let externalId = (try JSONSerialization.jsonObject(with: Data(externalBody.utf8)) as? [String: Any])?["id"] as? String ?? ""
-        #expect(externalBody == "{\"id\":\"\(externalId)\",\"name\":\"byte-external\",\"runtime\":\"external\",\"model\":\"external\",\"external\":true,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":null,\"runtimeConfig\":{\"envVars\":null,\"mode\":{\"kind\":\"default\"},\"model\":{\"id\":\"external\",\"kind\":\"preset\"},\"reasoningEffort\":null,\"runtime\":\"external\",\"version\":1},\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"},\"displayName\":\"byte-external\",\"description\":null,\"avatarUrl\":null,\"serverRole\":\"member\"}")
+        #expect(externalBody == "{\"id\":\"\(externalId)\",\"name\":\"byte-external\",\"runtime\":\"external\",\"model\":\"external\",\"external\":true,\"machineId\":null,\"reasoningEffort\":null,\"envVars\":null,\"runtimeConfig\":{\"envVars\":null,\"mode\":{\"kind\":\"default\"},\"model\":{\"id\":\"external\",\"kind\":\"preset\"},\"reasoningEffort\":null,\"runtime\":\"external\",\"version\":1},\"serverId\":\"\(serverId)\",\"status\":\"inactive\",\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"},\"displayName\":\"byte-external\",\"description\":null,\"avatarUrl\":null,\"serverRole\":\"member\"}")
     }
 }
 
@@ -115,7 +115,7 @@ private func withRoutes(
     )
     try await withRoutes(accounts) { call in
         let options = try await call(.get, "/api/agents/\(agentId)/runtime-options", nil)
-        #expect(options.body.string == "{\"agentId\":\"\(agentId)\",\"runtimes\":[],\"models\":[]}")
+        #expect(options.body.string == "{\"context\":\"existing_agent\",\"machineId\":null,\"options\":[{\"runtimeId\":\"claude\",\"capabilityStatus\":\"not_installed\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false},{\"runtimeId\":\"codex\",\"capabilityStatus\":\"not_installed\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false},{\"runtimeId\":\"builtin\",\"capabilityStatus\":\"update_required\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false,\"formDefinitionRef\":{\"protocolVersion\":1,\"runtimeId\":\"builtin\",\"schemaVersion\":\"builtin-pi.create.v3\"}},{\"runtimeId\":\"kimi-sdk\",\"capabilityStatus\":\"update_required\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false,\"formDefinitionRef\":{\"protocolVersion\":1,\"runtimeId\":\"kimi-sdk\",\"schemaVersion\":\"kimi-sdk.create.v1\"}},{\"runtimeId\":\"cursor\",\"capabilityStatus\":\"not_installed\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false},{\"runtimeId\":\"opencode\",\"capabilityStatus\":\"not_installed\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false},{\"runtimeId\":\"pi\",\"capabilityStatus\":\"not_installed\",\"admissionStatus\":\"available_for_new\",\"admissionReason\":null,\"current\":false,\"availableForNew\":true,\"manageableForCurrentAgent\":false,\"canSelectInThisContext\":false}]}")
 
         let manageable = try await call(.get, "/api/agents/manageable", nil)
         let manageableBody = manageable.body.string ?? ""
@@ -138,8 +138,10 @@ private func withRoutes(
 
         let badMode = try await call(.patch, "/api/agents/\(agentId)", "{\"restartMode\":\"a\\\"b\"}")
         #expect(badMode.status == .badRequest)
-        // The retired handler interpolated the mode unescaped; the bytes stay.
-        #expect(badMode.body.string == "{\"error\":\"Invalid restart mode: a\"b\"}")
+        // Node res.json escapes the quoted mode and publishes only the error field.
+        #expect(badMode.body.string == "{\"error\":\"Invalid restart mode: a\\\"b\"}")
+        let badModeObject = try JSONDecoder().decode([String: String].self, from: Data((badMode.body.string ?? "").utf8))
+        #expect(badModeObject == ["error": "Invalid restart mode: a\"b"])
 
         let creator = try await call(.patch, "/api/agents/\(agentId)/creator", "{\"creatorType\":\"user\",\"creatorId\":\"\(ownerId)\"}")
         #expect(creator.body.string == "{\"creator\":{\"type\":\"human\",\"id\":\"\(ownerId)\"}}")

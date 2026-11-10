@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 // Request and response shapes for the runtime-form, runtime-probe, runtime
 // account usage, onboarding/notification settings and machine registration
@@ -107,16 +108,23 @@ struct AgentRuntimeConfigProjection: Decodable {
     struct Provider: Decodable {
         var kind: String?
         var apiUrl: String?
+        var providerId: String?
+        var baseUrl: String?
+        var supportsImageInput: Bool?
 
         private enum CodingKeys: String, CodingKey {
             case kind
             case apiUrl
+            case providerId, baseUrl, supportsImageInput
         }
 
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             kind = try? container.decode(String.self, forKey: .kind)
             apiUrl = try? container.decode(String.self, forKey: .apiUrl)
+            providerId = try? container.decode(String.self, forKey: .providerId)
+            baseUrl = try? container.decode(String.self, forKey: .baseUrl)
+            supportsImageInput = try? container.decode(Bool.self, forKey: .supportsImageInput)
         }
     }
 
@@ -124,6 +132,7 @@ struct AgentRuntimeConfigProjection: Decodable {
     var provider: Provider?
     var reasoningEffort: String?
     var fastMode: Bool?
+    var loadLocalPlugins: Bool?
     var command: String?
     var envVars: [String: String]?
 
@@ -131,7 +140,7 @@ struct AgentRuntimeConfigProjection: Decodable {
         case model
         case provider
         case reasoningEffort
-        case fastMode
+        case fastMode, loadLocalPlugins
         case command
         case envVars
     }
@@ -144,6 +153,7 @@ struct AgentRuntimeConfigProjection: Decodable {
         provider = try? container.decode(Provider.self, forKey: .provider)
         reasoningEffort = try? container.decode(String.self, forKey: .reasoningEffort)
         fastMode = (try? container.decode(JSONScalarValue.self, forKey: .fastMode))?.legacyBool
+        loadLocalPlugins = try? container.decode(Bool.self, forKey: .loadLocalPlugins)
         command = try? container.decode(String.self, forKey: .command)
         envVars = try? container.decode([String: String].self, forKey: .envVars)
     }
@@ -173,6 +183,10 @@ private func slashEscapedString(_ value: String) -> String {
 /// deterministic reading of an unordered object) and keep the escaped slash.
 public struct AgentRuntimeFormValues: Sendable, Equatable {
     public var apiUrl: String?
+    public var providerId: String?
+    public var baseUrl: String?
+    public var supportsImageInput: Bool?
+    public var loadLocalPlugins: Bool?
     public var command: String?
     public var envVars: [String: String]
     public var fastMode: Bool?
@@ -182,6 +196,10 @@ public struct AgentRuntimeFormValues: Sendable, Equatable {
 
     public init(
         apiUrl: String? = nil,
+        providerId: String? = nil,
+        baseUrl: String? = nil,
+        supportsImageInput: Bool? = nil,
+        loadLocalPlugins: Bool? = nil,
         command: String? = nil,
         envVars: [String: String] = [:],
         fastMode: Bool? = nil,
@@ -190,6 +208,10 @@ public struct AgentRuntimeFormValues: Sendable, Equatable {
         reasoningEffort: String? = nil
     ) {
         self.apiUrl = apiUrl
+        self.providerId = providerId
+        self.baseUrl = baseUrl
+        self.supportsImageInput = supportsImageInput
+        self.loadLocalPlugins = loadLocalPlugins
         self.command = command
         self.envVars = envVars
         self.fastMode = fastMode
@@ -237,7 +259,17 @@ public struct AgentRuntimeFormResponse: JSONBodyConvertible, Equatable {
     }
 
     public var jsonBody: OrderedJSON {
-        .object([
+        if runtimeId == "builtin" {
+            var fields: [String: JSONValue] = [
+                "providerId": .string(values.providerId ?? ""), "model": .string(values.model ?? ""),
+                "loadLocalPlugins": .bool(values.loadLocalPlugins == true),
+                "envVars": .object(values.envVars.mapValues(JSONValue.string)),
+            ]
+            if let baseUrl = values.baseUrl { fields["baseUrl"] = .string(baseUrl) }
+            if let supportsImageInput = values.supportsImageInput { fields["supportsImageInput"] = .bool(supportsImageInput) }
+            return RuntimeFormCatalog.builtinV2Definition(schemaVersion: schemaVersion, chinese: modelLabel == "模型", values: .object(fields))
+        }
+        return .object([
             OrderedJSONField("protocolVersion", 2),
             OrderedJSONField("runtimeId", runtimeId),
             OrderedJSONField("schemaVersion", schemaVersion),
@@ -268,7 +300,7 @@ enum RuntimeFormCapabilities {
 
 // MARK: - Runtime form definitions
 
-/// A machine's runtime form definition (v1 data-schema or v2 field list).
+/// A machine's runtime form definition (released data-schema on v1 or v2).
 public enum RuntimeFormDefinitionResponse: JSONBodyConvertible, Equatable {
     /// A definition the form catalog already ships as rendered JSON.
     case catalog(String)
@@ -281,43 +313,7 @@ public enum RuntimeFormDefinitionResponse: JSONBodyConvertible, Equatable {
         case .catalog(let json):
             return .raw(json)
         case .builtinV2(let schemaVersion, let chinese):
-            func source(_ id: String) -> OrderedJSON {
-                .object([
-                    OrderedJSONField("protocolVersion", 1),
-                    OrderedJSONField("runtimeId", "builtin"),
-                    OrderedJSONField("schemaVersion", schemaVersion),
-                    OrderedJSONField("sourceId", id),
-                ])
-            }
-            func field(_ key: String, _ kind: String, _ label: String, required: Bool, extra: [OrderedJSONField]) -> OrderedJSON {
-                .object([
-                    OrderedJSONField("key", key),
-                    OrderedJSONField("kind", kind),
-                    OrderedJSONField("label", label),
-                    OrderedJSONField("required", required),
-                ] + extra)
-            }
-            return .object([
-                OrderedJSONField("protocolVersion", 2),
-                OrderedJSONField("runtimeId", "builtin"),
-                OrderedJSONField("schemaVersion", schemaVersion),
-                OrderedJSONField("requiredClientCapabilities", OrderedJSON.array([.string("option_source.status")])),
-                OrderedJSONField("fields", OrderedJSON.array([
-                    field("providerId", "select", chinese ? "提供方" : "Provider", required: true, extra: []),
-                    field("apiKey", "password", chinese ? "API 密钥" : "API Key", required: true, extra: [
-                        OrderedJSONField("writeOnly", true),
-                    ]),
-                    field("model", "dependent_select", chinese ? "模型" : "Model", required: true, extra: [
-                        OrderedJSONField("dependsOn", "providerId"),
-                    ]),
-                    field("supportsImageInput", "boolean", chinese ? "图片输入" : "Image input", required: false, extra: []),
-                ])),
-                OrderedJSONField("capabilities", RuntimeFormCapabilities.body()),
-                OrderedJSONField("optionSources", OrderedJSON.object([
-                    OrderedJSONField("provider", source("provider")),
-                    OrderedJSONField("model", source("model")),
-                ])),
-            ])
+            return RuntimeFormCatalog.builtinV2Definition(schemaVersion: schemaVersion, chinese: chinese)
         case .selectV2(let runtimeId, let schemaVersion, let chinese):
             return .object([
                 OrderedJSONField("protocolVersion", 2),
@@ -477,6 +473,9 @@ public struct BuiltinModelSourceBody: Sendable, Equatable {
 
     public var schemaVersion: String
     public var groups: [Group]
+    /// Declared metadata retained when an unavailable source has no options.
+    public var metadataGroups: [Group]?
+    public var includeGatewayOptions: Bool
     public var status: String?
     public var reason: String?
     public var retryable: Bool?
@@ -486,10 +485,14 @@ public struct BuiltinModelSourceBody: Sendable, Equatable {
         groups: [Group],
         status: String? = nil,
         reason: String? = nil,
-        retryable: Bool? = nil
+        retryable: Bool? = nil,
+        metadataGroups: [Group]? = nil,
+        includeGatewayOptions: Bool = false
     ) {
         self.schemaVersion = schemaVersion
         self.groups = groups
+        self.metadataGroups = metadataGroups
+        self.includeGatewayOptions = includeGatewayOptions
         self.status = status
         self.reason = reason
         self.retryable = retryable
@@ -498,8 +501,18 @@ public struct BuiltinModelSourceBody: Sendable, Equatable {
     /// The catalog the Computer falls back to without a live answer.
     public static func bundledGroups() -> [Group] {
         [
-            Group(provider: "deepseek", models: [RuntimeModelChoice(value: "deepseek-chat", label: "DeepSeek Chat")]),
-            Group(provider: "moonshotai", models: [RuntimeModelChoice(value: "kimi-k2", label: "Kimi K2")]),
+            // Pinned piBuiltinModels.generated.ts:96-97,124-128. Declared UI only;
+            // this bounded two-provider subset is not a full Built-in catalog.
+            Group(provider: "deepseek", models: [
+                RuntimeModelChoice(value: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro"),
+                RuntimeModelChoice(value: "deepseek/deepseek-flash", label: "DeepSeek V4.1 Flash"),
+            ]),
+            Group(provider: "moonshotai", models: [
+                RuntimeModelChoice(value: "moonshotai/kimi-k2.7-code", label: "Kimi K2.7 Code"),
+                RuntimeModelChoice(value: "moonshotai/kimi-k2.7-code-highspeed", label: "Kimi K2.7 Code HighSpeed"),
+                RuntimeModelChoice(value: "moonshotai/kimi-k3", label: "Kimi K3"),
+                RuntimeModelChoice(value: "moonshotai/kimi-k2.6", label: "Kimi K2.6"),
+            ]),
         ]
     }
 
@@ -511,9 +524,23 @@ public struct BuiltinModelSourceBody: Sendable, Equatable {
         body.append("sourceId", "model")
         body.append("kind", "dependent_select")
         body.append("pointer", "/model")
-        body.append("optionsByValue", .object(groups.map {
-            OrderedJSONField($0.provider, OrderedJSON.array($0.models.map(\.jsonBody)))
+        body.append("dependsOn", "/providerId")
+        var optionGroups = groups.map { OrderedJSONField($0.provider, OrderedJSON.array($0.models.map(\.jsonBody))) }
+        if includeGatewayOptions, status != "unavailable" {
+            optionGroups += RuntimeFormCatalog.builtinGatewayIDs.map { OrderedJSONField($0, .array([])) }
+        }
+        body.append("optionsByValue", .object(optionGroups))
+        let defaults = includeGatewayOptions ? RuntimeFormCatalog.builtinV2DefaultModels
+            : ["deepseek": "deepseek/deepseek-v4-pro", "moonshotai": "moonshotai/kimi-k2.6"]
+        let metadata = metadataGroups ?? groups
+        body.append("defaultValueByValue", .object(metadata.compactMap { group in
+            guard let first = group.models.first else { return nil }
+            let preferred = defaults[group.provider] ?? first.value
+            return OrderedJSONField(group.provider, group.models.contains { $0.value == preferred } ? preferred : first.value)
         }))
+        var custom = metadata.map { OrderedJSONField($0.provider, false) }
+        if includeGatewayOptions { custom += RuntimeFormCatalog.builtinGatewayIDs.map { OrderedJSONField($0, true) } }
+        body.append("customValueAllowedByValue", .object(custom))
         body.append("status", ifPresent: status)
         body.append("reason", ifPresent: reason)
         body.append("retryable", ifPresent: retryable)
@@ -529,6 +556,7 @@ public enum RuntimeOptionSourceResponse: JSONBodyConvertible, Equatable {
     case model(RuntimeModelSourceBody)
     case builtinModel(BuiltinModelSourceBody)
     case builtinProvider(schemaVersion: String, chinese: Bool)
+    case builtinProviderV2(schemaVersion: String, supportedModelIDs: Set<String>?)
     case cachedModels(schemaVersion: String, models: [RuntimeModelChoice])
 
     public var jsonBody: OrderedJSON {
@@ -539,6 +567,8 @@ public enum RuntimeOptionSourceResponse: JSONBodyConvertible, Equatable {
             return body.jsonBody
         case .builtinModel(let body):
             return body.jsonBody
+        case .builtinProviderV2(let schemaVersion, let supportedModelIDs):
+            return RuntimeFormCatalog.builtinV2ProviderSource(schemaVersion: schemaVersion, supportedModelIDs: supportedModelIDs)
         case .builtinProvider(let schemaVersion, let chinese):
             func option(_ value: String, _ label: String) -> OrderedJSON {
                 .object([
@@ -576,6 +606,8 @@ public struct MachineRuntimeOptionsResponse: JSONBodyConvertible, Equatable {
         public var capabilityStatus: String
         public var canSelectInThisContext: Bool
         public var runtimeFormV2: Bool
+        public var current: Bool
+        public var admissionReason: String?
         /// The v1 form reference's schema version, when the option publishes one.
         public var formDefinitionSchemaVersion: String?
 
@@ -584,34 +616,38 @@ public struct MachineRuntimeOptionsResponse: JSONBodyConvertible, Equatable {
             capabilityStatus: String,
             canSelectInThisContext: Bool,
             runtimeFormV2: Bool,
-            formDefinitionSchemaVersion: String?
+            formDefinitionSchemaVersion: String?,
+            current: Bool = false,
+            admissionReason: String? = nil
         ) {
             self.runtimeId = runtimeId
             self.capabilityStatus = capabilityStatus
             self.canSelectInThisContext = canSelectInThisContext
             self.runtimeFormV2 = runtimeFormV2
             self.formDefinitionSchemaVersion = formDefinitionSchemaVersion
+            self.current = current
+            self.admissionReason = admissionReason
         }
 
         var jsonBody: OrderedJSON {
             var body = OrderedJSONObject()
             body.append("runtimeId", runtimeId)
             body.append("capabilityStatus", capabilityStatus)
-            body.append("admissionStatus", "available_for_new")
-            body.append("admissionReason", optional: nil as String?)
-            body.append("current", false)
-            body.append("availableForNew", true)
-            body.append("manageableForCurrentAgent", false)
+            body.append("admissionStatus", admissionReason == nil ? "available_for_new" : "grandfathered_current")
+            body.append("admissionReason", optional: admissionReason)
+            body.append("current", current)
+            body.append("availableForNew", admissionReason == nil)
+            body.append("manageableForCurrentAgent", current && capabilityStatus == "available")
             body.append("canSelectInThisContext", canSelectInThisContext)
-            if runtimeFormV2 {
-                body.append("runtimeFormV2", .object([OrderedJSONField("protocolVersion", 2)]))
-            }
             if let formDefinitionSchemaVersion {
                 body.append("formDefinitionRef", .object([
                     OrderedJSONField("protocolVersion", 1),
                     OrderedJSONField("runtimeId", runtimeId),
                     OrderedJSONField("schemaVersion", formDefinitionSchemaVersion),
                 ]))
+            }
+            if runtimeFormV2 {
+                body.append("runtimeFormV2", .object([OrderedJSONField("protocolVersion", 2)]))
             }
             return body.json
         }
@@ -695,38 +731,41 @@ public enum MachineRuntimeModelsResponse: JSONBodyConvertible, Equatable {
 }
 
 /// `GET /api/servers/:id/machines/:machineId/workspaces`.
-public struct MachineWorkspacesResponse: JSONBodyConvertible, Equatable {
+public struct MachineWorkspacesResponse: JSONBodyConvertible, Sendable, Equatable {
     public struct Row: Sendable, Equatable {
         public var directoryName: String
+        public var totalSizeBytes: Int
         public var lastModified: String
+        public var fileCount: Int
+        public var displayPath: String?
         public var status: String
-        public var agentName: String
+        public var agentName: String?
         public var agentStatus: String
 
-        public init(
-            directoryName: String,
-            lastModified: String,
-            status: String,
-            agentName: String,
-            agentStatus: String
-        ) {
+        public init(directoryName: String, totalSizeBytes: Int, lastModified: String,
+                    fileCount: Int, displayPath: String? = nil, status: String,
+                    agentName: String?, agentStatus: String) {
             self.directoryName = directoryName
+            self.totalSizeBytes = totalSizeBytes
             self.lastModified = lastModified
+            self.fileCount = fileCount
+            self.displayPath = displayPath
             self.status = status
             self.agentName = agentName
             self.agentStatus = agentStatus
         }
 
         var jsonBody: OrderedJSON {
-            .object([
-                OrderedJSONField("directoryName", directoryName),
-                OrderedJSONField("totalSizeBytes", 0),
-                OrderedJSONField("lastModified", lastModified),
-                OrderedJSONField("fileCount", 0),
-                OrderedJSONField("status", status),
-                OrderedJSONField("agentName", agentName),
-                OrderedJSONField("agentStatus", agentStatus),
-            ])
+            var body = OrderedJSONObject()
+            body.append("directoryName", directoryName)
+            body.append("totalSizeBytes", totalSizeBytes)
+            body.append("lastModified", lastModified)
+            body.append("fileCount", fileCount)
+            body.append("displayPath", ifPresent: displayPath)
+            body.append("status", status)
+            body.append("agentName", optional: agentName)
+            body.append("agentStatus", agentStatus)
+            return body.json
         }
     }
 
@@ -739,6 +778,28 @@ public struct MachineWorkspacesResponse: JSONBodyConvertible, Equatable {
     /// A bare JSON array.
     public var jsonBody: OrderedJSON {
         .array(rows.map(\.jsonBody))
+    }
+}
+
+/// Sanitized Node scan failure; the real error correlation links header/body.
+struct MachineWorkspaceScanFailure: DomainError {
+    let correlationId = UUID().uuidString.lowercased()
+    var status: UInt { 500 }
+    var errorMessage: String { "Failed to scan workspaces" }
+    var responseHeaders: [String: String] { ["X-Slock-Error-Id": correlationId] }
+    var errorBody: OrderedJSON? {
+        .object([.init("error", errorMessage), .init("code", "machine_workspace_scan_failed"),
+                 .init("correlationId", correlationId)])
+    }
+}
+
+/// Native cleanup is unimplemented. A cache marker is not physical deletion.
+struct MachineWorkspaceDeleteUnavailable: DomainError {
+    var status: UInt { 503 }
+    var errorMessage: String { "Machine workspace deletion is unavailable" }
+    var errorBody: OrderedJSON? {
+        .object([.init("error", errorMessage), .init("code", "machine_workspace_delete_unavailable"),
+                 .init("retryable", false)])
     }
 }
 

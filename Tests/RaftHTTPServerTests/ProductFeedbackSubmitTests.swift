@@ -30,7 +30,7 @@ private func form(_ fields: [String: String]) -> (body: String, contentType: Str
     return (body, "multipart/form-data; boundary=\(boundary)")
 }
 
-private func submitForm(_ client: any Client, _ fixture: SubmitFixture, _ fields: [String: String], clientKind: String? = nil) async throws -> (status: HTTPResponse.Status, body: [String: Any]) {
+private func submitForm(_ client: any Client, _ fixture: SubmitFixture, _ fields: [String: String], clientKind: String? = nil) async throws -> (status: HTTPResponse.Status, body: [String: Any], response: ClientResponse) {
     let payload = form(fields)
     var headers = HTTPFields()
     headers[.authorization] = "Bearer \(fixture.token)"
@@ -39,7 +39,7 @@ private func submitForm(_ client: any Client, _ fixture: SubmitFixture, _ fields
     let response = try await client.send(.post, headers: headers, to: URI(string: "/api/product-feedback")) { request in
         request.body = .init(string: payload.body)
     }
-    return (response.status, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:])
+    return (response.status, (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:], response)
 }
 
 private func fieldValue(_ body: String, _ name: String) -> String? {
@@ -60,9 +60,16 @@ private func fieldValue(_ body: String, _ name: String) -> String? {
                 request.body = .init(string: "--x--\r\n")
             }
             #expect(noAuth.status == .unauthorized)
+            #expect(noAuth.body.string == #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#)
+            #expect(noAuth.headers[.contentLength] == "74")
+            #expect(noAuth.headers[.cacheControl] == "private, no-store")
             let unverifiedResult = try await submitForm(client, unverified, ["type": "idea", "message": "x", "submission_id": "55555555-5555-4555-8555-555555555555", "may_contact": "false"])
             #expect(unverifiedResult.status == .forbidden)
-            #expect(unverifiedResult.body["code"] as? String == "account_unverified")
+            #expect(unverifiedResult.body["error"] as? String == "Email verification required")
+            #expect(unverifiedResult.body["code"] == nil)
+            #expect(unverifiedResult.response.body.string == #"{"error":"Email verification required"}"#)
+            #expect(unverifiedResult.response.headers[.contentLength] == "39")
+            #expect(unverifiedResult.response.headers[.cacheControl] == "private, no-store")
         }
     }
 

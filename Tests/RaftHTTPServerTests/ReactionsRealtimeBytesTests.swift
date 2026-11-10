@@ -91,12 +91,27 @@ private func expectGolden(
         Issue.record("no golden for \(label)", sourceLocation: sourceLocation)
         return
     }
+    // app.ts:290 applies this policy before both human and agent auth. Every
+    // caller below uses an API route with no applicable leaf cache override.
+    let expectedCacheControl = "private, no-store"
+    // These requests now stop at the complete app's requireAuth mount, before
+    // the historical leaf-handler goldens. `plain` retains Bearer nope after
+    // done-badauth, including the later cases whose labels say "noauth".
+    let mountedAuthBodies: [String: String] = [
+        "done-noauth": #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#,
+        "done-badauth": #"{"error":"Invalid or expired token","code":"auth_required"}"#,
+        "undone-noauth": #"{"error":"Invalid or expired token","code":"auth_required"}"#,
+        "tdone-noauth": #"{"error":"Invalid or expired token","code":"auth_required"}"#,
+        "tundone-noauth": #"{"error":"Invalid or expired token","code":"auth_required"}"#,
+        "readall-noauth": #"{"error":"Invalid or expired token","code":"auth_required"}"#,
+    ]
+    let expectedBody = mountedAuthBodies[label] ?? golden.body
     var body = response.body.string ?? ""
     for (needle, replacement) in replacements { body = body.replacingOccurrences(of: needle, with: replacement) }
     #expect(response.status.code == UInt(golden.status), "\(label) status", sourceLocation: sourceLocation)
-    #expect(body == golden.body, "\(label) body", sourceLocation: sourceLocation)
+    #expect(body == expectedBody, "\(label) body", sourceLocation: sourceLocation)
     #expect(
-        response.headers[HTTPField.Name("Cache-Control")!] == golden.cacheControl,
+        response.headers[HTTPField.Name("Cache-Control")!] == expectedCacheControl,
         "\(label) cache-control",
         sourceLocation: sourceLocation
     )

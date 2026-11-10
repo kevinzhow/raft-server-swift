@@ -36,12 +36,12 @@ private func queryItem(_ url: String, _ name: String) -> String? {
 }
 
 /// Runs a mobile login start and the provider callback and returns the handoff code.
-private func handoffCode(_ service: OAuthFlowsService, provider: String = "google") throws -> String {
-    let started = try service.startMobileOAuth(MobileOAuthStartRequest(
+private func handoffCode(_ service: OAuthFlowsService, provider: String = "google") async throws -> String {
+    let started = try await service.startMobileOAuth(MobileOAuthStartRequest(
         isObject: true, returnUri: returnUri, provider: provider, mode: "login", codeChallenge: challenge()
     ))
     let state = try #require(queryItem(started.authorizationUrl, "state"))
-    let redirect = try service.mobileOAuthCallback(provider: provider, code: "provider-code", state: state)
+    let redirect = try await service.mobileOAuthCallback(provider: provider, code: "provider-code", state: state)
     return try #require(queryItem(redirect.location, "code"))
 }
 
@@ -109,7 +109,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     ).status == 409)
 }
 
-@Test func oauthFlowsPublishProviderListRedirectAndLinkStartBytes() throws {
+@Test func oauthFlowsPublishProviderListRedirectAndLinkStartBytes() async throws {
     let fixture = makeFixture()
     let service = fixture.service
 
@@ -123,7 +123,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
         == #"{"providers":[{"id":"google","label":"Google","enabled":true},{"id":"github","label":"GitHub","enabled":false},{"id":"apple","label":"Apple","enabled":true}]}"#)
     #expect(throws: OAuthFlowsError.platformInvalid) { try gated.service.authProviders(platform: "desktop") }
 
-    let redirect = try service.startWebOAuth(provider: "google", returnTo: "/inbox")
+    let redirect = try await service.startWebOAuth(provider: "google", returnTo: "/inbox")
     #expect(redirect.status == 302)
     #expect(redirect.jsonBody.render() == "")
     #expect(redirect.location.hasPrefix("https://accounts.google.com/o/oauth2/v2/auth?"))
@@ -133,49 +133,49 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     #expect(redirect.headers == .exact([
         "X-Robots-Tag": AppFallback.robotsTag, "Location": redirect.location, "Set-Cookie": cookie,
     ]))
-    #expect(throws: OAuthFlowsError.notFound) { try service.startWebOAuth(provider: "nope", returnTo: nil) }
-    #expect(throws: OAuthFlowsError.providerNotConfigured(provider: "github")) {
-        try gated.service.startWebOAuth(provider: "github", returnTo: nil)
+    await #expect(throws: OAuthFlowsError.notFound) { try await service.startWebOAuth(provider: "nope", returnTo: nil) }
+    await #expect(throws: OAuthFlowsError.providerNotConfigured(provider: "github")) {
+        try await gated.service.startWebOAuth(provider: "github", returnTo: nil)
     }
 
     let (_, bearer) = verifiedBearer(fixture, "01")
-    let link = try service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(returnTo: "/x"), authorization: bearer)
+    let link = try await service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(returnTo: "/x"), authorization: bearer)
     #expect(link.jsonBody.render().hasPrefix(#"{"url":"https://github.com/login/oauth/authorize?"#))
     #expect(link.headers.values["Set-Cookie"]?.contains("slock_github_oauth_nonce=") == true)
-    #expect(throws: OAuthFlowsError.missingAuthorization) {
-        try service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(), authorization: nil)
+    await #expect(throws: OAuthFlowsError.missingAuthorization) {
+        try await service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(), authorization: nil)
     }
-    #expect(throws: OAuthFlowsError.invalidToken) {
-        try service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(), authorization: "Bearer nope")
+    await #expect(throws: OAuthFlowsError.invalidToken) {
+        try await service.startWebOAuthLink(provider: "github", body: WebOAuthLinkStartRequest(), authorization: "Bearer nope")
     }
 }
 
-@Test func oauthFlowsMobileHandoffPublishesTheLegacyBodies() throws {
+@Test func oauthFlowsMobileHandoffPublishesTheLegacyBodies() async throws {
     let fixture = makeFixture()
     let service = fixture.service
 
-    let started = try service.startMobileOAuth(MobileOAuthStartRequest(
+    let started = try await service.startMobileOAuth(MobileOAuthStartRequest(
         isObject: true, returnUri: returnUri, provider: "google", mode: "login", codeChallenge: challenge()
     ))
     let startedBody = started.jsonBody.render()
     #expect(startedBody.hasPrefix(#"{"requestId":""#))
     #expect(startedBody.contains(#","authorizationUrl":"https://accounts.google.com/o/oauth2/v2/auth?"#))
     #expect(startedBody.contains(#","returnUri":"raft://oauth/callback","expiresAt":""#))
-    #expect(throws: OAuthFlowsError.invalidMobileStart) { try service.startMobileOAuth(MobileOAuthStartRequest()) }
-    #expect(throws: OAuthFlowsError.returnURINotAllowed) {
-        try service.startMobileOAuth(MobileOAuthStartRequest(isObject: true))
+    await #expect(throws: OAuthFlowsError.invalidMobileStart) { try await service.startMobileOAuth(MobileOAuthStartRequest()) }
+    await #expect(throws: OAuthFlowsError.returnURINotAllowed) {
+        try await service.startMobileOAuth(MobileOAuthStartRequest(isObject: true))
     }
 
     // Callback: a bad state is the plain-text refusal; a good one redirects with the code.
-    #expect(throws: OAuthFlowsError.invalidMobileRequest) {
-        try service.mobileOAuthCallback(provider: "google", code: "c", state: "bad")
+    await #expect(throws: OAuthFlowsError.invalidMobileRequest) {
+        try await service.mobileOAuthCallback(provider: "google", code: "c", state: "bad")
     }
     let state = try #require(queryItem(started.authorizationUrl, "state"))
-    let cancelled = try service.mobileOAuthCallback(provider: "google", code: nil, state: state, providerError: "denied")
+    let cancelled = try await service.mobileOAuthCallback(provider: "google", code: nil, state: state, providerError: "denied")
     #expect(cancelled.location == "raft://oauth/callback?provider=google&mode=login&error=denied")
 
     // Complete without a stored account: sign up. Legal acceptance is checked first.
-    let code = try handoffCode(service)
+    let code = try await handoffCode(service)
     #expect(throws: OAuthFlowsError.legalAcceptanceRequired) {
         try service.completeMobileOAuth(MobileOAuthCompleteRequest(code: code, codeVerifier: verifier))
     }
@@ -187,7 +187,7 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     #expect(throws: OAuthFlowsError.pkceMismatch) {
         try service.completeMobileOAuth(MobileOAuthCompleteRequest(code: code, codeVerifier: "wrong"))
     }
-    let fresh = try handoffCode(service)
+    let fresh = try await handoffCode(service)
     let completed = try service.completeMobileOAuth(MobileOAuthCompleteRequest(
         code: fresh, codeVerifier: verifier, acceptTerms: true,
         termsVersion: AuthLegalPolicy.termsVersion, privacyVersion: AuthLegalPolicy.privacyVersion
@@ -203,18 +203,18 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
     #expect(fixture.sessionCount == 1)
 }
 
-@Test func oauthFlowsLinkCompleteListsTheLinkedIdentities() throws {
+@Test func oauthFlowsLinkCompleteListsTheLinkedIdentities() async throws {
     let fixture = makeFixture()
     let service = fixture.service
     let (userId, bearer) = verifiedBearer(fixture, "02")
 
-    let started = try service.startMobileOAuthLink(
+    let started = try await service.startMobileOAuthLink(
         provider: "google",
         body: MobileOAuthStartRequest(isObject: true, returnUri: returnUri, codeChallenge: challenge()),
         authorization: bearer
     )
     let state = try #require(queryItem(started.authorizationUrl, "state"))
-    let redirect = try service.mobileOAuthCallback(provider: "google", code: "c", state: state)
+    let redirect = try await service.mobileOAuthCallback(provider: "google", code: "c", state: state)
     let code = try #require(queryItem(redirect.location, "code"))
 
     let other = verifiedBearer(fixture, "03").bearer
@@ -325,10 +325,11 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
 /// A handoff code is spent once: the consumed check, the PKCE check and the
 /// sign-up are one store critical section, so a burst of simultaneous
 /// completions creates one account and one session.
-@Test func oauthFlowsCompleteMobileSpendsAHandoffExactlyOnce() async {
+@Test func oauthFlowsCompleteMobileSpendsAHandoffExactlyOnce() async throws {
     let fixture = makeFixture()
     let store = fixture.store
     seedHandoff(store, id: "req-1", code: "code-1", mode: "login", userId: nil)
+    let passwordPlaceholder = try await PasswordWork.hash(AuthTokenCodec.randomHex(32))
 
     let outcomes = await withTaskGroup(of: Bool.self) { group in
         for _ in 0..<24 {
@@ -336,7 +337,8 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
                 if case .signedIn = store.completeMobile(
                     code: "code-1", verifier: verifier, pendingLinkToken: nil, acceptTerms: true,
                     termsVersion: AuthLegalPolicy.termsVersion,
-                    privacyVersion: AuthLegalPolicy.privacyVersion, now: Date()
+                    privacyVersion: AuthLegalPolicy.privacyVersion, now: Date(),
+                    passwordPlaceholder: passwordPlaceholder
                 ) { return true }
                 return false
             }

@@ -5,10 +5,10 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// Complete `method path` table owned by `MessagingFeature`: the 14
-/// `/api/messages/*`, 13 `/api/attachments/*`, 12 `/api/tasks/*`,
-/// 3 `/api/actions/*` and 2 `/api/read-mutations*` registrations that used to
-/// be inline in `FallbackApplication.configure` (44 pairs). `/api/v2/messages`
+/// Complete `method path` table owned by `MessagingFeature`: the 15
+/// `/api/messages/*`, 15 `/api/attachments/*`, 12 `/api/tasks/*`,
+/// 3 `/api/actions/*` and 2 `/api/read-mutations*` registrations (47 pairs).
+/// This includes the batch URL and both HTML preview leaves. `/api/v2/messages`
 /// is intentionally absent: it is not one of the extracted prefixes.
 private let expectedMessagingRoutes: [String] = [
     "POST /api/actions/:messageId/execute",
@@ -26,13 +26,16 @@ private let expectedMessagingRoutes: [String] = [
     "POST /api/attachments/upload-sessions",
     "DELETE /api/attachments/upload-sessions/:uploadId",
     "GET /api/attachments/upload-sessions/:uploadId",
+    "GET /api/attachments/upload-sessions/:uploadId/active",
     "POST /api/attachments/upload-sessions/:uploadId/complete",
+    "POST /api/attachments/urls",
     "POST /api/messages",
     "GET /api/messages/:messageId/mention-deliveries",
     "DELETE /api/messages/:messageId/reactions",
     "POST /api/messages/:messageId/reactions",
     "GET /api/messages/:messageId/reactions/actors",
     "GET /api/messages/:messageId/reactions/viewer",
+    "GET /api/messages/attachment-preview/enabled",
     "GET /api/messages/channel/:channelId",
     "GET /api/messages/context/:messageId",
     "POST /api/messages/forward",
@@ -77,8 +80,8 @@ private func messagingRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedMessagingRoutes.count == 44)
-        #expect(Set(expectedMessagingRoutes).count == 44)
+        #expect(expectedMessagingRoutes.count == 47)
+        #expect(Set(expectedMessagingRoutes).count == 47)
 
         // One route per table entry, and no route outside the five families.
         #expect(routes.count == expected.count)

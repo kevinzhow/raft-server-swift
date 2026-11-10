@@ -3,3 +3,15 @@
 *.xcodeproj
 .DS_Store
 .grok-write-*.tmp
+
+# Private deployment configuration and generated validation evidence.
+.env
+.env.*
+*.env
+!.env.example
+.cloudflared/
+secrets/
+deploy/private/
+deploy/caddy-data/
+deploy/caddy-config/
+deploy/reference-production/

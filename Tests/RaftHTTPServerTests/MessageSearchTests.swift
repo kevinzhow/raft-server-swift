@@ -165,7 +165,7 @@ private func searchResults(_ response: ClientResponse) throws -> [[String: Any]]
                 headers[.contentType] = "application/json"
                 return headers
             }(), to: "/api/messages") { request in
-                request.body = .init(string: "{\"channelId\":\"\(fixture.channelId)\",\"content\":\"self mention target\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(fixture.ownerId)\",\"name\":\"search-owner-993\"}]}")
+                request.body = .init(string: "{\"channelId\":\"\(fixture.channelId)\",\"content\":\"self mention target @search-owner-993\",\"mentions\":[{\"type\":\"user\",\"id\":\"\(fixture.ownerId)\",\"name\":\"search-owner-993\"}]}")
             }
             #expect(mentioned.status == .ok)
             let mentionId = try #require((try searchBody(mentioned))["id"] as? String)

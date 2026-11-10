@@ -64,14 +64,16 @@ import TestSupport
     )
     #expect(ok.ok)
     let account = scene.passwordCredentialFacts(email: "reset@profile.test")
-    #expect(account?.passwordHash == AuthTokenCodec.sha256("new-password-123"))
+    let encoded = try #require(account?.passwordHash)
+    #expect(encoded.hasPrefix("$argon2id$v=19$m=65536,t=3,p=4$"))
+    #expect(PasswordCredential.verify("new-password-123", encoded: encoded))
     #expect(account?.passwordCredentialEstablishedAt == now)
 
     // The token was spent by the first success; the replay writes nothing.
     #expect(throws: AuthProfileError.invalidOrExpiredResetToken) {
         try service.resetPassword(ResetPasswordRequest(token: "profile-reset-token", password: "second-password"))
     }
-    #expect(account?.passwordHash == AuthTokenCodec.sha256("new-password-123"))
+    #expect(scene.passwordCredentialFacts(email: "reset@profile.test")?.passwordHash == encoded)
 }
 
 @Test func authProfileResetPasswordKeepsTheTypedRequestLenient() throws {

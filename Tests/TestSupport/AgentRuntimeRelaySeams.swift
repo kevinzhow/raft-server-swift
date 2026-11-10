@@ -38,10 +38,6 @@ extension EmailLoginDirectory {
         agentsRuntimeStore.agentResetDispatch = handler
     }
 
-    public func installAgentConfigLiftDispatchForTesting(_ handler: (@Sendable (_ agentId: String, _ runtimeValuesChanged: Bool) -> Void)?) {
-        agentsRuntimeStore.agentConfigLiftDispatch = handler
-    }
-
     public func installMachineMigrationArchiveSourceWorkspaceForTesting(_ handler: (@Sendable (_ machineId: String, _ migrationRef: String, _ agentId: String) async throws -> Void)?) {
         machinesAndComputersStore.machineMigrationArchiveSourceWorkspace = handler
     }

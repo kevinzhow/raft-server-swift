@@ -1,16 +1,6 @@
 import Foundation
 
-/// OAuth-ledger surface the socket membership rules read. The OAuth domain is
-/// not migrated yet, so its ledger is injected behind this small protocol
-/// instead of the service holding `EmailLoginDirectory`.
-protocol SocketMembershipOAuthProviding: Sendable {
-    func memberRole(serverId: String, userId: String) -> String?
-    func visibleChannels(serverId: String, userId: String) -> [SocketChannelVisibility]
-    func channelHumanIds(channelId: String) -> [String]
-    func removeChannelHuman(channelId: String, userId: String)
-}
-
-extension OAuthLedger: SocketMembershipOAuthProviding {
+extension OAuthLedger {
     func visibleChannels(serverId: String, userId: String) -> [SocketChannelVisibility] {
         channelsForServer(serverId: serverId, userId: userId).map {
             SocketChannelVisibility(id: $0.id, name: $0.name, type: $0.type)
@@ -27,19 +17,22 @@ extension OAuthLedger: SocketMembershipOAuthProviding {
 public struct SocketMembershipService: Sendable {
     private let channels: ServersAndChannelsStore
     private let messages: MessagesAndThreadsStore
-    private let oauth: any SocketMembershipOAuthProviding
+    private let oauth: OAuthLedger
+    private let flags: AgentsRuntimeStore
     /// Feature-flag gate owned by the not-yet-migrated integrations domain.
     private let attachmentCommentsEnabled: @Sendable (String, String) -> Bool
 
     init(
         channels: ServersAndChannelsStore,
         messages: MessagesAndThreadsStore,
-        oauth: any SocketMembershipOAuthProviding,
+        oauth: OAuthLedger,
+        flags: AgentsRuntimeStore,
         attachmentCommentsEnabled: @escaping @Sendable (String, String) -> Bool
     ) {
         self.channels = channels
         self.messages = messages
         self.oauth = oauth
+        self.flags = flags
         self.attachmentCommentsEnabled = attachmentCommentsEnabled
     }
 
@@ -47,16 +40,17 @@ public struct SocketMembershipService: Sendable {
 
     /// Server role read by the transport handshake.
     public func serverRole(serverId: String, userId: String) -> String? {
-        oauth.memberRole(serverId: serverId, userId: userId)
+        oauth.activeRegularServerMember(serverId: serverId, userId: userId)
+            ? oauth.memberRole(serverId: serverId, userId: userId) : nil
     }
 
-    /// Channel rooms a socket joins at connect time: regular channels the
-    /// viewer can list, and private/DM channels they belong to. Thread rooms
-    /// are followed, not joined at connect. Guests only see guest-visible
+    /// Channel rooms a socket joins at connect time: listable regular channels,
+    /// joined private/DM channels and joined active local joint projections.
+    /// Thread rooms are followed, not joined at connect. Guests only see guest-visible
     /// regular channels other than `#all`, the same gate the HTTP channel list
     /// applies.
     public func visibleChannelIds(serverId: String, userId: String) -> SocketVisibleChannelsDTO {
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+        guard let role = serverRole(serverId: serverId, userId: userId) else {
             return SocketVisibleChannelsDTO(channelIds: [])
         }
         let isGuest = role == "guest"
@@ -64,8 +58,12 @@ public struct SocketMembershipService: Sendable {
         let guestVisible = isGuest
             ? channels.guestVisibleChannelIds(candidateChannels.map(\.id))
             : []
+        let roomState = channels.deliveryAckChannelSnapshot()
+        let linksByLocal = Dictionary(grouping: roomState.jointProjections, by: \.localChannelId)
         var ids: [String] = []
         for channel in candidateChannels {
+            // Room listability uses actual OAuth type, not aggregate read policy.
+            guard !(channel.name == "all" && channel.type != "channel") else { continue }
             switch channel.type {
             case "channel":
                 if isGuest {
@@ -73,6 +71,15 @@ public struct SocketMembershipService: Sendable {
                 }
                 ids.append(channel.id)
             case "private", "dm":
+                ids.append(channel.id)
+            case "joint":
+                let links = linksByLocal[channel.id] ?? []
+                let active = links.filter { $0.serverId == serverId && $0.status == "active" }
+                guard !isGuest, let local = roomState.channels[channel.id],
+                      local.serverId == serverId, local.kind == "joint", local.deletedAt == nil,
+                      Set(links.map(\.canonicalChannelId)).count == 1, active.count == 1,
+                      oauth.channelHumanIds(channelId: channel.id).contains(userId)
+                else { continue }
                 ids.append(channel.id)
             default:
                 continue
@@ -100,27 +107,23 @@ public struct SocketMembershipService: Sendable {
         limit: Int
     ) -> SocketSyncResumeDTO? {
         guard lastSeq > 0, limit > 0 else { return nil }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else { return nil }
-        let isGuest = role == "guest"
+        let reads = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: flags)
+        guard (try? reads.requireServerScope(serverId: serverId, userId: userId)) != nil else { return nil }
+        // This is the Node aggregate SQL policy, distinct from room listability
+        // and scoped/search participant policy. Capture it once for this replay.
+        let readable = reads.aggregateLocalChannelIds(serverId: serverId, userId: userId)
+        guard !readable.isEmpty else {
+            return SocketSyncResumeDTO(messages: [], currentSeq: lastSeq, hasMore: false)
+        }
         let commentsVisible = attachmentCommentsEnabled(serverId, userId)
         let channelState = channels.channelReadSnapshot()
-        let follows = messages.threadFollowSnapshot()
-        var readable: [String: Bool] = [:]
         var rows: [(seq: Int, message: SocketSyncMessageDTO)] = []
         for message in messages.messagesForResume(afterSeq: lastSeq) {
             guard let channel = channelState.channels[message.channelId],
                   channel.serverId == serverId,
                   channel.deletedAt == nil
             else { continue }
-            guard channelReadable(
-                channelId: message.channelId,
-                userId: userId,
-                isGuest: isGuest,
-                channels: channelState.channels,
-                guestVisibleChannels: channelState.guestVisibleChannels,
-                follows: follows,
-                cache: &readable
-            ) else { continue }
+            guard readable.contains(message.channelId) else { continue }
             let attachments = messages.attachmentCommentSummaries(
                 ids: message.attachmentIds,
                 commentsVisible: commentsVisible
@@ -170,49 +173,4 @@ public struct SocketMembershipService: Sendable {
         }
     }
 
-    /// The per-channel read gate used by `sync:resume`. Reads one channel
-    /// snapshot and one thread-follow snapshot; no store lock is held while the
-    /// recursion runs.
-    private func channelReadable(
-        channelId: String,
-        userId: String,
-        isGuest: Bool,
-        channels: [String: PostableChannel],
-        guestVisibleChannels: [String: Bool],
-        follows: MessagesAndThreadsStore.ThreadFollowSnapshot,
-        cache: inout [String: Bool]
-    ) -> Bool {
-        if let cached = cache[channelId] { return cached }
-        guard let channel = channels[channelId], channel.deletedAt == nil else {
-            cache[channelId] = false
-            return false
-        }
-        let readable: Bool
-        switch channel.kind {
-        case "thread":
-            let key = "\(channel.serverId)\n\(userId)\n\(channelId)"
-            let followed = follows.follows.contains(key) && !follows.unfollows.contains(key)
-            if followed, let parentId = channel.parentChannelId {
-                readable = channelReadable(
-                    channelId: parentId,
-                    userId: userId,
-                    isGuest: isGuest,
-                    channels: channels,
-                    guestVisibleChannels: guestVisibleChannels,
-                    follows: follows,
-                    cache: &cache
-                )
-            } else {
-                readable = false
-            }
-        case "private", "dm":
-            readable = channel.memberIds.contains(userId)
-                || oauth.channelHumanIds(channelId: channelId).contains(userId)
-        default:
-            readable = !isGuest
-                || ((guestVisibleChannels[channelId] ?? false) && channel.name != "all")
-        }
-        cache[channelId] = readable
-        return readable
-    }
 }

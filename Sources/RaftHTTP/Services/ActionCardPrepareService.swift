@@ -489,16 +489,18 @@ public struct ActionCardPrepareService: Sendable {
         }
         if kind == nil, name.hasPrefix("migration-receipt-") {
             let postable = channels.postableChannels
-            let owned = postable.first { _, channel in
-                channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
+            let owned = postable.first { id, channel in
+                channel.serverId == serverId && channel.deletedAt == nil
+                    && channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
+                    && oauth.channelAgentIds(channelId: id) == [agentId]
+                    && oauth.channelHumanIds(channelId: id).isEmpty
             }
             guard let owned else { return .notFound }
             return .resolved(peerId: agentId, peerKind: "agent", name: name)
         }
         let accounts = self.accounts.accounts
         let humans = accounts.values.filter {
-            $0.id != agentId
-                && ($0.name.caseInsensitiveCompare(name) == .orderedSame
+            ($0.name.caseInsensitiveCompare(name) == .orderedSame
                     || ($0.displayName ?? "").caseInsensitiveCompare(name) == .orderedSame)
                 && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
         }.map(\.id)
@@ -521,14 +523,24 @@ public struct ActionCardPrepareService: Sendable {
     }
 
     /// Finds the live DM channel between an agent and a peer.
-    func dmChannelId(serverId: String, agentId: String, peerId: String) -> String? {
-        channels.postableChannels.first { _, channel in
-            channel.serverId == serverId
-                && channel.kind == "dm"
-                && channel.deletedAt == nil
-                && channel.memberIds.contains(agentId)
-                && channel.memberIds.contains(peerId)
-        }?.key
+    func dmChannelId(serverId: String, agentId: String, peerId: String, peerKind: String, peerName: String? = nil) -> String? {
+        if peerKind == "agent", peerId == agentId {
+            // A receipt is a retained named singleton surface, not a self DM.
+            // Resolve only its verified original identity; never manufacture one.
+            guard let peerName, peerName.hasPrefix("migration-receipt-") else { return nil }
+            return channels.postableChannels.first { id, channel in
+                channel.serverId == serverId && channel.deletedAt == nil && channel.kind == "dm"
+                    && channel.name == peerName && channel.memberIds == [agentId]
+                    && oauth.channelAgentIds(channelId: id) == [agentId]
+                    && oauth.channelHumanIds(channelId: id).isEmpty
+            }?.key
+        }
+        guard let id = oauth.directChannelId(serverId: serverId, firstUserId: agentId,
+            secondUserId: peerId, firstKind: .agent, secondKind: peerKind == "agent" ? .agent : .human),
+              let channel = channels.postableChannel(id: id), channel.serverId == serverId,
+              channel.kind == "dm", channel.deletedAt == nil,
+              channel.memberIds.contains(agentId), channel.memberIds.contains(peerId) else { return nil }
+        return id
     }
 
     /// The peer card exists only when the peer has a profile description or a
@@ -545,11 +557,11 @@ public struct ActionCardPrepareService: Sendable {
         } else {
             return nil
         }
-        guard let peerId = oauth.channelHumanIds(channelId: baseId).first(where: { $0 != agentId }),
+        guard let peerId = oauth.channelHumanIds(channelId: baseId).first,
               let account = accounts.accounts.values.first(where: { $0.id == peerId })
         else { return nil }
         let timezone = messages.humanMessageRows.last {
-            $0.channelId == baseId && $0.senderId == peerId && ($0.senderTimezone?.isEmpty == false)
+            $0.channelId == baseId && $0.senderType == "user" && $0.senderId == peerId && ($0.senderTimezone?.isEmpty == false)
         }?.senderTimezone
         let description = account.description?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (description?.isEmpty == false) || timezone != nil else { return nil }
@@ -633,9 +645,11 @@ public struct ActionCardPrepareService: Sendable {
             let dmId: String? = channel.kind == "dm"
                 ? channelId
                 : (channel.parentChannelId.flatMap { channels[$0]?.kind == "dm" ? $0 : nil })
-            if let dmId, let dm = channels[dmId] {
-                if let peerId = dm.memberIds.first(where: { $0 != agentId }) {
-                    peerName = accounts.accounts.values.first { $0.id == peerId }?.name
+            if let dmId {
+                if let humanId = oauth.channelHumanIds(channelId: dmId).first {
+                    peerName = accounts.accounts.values.first { $0.id == humanId }?.name
+                } else if let peerId = oauth.channelAgentIds(channelId: dmId).first(where: { $0 != agentId }) {
+                    peerName = oauth.agentRuntimeInfo(id: peerId)?.name
                 }
             }
         }
@@ -673,8 +687,10 @@ public struct ActionCardPrepareService: Sendable {
         } else {
             senderType = "human"
         }
-        let senderName = message.externalSenderName
-            ?? accounts.accounts.values.first { $0.id == message.senderId }?.name
+        let nativeSenderName = message.senderType == "agent"
+            ? oauth.agentRuntimeInfo(id: message.senderId)?.name
+            : accounts.accounts.values.first { $0.id == message.senderId }?.name
+        let senderName = message.externalSenderName ?? nativeSenderName
             ?? (message.senderId == "system" ? "system" : message.senderId)
         let timestamp = DateText.isoString(message.createdAt)
         let identityFields = String(conversationIdentity.dropFirst().dropLast())

@@ -28,7 +28,7 @@ enum UnlinkIdentityOutcome {
 /// Result of the locked password login (pending-link check, password check,
 /// session open and link consume).
 enum AuthenticateOutcome {
-    case authenticated(userId: String, email: String, tokens: IssuedSessionTokens, linkedProvider: String?)
+    case authenticated(account: Account, tokens: IssuedSessionTokens, linkedProvider: String?)
     case pendingLinkExpired
     case pendingLinkAccountMismatch
     case rejected
@@ -59,7 +59,7 @@ enum CompleteAppLoginOutcome {
 }
 
 enum ChangePasswordOutcome: Equatable, Sendable {
-    case changed
+    case changed(PasswordSessionRevocation)
     case accountMissing
     case wrongPassword
 }
@@ -147,10 +147,18 @@ extension AuthProfileStore {
     func authenticate(
         email: String,
         passwordHash: String,
+        expectedUserId: String? = nil,
         pendingLinkToken: String?,
         now: Date
     ) -> AuthenticateOutcome {
         return state.withLock { state in
+            // The service already verified this exact encoded credential outside
+            // the mutex. Recheck its version and live owner BEFORE link errors.
+            guard var account = state.accountSurface.accounts[email],
+                  account.passwordHash == passwordHash,
+                  expectedUserId == nil || account.id == expectedUserId,
+                  account.retiredAt == nil
+            else { return .rejected }
             var pendingLink: PendingSocialLink?
             if let token = pendingLinkToken, !token.isEmpty {
                 guard let pending = state.accountSurface.pendingSocialLinks[token], !pending.consumed,
@@ -159,10 +167,6 @@ extension AuthProfileStore {
                 guard pending.email == email else { return .pendingLinkAccountMismatch }
                 pendingLink = pending
             }
-            guard var account = state.accountSurface.accounts[email],
-                  account.passwordHash == passwordHash,
-                  account.retiredAt == nil
-            else { return .rejected }
             if account.passwordCredentialEstablishedAt == nil {
                 account.passwordCredentialEstablishedAt = now
                 state.accountSurface.accounts[email] = account
@@ -185,7 +189,10 @@ extension AuthProfileStore {
                 }
                 linkedProvider = pending.provider
             }
-            return .authenticated(userId: account.id, email: account.email, tokens: tokens, linkedProvider: linkedProvider)
+            // Carry the authenticated account value from the same critical section as
+            // credential revalidation and session issuance. Do not reduce it to
+            // id/email or race a second profile lookup after opening the session.
+            return .authenticated(account: account, tokens: tokens, linkedProvider: linkedProvider)
         }
     }
 }

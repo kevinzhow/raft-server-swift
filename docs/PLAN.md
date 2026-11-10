@@ -1,25 +1,58 @@
 # 复刻推进计划
 
-**目标**：等价复刻 `raft-source` tag `v1.21.23-source.1` 的 server 与 daemon。
-**规格**：上游 Node 测试中对外可见的 HTTP 状态码、JSON、响应头与套接字帧。
+**长期目标**：等价复刻 `raft-source` tag `v1.21.23-source.1` 的 server 与 daemon。
+**规格**：上游 Node 测试中对外可见的 HTTP 状态码、JSON、响应头与套接字帧；实际交付还须满足固定版本 Web/CLI 消费端的完整业务链路。
+
+## 0. 当前交付目标与推进顺序
+
+**当前用户目标**：完成 Swift Raft 的真实生产部署，沿用既有 Cloudflare Tunnel、已登录 Codex、Cloudflare Email Sending 和 R2。开发、构建、缓存、服务与临时产物全部使用数据盘。生产域名、地址、密钥、收件人和操作凭据仅保留在仓库外。Phase 6 的架构债务不替代本次交付目标。
+
+**当前阶段**：完整交付路径已按实际 Web／CLI 消费者、注册路由与 frame、DTO、Service、真实 Store、PG／daemon／provider 建立代码契约矩阵。Codex owned reset、typed DM、non-Codex 配置保存和相关共享文件已整组收口，并通过完整相关目标及同一最终 Source 的九组独立 PG。profile 与 Task 旧 gate 消费及完整 native 接收／取消／清理出口已完成整组作者回读和同一唯一独审，精确采用两个测试／脚本差量，生产 Source 未变。最新完整实进程 E2E、smoke、architecture、parity-check 均已通过，完整单元门禁也已通过，最终 Source 输入保持不变。官方 Computer 的干净构建、复制包闭包与复制 Node 冷导入，以及现有 Caddy 两个静态 profile 的临时完整 HTTP 验证也已通过。下一步立即提交并 push 已验证批次，再从干净提交构建最终 Main、验证同一制品正常 UI／角色并启用生产。
+
+**已验证及其边界**：
+
+- 先前隔离 stage 已证明真实 Main、PG／Redis、官方 Node Computer、实际 Codex catalog，以及普通消息和 Task 的真实模型执行。这是较早制品的证据；最终干净制品、完整正常 Web 流程和生产仍待验收。
+- 加密 R2 字节、认证下载、有界预览、应用备份、新目录恢复和恢复后 Main／TLS 已通过。恢复复用原应用密钥与同一 R2，不代表独立对象桶或异地密钥恢复。
+- Auth、消息权限与冷读、Task、Socket、active-account、机器查询、legacy scan、human delivery、Grok admission 和 terminal recovery 已分别通过相关公开目标及独立 PG／socket。保留真实 14-owner 图、rollback-only 丢弃和原 writer lease 下的真正 stale CAS；这些协议输入受控，不能当作官方 provider 接受。
+- Builtin v2 的完整定义、sources、edit 与 formValues-only 往返、secret identity、拒绝不变、更改触发 lift 及 no-op 不重复 lift 已通过。完整八定义、v1 字节和既有 Grok／权限链保留；builtin provider/native 执行不在此资格内，真实生产模型路径使用 Codex。
+- 固定版本成熟 mdast／GFM 与上游相同配置已接入进程内 JavaScriptCore。原 UTF-16 range、非 BMP／NUL ABI、原生语料、C 审查和实际资源 bundle 已验证；独立复制制品能解析并证明 JSC 映射，缺 bundle 会在监听前拒绝。最终 release 的运行时闭包、实际载入与 Node/native-addon ABI 仍需重新取证。
+- Forward／Share 的真实 native membership、postable facts、原重放／PNG／host 合同已通过完整相关目标。workspace 的完整授权顺序和 orphan Task retained no-write 也已通过，原 RBAC 断言保留。
+- runtime 原始输入、JS 转换失败、精确错误响应与拒绝后未写入已通过整组目标。typed DM／follow／inbox 最终 S4＋T3 经完整独审后与这些共享文件精确合并；公开 Before 已重现缺口，完整相关 After 和新的 fresh mentions PG 已通过且未 skip。覆盖实际 typed roster、同 UUID 的不同类型、真实 parent/follow、receipt 只读、实际 reminders、不可消费历史 roster 的明确 503、formal eligibility、claim／receipt／BPR。此结果不是模型 PATCH reset、全门禁或生产资格。
+- 前次完整提交门禁的 architecture 与 parity-check 通过，`make test` 因普通断言失败退出，未发生 signal 6／11。两个 quoted restart-mode 旧 golden 已按 pinned Node 的 `res.json(object)` 修正，保留精确字节断言并增加严格 JSON 对象断言。released-mobile builtin edit 的反例也已确认：原请求在裸组合返回 500，真实 PG／producer 返回 503；只补 fixture 无法修复。最终源码已从现有权威 runtime 记录读取状态，仅允许同 runtime、无 retained 执行／控制事实的窄 metadata 分支沿原 config lift 保存。其余 guard、Domain、active-reset coalescing 和既有错误路径原样保留，不新增拒绝。原 Mobile 测试及样本字节不变，修复后相关目标与独立 metadata PG 完整尾部通过，包括密钥身份／redaction、历史执行拒绝和真实 active coalescing／session publication；同一 Source 上的三个模型 PG 及旧 controls／config／human／conversation／builtin 复验也全部通过。前轮完整 `make test` 已通过；profile 平面响应适配采用后，下一次 E2E 暴露旧 `taskIds` 解码及不安全索引的确定性 SIG4。已按完整双 gate 契约矩阵收口公开 `{tasks}`／`{task}` 消费、实际帧接收与 EOF／error／取消／超时／连接清理，保持两个完整 profile 验证块。最终候选经作者全文回读和原唯一独审后已精确采用；最新实进程 E2E 完整两场景、smoke、architecture 与 parity-check 均通过，完整单元门禁也已通过，最终 Source 输入保持不变。真实 daemon 等待完整身份输出，标记后的 online 帧仍仅是本地观察位置，不当作 server epoch 或 OS 证据；新接收拒绝出口只有静态边界与正常完整帧运行证据，没有伪称故障 Before。
+- 官方 Computer 已从固定源码的新导出实际完成规范构建，原始源码未变化；复制包保留完整运行依赖及 vendor 资源，所有剩余链接均在包内严格解析。复制的 Node runtime 已实际冷导入 Computer／Core／Codex 定义，正常 CLI sidecar 版本与固定 metadata 一致，复制前后 inventory 不变。这不代表真实 service／resident／Codex child 的最终角色已验收，也未执行新 provider。
+- Web 使用已构建且逐字节核验的同一版本，保留上游 release identity 和 same-origin API。Main 没有静态服务，旧独立端口没有启动依赖；已改为现有 Caddy `file_server` 的不可变版本目录，不新增 Web server。两个新 profile 在同一镜像、UID、实际 capability 设置的临时 loopback 实例通过主／feedback SPA、静态资源、缺失与隐藏文件、缓存头、强 ETag／304、metrics 拒绝及保留 peer/header cohort 的 HTTP 验证。真实 Cloudflare cohort／防伪／共享缓存、实际加载 profile 与正常 UI 仍未证明，生产 gateway 未改。私有 phase 校验已把 Web200 移到 restricted 加载后的现有 canary-policy 和最终 public-canary，保留 private Main200 原始观察时间与两次 public503 顺序，并绑定新的 full-static 候选。语法和 PENDING 发布拒绝已验证；尚无实际生产阶段证据。
+
+**当前模型路径验证**：六文件 owned reset 修复及完整 PG 回归已由同一独审者整组复核，并与 Core 的共享文件精确合并。三个独立 fresh-PG/public-HTTP 场景均已实际运行到尾且未 skip：canonical 新模型 PATCH 触发并完成 reset；正常 active no-op 保留真实未退出 process 的等待窗口，human POST 形成真实 held 消息，随后经受控 exit／automatic start／实际 delivery／ACK 完成释放与重放不重复；真实 pending-ready 下，已 written 的 public reset 经两次同值 session PATCH 只清 session／发布一次，保持原 operation、terminal generation、fence 与 stop，再由实际 ready 恢复正常 start。旧 controls／config／human／conversation／builtin 也通过。保留 Node 首次配置更改的两次 lift 与正常 start generation、旧 public reset 默认、manual／unexited／backoff 保护和 14-owner rollback。此处是服务器真实 HTTP／PG／NIO 与受控 daemon 协议资格；没有 stop ACK，也不把协议回执当作 OS cleanup 或官方 Codex／provider 接受。
+
+**明确能力边界**：legacy machine-on-behalf attested-send 的 E1／freshness 仍为 partial；credential-route 测试不锁该旧 funnel。正常 CLI／官方 Computer 强制 credential v2，本批不伪造 legacy 成功。CLI threads list 所需未知历史 follow time／reason 不猜造，不用 last message 或 UUID 时间代替。active joint HUMAN 写入、物理 workspace 删除保持明确 503；未知旧 metadata、survey／handoff、owner intro 和 native TTL 不补造。通用文档预览保留下载回退，HTML 为独立路径。Share 的 local PNG 已验证；若配置非空 CDN base，URL shape 不代表已写入外部对象，部署配置必须与实际存储路径一致。
+
+**下一批与完成条件**：
+
+1. 保持已审查并通过完整相关目标／独立 PG 的生产源码固定。profile、canonical Task 消费、安全索引、完整 native 接收／终止／取消／清理及实际 daemon 验证已整组采用，实进程 E2E 和 smoke 均通过。本轮全部必要门禁已通过，最终 diff／依赖与配置值隐私审查完成；立即提交并 push 已验证批次。不得把协议 context 或本地帧位置当作 OS／provider 成功。
+2. 批次稳定后通过全部提交门禁：`make test`、`make test-e2e`、`./scripts/smoke-server.sh`、`make architecture`、`make parity-check` 和必须的独立 PG。审查当前依赖、全部 diff 与隐私，立即提交并 push 已验证的代码批次；不把授权 WIP 当作无关变更，不伪造旧 after receipt。
+3. 从该干净提交构建最终 Main release，完成 runtime／JSC 实际载入与四角色闭包。复用已核验的固定上游 Web、Computer 与 Node 制品，绑定各自正确来源；用同一最终制品完成正常 Cindy onboarding、支持模型选择与实际执行、消息／Task／Computers／workspace／附件冷读和监督重启。
+4. 启动生产 listener 前先核查实际 gateway 与依赖并加载显式维护屏障，证明 public 503；upstream 尚未运行不能算屏障。再验证 private Main 200 和 public 仍 503，使用全新生产 PG／Redis 与正常 owner bootstrap，不迁入隔离站点的合成账号、业务数据或 Computer 凭据。
+5. 完成已授权真实邮件与验证链接、正常 enrollment、真实模型、监督重启／故障恢复和公开 canary 后切换入口。provider 接受／排队不等同邮箱到箱；挑战期间恢复 closed-all。目前尚无加载的生产维护屏障、生产库、owner、enrollment 或验收邮件。
+
+**目标更新纪律**：用户改变方向、代码审查改变范围或顺序、门禁失败及里程碑验证后，当轮同步本计划、任务清单和持久化 session goal，替换过期结论；不等待用户催问或上下文压缩。
 
 ## 1. 行为覆盖与已完成阶段
 
-`make parity` / `make parity-check`：**406 / 406 模块全部 locked**。
+`make parity` / `make parity-check`：**406 个模块纳入账本，405 locked、1 partial**。legacy machine-on-behalf attested-send 的限定见上节。
 
 | 区域 | 模块 | 用例 |
 | --- | --- | --- |
-| Route | `219 / 219` | `2000 / 2000`（100.0%） |
+| Route | `218 locked + 1 partial / 219 tracked` | `1975 / 2000`（98.8%） |
 | Socket | `7 / 7` | `16 / 16`（100.0%） |
 | Daemon | `180 / 180` | `2616 / 2616`（含账本中注明的排除项） |
 
 Daemon 的 2616 条账本用例包含 Node 运行时、进程管理和外部集成轨道；约 1130 条已在 `docs/PARITY.tsv` 注明排除，便携可执行口径约 616 条。报告进度须保留这些资格说明，不能把账本总量当作实际执行量。
 
-Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离的 `RaftServer` 和一个 `RaftDaemon`；`scripts/smoke-server.sh` 检查真实端口上的注册、验证邮件、建服建频道、人类与 Agent 消息、Socket.IO 和 `/daemon/connect`。24 项 smoke 是接线检查，不单独证明全部 parity 模块。
+Phases 0–4 的真实进程闭环已建立：`make test-e2e` 启动两个隔离的 `RaftServer` 和一个 `RaftDaemon`；`scripts/smoke-server.sh` 检查真实端口上的注册、验证邮件、建服建频道、人类与 Agent 消息、Socket.IO 和 `/daemon/connect`。26 项 smoke 是接线检查，不单独证明全部 parity 模块。
 
 Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 body 读取退役和生产 `ForTesting` 入口迁移。`EmailLogin.swift` 从 34,306 行降到 48 行，原目录中不再有 Swift 文件。测试 seam 位于不被生产 target 依赖的 `Tests/TestSupport`。
 
-这些结果不代表深度架构重构已经完成：字段转发和目录全局锁已删除，旧类型在其他目录仍有工厂扩展、构造调用和测试 API。Store/OAuth 的 checked 隔离与消息 owner 事务已完成，最终显式 Service 装配仍需迁移。当前工作是 Phase 6；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
+这些结果不代表深度架构重构已经完成：字段转发和目录全局锁已删除，旧类型在其他目录仍有工厂扩展、构造调用和测试 API。Store/OAuth 的 checked 隔离与消息 owner 事务已完成，最终显式 Service 装配仍需迁移。Phase 6 是分层债务计划，受上节当前交付目标约束；精确分层、检测范围和数值快照只在 `docs/ARCHITECTURE.md` 维护。
 
 ## 2. Phase 6：消除剩余耦合
 
@@ -67,7 +100,7 @@ Phase 5 已完成旧 `EmailLogin/` 文件提取、Feature 路由拆分、同步 
 
 ## Production storage foundation
 
-The isolated `RaftObjectStorage` adapter now uses Soto/SotoCore 7.17 and swift-crypto AES-GCM. Its local network acceptance covers ciphertext, tampering, roundtrip and deletion. An explicitly enabled live acceptance checks a separate prefix with existing credentials. HTTP binding, persistent attachment references, production execution activation and deployment recovery remain integration work. Phase 6 and all existing parity qualifications remain open as stated above.
+The isolated `RaftObjectStorage` adapter uses Soto/SotoCore 7.17 and swift-crypto AES-GCM. Local network acceptance covers ciphertext, tampering, roundtrip and deletion; live acceptance uses a separate prefix with existing credentials. Native HTTP binding, retained attachment references, official Computer/Codex execution and bounded application recovery have since been exercised. Final clean-release qualification, the complete Web delivery path and production activation remain open under section 0. Phase 6 and all existing parity qualifications remain open.
 
 ## 3. 切片门禁与工作契约
 

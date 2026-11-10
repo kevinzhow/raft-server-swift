@@ -2,11 +2,23 @@ import Foundation
 @testable import RaftHTTP
 import Testing
 
-@Test func supportHelperTaskCatalogKeepsPublishedBytesAndNulls() {
+@Test func supportHelperTaskCatalogKeepsPublishedBytesAndNulls() throws {
     let task = TaskRecord(id: "task", channelId: "channel", title: "a\"/中", description: "é", status: "todo", taskNumber: 7, messageId: "message", createdAt: Date(timeIntervalSince1970: 0))
-    let catalog = TaskCatalogService(tasks: TasksAndRemindersStore(), profiles: AuthProfileStore(), oauth: OAuthLedger())
-    #expect(catalog.fullTaskJSON(task, channelName: "general", channelType: "channel") == #"{"id":"task","channelId":"channel","channelName":"general","channelType":"channel","title":"a\"/中","description":"é","status":"todo","taskNumber":7,"messageId":"message","revision":0}"#)
-    #expect(catalog.summaryTaskJSON(task, channelName: "general", channelType: "channel") == #"{"channelId":"channel","channelName":"general","channelType":"channel","claimedAt":null,"claimedById":null,"claimedByName":null,"claimedByType":null,"completedAt":null,"createdAt":"1970-01-01T00:00:00.000Z","createdById":null,"createdByName":null,"createdByType":null,"descriptionBytes":2,"hasDescription":true,"id":"task","isLegacy":false,"messageId":"message","readOnlyReason":null,"revision":0,"source":"tasks","status":"todo","taskNumber":7,"title":"a\"/中","updatedAt":null}"#)
+    let oauth = OAuthLedger()
+    let channelId = oauth.createChannel(serverId: "helper-server", name: "general", creatorUserId: "helper-creator")
+    var scopedTask = task
+    scopedTask.channelId = channelId
+    let catalog = TaskCatalogService(tasks: TasksAndRemindersStore(), profiles: AuthProfileStore(), oauth: oauth, messages: MessagesAndThreadsStore(), channels: ServersAndChannelsStore(), flags: AgentsRuntimeStore())
+    let full = try catalog.fullTaskJSON(scopedTask, channelName: "general", channelType: "channel")
+    #expect(full == #"{"id":"task","messageId":"message","channelId":"\#(channelId)","channelName":"general","channelType":"channel","taskNumber":7,"title":"a\"/中","description":"é","status":"todo","createdByType":null,"createdById":null,"createdByName":null,"createdByMembershipStatus":null,"claimedByType":null,"claimedById":null,"claimedByName":null,"claimedAt":null,"completedAt":null,"requiresResourceReceipt":false,"resourceReceipt":null,"resourceReceiptRecordedAt":null,"resourceTeardownOwnerAgentId":null,"resourceExpiryFollowupId":null,"createdAt":"1970-01-01T00:00:00.000Z","updatedAt":null,"revision":0,"isLegacy":false}"#)
+    let fullObject = try #require(try JSONSerialization.jsonObject(with: Data(full.utf8)) as? [String: Any])
+    #expect(fullObject["title"] as? String == "a\"/中")
+    #expect(fullObject["description"] as? String == "é")
+    #expect(fullObject["channelId"] as? String == channelId)
+    #expect(fullObject["createdById"] is NSNull)
+    #expect(fullObject["updatedAt"] is NSNull)
+    #expect(fullObject["taskCurrentProjection"] == nil)
+    #expect(try catalog.summaryTaskJSON(scopedTask, channelName: "general", channelType: "channel") == #"{"channelId":"\#(channelId)","channelName":"general","channelType":"channel","claimedAt":null,"claimedById":null,"claimedByName":null,"claimedByType":null,"completedAt":null,"createdAt":"1970-01-01T00:00:00.000Z","createdById":null,"createdByName":null,"createdByType":null,"descriptionBytes":2,"hasDescription":true,"id":"task","isLegacy":false,"messageId":"message","readOnlyReason":null,"revision":0,"source":"tasks","status":"todo","taskNumber":7,"title":"a\"/中","updatedAt":null}"#)
 }
 
 @Test func supportHelperForwardPointersKeepOmissionAndScrubOrder() {
@@ -26,15 +38,17 @@ import Testing
     #expect(AgentFreshnessIdentity.freshnessDecisionProducerFactId(agentId: "a", target: "target", reason: "why", pendingMaxSeq: 5, modelSeenSeq: 3, heldMessageCount: 2, omittedMessageCount: 4) == "freshness_decision_fact:" + AuthTokenCodec.sha256Hex(bytes))
 }
 
-@Test func supportHelperAuthTokensKeepClaimsAndValidation() {
+@Test func supportHelperAuthTokensKeepClaimsAndValidation() async throws {
+    let secret = "synthetic-helper-signing-secret-71-only"
     let state = SocialAuthState(provider: "github", mode: "login", nonce: "n", kind: "web", mobileRequestId: "m", desktopNonce: "d", returnTo: "/a", linkUserId: "u", linkOnConflict: true)
-    #expect(AuthTokenCodec.verifySocialAuthState(AuthTokenCodec.signSocialAuthState(state)) == state)
-    #expect(AuthTokenCodec.verifySocialAuthState("bad") == nil)
-    let token = AuthTokenCodec.signNativeAppleRequestToken(secret: "secret", requestId: "r", mode: "login", codeChallenge: String(repeating: "a", count: 32), expiresAt: Date().addingTimeInterval(60))
-    if case .valid(let claims) = AuthTokenCodec.verifyNativeAppleRequestToken(token, secret: "secret") {
+    let stateToken = try await AuthTokenCodec.signSocialAuthState(state, secret: secret)
+    #expect(await AuthTokenCodec.verifySocialAuthState(stateToken, secret: secret) == state)
+    #expect(await AuthTokenCodec.verifySocialAuthState("bad", secret: secret) == nil)
+    let token = try await AuthTokenCodec.signNativeAppleRequestToken(secret: secret, requestId: "r", mode: "login", codeChallenge: String(repeating: "a", count: 32), expiresAt: Date().addingTimeInterval(60))
+    if case .valid(let claims) = await AuthTokenCodec.verifyNativeAppleRequestToken(token, secret: secret) {
         #expect(claims.requestId == "r")
     } else { Issue.record("Expected valid native request token") }
-    if case .invalid = AuthTokenCodec.verifyNativeAppleRequestToken(token, secret: "other") {} else { Issue.record("Wrong key must fail") }
+    if case .invalid = await AuthTokenCodec.verifyNativeAppleRequestToken(token, secret: "synthetic-different-signing-secret-71") {} else { Issue.record("Wrong key must fail") }
 }
 
 @Test func supportHelperUnsubscribeKeepsInvalidHTML() {

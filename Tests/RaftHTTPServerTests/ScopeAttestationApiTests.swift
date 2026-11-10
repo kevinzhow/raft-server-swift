@@ -1,3 +1,4 @@
+import Crypto
 import Foundation
 import HTTPTypes
 import RaftHTTP
@@ -56,13 +57,23 @@ private func tracePayload(_ extra: [String: Any]) -> [String: Any] {
     return ["scope": "daemon-trace-bundle:create", "metadata": metadata]
 }
 
-private func jwtClaims(_ token: String) -> [String: Any] {
-    let parts = token.split(separator: ".")
-    guard parts.count == 3 else { return [:] }
-    var payload = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-    while payload.count % 4 != 0 { payload += "=" }
-    guard let data = Data(base64Encoded: payload),
-          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+private func scopeClaims(_ token: String, secret: String = "daemon-scope-test-secret") -> [String: Any] {
+    // Mirror the pinned worker's published payload.signature verification over
+    // the encoded payload bytes; never accept an unsigned decoded JWT payload.
+    let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+    guard parts.count == 2, !parts.contains(where: { $0.isEmpty || $0.contains("=") }) else { return [:] }
+    func decode(_ value: Substring) -> Data? {
+        var encoded = String(value).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while encoded.count % 4 != 0 { encoded += "=" }
+        return Data(base64Encoded: encoded)
+    }
+    guard let signature = decode(parts[1]),
+          HMAC<SHA256>.isValidAuthenticationCode(
+              signature, authenticating: Data(parts[0].utf8), using: SymmetricKey(data: Data(secret.utf8))
+          ),
+          let data = decode(parts[0]),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+          let expires = object["exp"] as? Int, expires > Int(Date().timeIntervalSince1970)
     else { return [:] }
     return object
 }
@@ -79,7 +90,7 @@ private func jwtClaims(_ token: String) -> [String: Any] {
             #expect(capability.body["scope"] as? String == "feedback-report:create")
             #expect(capability.body["audience"] as? String == "feedback-worker")
             #expect(capability.body["resource"] as? String == "servers/\(fixture.serverId)/machines/\(fixture.machineId)/feedback-reports")
-            let claims = jwtClaims(try #require(capability.body["attestation"] as? String))
+            let claims = scopeClaims(try #require(capability.body["attestation"] as? String))
             #expect(claims["sub"] as? String == "machine:\(fixture.machineId)")
             #expect(claims["actorType"] as? String == "machine")
             #expect(claims["machineId"] as? String == fixture.machineId)
@@ -102,8 +113,65 @@ private func jwtClaims(_ token: String) -> [String: Any] {
             #expect(computerCapability.status == .ok)
             #expect(computerCapability.body["audience"] as? String == "trace-ingest-worker")
             #expect(computerCapability.body["resource"] as? String == "servers/\(fixture.serverId)/machines/\(computerMachineId)/trace-bundles")
-            let computerClaims = jwtClaims(try #require(computerCapability.body["attestation"] as? String))
+            let computerClaims = scopeClaims(try #require(computerCapability.body["attestation"] as? String))
             #expect(computerClaims["sub"] as? String == "machine:\(computerMachineId)")
+        }
+    }
+}
+
+@Test func machineScopeAttestationHTTPMatchesNodeWorkerUTF8HMACAndClaims() async throws {
+    var fixture = ScopeFixture()
+    fixture.seed()
+    let secret = "scope-test-only-é-🔐-independent-signing-key"
+    fixture.accounts.setScopeAttestationSecretForTesting(secret)
+    fixture.accounts.setDeploymentEnvironmentForTesting("staging")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: fixture.accounts))
+        try await app.testing { client in
+            let requestedAt = Int(Date().timeIntervalSince1970)
+            let result = try await attest(client, fixture, tracePayload([
+                "bundleId": "bundle-é-😀", "rawTranscriptExcerpt": "must-not-be-signed",
+            ]), apiKey: fixture.apiKey)
+            try #require(result.status == .ok)
+            let token = try #require(result.body["attestation"] as? String)
+            #expect(token.split(separator: ".", omittingEmptySubsequences: false).count == 2)
+            #expect(!token.contains("="))
+            #expect(token.utf8.count <= 16 * 1024)
+            let claims = scopeClaims(token, secret: secret)
+            try #require(!claims.isEmpty)
+            #expect(Set(claims.keys) == Set([
+                "v", "typ", "scope", "sub", "actorType", "machineId", "serverId", "serverSlug",
+                "aud", "resource", "metadata", "nonce", "jti", "exp",
+            ]))
+            #expect(claims["v"] as? Int == 1)
+            #expect(claims["typ"] as? String == "scope-attestation")
+            #expect(claims["scope"] as? String == "daemon-trace-bundle:create")
+            #expect(claims["sub"] as? String == "machine:\(fixture.machineId)")
+            #expect(claims["actorType"] as? String == "machine")
+            #expect(claims["machineId"] as? String == fixture.machineId)
+            #expect(claims["serverId"] as? String == fixture.serverId)
+            #expect(claims["serverSlug"] as? String == fixture.slug)
+            #expect(claims["aud"] as? String == "trace-ingest-worker")
+            #expect(claims["resource"] as? String == "servers/\(fixture.serverId)/machines/\(fixture.machineId)/trace-bundles")
+            #expect(UUID(uuidString: claims["nonce"] as? String ?? "") != nil)
+            #expect(UUID(uuidString: claims["jti"] as? String ?? "") != nil)
+            let expires = try #require(claims["exp"] as? Int)
+            #expect(expires >= requestedAt + 120)
+            #expect(expires <= Int(Date().timeIntervalSince1970) + 120)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let expiresAt = try #require(result.body["expiresAt"] as? String)
+            #expect(formatter.date(from: expiresAt) == Date(timeIntervalSince1970: TimeInterval(expires)))
+            let metadata = try #require(claims["metadata"] as? [String: Any])
+            let echoed = try #require(result.body["metadata"] as? [String: Any])
+            #expect(NSDictionary(dictionary: metadata).isEqual(to: echoed))
+            #expect(metadata["bundleId"] as? String == "bundle-é-😀")
+            #expect(metadata["rawTranscriptExcerpt"] == nil)
+            #expect(metadata["deploymentEnvironment"] as? String == "staging")
+            #expect(scopeClaims(token, secret: "different-test-key").isEmpty)
+            let parts = token.split(separator: ".").map(String.init)
+            #expect(scopeClaims("\(parts[0])A.\(parts[1])", secret: secret).isEmpty)
+            #expect(scopeClaims("e30.\(token)", secret: secret).isEmpty)
         }
     }
 }
@@ -177,7 +245,7 @@ private func jwtClaims(_ token: String) -> [String: Any] {
             #expect(signed["feedbackTranscriptWindowToleranceMs"] as? Int == 900_000)
             #expect(signed["rawTranscriptExcerpt"] == nil)
             #expect((signed["objectKey"] as? String)?.wholeMatch(of: /^trace-bundles\/[0-9a-f-]+\/[0-9a-f-]+\/.+\.jsonl\.gz$/) != nil)
-            #expect(jwtClaims(try #require(response.body["attestation"] as? String))["metadata"] != nil)
+            #expect(scopeClaims(try #require(response.body["attestation"] as? String))["metadata"] != nil)
 
             let dev = try await attest(client, fixture, tracePayload(["deploymentEnvironment": "dev"]), apiKey: fixture.apiKey)
             #expect(dev.status == .ok)

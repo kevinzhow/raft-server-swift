@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -41,7 +41,7 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
     #expect(response.headers[HTTPField.Name("Content-Type")!] == "application/json; charset=utf-8")
     #expect(response.headers[HTTPField.Name("X-Robots-Tag")!] != nil)
     #expect(response.headers[HTTPField.Name("Content-Length")!] == String(length))
-    #expect(response.headers[HTTPField.Name("Cache-Control")!] == nil)
+    #expect(response.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
 }
 
 @Test func authIdentityRoutesPublishTheLegacyBytesAndHeaders() async throws {
@@ -103,7 +103,7 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             let plain = try await send(client, .post, "/api/auth/login", contentType: nil, body: #"{"email":"bytes@slock.test","password":"password123"}"#)
             #expect(plain.status == .ok)
             let text = plain.body.string ?? ""
-            #expect(text.hasPrefix(#"{"user":{"id":"\#(fixture.userId)","email":"bytes@slock.test"},"accessToken":""#))
+            #expect(text.hasPrefix(#"{"user":{"id":"\#(fixture.userId)","email":"bytes@slock.test","name":"bytes","emailVerified":false,"displayName":"bytes","gravatarHash":""#))
             #expect(text.hasSuffix(#","linkedProvider":null}"#))
             expectStandard(plain, length: text.utf8.count)
 
@@ -167,6 +167,76 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
 
             let noAvatar = try await send(client, .post, "/api/auth/me/avatar", bearer: fixture.bearer, contentType: "text/plain", body: "x")
             #expect(noAvatar.body.string == #"{"error":"No avatar file provided"}"#)
+        }
+    }
+}
+
+
+@Test func passwordLoginPublishesStoredVerificationAndProfileForEveryBrowserGateState() async throws {
+    let completedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    for verified in [false, true] {
+        for completed in [false, true] {
+            // Each combination owns a fresh synthetic account. No production
+            // seed, deployment state or session file is read or changed.
+            let accounts = EmailLoginDirectory()
+            let userId = UUID().uuidString.lowercased()
+            let email = "projection-\(userId)@auth.test"
+            accounts.addAccount(id: userId, email: email, password: "projection-test-password")
+            accounts.authProfileStore.state.withLock { owned in
+                owned.accountSurface.accounts[email]?.emailVerified = verified
+                owned.accountSurface.accounts[email]?.name = completed ? "ready-handle" : ""
+                owned.accountSurface.accounts[email]?.displayName = "Projection é😀"
+                owned.accountSurface.accounts[email]?.profileSetupCompletedAt = completed ? completedAt : nil
+                owned.accountSurface.accounts[email]?.profileSetupSuggestedHandle = "suggested-handle"
+                owned.accountSurface.accounts[email]?.profileSetupProvider = "github"
+                owned.accountSurface.accounts[email]?.preferredMessageBodyFontSize = "lg"
+            }
+            try await withApp { app in
+                configure(app, services: FallbackServices(
+                    nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+                ))
+                try await app.testing { client in
+                    let body = try JSONSerialization.data(withJSONObject: [
+                        "email": email, "password": "projection-test-password",
+                        "emailVerified": !verified, "name": "forged-handle",
+                        "profileSetupCompletedAt": "2099-01-01T00:00:00.000Z",
+                    ] as [String: Any])
+                    let response = try await send(client, .post, "/api/auth/login", body: String(decoding: body, as: UTF8.self))
+                    try #require(response.status == .ok)
+                    let json = try #require(try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any])
+                    let user = try #require(json["user"] as? [String: Any])
+                    #expect(user["id"] as? String == userId)
+                    #expect(user["email"] as? String == email)
+                    #expect(user["emailVerified"] as? Bool == verified)
+                    #expect(user["name"] as? String == (completed ? "ready-handle" : ""))
+                    #expect(user["displayName"] as? String == "Projection é😀")
+                    if completed {
+                        #expect(user["profileSetupCompletedAt"] as? String == "2023-11-14T22:13:20.000Z")
+                    } else {
+                        #expect(user["profileSetupCompletedAt"] is NSNull)
+                    }
+                    #expect(user["profileSetupSuggestedHandle"] as? String == "suggested-handle")
+                    #expect(user["profileSetupProvider"] as? String == "github")
+                    #expect(user["preferredMessageBodyFontSize"] as? String == "lg")
+                    #expect(user["gravatarHash"] as? String == AuthTokenCodec.sha256(email))
+                    for privateField in ["passwordHash", "passwordCredentialEstablishedAt", "accessToken", "refreshToken", "verificationToken"] {
+                        #expect(user[privateField] == nil, Comment(rawValue: privateField))
+                    }
+                    let accessToken = try #require(json["accessToken"] as? String)
+                    let refreshToken = try #require(json["refreshToken"] as? String)
+                    #expect(!accessToken.isEmpty && !refreshToken.isEmpty)
+                    expectStandard(response, length: (response.body.string ?? "").utf8.count)
+                    let me = try await send(client, .get, "/api/auth/me", bearer: accessToken)
+                    try #require(me.status == .ok)
+                    let meUser = try #require(try JSONSerialization.jsonObject(with: Data((me.body.string ?? "").utf8)) as? [String: Any])
+                    let loginPublicJSON = try JSONSerialization.data(withJSONObject: user, options: [.sortedKeys])
+                    let currentPublicJSON = try JSONSerialization.data(withJSONObject: meUser, options: [.sortedKeys])
+                    #expect(loginPublicJSON == currentPublicJSON)
+                    let rejected = try await send(client, .post, "/api/auth/login", body: "{\"email\":\"\(email)\",\"password\":\"wrong\"}")
+                    #expect(rejected.status == .unauthorized)
+                    #expect(rejected.body.string == #"{"code":"AUTH_INVALID_CREDENTIALS","error":"Invalid email or password"}"#)
+                }
+            }
         }
     }
 }

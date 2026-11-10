@@ -35,7 +35,7 @@ public enum PublicSearchBucketDecision: Sendable, Equatable {
 }
 
 public protocol PublicSearchBucketStoring: Sendable {
-    func consume(limit: Int) -> PublicSearchBucketDecision
+    func consume(limit: Int) async -> PublicSearchBucketDecision
 }
 
 /// Shared in-flight accounting for the service path; the slot is held until the

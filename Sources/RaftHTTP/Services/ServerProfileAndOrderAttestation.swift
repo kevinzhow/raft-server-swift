@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import RaftShared
 
 /// The signed attestation claims `metadata` object of the machine route.
 ///
@@ -42,6 +43,8 @@ struct ScopeAttestationMetadata: Encodable, Equatable, Sendable {
 
 /// The claims a machine attestation signs.
 private struct MachineScopeClaims: Encodable {
+    let v = 1
+    let typ = "scope-attestation"
     var sub: String
     var actorType: String
     var machineId: String
@@ -58,6 +61,14 @@ private struct MachineScopeClaims: Encodable {
 
 /// The claims a user (server-route) attestation signs.
 private struct ServerScopeClaims: Encodable {
+    let v = 1
+    let typ = "scope-attestation"
+    // The native profile model has no independent trace_user_id yet. The
+    // pinned worker accepts null; never substitute an account/analytics ID.
+    let traceUserId: JSONValue = .null
+    var email: JSONValue
+    var serverSlug: String
+    var nonce: String
     var scope: String
     var actorType: String
     var sub: String
@@ -67,14 +78,10 @@ private struct ServerScopeClaims: Encodable {
     var exp: Int
 }
 
-private struct JWTHeader: Encodable {
-    var alg: String
-    var typ: String
-}
-
 /// `POST /machine/scope-attestation` and `POST /api/servers/:id/scope-attestation`.
 ///
-/// Both mint an HS256 token over sorted-key claims. The claims JSON and the
+/// Both mint the Node scope capability: base64url(claims).base64url(HMAC).
+/// Scope capabilities have no JWT header. The claims JSON and the
 /// response `metadata` member are produced by the same encoder, so the signed
 /// payload and the echoed object carry identical bytes.
 extension ServerProfileAndOrderService {
@@ -95,18 +102,9 @@ extension ServerProfileAndOrderService {
         guard let machineId = dependencies.machineIdForCredential(authorization) else {
             throw ServerProfileAndOrderError.machineUnauthorized
         }
-        let secretOverride = dependencies.profiles.scopeAttestationSecretOverride
         let deploymentOverride = dependencies.profiles.deploymentEnvironmentOverride
         let environment = dependencies.environment()
-        let secretValue: String?
-        if let secretOverride { secretValue = secretOverride } else {
-            secretValue = environment["SCOPE_ATTESTATION_SECRET"]
-        }
-        guard let secret = secretValue,
-              !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
-            throw ServerProfileAndOrderError.scopeAttestationNotConfigured
-        }
+        let secret = try scopeAttestationSecret(environment: environment)
         guard let body, let scope = body.scope else {
             throw ServerProfileAndOrderError.invalidAttestationRequest
         }
@@ -147,7 +145,7 @@ extension ServerProfileAndOrderService {
             exp: expires,
             metadata: metadata
         )
-        let attestation = Self.signHS256(claims: Self.encodeSorted(claims), secret: secret)
+        let attestation = Self.signScopeAttestation(claims: Self.encodeSorted(claims), secret: secret)
         return ScopeAttestationResponse(
             attestation: attestation,
             scope: scope,
@@ -355,8 +353,16 @@ extension ServerProfileAndOrderService {
         default:
             throw ServerProfileAndOrderError.unknownScope
         }
+        guard let server = dependencies.oauth.serverProfile(id: serverId) else {
+            throw ServerProfileAndOrderError.notFound
+        }
+        let secret = try scopeAttestationSecret(environment: dependencies.environment())
+        let email = dependencies.profiles.account(userId: userId)?.email
         let expiresAt = dependencies.now().addingTimeInterval(300)
         let claims = ServerScopeClaims(
+            email: email.flatMap { $0.isEmpty ? nil : JSONValue.string($0) } ?? .null,
+            serverSlug: server.slug,
+            nonce: dependencies.makeUUID(),
             scope: scope,
             actorType: "user",
             sub: userId,
@@ -365,10 +371,8 @@ extension ServerProfileAndOrderService {
             resource: resource,
             exp: Int(expiresAt.timeIntervalSince1970)
         )
-        let secret = dependencies.environment()["SCOPE_ATTESTATION_SECRET"]
-            ?? "scope-attestation-default-secret"
         return ScopeAttestationResponse(
-            attestation: Self.signHS256(claims: Self.encodeSorted(claims), secret: secret),
+            attestation: Self.signScopeAttestation(claims: Self.encodeSorted(claims), secret: secret),
             scope: scope,
             audience: audience,
             resource: resource,
@@ -386,15 +390,30 @@ extension ServerProfileAndOrderService {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func signHS256(claims claimsJSON: String, secret: String) -> String {
+    private func scopeAttestationSecret(environment: [String: String]) throws -> String {
+        let secretValue: String?
+        if let override = dependencies.profiles.scopeAttestationSecretOverride {
+            secretValue = override
+        } else {
+            secretValue = environment["SCOPE_ATTESTATION_SECRET"]
+        }
+        guard let secret = secretValue,
+              !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ServerProfileAndOrderError.scopeAttestationNotConfigured
+        }
+        return secret
+    }
+
+    private static func signScopeAttestation(claims claimsJSON: String, secret: String) -> String {
         func base64url(_ data: Data) -> String {
             data.base64EncodedString()
                 .replacingOccurrences(of: "+", with: "-")
                 .replacingOccurrences(of: "/", with: "_")
                 .replacingOccurrences(of: "=", with: "")
         }
-        let headerJSON = encodeSorted(JWTHeader(alg: "HS256", typ: "JWT"))
-        let signingInput = "\(base64url(Data(headerJSON.utf8))).\(base64url(Data(claimsJSON.utf8)))"
+        // Exactly the encoded payload is authenticated, using the configured
+        // secret's UTF-8 bytes, as in Node createScopeAttestation/worker verifyToken.
+        let signingInput = base64url(Data(claimsJSON.utf8))
         let mac = Data(HMAC<SHA256>.authenticationCode(
             for: Data(signingInput.utf8),
             using: SymmetricKey(data: Data(secret.utf8))

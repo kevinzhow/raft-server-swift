@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import RaftObjectStorage
 import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -8,6 +9,69 @@ import FoundationNetworking
 /// Domain service accessors. Each accessor wires one migrated service from the
 /// directory's stores and the OAuth ledger.
 extension EmailLoginDirectory {
+    /// Bind the fourteen codecs to this root's actual owners, including its
+    /// retained native notifications instance. This never constructs another graph.
+    public func makeDurableBindings() throws -> [DurableSnapshotBinding] {
+        let profiles = authProfileStore
+        let notifications = notificationsStore
+        let native = notificationsStore.native
+        let events = productEventStore
+        let inbox = inboxFactStore
+        let follows = threadFollowStore
+        let messages = messagesAndThreadsStore
+        let agents = agentsRuntimeStore
+        let tasks = tasksAndRemindersStore
+        let machines = machinesAndComputersStore
+        let channels = serversAndChannelsStore
+        let cards = managedMCPAndCardsStore
+        let feedback = feedbackStore
+        let oauth = self.oauth
+        return try [
+            DurableSnapshotBinding(domain: .authProfiles,
+                encode: { try profiles.exportAuthProfilePersistence() },
+                restore: { try profiles.restoreAuthProfilePersistence(from: $0) }),
+            DurableSnapshotBinding(domain: .notifications,
+                encode: { try notifications.exportOpaqueData() },
+                restore: { try notifications.restoreOpaqueData($0) }),
+            DurableSnapshotBinding(domain: .notifications, aggregateID: "native",
+                encode: { try native.exportOpaqueData() },
+                restore: { try native.restoreOpaqueData($0) }),
+            DurableSnapshotBinding(domain: .productEvents,
+                encode: { try events.exportPersistenceData() },
+                restore: { try events.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .inboxFacts,
+                encode: { try inbox.exportPersistenceData() },
+                restore: { try inbox.restorePersistenceData(from: $0) }),
+            DurableSnapshotBinding(domain: .threadFollows,
+                encode: { try follows.exportPersistenceData() },
+                restore: { try follows.restorePersistenceData(from: $0) }),
+            DurableSnapshotBinding(domain: .messagesAndThreads,
+                encode: { try messages.exportPersistenceData() },
+                restore: { try messages.restorePersistenceData(from: $0) }),
+            DurableSnapshotBinding(domain: .agentsRuntime,
+                encode: { try agents.exportPersistenceData() },
+                restore: { try agents.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .tasksAndReminders,
+                encode: { try tasks.exportPersistenceData() },
+                restore: { try tasks.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .machinesAndComputers,
+                encode: { try machines.exportPersistenceData() },
+                restore: { try machines.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .serversAndChannels,
+                encode: { try channels.exportPersistenceData() },
+                restore: { try channels.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .managedMCPAndCards,
+                encode: { try cards.exportPersistenceData() },
+                restore: { try cards.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .feedback,
+                encode: { try feedback.exportPersistenceData() },
+                restore: { try feedback.restorePersistenceData($0) }),
+            DurableSnapshotBinding(domain: .oauthLedger,
+                encode: { try oauth.exportPersistenceData() },
+                restore: { try oauth.restorePersistenceData($0) }),
+        ]
+    }
+
     /// Provider discovery, the web and mobile OAuth legs, the native-Apple
     /// handoff, the installation lookup and the feature-flag evaluation. The
     /// directory supplies the stores and the OAuth ledger; nothing crosses a
@@ -99,6 +163,7 @@ extension EmailLoginDirectory {
             messages: messagesAndThreadsStore,
             channels: serversAndChannelsStore,
             oauth: oauth,
+            flags: agentsRuntimeStore,
             dependencies: InboxAndWakeDependencies(
                 auth: authCore,
                 profiles: authProfileStore,
@@ -241,7 +306,8 @@ extension EmailLoginDirectory {
                 mentions: messageMentions,
                 channels: serversAndChannelsStore,
                 search: searchMentions
-            )
+            ),
+            machines: machinesAndComputersStore
         )
     }
 
@@ -366,6 +432,7 @@ extension EmailLoginDirectory {
             channels: serversAndChannelsStore,
             messages: messagesAndThreadsStore,
             oauth: oauth,
+            flags: agentsRuntimeStore,
             attachmentCommentsEnabled: { [self] serverId, userId in
                 messageReadProjection.commentsEnabled(serverId: serverId, userId: userId)
             }
@@ -581,9 +648,48 @@ extension EmailLoginDirectory {
         ))
     }
 
+    /// Execution and ingress share the same retained domain owners and writer.
+    public func agentExecution(persistence: BusinessPersistenceRuntime) -> AgentExecutionService {
+        AgentExecutionService(
+            agents: agentsRuntimeStore, machines: machinesAndComputersStore, oauth: oauth,
+            channels: serversAndChannelsStore, messages: messagesAndThreadsStore, persistence: persistence
+        )
+    }
+
+    /// Materialize commands from the same owners that admitted and persisted them.
+    public func agentExecutionMaterialization(
+        persistence: BusinessPersistenceRuntime, serverURL: String
+    ) -> AgentExecutionMaterializationService {
+        AgentExecutionMaterializationService(
+            agents: agentsRuntimeStore, machines: machinesAndComputersStore, oauth: oauth,
+            channels: serversAndChannelsStore, messages: messagesAndThreadsStore,
+            profiles: authProfileStore, tasks: tasksAndRemindersStore,
+            persistence: persistence, serverURL: serverURL
+        )
+    }
+
+    /// Storage I/O is a transient port; only authenticated object references enter
+    /// persistence. Production calls this before admitting business requests.
+    /// Install only a transient handle on the retained Machines owner. After
+    /// activation the composition root invokes this in a short writer UoW.
+    public func configureMachineQueries(_ queries: any MachineQuerying) {
+        machinesAndComputersStore.machineQueries = queries
+    }
+
+    public func configureAttachmentStorage(_ storage: any AttachmentObjectStoring) {
+        messagesAndThreadsStore.withState { state in
+            state.attachmentObjectStorage = storage
+            state.requiresDurableAttachmentStorage = true
+        }
+    }
+
+    public func requireDurableAttachmentStorage() {
+        messagesAndThreadsStore.withState { $0.requiresDurableAttachmentStorage = true }
+    }
+
     /// Task creation and live catalog projections share the existing owners.
     public var taskCatalog: TaskCatalogService {
-        TaskCatalogService(tasks: tasksAndRemindersStore, profiles: authProfileStore, oauth: oauth)
+        TaskCatalogService(tasks: tasksAndRemindersStore, profiles: authProfileStore, oauth: oauth, messages: messagesAndThreadsStore, channels: serversAndChannelsStore, flags: agentsRuntimeStore)
     }
 
     /// Server tasks: channel task reads, the assignee write and the agent amend.
@@ -593,7 +699,11 @@ extension EmailLoginDirectory {
             oauth: oauth,
             tasks: tasksAndRemindersStore,
             agentTasks: actionCardExecute,
-            feedbackLocators: feedbackLocators
+            feedbackLocators: feedbackLocators,
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            flags: agentsRuntimeStore
         )
     }
 

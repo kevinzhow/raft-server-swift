@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -77,10 +78,11 @@ public struct ManagedMCPAssignmentsService: Sendable {
         )
     }
 
-    private func taskFragment(_ task: TaskRecord, _ channelName: String, _ channelType: String, _ summary: Bool) -> String {
-        summary
-            ? catalog.summaryTaskJSON(task, channelName: channelName, channelType: channelType)
-            : catalog.fullTaskJSON(task, channelName: channelName, channelType: channelType)
+    private func taskFragment(_ task: TaskRecord, _ channelName: String, _ channelType: String, _ summary: Bool, channelId: String) throws -> String {
+        if summary {
+            return try catalog.summaryTaskJSON(task, channelName: channelName, channelType: channelType, channelId: channelId)
+        }
+        return try catalog.fullTaskJSON(task, channelName: channelName, channelType: channelType, channelId: channelId)
     }
 
     private var visibility: ManagedMCPChannelVisibility {
@@ -573,113 +575,136 @@ public struct ManagedMCPAssignmentsService: Sendable {
     /// The caller's write access to the task's channel: a missing task and an
     /// invisible channel answer `Task not found`, a read-only one asks the
     /// caller to join.
-    private func requireTaskWriteAccess(serverId: String, task: TaskRecord, userId: String, missing: ManagedMCPAssignmentsError = .taskNotFound) throws {
-        switch TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: task.channelId, userId: userId) {
-        case .missing: throw missing
-        case .readOnly: throw ManagedMCPAssignmentsError.joinChannelToChangeTasks
-        case .write: break
+    private func requireTaskUser(_ authorization: String?, serverId: String) throws -> String {
+        let userId = try requireSession(authorization)
+        guard !serverId.isEmpty else { throw MessageSendError.missingServerId }
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId) else {
+            throw ChannelMembershipError.notAMember
         }
+        return userId
+    }
+
+    private func requireTaskWriteAccess(serverId: String, task: TaskRecord, userId: String,
+        missing: ManagedMCPAssignmentsError = .taskNotFound) throws -> TaskExecutionSurface {
+        guard let local = catalog.taskSurface(task, serverId: serverId, userId: userId) else { throw missing }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != "guest" else {
+            throw ManagedMCPAssignmentsError.joinChannelToChangeTasks
+        }
+        if channels.postableChannel(id: local.channelId)?.deletedAt == nil {
+            guard oauth.isChannelParticipant(channelId: local.channelId, userId: userId) else {
+                throw ManagedMCPAssignmentsError.joinChannelToChangeTasks
+            }
+            try requireNotArchived(local.channelId)
+        }
+        return local
     }
 
     // DELETE /api/tasks/:taskId
     public func deleteTask(authorization: String?, serverId: String, taskId: String) throws -> OkResponse {
-        let userId = try requireSession(authorization)
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
-            throw ChannelMembershipError.notAMember
-        }
+        let userId = try requireTaskUser(authorization, serverId: serverId)
         guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
-        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        _ = try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        let role = oauth.memberRole(serverId: serverId, userId: userId)
         if role != "owner" && role != "admin" && task.creatorId != userId {
             throw ManagedMCPAssignmentsError.onlyCreatorCanDeleteTask
         }
-        if let removed = tasks.removeTask(id: taskId), removed.hasHostMessage {
-            messages.clearTaskShadow(messageId: removed.messageId)
-        }
+        if let removed = tasks.removeTask(id: taskId), removed.hasHostMessage { messages.clearTaskShadow(messageId: removed.messageId) }
         return OkResponse()
     }
 
-    // PATCH /api/tasks/:taskId/claim
-    public func claimTask(authorization: String?, serverId: String, taskId: String) throws -> ActionCardTaskPayload {
-        let userId = try requireSession(authorization)
+    private func mutationResponse(_ task: TaskRecord, surface: TaskExecutionSurface) throws -> ChannelTaskResponse {
+        let projection = try catalog.readProjection(task, channelId: surface.channelId)
+        // Preserve the existing bound publisher for every actual local target;
+        // HTTP alone adds its envelope around the caller-local projection.
+        for target in catalog.taskUpdateProjections(task) {
+            publishTaskUpdated(target.jsonBody.render())
+        }
+        return ChannelTaskResponse(task: projection)
+    }
+
+    public func claimTask(authorization: String?, serverId: String, taskId: String) throws -> ChannelTaskResponse {
+        let userId = try requireTaskUser(authorization, serverId: serverId)
         guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
-        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
-        switch tasks.claimForUser(
-            taskId: taskId,
-            userId: userId,
-            channelDeletion: TaskChannelDeletionQuery(channels: channels),
-            now: now()
-        ) {
-        case .notFound:
-            throw ManagedMCPAssignmentsError.taskNotFound
-        case .channelDeleted:
-            throw ManagedMCPAssignmentsError.channelDeletedClaimForbidden
-        case .claimed(let claimed):
-            let payload = ActionCardTaskPayload(claimed)
-            publishTaskUpdated(payload.jsonBody.render())
-            return payload
+        let local = try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        guard local.type != "thread" else { throw ManagedMCPAssignmentsError.taskConflict("Thread messages cannot be claimed as tasks") }
+        switch tasks.claimForUser(taskId: taskId, userId: userId, channelDeletion: TaskChannelDeletionQuery(channels: channels), now: now()) {
+        case .notFound: throw ManagedMCPAssignmentsError.taskNotFound
+        case .channelDeleted: throw ManagedMCPAssignmentsError.channelDeletedClaimForbidden
+        case .rejected(let reason): throw ManagedMCPAssignmentsError.taskConflict(reason)
+        case .alreadyAssigned(let observed):
+            let name = observed.assigneeId.flatMap { id in
+                observed.assigneeType == "agent" ? oauth.agentRuntimeInfo(id: id)?.name : profiles.account(userId: id)?.name
+            }
+            throw ManagedMCPAssignmentsError.taskConflict(name.map { "already assigned to @\($0)" } ?? "already assigned to <unresolved>")
+        case .claimed(let claimed): return try mutationResponse(claimed, surface: local)
         }
     }
 
-    // PATCH /api/tasks/:taskId/unclaim
-    public func unclaimTask(authorization: String?, serverId: String, taskId: String) throws -> ActionCardTaskPayload {
-        let userId = try requireSession(authorization)
+    public func unclaimTask(authorization: String?, serverId: String, taskId: String) throws -> ChannelTaskResponse {
+        let userId = try requireTaskUser(authorization, serverId: serverId)
         guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
-        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
-        guard let unclaimed = tasks.unclaimForUser(taskId: taskId, userId: userId) else {
-            throw ManagedMCPAssignmentsError.taskNotFound
+        let local = try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        guard channels.postableChannel(id: local.channelId)?.deletedAt == nil else {
+            throw ManagedMCPAssignmentsError.channelDeletedTerminalOnly
         }
-        return ActionCardTaskPayload(unclaimed)
+        switch tasks.unclaimForUser(taskId: taskId, userId: userId, now: now()) {
+        case .notFound: throw ManagedMCPAssignmentsError.taskNotFound
+        case .done: throw ManagedMCPAssignmentsError.taskConflict("task is done")
+        case .unassigned: throw ManagedMCPAssignmentsError.taskConflict("task is not assigned")
+        case .unclaimed(let task): return try mutationResponse(task, surface: local)
+        }
     }
 
-    // PATCH /api/tasks/:taskId/status
-    public func updateTaskStatus(
-        authorization: String?,
-        serverId: String,
-        taskId: String,
-        body: TaskStatusRequest?
-    ) throws -> ActionCardTaskPayload {
-        let userId = try requireSession(authorization)
+    public func updateTaskStatus(authorization: String?, serverId: String, taskId: String, body: TaskStatusRequest?) throws -> ChannelTaskResponse {
+        let userId = try requireTaskUser(authorization, serverId: serverId)
         guard let status = body?.status, TaskCatalogPolicy.validTaskStatuses.contains(status) else {
             throw ManagedMCPAssignmentsError.invalidTaskStatus
         }
         guard let task = tasks.task(id: taskId) else { throw ManagedMCPAssignmentsError.taskNotFound }
-        try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
-        switch tasks.applyHumanStatus(
-            taskId: taskId,
-            status: status,
-            userId: userId,
-            channelDeletion: TaskChannelDeletionQuery(channels: channels),
-            now: now()
-        ) {
-        case .notFound:
-            throw ManagedMCPAssignmentsError.taskNotFound
-        case .channelDeletedTerminalOnly:
-            throw ManagedMCPAssignmentsError.channelDeletedTerminalOnly
-        case .onlyAssigneeCanReturnToTodo:
-            throw ManagedMCPAssignmentsError.onlyAssigneeCanReturnToTodo
-        case .updated(let updated):
-            return ActionCardTaskPayload(updated)
+        let local = try requireTaskWriteAccess(serverId: serverId, task: task, userId: userId)
+        if channels.postableChannel(id: local.channelId)?.deletedAt != nil {
+            guard ["done", "closed"].contains(status) else { throw ManagedMCPAssignmentsError.channelDeletedTerminalOnly }
+            let role = oauth.memberRole(serverId: serverId, userId: userId)
+            guard role == "owner" || role == "admin" else { throw ManagedMCPAssignmentsError.onlyAdminsCanCloseDeletedTask }
+        }
+        switch tasks.applyHumanStatus(taskId: taskId, status: status, userId: userId,
+            channelDeletion: TaskChannelDeletionQuery(channels: channels), now: now()) {
+        case .notFound: throw ManagedMCPAssignmentsError.taskNotFound
+        case .channelDeletedTerminalOnly: throw ManagedMCPAssignmentsError.channelDeletedTerminalOnly
+        case .onlyAssigneeCanReturnToTodo: throw ManagedMCPAssignmentsError.onlyAssigneeCanReturnToTodo
+        case .resourceReceiptRequired: throw ActionCardExecuteError.resourceReceiptRequired
+        case .updated(let updated): return try mutationResponse(updated, surface: local)
         }
     }
 
-    // POST /api/tasks/convert-message
-    public func convertMessageToTask(
-        authorization: String?,
-        serverId: String,
-        body: TaskConvertRequest?
-    ) throws -> TaskConvertResponse {
-        let userId = try requireSession(authorization)
-        guard let messageId = body?.messageId else { throw ManagedMCPAssignmentsError.messageNotFound }
-        let storedChannelId = oauth.messageChannelId(messageId)
-            ?? messages.humanMessageRows.first { $0.id == messageId }?.channelId
-        guard let channelId = storedChannelId else { throw ManagedMCPAssignmentsError.messageNotFound }
-        switch TasksAndLabsService.channelAccess(oauth: oauth, serverId: serverId, channelId: channelId, userId: userId) {
-        case .missing: throw ManagedMCPAssignmentsError.messageNotFound
-        case .readOnly: throw ManagedMCPAssignmentsError.joinChannelToChangeTasks
-        case .write: break
+    public func convertMessageToTask(authorization: String?, serverId: String, body: TaskConvertRequest?) throws -> ChannelTaskResponse {
+        let userId = try requireTaskUser(authorization, serverId: serverId)
+        guard let messageId = body?.messageId,
+              let message = messages.humanMessageRows.first(where: { $0.id == messageId }),
+              let local = catalog.conversionSurface(channelId: message.channelId, serverId: serverId, userId: userId)
+        else { throw ManagedMCPAssignmentsError.messageNotFound }
+        guard local.type != "thread" else { throw ManagedMCPAssignmentsError.taskConflict("Thread messages cannot be claimed as tasks") }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != "guest",
+              oauth.isChannelParticipant(channelId: local.channelId, userId: userId)
+        else { throw ManagedMCPAssignmentsError.joinChannelToChangeTasks }
+        try requireNotArchived(local.channelId)
+        guard message.senderType != "external_projection" else {
+            throw ManagedMCPAssignmentsError.taskConflict("external projection messages cannot be claimed as tasks")
         }
-        let id = tasks.appendConvertedMessageTask(channelId: channelId, messageId: messageId, creatorId: userId)
-        return TaskConvertResponse(taskIds: [id])
+        guard message.messageType != "system" else {
+            throw ManagedMCPAssignmentsError.taskConflict("system messages cannot be claimed as tasks — if the message describes an action you should take, just do it; otherwise ignore it. Don't claim.")
+        }
+        guard message.taskStatus == nil else { throw ManagedMCPAssignmentsError.taskConflict("already converted") }
+        let legacyMax = messages.humanMessageRows.filter { $0.channelId == message.channelId }.compactMap(\.taskNumber).max() ?? 0
+        switch tasks.appendConvertedMessageTask(channelId: message.channelId, messageId: messageId, title: message.content,
+            creatorId: userId, legacyMessageMaxNumber: legacyMax, now: now()) {
+        case .alreadyConverted: throw ManagedMCPAssignmentsError.taskConflict("already converted")
+        case .created(let task):
+            let projection = try catalog.readProjection(task, channelId: local.channelId)
+            do { try catalog.publishConvertedTask(task, surface: local) }
+            catch { DeferredEffects.markRollbackOnly(); throw error }
+            return ChannelTaskResponse(task: projection)
+        }
     }
 
     // MARK: - GET /api/tasks/server
@@ -692,10 +717,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         serverId: String,
         rawQuery: String?
     ) throws -> ServerTasksResponse {
-        let userId = try requireSession(authorization)
-        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
-            throw ChannelMembershipError.notAMember
-        }
+        let userId = try requireTaskUser(authorization, serverId: serverId)
         func repeated(_ name: String) -> Bool {
             guard let rawQuery else { return false }
             return rawQuery.split(separator: "&").filter { $0.hasPrefix(name + "=") }.count > 1
@@ -711,7 +733,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         guard let rawQuery else {
             let ordered = catalog.orderedTasks(serverId: serverId, userId: userId, status: status)
             return ServerTasksResponse(
-                taskFragments: ordered.map { taskFragment($0.task, $0.channelName, $0.channelType, false) },
+                taskFragments: try ordered.map { try taskFragment($0.task, $0.channelName, $0.channelType, false, channelId: $0.channelId) },
                 paginated: false,
                 nextCursor: nil
             )
@@ -744,7 +766,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
         var startIndex = 0
         if let cursor {
             guard let index = ordered.firstIndex(where: {
-                $0.task.channelId == cursor.channelId && $0.task.taskNumber == cursor.taskNumber
+                $0.channelId == cursor.channelId && $0.task.taskNumber == cursor.taskNumber
             }) else {
                 throw ManagedMCPAssignmentsError.invalidCursor
             }
@@ -756,12 +778,12 @@ public struct ManagedMCPAssignmentsService: Sendable {
             let slice = Array(ordered.dropFirst(startIndex).prefix(limit))
             page = slice
             if let last = slice.last, startIndex + slice.count < ordered.count {
-                nextCursor = TaskCatalogPolicy.encodeCursor(channelId: last.task.channelId, taskNumber: last.task.taskNumber)
+                nextCursor = TaskCatalogPolicy.encodeCursor(channelId: last.channelId, taskNumber: last.task.taskNumber)
             }
         }
         let response = ServerTasksResponse(
-            taskFragments: page.map {
-                taskFragment($0.task, $0.channelName, $0.channelType, detail == "summary")
+            taskFragments: try page.map {
+                try taskFragment($0.task, $0.channelName, $0.channelType, detail == "summary", channelId: $0.channelId)
             },
             paginated: limit != nil,
             nextCursor: nextCursor

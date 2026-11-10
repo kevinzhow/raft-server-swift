@@ -25,7 +25,9 @@ extension AgentPrivateSurfaceService {
         }
         let actor = try authorizedActor(authorization: authorization, agentId: agentId)
         let info = actor.info
-        guard let fields = body?.members else { throw AgentPrivateSurfaceError.invalidAgentUpdate }
+        guard let submittedFields = body?.members else { throw AgentPrivateSurfaceError.invalidAgentUpdate }
+        let fields = try adoptingBuiltinForm(submittedFields, serverId: info.serverId,
+            existingJSON: info.runtimeConfigJSON, external: info.runtime == "external", editing: true)
         let oauth = dependencies.oauth
         let previousConfig = AgentRuntimeConfigDocument(storedJSON: info.runtimeConfigJSON)
         let previousModelValue = AgentRuntimeConfigDocument.agentModel(
@@ -33,84 +35,80 @@ extension AgentPrivateSurfaceService {
         )
         let previousEffortValue = previousConfig.reasoningEffort
         let previousRuntimeValue = info.runtime
-        if let restartMode = fields["restartMode"]?.legacyString,
-           restartMode != "restart", restartMode != "session" {
-            throw AgentPrivateSurfaceError.invalidRestartMode(restartMode)
-        }
         // External agents run on their own machine; Raft-managed runtime
         // fields are immutable for them (descriptions still update).
         if info.runtime == "external",
            ["runtime", "runtimeConfig", "model", "reasoningEffort", "envVars"].contains(where: { fields[$0] != nil }) {
             throw AgentPrivateSurfaceError.externalRuntimeImmutable
         }
-        if fields["serverRole"] != nil {
-            try applyAgentServerRole(actor: actor, fields: fields)
+        try Self.validatePatchRuntimeHints(fields, currentRuntime: info.runtime)
+        if let restartMode = fields["restartMode"],
+           restartMode != .string("restart"), restartMode != .string("session") {
+            throw AgentPrivateSurfaceError.invalidRestartMode(try Self.nodeValueDescription(restartMode, failureMessage: "Failed to update agent"))
         }
-        var description: String?
-        if let value = fields["description"]?.legacyString {
-            oauth.updateAgentDescription(id: agentId, description: value)
-            description = value
-        }
-        var displayName: String?
-        if let value = fields["displayName"]?.legacyString {
-            oauth.updateAgentDisplayName(id: agentId, displayName: value)
-            displayName = value
-        }
-        var avatarUrl: String?
-        if let value = fields["avatarUrl"]?.legacyString {
-            oauth.updateAgentAvatar(id: agentId, avatarUrl: value)
-            avatarUrl = value
-        }
+        // Keep role refusal ordering, but defer every mutation/notice until all
+        // runtime admission and config checks have accepted the complete patch.
+        let roleChange = try validatedAgentServerRoleChange(actor: actor, fields: fields)
+        let description = fields["description"]?.legacyString
+        let displayName = fields["displayName"]?.legacyString
+        let avatarUrl = fields["avatarUrl"]?.legacyString
         var runtimeConfigJSON = info.runtimeConfigJSON
         var envVarsJSON = info.envVarsJSON
         var replacedRuntime: String?
-        if let legacyRuntime = fields["runtime"]?.legacyString {
-            if MachineMigrationPolicy.deprecatedAgentRuntimes.contains(legacyRuntime), legacyRuntime != info.runtime {
-                throw AgentPrivateSurfaceError.deprecatedRuntime(legacyRuntime)
-            }
-            replacedRuntime = legacyRuntime
-        }
-        var configChanged = false
-        var config = AgentRuntimeConfigDocument(storedJSON: runtimeConfigJSON)
-        if let rawConfig = AgentRuntimeConfigDocument(request: fields["runtimeConfig"]) {
-            if let configRuntime = rawConfig.runtime,
-               MachineMigrationPolicy.deprecatedAgentRuntimes.contains(configRuntime), configRuntime != info.runtime {
-                throw AgentPrivateSurfaceError.deprecatedRuntime(configRuntime)
-            }
-            try Self.checkStructure(rawConfig)
-            var normalized = rawConfig.normalized()
-            normalized.preserveProviderAPIKey(from: config)
-            if let unsupported = normalized.unsupportedCommandRuntime {
-                throw AgentPrivateSurfaceError.commandNotSupported(runtime: unsupported)
-            }
-            config = normalized
-            configChanged = true
-            replacedRuntime = normalized.runtime
-        } else {
-            if let model = fields["model"]?.legacyString {
-                config.setPresetModel(id: model)
-                configChanged = true
-            }
-            if let effort = fields["reasoningEffort"] {
-                config.setReasoningEffort(effort)
-                configChanged = true
-            }
-        }
-        if fields["envVars"] != nil {
+        let configChanged = ["runtimeConfig", "runtime", "model", "reasoningEffort", "envVars"].contains { fields[$0] != nil }
+        var config = previousConfig
+        if configChanged {
             let validation = AgentRuntimeConfigDocument.validatedEnvVars(fields["envVars"])
             if let error = validation.error { throw AgentPrivateSurfaceError.invalidEnvVars(error) }
-            var userEnv: [String: String] = [:]
-            for (key, value) in validation.env ?? [:] where !key.hasPrefix("ANTHROPIC_") {
-                userEnv[key] = value
+            var normalizationFields = fields
+            if normalizationFields["runtime"] == nil || normalizationFields["runtime"] == .null {
+                normalizationFields["runtime"] = .string(info.runtime)
             }
-            config.setEnv(userEnv)
-            configChanged = true
-        }
-        if let replacedRuntime {
-            config.setRuntime(replacedRuntime)
-            configChanged = true
+            if normalizationFields["model"] == nil || normalizationFields["model"] == .null {
+                normalizationFields["model"] = .string(previousModelValue)
+            }
+            if normalizationFields["reasoningEffort"] == nil {
+                normalizationFields["reasoningEffort"] = previousEffortValue.map(JSONValue.string) ?? .null
+            }
+            let storedEnv = info.envVarsJSON.flatMap { try? JSONDecoder().decode([String: String].self, from: Data($0.utf8)) }
+            let env = fields["envVars"] == nil ? storedEnv : validation.env
+            let rawConfig = try Self.requestRuntimeConfig(
+                normalizationFields, env: env,
+                stored: info.runtimeConfigJSON == nil ? nil : previousConfig,
+                coercionFailureMessage: "Failed to update agent"
+            )
+            if let runtime = rawConfig.runtime,
+               MachineMigrationPolicy.deprecatedAgentRuntimes.contains(runtime), runtime != info.runtime {
+                throw AgentPrivateSurfaceError.deprecatedRuntime(runtime)
+            }
+            try Self.checkStructure(rawConfig)
+            config = rawConfig.normalized()
+            config.preserveProviderAPIKey(from: previousConfig)
+            if fields["envVars"] != nil {
+                config.setUserEnv(validation.env ?? [:])
+            }
+            if let unsupported = config.unsupportedCommandRuntime {
+                throw AgentPrivateSurfaceError.commandNotSupported(runtime: unsupported)
+            }
+            replacedRuntime = config.runtime
         }
         if configChanged {
+            // Node permits an unchanged current Grok to remain editable even
+            // when this caller's new-use policy is disabled.
+            if (replacedRuntime ?? info.runtime) == "grok", info.runtime != "grok",
+               !dependencies.agents.evaluateFeatureFlag(
+                    key: "grok_runtime_v0", userId: actor.userId, serverId: info.serverId, platform: nil,
+                    client: .init(os: nil, buildNumber: nil, buildType: nil)
+               ).enabled {
+                throw AgentPrivateSurfaceError.grokRuntimeDisabled
+            }
+            if (replacedRuntime ?? info.runtime) == "grok" {
+                guard let machineId = dependencies.agents.agentMachineIds[info.id],
+                      let machine = dependencies.machines.machine(id: machineId, serverId: info.serverId),
+                      machine.runtimes.contains("grok") else {
+                    throw AgentPrivateSurfaceError.grokCapabilityUnavailable
+                }
+            }
             if let machineId = dependencies.agents.agentMachineIds[info.id] {
                 try checkBuiltinCatalog(machineId: machineId, config: config)
             }
@@ -118,6 +116,72 @@ extension AgentPrivateSurfaceService {
             let env = config.derivedEnvVars(userEnv: config.userEnv)
             runtimeConfigJSON = config.serialized()
             envVarsJSON = AgentRuntimeConfigDocument.serializedEnv(env)
+        }
+        let plannedRuntime = replacedRuntime ?? info.runtime
+        let plannedModel = AgentRuntimeConfigDocument.agentModel(
+            from: runtimeConfigJSON, external: plannedRuntime == "external"
+        )
+        let previousEnv = info.envVarsJSON.flatMap { try? JSONDecoder().decode([String: String].self, from: Data($0.utf8)) }
+        let currentEnv = envVarsJSON.flatMap { try? JSONDecoder().decode([String: String].self, from: Data($0.utf8)) }
+        let runtimeValuesChanged = configChanged && (plannedModel != previousModelValue
+            || plannedRuntime != previousRuntimeValue
+            || config.reasoningEffort != previousEffortValue
+            || config.serialized() != previousConfig.serialized()
+            || currentEnv != previousEnv)
+        let requestedResetMode: AgentExecutionResetMode? = fields["restartMode"] == .string("session")
+            ? .session : fields["restartMode"] == .string("restart") ? .restart : nil
+        let forceSession = plannedRuntime != previousRuntimeValue
+            || (plannedRuntime == "codex" && plannedModel != previousModelValue)
+        let effectiveResetMode = requestedResetMode.map { forceSession ? AgentExecutionResetMode.session : $0 }
+        // Non-Codex form saves retain their metadata contract. This narrow
+        // branch is not reset admission and makes no claim about an OS process.
+        var metadataOnlyRuntimeSave = false
+        if requestedResetMode != nil {
+            let owned = dependencies.agents.state
+            let execution = owned.execution
+            // Any retained row includes native session, process, launch, manual
+            // and completed execution history; unsettled-only checks are unsafe.
+            let hasExecutionHistory = execution.agents[agentId] != nil
+                || execution.commands.values.contains(where: { $0.agentId == agentId })
+                || (execution.stopIntents ?? [:]).values.contains(where: { $0.agentId == agentId })
+                || (execution.heldDeliveries ?? [:]).values.contains(where: { $0.agentId == agentId })
+                || (execution.resetIntents ?? [:]).values.contains(where: { $0.agentId == agentId })
+            let profile = owned.agentRuntimeProfiles[agentId]
+            let hasPendingProfile = profile?.pendingKind != nil
+                || profile?.pendingBeforeMachineId != nil
+                || profile?.pendingAfterMachineId != nil
+                || profile?.migrationStatus != nil
+            let hasMigrationHistory = owned.activeAgentMigrations.values.contains(where: { $0.agentId == agentId })
+                || owned.machineMigrations.values.contains(where: { $0.agentId == agentId })
+                || owned.hostedMigrations[agentId] != nil
+            metadataOnlyRuntimeSave = previousRuntimeValue == plannedRuntime
+                && plannedRuntime != "codex" && plannedRuntime != "external"
+                && (oauth.agentRuntimeInfo(id: agentId).map {
+                    $0.status == "inactive" || $0.status == "stopped"
+                } ?? false)
+                && !hasExecutionHistory && !hasPendingProfile && !hasMigrationHistory
+        }
+        if requestedResetMode != nil, !metadataOnlyRuntimeSave, case .none = dependencies.execution {
+            // A missing durable producer is not an offline machine. Refuse before
+            // writes when real owned execution facts require a transition. Keep
+            // legitimate metadata-only no-machine/no-execution fixture behavior.
+            let ownedMachine = dependencies.agents.agentMachineIds[agentId].flatMap {
+                dependencies.machines.machine(id: $0, serverId: info.serverId)
+            }
+            if ownedMachine != nil || dependencies.agents.state.execution.agents[agentId] != nil {
+                throw AgentExecutionProducerError(operation: "update agent", underlying: .dispatchUnavailable)
+            }
+        }
+        if let roleChange {
+            oauth.setAgentRole(serverId: info.serverId, agentId: info.id, role: roleChange.to)
+            dependencies.postAgentRoleNotice(
+                info.serverId, actor.userId, info.id, info.name, roleChange.from, roleChange.to
+            )
+        }
+        if let description { oauth.updateAgentDescription(id: agentId, description: description) }
+        if let displayName { oauth.updateAgentDisplayName(id: agentId, displayName: displayName) }
+        if let avatarUrl { oauth.updateAgentAvatar(id: agentId, avatarUrl: avatarUrl) }
+        if configChanged {
             oauth.updateAgentRuntime(id: agentId, runtimeConfigJSON: runtimeConfigJSON, envVarsJSON: envVarsJSON)
             if let replacedRuntime { oauth.updateAgentRuntimeId(id: agentId, runtime: replacedRuntime) }
         }
@@ -127,11 +191,16 @@ extension AgentPrivateSurfaceService {
         let model = AgentRuntimeConfigDocument.agentModel(
             from: configForModel, external: runtimeForResponse == "external"
         )
-        // RFC 071 §5: only a real runtime value change lifts the terminal breaker.
-        let runtimeValuesChanged = model != previousModelValue
-            || runtimeForResponse != previousRuntimeValue
-            || config.reasoningEffort != previousEffortValue
-        dependencies.agents.agentConfigLiftDispatch?(agentId, runtimeValuesChanged)
+        if configChanged || requestedResetMode != nil {
+            do {
+                try dependencies.execution?.applyRuntimeConfigurationChange(
+                    serverId: info.serverId, agentId: agentId,
+                    runtimeValuesChanged: runtimeValuesChanged, restartMode: metadataOnlyRuntimeSave ? nil : effectiveResetMode
+                )
+            } catch let error as AgentExecutionError {
+                throw AgentExecutionProducerError(operation: "update agent", underlying: error)
+            }
+        }
         return AgentPatchResponse(
             id: info.id,
             name: info.name,
@@ -151,9 +220,12 @@ extension AgentPrivateSurfaceService {
 
     /// Human role-transition policy for `serverRole` on an agent: the owner may
     /// promote and demote, an admin may only promote an agent they created, and
-    /// `owner` itself is never assignable to an agent. A real change posts a
-    /// system notice into the actor's DM with the agent.
-    private func applyAgentServerRole(actor: AgentActor, fields: [String: JSONValue]) throws {
+    /// `owner` itself is never assignable to an agent. Validation is read-only;
+    /// the accepted patch later applies the change and posts its actual notice.
+    private func validatedAgentServerRoleChange(
+        actor: AgentActor, fields: [String: JSONValue]
+    ) throws -> (from: String, to: String)? {
+        guard fields["serverRole"] != nil else { return nil }
         guard let targetRole = fields["serverRole"]?.legacyString else {
             throw AgentPrivateSurfaceError.serverRoleMustBeString
         }
@@ -163,17 +235,14 @@ extension AgentPrivateSurfaceService {
         guard actor.role == "owner" || actor.role == "admin" else { throw AgentPrivateSurfaceError.forbidden }
         let info = actor.info
         let currentRole = dependencies.oauth.agentRole(serverId: info.serverId, agentId: info.id) ?? "member"
-        if targetRole == currentRole { return }
+        if targetRole == currentRole { return nil }
         if targetRole == "member", currentRole == "admin", actor.role != "owner" {
             throw AgentPrivateSurfaceError.onlyOwnerCanDemoteAdmin
         }
         if targetRole == "admin", actor.role == "admin", info.creatorUserId != actor.userId {
             throw AgentPrivateSurfaceError.onlyOwnerCanPromote
         }
-        dependencies.oauth.setAgentRole(serverId: info.serverId, agentId: info.id, role: targetRole)
-        dependencies.postAgentRoleNotice(
-            info.serverId, actor.userId, info.id, info.name, currentRole, targetRole
-        )
+        return (from: currentRole, to: targetRole)
     }
 
     // MARK: - Assistant ownership
@@ -244,7 +313,7 @@ extension AgentPrivateSurfaceService {
             throw AgentPrivateSurfaceError.assistantHasChannels
         }
         let existingDM = dependencies.directChannelId(serverId, agentId, userId)
-        let dmId = existingDM ?? oauth.createDirectChannel(serverId: serverId, firstUserId: agentId, secondUserId: userId)
+        let dmId = existingDM ?? oauth.createDirectChannel(serverId: serverId, firstUserId: agentId, secondUserId: userId, firstKind: .agent)
         dependencies.channels.addPostableChannel(serverId: serverId, channelId: dmId, memberId: agentId, kind: "dm", name: "dm")
         dependencies.channels.addPostableChannel(serverId: serverId, channelId: dmId, memberId: userId, kind: "dm", name: "dm")
         oauth.addChannelHuman(channelId: dmId, userId: userId)

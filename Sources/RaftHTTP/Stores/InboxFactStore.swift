@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import RaftShared
 
 struct StoredInboxFact: Sendable {
     var messageId: String
@@ -17,7 +18,7 @@ struct StoredInboxFact: Sendable {
 /// keeps the migration mechanical. Domain-specific queries can move into this
 /// store without touching the directory's session/channel state.
 final class InboxFactStore: Sendable {
-    private let facts = Mutex<[StoredInboxFact]>([])
+    private let facts = TransactionalState<[StoredInboxFact]>([])
 
     func append(_ fact: StoredInboxFact) {
         facts.withLock { $0.append(fact) }
@@ -25,5 +26,10 @@ final class InboxFactStore: Sendable {
 
     func all() -> [StoredInboxFact] {
         facts.withLock { $0 }
+    }
+
+    var persistenceFactsSnapshot: [StoredInboxFact] {
+        get { facts.withLock { $0 } }
+        set { facts.withLock { $0 = newValue } }
     }
 }

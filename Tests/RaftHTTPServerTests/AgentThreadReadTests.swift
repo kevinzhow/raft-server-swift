@@ -72,7 +72,8 @@ private func makeThreadReadFixture(suffix: String) -> ThreadReadFixture {
     let elsewhere = accounts.oauth.createMessageRecord(channelId: other, content: "message in another channel", senderId: ownerId).id
 
     let dm = accounts.oauth.createDirectChannel(serverId: serverId, firstUserId: ownerId, secondUserId: agent)
-    accounts.oauth.addChannelHuman(channelId: dm, userId: agent)
+    accounts.oauth.removeChannelHuman(channelId: dm, userId: agent)
+    accounts.oauth.addChannelAgent(channelId: dm, agentId: agent)
     for member in [ownerId, agent] {
         accounts.addPostableChannel(serverId: serverId, channelId: dm, memberId: member, kind: "dm", name: "dm")
     }

@@ -28,17 +28,25 @@ public enum ChannelFileRules {
     }
 
     static func channelFileMimeType(filename: String, stored: String?) -> String {
-        if let stored, !stored.isEmpty { return stored }
-        let ext = (filename as NSString).pathExtension.lowercased()
-        switch ext {
-        case "pdf": return "application/pdf"
-        case "png": return "image/png"
-        case "jpg", "jpeg": return "image/jpeg"
-        case "gif": return "image/gif"
-        case "webp": return "image/webp"
-        case "txt": return "text/plain"
-        case "html", "htm": return "text/html"
-        default: return "application/octet-stream"
-        }
+        resolveAttachmentMimeType(filename: filename, stored: stored)
     }
+
+    /// Node's read/transport MIME policy for an actual resolved attachment:
+    /// explicit non-generic MIME wins; otherwise use the real filename suffix,
+    /// then the generic binary default. This does not sniff or mutate bytes.
+    public static func resolveAttachmentMimeType(filename: String, stored: String?) -> String {
+        let normalized = stored?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if !normalized.isEmpty && normalized != "application/octet-stream" { return normalized }
+        let suffix = filename.lastIndex(of: ".").map { String(filename[$0...]).lowercased() } ?? ""
+        return attachmentFilenameMimes[suffix] ?? (normalized.isEmpty ? "application/octet-stream" : normalized)
+    }
+
+    private static let attachmentFilenameMimes = [
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+        ".svg": "image/svg+xml", ".heic": "image/heic", ".heif": "image/heif", ".html": "text/html", ".htm": "text/html",
+        ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".mp3": "audio/mpeg", ".wav": "audio/wav",
+        ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/opus",
+        ".weba": "audio/webm", ".flac": "audio/flac", ".pdf": "application/pdf", ".txt": "text/plain",
+        ".md": "text/markdown", ".json": "application/json", ".csv": "text/csv",
+    ]
 }

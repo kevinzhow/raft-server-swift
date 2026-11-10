@@ -6,6 +6,12 @@ struct LedgerRealtimeAuth: RealtimeAuthorizing {
     let authCore: AuthCoreService
     let membership: SocketMembershipService
 
+    func sessionIdentity(forAccessToken token: String) -> RealtimeSessionIdentity? {
+        authCore.sessionIdentity(accessToken: token).map {
+            RealtimeSessionIdentity(userId: $0.userId, familyId: $0.familyId)
+        }
+    }
+
     func userId(forAccessToken token: String) -> String? {
         authCore.sessionIdentity(accessToken: token)?.userId
     }
