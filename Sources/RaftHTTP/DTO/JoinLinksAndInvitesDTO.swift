@@ -528,6 +528,12 @@ public struct SetupProjectionResponseDTO: Codable, Sendable, Equatable, JSONBody
     public var runtimeOptions: [RuntimeOption] = []
     public var hasConnectedComputer: Bool = false
     public var offlineComputers: [OfflineComputer] = []
+    /// The two post-setup screens still owed. They are only ever true for the
+    /// server's primary owner after a retained real-flow completion
+    /// (`services/serverSetupStateService.ts:355-374`); the setup service decides
+    /// them from persisted facts, never from client state.
+    public var postSetupSurveyPending: Bool = false
+    public var postSetupHandoffPending: Bool = false
     public var revokedComputers: Int? = nil
 
     public var jsonBody: OrderedJSON {
@@ -547,10 +553,11 @@ public struct SetupProjectionResponseDTO: Codable, Sendable, Equatable, JSONBody
         body.append("runtimeOptions", .array(runtimeOptions.map(\.jsonBody)))
         body.append("hasConnectedComputer", hasConnectedComputer)
         body.append("offlineComputers", .array(offlineComputers.map(\.jsonBody)))
-        // The existing owner has no completionReason / survey history. Do not
-        // manufacture an owed personal workflow from an absent persistence fact.
+        // Survey and handoff are separate retained facts, reported separately and
+        // independently (`surveyPending`, `handoffPending`).
         body.append("postSetup", .object([
-            OrderedJSONField("surveyPending", false), OrderedJSONField("handoffPending", false),
+            OrderedJSONField("surveyPending", postSetupSurveyPending),
+            OrderedJSONField("handoffPending", postSetupHandoffPending),
         ]))
         body.append("revokedComputers", ifPresent: revokedComputers)
         return body.json

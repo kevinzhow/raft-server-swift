@@ -32,6 +32,8 @@ extension ServersAndChannelsStore {
             current.userOnboardingSettings = restored.userOnboardingSettings
             current.setupPhases = restored.setupPhases
             current.setupHandoffs = restored.setupHandoffs
+            current.setupCompletionReasons = restored.setupCompletionReasons
+            current.setupHandoffReceipts = restored.setupHandoffReceipts
             current.guestRoleServers = restored.guestRoleServers
             current.proSeats = restored.proSeats
             current.joinLinks = restored.joinLinks
@@ -71,6 +73,14 @@ private struct CPServersSnapshot: Codable {
     var userOnboardingSettings: [String: CPUserOnboarding]
     var setupPhases: [String: String]
     var setupHandoffs: Set<String>
+    /// The post-setup fact group (completion reason + owner handoff receipts).
+    ///
+    /// `nil` means the snapshot is the clearly identified OLD v1 shape, written
+    /// before this group existed; it decodes as unknown reasons and no receipts.
+    /// A present group must be complete and well-typed: absence of one member,
+    /// a wrong type or a malformed date rejects the whole snapshot instead of
+    /// restoring a partial group.
+    var setupCompletion: CPSetupCompletion?
     var guestRoleServers: Set<String>
     var proSeats: [String: Int]
     var joinLinks: [String: CPJoinLink]
@@ -107,6 +117,10 @@ private struct CPServersSnapshot: Codable {
         userOnboardingSettings = value.userOnboardingSettings.mapValues(CPUserOnboarding.init)
         setupPhases = value.setupPhases
         setupHandoffs = value.setupHandoffs
+        setupCompletion = CPSetupCompletion(
+            completionReasons: value.setupCompletionReasons,
+            handoffReceipts: value.setupHandoffReceipts.mapValues(CPHandoffReceipt.init)
+        )
         guestRoleServers = value.guestRoleServers
         proSeats = value.proSeats
         joinLinks = value.joinLinks.mapValues(CPJoinLink.init)
@@ -123,6 +137,56 @@ private struct CPServersSnapshot: Codable {
         jointInvites = value.jointInvites.map(CPJointInvite.init)
         composerResourceServers = value.composerResourceServers
         installedServerApps = value.installedServerApps
+    }
+
+    /// Strict decode of every existing key plus the NEW post-setup group.
+    ///
+    /// A snapshot written before the group existed omits the whole key and
+    /// decodes as unknown reasons / no receipts (the clearly identified old v1
+    /// shape). Everything else stays required, and the group is decoded as one
+    /// unit: a present group missing either member, holding the wrong type or a
+    /// malformed date fails the whole snapshot before anything is restored.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        postableChannels = try container.decode([String: CPPostableChannel].self, forKey: .postableChannels)
+        threadOrder = try container.decode([String].self, forKey: .threadOrder)
+        serverMemberRoles = try container.decode([String: String].self, forKey: .serverMemberRoles)
+        hideHumansFromMembers = try container.decode([String: Bool].self, forKey: .hideHumansFromMembers)
+        serverMemberStatuses = try container.decode([String: String].self, forKey: .serverMemberStatuses)
+        membershipAgreementAudits = try container.decode([CPMembershipAudit].self, forKey: .membershipAgreementAudits)
+        jointProjections = try container.decode([CPJointLink].self, forKey: .jointProjections)
+        serverMemberEvents = try container.decode([CPServerMemberEvent].self, forKey: .serverMemberEvents)
+        deletedServerIds = try container.decode(Set<String>.self, forKey: .deletedServerIds)
+        removedServerMembers = try container.decode(Set<String>.self, forKey: .removedServerMembers)
+        serverPlans = try container.decode([String: String].self, forKey: .serverPlans)
+        serverLabsState = try container.decode([String: CPServerLabs].self, forKey: .serverLabsState)
+        serverInvites = try container.decode([CPServerInvite].self, forKey: .serverInvites)
+        serverSwitcherOrders = try container.decode([String: CPSwitcher].self, forKey: .serverSwitcherOrders)
+        serverOnboardingSettings = try container.decode([String: CPServerOnboarding].self, forKey: .serverOnboardingSettings)
+        userOnboardingSettings = try container.decode([String: CPUserOnboarding].self, forKey: .userOnboardingSettings)
+        setupPhases = try container.decode([String: String].self, forKey: .setupPhases)
+        setupHandoffs = try container.decode(Set<String>.self, forKey: .setupHandoffs)
+        if container.contains(.setupCompletion) {
+            setupCompletion = try container.decode(CPSetupCompletion.self, forKey: .setupCompletion)
+        } else {
+            setupCompletion = nil
+        }
+        guestRoleServers = try container.decode(Set<String>.self, forKey: .guestRoleServers)
+        proSeats = try container.decode([String: Int].self, forKey: .proSeats)
+        joinLinks = try container.decode([String: CPJoinLink].self, forKey: .joinLinks)
+        usageLimitAttentionServers = try container.decode(Set<String>.self, forKey: .usageLimitAttentionServers)
+        guestVisibleChannels = try container.decode([String: Bool].self, forKey: .guestVisibleChannels)
+        guestJoinableChannels = try container.decode([String: Bool].self, forKey: .guestJoinableChannels)
+        readReceiptsServers = try container.decode(Set<String>.self, forKey: .readReceiptsServers)
+        channelHumanRoles = try container.decode([String: String].self, forKey: .channelHumanRoles)
+        channelAuthorityRevisions = try container.decode([String: Int].self, forKey: .channelAuthorityRevisions)
+        sidebarModes = try container.decode([String: CPSidebarMode].self, forKey: .sidebarModes)
+        sidebarSections = try container.decode([String: CPSidebarSections].self, forKey: .sidebarSections)
+        sidebarPinnedRefs = try container.decode([String: CPSidebarPinned].self, forKey: .sidebarPinnedRefs)
+        sidebarReadAllEnabled = try container.decode(Bool.self, forKey: .sidebarReadAllEnabled)
+        jointInvites = try container.decode([CPJointInvite].self, forKey: .jointInvites)
+        composerResourceServers = try container.decode(Set<String>.self, forKey: .composerResourceServers)
+        installedServerApps = try container.decode([String: Set<String>].self, forKey: .installedServerApps)
     }
 
     func restored() -> ServersAndChannelsStore.State {
@@ -145,6 +209,9 @@ private struct CPServersSnapshot: Codable {
         value.userOnboardingSettings = userOnboardingSettings.mapValues { $0.restored() }
         value.setupPhases = setupPhases
         value.setupHandoffs = setupHandoffs
+        let completion = setupCompletion ?? .empty
+        value.setupCompletionReasons = completion.completionReasons
+        value.setupHandoffReceipts = completion.handoffReceipts.mapValues { $0.restored() }
         value.guestRoleServers = guestRoleServers
         value.proSeats = proSeats
         value.joinLinks = joinLinks.mapValues { $0.restored() }
@@ -331,6 +398,58 @@ private struct CPUserOnboarding: Codable {
         var value = UserOnboarding()
         value.reminderOptOut = reminderOptOut; value.dismissed = dismissed; value.currentStep = currentStep
         return value
+    }
+}
+
+/// The one post-setup fact group. Both members are required once the group is
+/// present, so a half-written group cannot restore a partial truth.
+private struct CPSetupCompletion: Codable {
+    var completionReasons: [String: String]
+    var handoffReceipts: [String: CPHandoffReceipt]
+
+    static let empty = CPSetupCompletion(completionReasons: [:], handoffReceipts: [:])
+
+    init(completionReasons: [String: String], handoffReceipts: [String: CPHandoffReceipt]) {
+        self.completionReasons = completionReasons
+        self.handoffReceipts = handoffReceipts
+    }
+
+    /// Rejects a receipt whose retained key and stored identity disagree: the
+    /// key is what the projection reads, and one snapshot must not carry two
+    /// answers to the same `(serverId, originalOwnerId)`.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        completionReasons = try container.decode([String: String].self, forKey: .completionReasons)
+        handoffReceipts = try container.decode([String: CPHandoffReceipt].self, forKey: .handoffReceipts)
+        for (key, receipt) in handoffReceipts where key != receipt.retainedKey {
+            throw DecodingError.dataCorruptedError(
+                forKey: .handoffReceipts,
+                in: container,
+                debugDescription: "Handoff receipt key does not match its retained identity"
+            )
+        }
+    }
+}
+
+private struct CPHandoffReceipt: Codable {
+    var serverId: String
+    var originalOwnerId: String
+    var acknowledgedAt: Date
+
+    var retainedKey: String { "\(serverId)\n\(originalOwnerId)" }
+
+    init(_ value: SetupHandoffReceipt) {
+        serverId = value.serverId
+        originalOwnerId = value.originalOwnerId
+        acknowledgedAt = value.acknowledgedAt
+    }
+
+    func restored() -> SetupHandoffReceipt {
+        SetupHandoffReceipt(
+            serverId: serverId,
+            originalOwnerId: originalOwnerId,
+            acknowledgedAt: acknowledgedAt
+        )
     }
 }
 

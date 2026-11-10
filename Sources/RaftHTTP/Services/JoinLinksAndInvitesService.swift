@@ -8,13 +8,27 @@ import Foundation
 public struct JoinLinksAndInvitesDependencies: Sendable {
     public var sessionUserId: @Sendable (String?) -> String?
     public var emitRealtime: @Sendable (String, String, String?) -> Void
+    /// Account-global survey/onboarding facts. BATCH-INTEGRATION: the Auth
+    /// account slice supplies the real implementation; the default keeps the
+    /// current minimal state (no recorded survey answer, no-op first-onboarding
+    /// record) instead of inventing either fact.
+    public var setupAccountFacts: any SetupAccountFacts
+    /// Best-effort Cindy briefing after the "Let's Go" acknowledgment is retained.
+    /// BATCH-INTEGRATION: the onboarding briefing service is not part of this
+    /// build. The receipt is stored before this runs and is never derived from
+    /// delivery: a briefing that fails here does not reopen the handoff.
+    public var triggerOnboardingBriefing: @Sendable (String, String) -> Void
 
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
-        emitRealtime: @escaping @Sendable (String, String, String?) -> Void
+        emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
+        setupAccountFacts: any SetupAccountFacts = UnavailableSetupAccountFacts(),
+        triggerOnboardingBriefing: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) {
         self.sessionUserId = sessionUserId
         self.emitRealtime = emitRealtime
+        self.setupAccountFacts = setupAccountFacts
+        self.triggerOnboardingBriefing = triggerOnboardingBriefing
     }
 }
 
@@ -529,7 +543,7 @@ public struct JoinLinksAndInvitesService: Sendable {
         guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
             throw JoinLinksAndInvitesError.notAMember
         }
-        return ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+        return setupProjectionService()
             .project(serverId: serverId, userId: userId, role: role)
     }
 
@@ -548,7 +562,7 @@ public struct JoinLinksAndInvitesService: Sendable {
             throw JoinLinksAndInvitesError.invalidSetupAction
         }
         guard role == "owner" else { throw JoinLinksAndInvitesError.insufficientPermission }
-        let projection = ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+        let projection = setupProjectionService()
         // A completion by any owner is terminal for the whole server. Neither a
         // late start nor a repeated complete may rewind it or recheck liveness.
         let current = projection.project(serverId: serverId, userId: userId, role: role)
@@ -557,9 +571,12 @@ public struct JoinLinksAndInvitesService: Sendable {
             guard projection.canComplete(serverId: serverId) else {
                 throw JoinLinksAndInvitesError.officialOnboardingAgentNotUsable
             }
-            _ = store.setSetupPhase(serverId: serverId, userId: userId, phase: "complete")
+            // The phase and its `normal` provenance are one Store mutation
+            // (services/serverSetupStateService.ts:555-571). A terminal retry
+            // reaches the early return above and writes nothing.
+            store.completeSetup(serverId: serverId, userId: userId)
         } else {
-            _ = store.setSetupPhase(serverId: serverId, userId: userId, phase: "in_progress")
+            store.startSetup(serverId: serverId, userId: userId)
         }
         return projection.project(serverId: serverId, userId: userId, role: role)
     }
@@ -581,10 +598,18 @@ public struct JoinLinksAndInvitesService: Sendable {
         }
         let revokedComputers = computers.revokeComputers(serverId: serverId, now: now())
         store.clearSetupState(serverId: serverId)
-        return ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+        return setupProjectionService()
             .project(serverId: serverId, userId: userId, role: role, revokedComputers: revokedComputers)
     }
 
+    /// "Let's Go": the PRIMARY owner accepts the handoff.
+    ///
+    /// Upstream `routes/servers.ts:1407-1446` and `serverService.ts:1530-1571`:
+    /// a missing server is 404, a caller who is not `server.ownerId` — including
+    /// a co-owner whose member role is `owner` — is 403 `INSUFFICIENT_PERMISSION`
+    /// before any write, the first acknowledgment is stamped and retained, and the
+    /// best-effort briefing runs only after that stamp. Acknowledgment is not
+    /// delivery: a briefing that never reaches Cindy does not reopen the handoff.
     public func serverSetupHandoff(
         authorization: String?,
         serverId: String
@@ -592,15 +617,52 @@ public struct JoinLinksAndInvitesService: Sendable {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw JoinLinksAndInvitesError.unauthorized
         }
-        guard oauth.serverProfile(id: serverId) != nil else {
+        guard let server = oauth.serverProfile(id: serverId) else {
             throw JoinLinksAndInvitesError.serverNotFound
         }
-        guard oauth.memberRole(serverId: serverId, userId: userId) == "owner" else {
+        // Binding the command to `server.ownerId` is the whole authorization:
+        // role `owner` is not enough (co-owners cannot accept the owner's handoff).
+        guard server.ownerId == userId else {
             throw JoinLinksAndInvitesError.insufficientPermission
         }
-        store.setSetupHandoff(serverId: serverId)
-        return ServerSetupProjectionService(store: store, agents: agents, computers: computers, oauth: oauth)
+        let acknowledgedAt = now()
+        let receipt = store.acknowledgeSetupHandoff(
+            serverId: serverId,
+            originalOwnerId: server.ownerId,
+            at: acknowledgedAt
+        )
+        // Account-global, first-time-only semantics belong to the account owner
+        // (BATCH-INTEGRATION seam). It runs after the receipt is retained.
+        dependencies.setupAccountFacts.recordFirstOnboarding(
+            userId: server.ownerId,
+            at: acknowledgedAt,
+            sessionFamilyId: liveSessionFamilyId(authorization)
+        )
+        // Best-effort, deliberately after the retained receipt: delivery never
+        // speaks for the user. BATCH-INTEGRATION: the briefing service is not in
+        // this build; the hook keeps the ordering explicit for its integration.
+        dependencies.triggerOnboardingBriefing(serverId, receipt.originalOwnerId)
+        return setupProjectionService()
             .project(serverId: serverId, userId: userId, role: "owner")
+    }
+
+    private func setupProjectionService() -> ServerSetupProjectionService {
+        ServerSetupProjectionService(
+            store: store,
+            agents: agents,
+            computers: computers,
+            oauth: oauth,
+            accountFacts: dependencies.setupAccountFacts
+        )
+    }
+
+    /// The live session family of the caller's bearer, or nil for a legacy
+    /// familyless token. This is the family the account-global first-onboarding
+    /// record retains, not a value derived from the request body.
+    private func liveSessionFamilyId(_ authorization: String?) -> String? {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        return accounts.activeSessionPrincipal(accessToken: token)?.familyId
     }
 
     // MARK: - Agent profile
@@ -796,7 +858,13 @@ extension EmailLoginDirectory {
                 },
                 emitRealtime: { [self] room, event, payload in
                     realtimeRelay.emit(room, event, payload)
-                }
+                },
+                // BATCH-INTEGRATION: the Auth account slice owns the real
+                // signup-survey and account-global first-onboarding facts and
+                // supplies a `SetupAccountFacts` implementation over
+                // `AuthProfileStore`. Until then the existing state is reported
+                // honestly and nothing is recorded.
+                setupAccountFacts: UnavailableSetupAccountFacts()
             )
         )
     }

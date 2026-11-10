@@ -8,6 +8,7 @@ struct ServerSetupProjectionService {
     let agents: AgentsRuntimeStore
     let computers: MachinesAndComputersStore
     let oauth: OAuthLedger
+    let accountFacts: any SetupAccountFacts
 
     func project(serverId: String, userId: String, role: String,
                  revokedComputers: Int? = nil) -> SetupProjectionResponseDTO {
@@ -25,6 +26,8 @@ struct ServerSetupProjectionService {
             result.surface = "complete"
             result.phase = "complete"
             result.gateReason = "setup_complete"
+            applyPostSetup(serverId: serverId, userId: userId, phase: phase,
+                           sidebar: sidebar, to: &result)
             return result
         }
         result.phase = phase
@@ -99,6 +102,33 @@ struct ServerSetupProjectionService {
         result.completionEnabled = usable
         result.gateReason = usable ? "completion_pending" : "official_onboarding_agent_unusable"
         return result
+    }
+
+    /// The two post-setup facts, read from retained state exactly like upstream
+    /// `projectServerSetup` (services/serverSetupStateService.ts:355-374):
+    ///
+    /// * the actor's OWN row must be `complete` with a retained `normal` or
+    ///   compatible `complete_after_defer` reason, and
+    /// * the actor must be the server's `ownerId` (a co-owner/admin who can help
+    ///   set the server up cannot answer the owner's personal survey or accept
+    ///   the owner's handoff).
+    ///
+    /// An inherited completion (the actor's row is not the completed one), an
+    /// unknown legacy reason, `grandfathered`/`admin_override`, and any unknown
+    /// actor owe nothing. Neither comparison uses a build/registration time.
+    private func applyPostSetup(serverId: String, userId: String, phase: String,
+                                sidebar: ServersAndChannelsStore.State,
+                                to result: inout SetupProjectionResponseDTO) {
+        let key = "\(serverId)\n\(userId)"
+        let reason = sidebar.setupCompletionReasons[key]
+            .flatMap(ServerSetupCompletionReason.init(rawValue:))
+        let flowCompleted = phase == "complete" && reason?.isFreshFlowCompletion == true
+        let actorIsOwner = oauth.serverProfile(id: serverId)?.ownerId == userId
+        guard flowCompleted, actorIsOwner else { return }
+        result.postSetupSurveyPending = !accountFacts.surveyCompleted(userId: userId)
+        // The handoff is owed until the real owner receipt exists. The legacy
+        // subjectless marker and any briefing/delivery timestamp are not it.
+        result.postSetupHandoffPending = sidebar.setupHandoffReceipts[key] == nil
     }
 
     /// Shared by the read projection and the complete write admission. Production
