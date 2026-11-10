@@ -46,6 +46,11 @@ private final class MigrationGapRecorder: @unchecked Sendable {
 private final class MigrationStartGate: @unchecked Sendable {
     private let lock = NSLock()
     private var entered = false
+    /// A release that arrives before the callback installs its release waiter
+    /// is remembered. Without this flag the waiter would suspend forever: the
+    /// start callback can be preempted between `signalEntered()` and
+    /// `waitRelease()`, while the test resumes and calls `release()`.
+    private var released = false
     private var enteredContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
 
@@ -74,13 +79,19 @@ private final class MigrationStartGate: @unchecked Sendable {
     func waitRelease() async {
         await withCheckedContinuation { continuation in
             lock.lock()
-            releaseContinuation = continuation
-            lock.unlock()
+            if released {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                releaseContinuation = continuation
+                lock.unlock()
+            }
         }
     }
 
     func release() {
         lock.lock()
+        released = true
         let continuation = releaseContinuation
         releaseContinuation = nil
         lock.unlock()
@@ -557,21 +568,39 @@ private func withMigrationGapApp(
         let flippedGeneration = try await gapDriveToArriving(client, fixture, ref: ref)
         let arrivalBody = gapArrivalBody(flippedGeneration)
 
-        async let firstArrival = gapPost(client, fixture.targetKey, "\(base)/arrived", arrivalBody)
-        await gate.waitEntered()
+        let firstArrival = Task {
+            try await gapPost(client, fixture.targetKey, "\(base)/arrived", arrivalBody)
+        }
+        try await withTestDeadline("migration start callback entry", seconds: 30) {
+            await gate.waitEntered()
+        }
         let observed = try await gapPost(client, fixture.targetKey, "\(base)/arrived", arrivalBody)
         #expect(observed.status == .ok)
         #expect(gapView(observed)["state"] as? String == "starting")
         #expect(recorder.count("archive") == 2, "each arrival observation confirms the idempotent archive receipt")
 
         gate.release()
-        let firstResponse = try await firstArrival
+        let firstResponse = try await withTestDeadline("first migration arrival response", seconds: 30) {
+            try await firstArrival.value
+        }
         #expect(firstResponse.status == .ok)
         #expect(gapView(firstResponse)["state"] as? String == "starting")
         #expect(recorder.count("start") == 1)
         let snapshot = try #require(fixture.accounts.machineMigrationStateForTesting(migrationRef: ref))
         #expect(snapshot.state == "starting")
         #expect(snapshot.sourceWorkspaceArchivedAt != nil)
+    }
+}
+
+/// The start callback may be preempted after `signalEntered()` and before it
+/// installs its release waiter. `release()` therefore has to remember an early
+/// release; otherwise `waitRelease()` suspends forever and the overlapped
+/// arrival test above hangs until the process is killed.
+@Test(.timeLimit(.minutes(1))) func migrationStartGateDoesNotLoseAnEarlyRelease() async throws {
+    let gate = MigrationStartGate()
+    gate.release()
+    try await withTestDeadline("pre-released migration gate", seconds: 5) {
+        await gate.waitRelease()
     }
 }
 
