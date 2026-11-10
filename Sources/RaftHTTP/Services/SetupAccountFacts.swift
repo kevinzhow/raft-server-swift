@@ -5,24 +5,23 @@ import Foundation
 /// They live on the Auth account, not on the server's membership row:
 ///
 /// * `surveyCompleted` reads `users.signup_survey_completed_at`. Upstream
-///   `ownerSurveyPending` is `owner.signupSurveyCompletedAt === null`
-///   (services/serverSetupStateService.ts:825-836).
+///   `ownerSurveyPending` is `!!owner && owner.signupSurveyCompletedAt === null`
+///   (services/serverSetupStateService.ts:807-847): a missing owner account is
+///   not pending.
 /// * `recordFirstOnboarding` is the account-global, first-time-only
 ///   `firstOnboardingCompletedAt` / `firstOnboardingCompletedSessionFamilyId`
 ///   write of the "Let's Go" command (services/serverService.ts:1556-1569).
 ///
-/// BATCH-INTEGRATION: the Auth account fields (`signupRole`,
-/// `signupSurveyCompletedAt`, `firstOnboardingCompletedAt`,
-/// `firstOnboardingCompletedSessionFamilyId`) and their strict AccountRow codec
-/// are owned by the Auth account slice. This protocol is the seam: the setup
-/// service never reads the account record itself. The Auth slice supplies an
-/// implementation backed by `AuthProfileStore`; until it lands,
-/// `UnavailableSetupAccountFacts` keeps the current minimal state (no recorded
-/// survey answer, no account-global record).
+/// This protocol is the seam: the setup service never reads the account record
+/// itself. `AuthProfileSetupAccountFacts` is the production implementation over
+/// the Auth account store; tests supply fixed answers.
 public protocol SetupAccountFacts: Sendable {
-    /// True only when this account already answered the signup survey. Knowing
-    /// nothing about the answer is `false`: the owner still owes the survey.
-    func surveyCompleted(userId: String) -> Bool
+    /// Whether this account already answered the signup survey.
+    ///
+    /// `nil` means the account row does not exist. Upstream fails open: a
+    /// missing owner owes nothing, so an unknown account is not an unanswered
+    /// survey and must not create a personal task.
+    func surveyCompleted(userId: String) -> Bool?
 
     /// Records the account-global first onboarding completion. Called on every
     /// accepted handoff command; the implementation keeps only the first write
@@ -30,20 +29,29 @@ public protocol SetupAccountFacts: Sendable {
     func recordFirstOnboarding(userId: String, at date: Date, sessionFamilyId: String?)
 }
 
-/// Minimal existing-state implementation of the Auth seam.
+/// Production `SetupAccountFacts` over the Auth account owner.
 ///
-/// BATCH-INTEGRATION: replace with the `AuthProfileStore`-backed implementation
-/// of the survey/account-global fields. `surveyCompleted` reports false
-/// (unknown, so owed) and the account-global record is a no-op; the retained
-/// receipt, not this facade, is what the projection reads for the handoff.
-public struct UnavailableSetupAccountFacts: SetupAccountFacts {
-    public init() {}
+/// The account-global facts are retained by `AuthProfileStore` in the same
+/// critical section as the rest of the account row, including the strict
+/// AccountRow persistence codec. The survey answer is the completion stamp the
+/// `PATCH /api/auth/me` profile write already stamps; the first-onboarding pair
+/// is only written by the first accepted handoff.
+struct AuthProfileSetupAccountFacts: SetupAccountFacts {
+    let accounts: AuthProfileStore
 
-    public func surveyCompleted(userId: String) -> Bool { false }
+    init(accounts: AuthProfileStore) {
+        self.accounts = accounts
+    }
 
-    public func recordFirstOnboarding(userId: String, at date: Date, sessionFamilyId: String?) {
-        // BATCH-INTEGRATION: first-time-only account-global write, owned by the
-        // Auth account slice. There is no account record for this fact here, so
-        // recording nothing is the only honest implementation.
+    func surveyCompleted(userId: String) -> Bool? {
+        accounts.account(userId: userId).map { $0.signupSurveyCompletedAt != nil }
+    }
+
+    func recordFirstOnboarding(userId: String, at date: Date, sessionFamilyId: String?) {
+        accounts.recordFirstOnboardingCompletion(
+            userId: userId,
+            at: date,
+            sessionFamilyId: sessionFamilyId
+        )
     }
 }

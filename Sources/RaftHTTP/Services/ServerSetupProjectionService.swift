@@ -125,7 +125,10 @@ struct ServerSetupProjectionService {
         let flowCompleted = phase == "complete" && reason?.isFreshFlowCompletion == true
         let actorIsOwner = oauth.serverProfile(id: serverId)?.ownerId == userId
         guard flowCompleted, actorIsOwner else { return }
-        result.postSetupSurveyPending = !accountFacts.surveyCompleted(userId: userId)
+        // `nil` (the owner account row is missing) fails open like upstream
+        // `!!owner && owner.signupSurveyCompletedAt === null`: no owner row, no
+        // survey owed. Only an existing account without a completion stamp owes it.
+        result.postSetupSurveyPending = accountFacts.surveyCompleted(userId: userId) == false
         // The handoff is owed until the real owner receipt exists. The legacy
         // subjectless marker and any briefing/delivery timestamp are not it.
         result.postSetupHandoffPending = sidebar.setupHandoffReceipts[key] == nil

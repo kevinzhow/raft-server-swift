@@ -8,21 +8,21 @@ import Foundation
 public struct JoinLinksAndInvitesDependencies: Sendable {
     public var sessionUserId: @Sendable (String?) -> String?
     public var emitRealtime: @Sendable (String, String, String?) -> Void
-    /// Account-global survey/onboarding facts. BATCH-INTEGRATION: the Auth
-    /// account slice supplies the real implementation; the default keeps the
-    /// current minimal state (no recorded survey answer, no-op first-onboarding
-    /// record) instead of inventing either fact.
+    /// Account-global survey/onboarding facts, read and written through the Auth
+    /// account owner. The production assembly supplies
+    /// `AuthProfileSetupAccountFacts`; tests supply fixed answers.
     public var setupAccountFacts: any SetupAccountFacts
     /// Best-effort Cindy briefing after the "Let's Go" acknowledgment is retained.
-    /// BATCH-INTEGRATION: the onboarding briefing service is not part of this
-    /// build. The receipt is stored before this runs and is never derived from
-    /// delivery: a briefing that fails here does not reopen the handoff.
+    /// The upstream onboarding-briefing service is not part of this port, so the
+    /// default hook is a no-op. The receipt is stored before this runs and is
+    /// never derived from delivery: a briefing that fails here does not reopen
+    /// the handoff.
     public var triggerOnboardingBriefing: @Sendable (String, String) -> Void
 
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
         emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
-        setupAccountFacts: any SetupAccountFacts = UnavailableSetupAccountFacts(),
+        setupAccountFacts: any SetupAccountFacts,
         triggerOnboardingBriefing: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) {
         self.sessionUserId = sessionUserId
@@ -702,8 +702,9 @@ public struct JoinLinksAndInvitesService: Sendable {
             sessionFamilyId: liveSessionFamilyId(authorization)
         )
         // Best-effort, deliberately after the retained receipt: delivery never
-        // speaks for the user. BATCH-INTEGRATION: the briefing service is not in
-        // this build; the hook keeps the ordering explicit for its integration.
+        // speaks for the user. The upstream Cindy briefing service is not part
+        // of this port, so the default hook is a no-op; the retained receipt,
+        // not the briefing, is what the projection reads.
         dependencies.triggerOnboardingBriefing(serverId, receipt.originalOwnerId)
         return setupProjectionService()
             .project(serverId: serverId, userId: actor.userId, role: actor.role)
@@ -922,12 +923,10 @@ extension EmailLoginDirectory {
                 emitRealtime: { [self] room, event, payload in
                     realtimeRelay.emit(room, event, payload)
                 },
-                // BATCH-INTEGRATION: the Auth account slice owns the real
-                // signup-survey and account-global first-onboarding facts and
-                // supplies a `SetupAccountFacts` implementation over
-                // `AuthProfileStore`. Until then the existing state is reported
-                // honestly and nothing is recorded.
-                setupAccountFacts: UnavailableSetupAccountFacts()
+                // The survey answer and the account-global first-onboarding
+                // pair live on the Auth account row; this seam reads and writes
+                // them through the profile store instead of copying state.
+                setupAccountFacts: AuthProfileSetupAccountFacts(accounts: authProfileStore)
             )
         )
     }

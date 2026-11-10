@@ -9,8 +9,9 @@ import Testing
 // seam answers the projection must report separately.
 
 private struct FixedSetupAccountFacts: SetupAccountFacts {
-    var answered: Bool
-    func surveyCompleted(userId: String) -> Bool { answered }
+    /// `nil` models a missing account row: upstream fails open and owes nothing.
+    var answered: Bool?
+    func surveyCompleted(userId: String) -> Bool? { answered }
     func recordFirstOnboarding(userId: String, at date: Date, sessionFamilyId: String?) {}
 }
 
@@ -40,6 +41,11 @@ private let seamSecondServer = "33333333-3333-4333-8333-333333333741"
     let answered = project(FixedSetupAccountFacts(answered: true))
     #expect(!answered.postSetupSurveyPending)
     #expect(answered.postSetupHandoffPending)
+    // A missing owner account owes no survey (`!!owner && … === null`), but the
+    // handoff receipt is still read independently.
+    let missingAccount = project(FixedSetupAccountFacts(answered: nil))
+    #expect(!missingAccount.postSetupSurveyPending)
+    #expect(missingAccount.postSetupHandoffPending)
     store.acknowledgeSetupHandoff(serverId: seamServer, originalOwnerId: seamOwner, at: Date())
     let acknowledged = project(FixedSetupAccountFacts(answered: false))
     #expect(acknowledged.postSetupSurveyPending)

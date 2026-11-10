@@ -364,7 +364,11 @@ public enum MobileOAuthCompleted: JSONBodyConvertible, Equatable {
         mode: String,
         returnUri: String,
         accessToken: String,
-        refreshToken: String
+        refreshToken: String,
+        /// The signed-in account's retained signup-survey facts. The published
+        /// user object carries both nullable members like `toPublicUser`.
+        signupSurveyCompletedAt: Date?,
+        signupRole: String?
     )
     /// A pending link token spent against the handoff: the account that now has
     /// the provider linked is signed in.
@@ -377,7 +381,8 @@ public enum MobileOAuthCompleted: JSONBodyConvertible, Equatable {
 
     public var jsonBody: OrderedJSON {
         switch self {
-        case .signedIn(let id, let email, let name, let provider, let mode, let returnUri, let accessToken, let refreshToken):
+        case .signedIn(let id, let email, let name, let provider, let mode, let returnUri, let accessToken, let refreshToken,
+                       let signupSurveyCompletedAt, let signupRole):
             return .object([
                 OrderedJSONField("user", .object([
                     OrderedJSONField("id", id),
@@ -385,6 +390,8 @@ public enum MobileOAuthCompleted: JSONBodyConvertible, Equatable {
                     OrderedJSONField("name", name),
                     OrderedJSONField("profileSetupCompletedAt", .null),
                     OrderedJSONField("profileSetupProvider", provider),
+                    OrderedJSONField("signupSurveyCompletedAt", optional: signupSurveyCompletedAt.map(DateText.iso8601)),
+                    OrderedJSONField("signupRole", optional: signupRole),
                 ])),
                 OrderedJSONField("accessToken", accessToken),
                 OrderedJSONField("refreshToken", refreshToken),

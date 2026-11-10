@@ -1,6 +1,6 @@
 import Foundation
 import HTTPTypes
-import RaftHTTP
+@testable import RaftHTTP
 import RaftHTTPServer
 import Testing
 import TestSupport
@@ -28,6 +28,14 @@ import VaporTesting
     }
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "setup-machine")
     accounts.linkComputerForTesting(serverId: serverId, machineId: machine, attachedByUserId: ownerId)
+    // A completed flow with its `normal` provenance and the owner's first
+    // handoff acknowledgment; the reset must clear the whole setup group in the
+    // same mutation that clears the phases.
+    accounts.serversAndChannelsStore.completeSetup(serverId: serverId, userId: ownerId)
+    accounts.serversAndChannelsStore.acknowledgeSetupHandoff(
+        serverId: serverId, originalOwnerId: ownerId,
+        at: Date(timeIntervalSinceReferenceDate: 812_345_678.5)
+    )
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -64,6 +72,10 @@ import VaporTesting
             let resetBody = try JSONSerialization.jsonObject(with: Data((resetResponse.body.string ?? "").utf8)) as? [String: Any]
             #expect(resetBody?["phase"] as? String == "not_started")
             #expect(resetBody?["revokedComputers"] as? Int == 1)
+            #expect((resetBody?["postSetup"] as? [String: Any])?["surveyPending"] as? Bool == false)
+            #expect((resetBody?["postSetup"] as? [String: Any])?["handoffPending"] as? Bool == false)
+            #expect(accounts.serversAndChannelsStore.setupCompletionReason(serverId: serverId, userId: ownerId) == nil)
+            #expect(accounts.serversAndChannelsStore.setupHandoffReceipt(serverId: serverId, ownerId: ownerId) == nil)
 
             let agent = accounts.oauth.createAgent(serverId: serverId, name: "setup-agent")
             accounts.addServerAgent(serverId: serverId, id: agent, name: "setup-agent", avatarUrl: nil, status: "inactive")

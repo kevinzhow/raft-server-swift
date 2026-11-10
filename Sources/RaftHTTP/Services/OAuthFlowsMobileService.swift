@@ -188,7 +188,9 @@ extension OAuthFlowsService {
                 mode: signedIn.mode,
                 returnUri: signedIn.returnUri,
                 accessToken: signedIn.tokens.accessToken,
-                refreshToken: signedIn.tokens.refreshToken
+                refreshToken: signedIn.tokens.refreshToken,
+                signupSurveyCompletedAt: signedIn.signupSurveyCompletedAt,
+                signupRole: signedIn.signupRole
             )
         }
     }

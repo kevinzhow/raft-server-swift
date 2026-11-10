@@ -403,3 +403,155 @@ private func seedUsableOnboardingAgent(
     let restoredToken = restored.mintAccessTokenForTesting(userId: owner)
     #expect(try await projectionBody(restored, restoredToken) == expected)
 }
+
+/// The complete owner onboarding flow through published HTTP paths: the owner
+/// creates two servers, both reach a real completion through the command, the
+/// survey is answered once for the account, and each server's handoff is
+/// acknowledged separately.
+///
+/// The exact complete-projection body is asserted as one string so the field
+/// names and member order stay the pinned upstream shape
+/// (`projectServerSetup`'s complete branch), including
+/// `… "offlineComputers":[],"postSetup":{"surveyPending":…,"handoffPending":…}}`.
+private func completeProjection(surveyPending: Bool, handoffPending: Bool) -> String {
+    "{\"surface\":\"complete\",\"phase\":\"complete\",\"currentStep\":null,\"blocksChat\":false,"
+        + "\"allowedExits\":[\"return_to_server\"],"
+        + "\"sideEffectState\":{\"transitions\":\"disabled\",\"completion\":\"disabled\"},"
+        + "\"gateReason\":\"setup_complete\",\"computerStatus\":\"unknown\","
+        + "\"runtimeStatus\":\"unknown\",\"runtimeOptions\":[],\"hasConnectedComputer\":false,"
+        + "\"offlineComputers\":[],\"postSetup\":{\"surveyPending\":\(surveyPending),"
+        + "\"handoffPending\":\(handoffPending)}}"
+}
+
+@Test func connectedOwnerOnboardingAsksSurveyOnceAndAcknowledgesEachServerHandoff() async throws {
+    let accounts = EmailLoginDirectory()
+    let owner = "11111111-1111-4111-8111-111111111750"
+    let coowner = "11111111-1111-4111-8111-111111111751"
+    let ownerEmail = "connected-onboarding-owner@slock.test"
+    let coownerEmail = "connected-onboarding-coowner@slock.test"
+    accounts.addAccount(id: owner, email: ownerEmail, password: "password123")
+    accounts.markEmailVerified(userId: owner)
+    accounts.addAccount(id: coowner, email: coownerEmail, password: "password123")
+    accounts.markEmailVerified(userId: coowner)
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            func jsonHeaders(_ token: String) -> HTTPFields {
+                var fields = HTTPFields()
+                fields[.authorization] = "Bearer \(token)"
+                fields[.contentType] = "application/json"
+                return fields
+            }
+            func login(_ email: String) async throws -> String {
+                var fields = HTTPFields()
+                fields[.contentType] = "application/json"
+                let response = try await client.send(.post, headers: fields, to: "/api/auth/login") { request in
+                    request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\"}")
+                }
+                #expect(response.status == .ok)
+                return try #require(try body(response)["accessToken"] as? String)
+            }
+            // The real Web first-server path: the owner creates the server.
+            func createServer(_ token: String, name: String, slug: String) async throws -> String {
+                let response = try await client.send(.post, headers: jsonHeaders(token), to: "/api/servers") { request in
+                    request.body = .init(string: "{\"name\":\"\(name)\",\"slug\":\"\(slug)\"}")
+                }
+                #expect(response.status == .ok)
+                return try #require(try body(response)["id"] as? String)
+            }
+            func projection(_ token: String, _ serverId: String) async throws -> ClientResponse {
+                var fields = jsonHeaders(token)
+                fields[HTTPField.Name("X-Server-Id")!] = serverId
+                return try await client.send(.get, headers: fields, to: "/api/servers/\(serverId)/setup-projection")
+            }
+            func transition(_ token: String, _ serverId: String, _ action: String) async throws -> ClientResponse {
+                var fields = jsonHeaders(token)
+                fields[HTTPField.Name("X-Server-Id")!] = serverId
+                return try await client.send(.post, headers: fields, to: "/api/servers/\(serverId)/setup-transition") { request in
+                    request.body = .init(string: "{\"action\":\"\(action)\"}")
+                }
+            }
+            func handoff(_ token: String, _ serverId: String) async throws -> ClientResponse {
+                var fields = jsonHeaders(token)
+                fields[HTTPField.Name("X-Server-Id")!] = serverId
+                return try await client.send(.post, headers: fields, to: "/api/servers/\(serverId)/setup-handoff")
+            }
+
+            let ownerToken = try await login(ownerEmail)
+            let coownerToken = try await login(coownerEmail)
+            let serverA = try await createServer(ownerToken, name: "Connected Onboarding A", slug: "connected-onboarding-a")
+            let serverB = try await createServer(ownerToken, name: "Connected Onboarding B", slug: "connected-onboarding-b")
+            accounts.oauth.addMember(serverId: serverA, userId: coowner, role: "owner")
+            _ = seedUsableOnboardingAgent(accounts: accounts, serverId: serverA, ownerId: owner)
+            _ = seedUsableOnboardingAgent(accounts: accounts, serverId: serverB, ownerId: owner)
+
+            // A real completion of server A owes both personal screens.
+            let completedA = try await transition(ownerToken, serverA, "complete")
+            #expect(completedA.status == .ok)
+            #expect(completedA.body.string == completeProjection(surveyPending: true, handoffPending: true))
+
+            // The co-owner helped set the server up but is never asked the
+            // owner's survey or to accept the owner's handoff.
+            let coownerView = try await projection(coownerToken, serverA)
+            #expect(coownerView.status == .ok)
+            #expect(coownerView.body.string == completeProjection(surveyPending: false, handoffPending: false))
+
+            // Answering the survey is account-global: the already-complete
+            // server stops asking, and a server completed later never asks.
+            let survey = try await client.send(.patch, headers: jsonHeaders(ownerToken), to: "/api/auth/me") { request in
+                request.body = .init(string: "{\"signupRole\":\"founder\"}")
+            }
+            #expect(survey.status == .ok)
+            let surveyBody = try body(survey)
+            #expect(surveyBody["signupRole"] as? String == "founder")
+            #expect(!((surveyBody["signupSurveyCompletedAt"] as? String) ?? "").isEmpty)
+            let afterSurveyA = try await projection(ownerToken, serverA)
+            #expect(afterSurveyA.body.string == completeProjection(surveyPending: false, handoffPending: true))
+            let completedB = try await transition(ownerToken, serverB, "complete")
+            #expect(completedB.status == .ok)
+            #expect(completedB.body.string == completeProjection(surveyPending: false, handoffPending: true))
+
+            // The account-global first-onboarding pair retains the FIRST
+            // handoff's real command time and the bearer's real session family.
+            let firstWindowStart = Date()
+            let acknowledgedA = try await handoff(ownerToken, serverA)
+            let firstWindowEnd = Date()
+            #expect(acknowledgedA.status == .ok)
+            #expect(acknowledgedA.body.string == completeProjection(surveyPending: false, handoffPending: false))
+            let first = try #require(accounts.authProfile.firstOnboardingCompletion(userId: owner))
+            #expect(first.completedAt >= firstWindowStart && first.completedAt <= firstWindowEnd)
+            let ownerFamily = try #require(
+                accounts.authProfileStore.activeSessionPrincipal(accessToken: ownerToken)?.familyId
+            )
+            #expect(first.sessionFamilyId == ownerFamily)
+            let receiptA = try #require(
+                accounts.serversAndChannelsStore.setupHandoffReceipt(serverId: serverA, ownerId: owner)
+            )
+            #expect(receiptA.acknowledgedAt == first.completedAt)
+
+            // Server B still owes its own handoff: the acknowledgment is per
+            // server, not account-global.
+            let afterHandoffA = try await projection(ownerToken, serverB)
+            #expect(afterHandoffA.body.string == completeProjection(surveyPending: false, handoffPending: true))
+
+            // Accepting server B's handoff changes only B's receipt; the
+            // account-global first pair keeps the original time and family.
+            let second = try await handoff(ownerToken, serverB)
+            #expect(second.status == .ok)
+            #expect(second.body.string == completeProjection(surveyPending: false, handoffPending: false))
+            let retained = try #require(accounts.authProfile.firstOnboardingCompletion(userId: owner))
+            #expect(retained.completedAt == first.completedAt)
+            #expect(retained.sessionFamilyId == first.sessionFamilyId)
+
+            // The co-owner still gets no personal task after the survey answer.
+            let coownerAfter = try await projection(coownerToken, serverA)
+            #expect(coownerAfter.body.string == completeProjection(surveyPending: false, handoffPending: false))
+        }
+    }
+}

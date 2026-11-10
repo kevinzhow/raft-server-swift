@@ -46,6 +46,10 @@ struct MobileSignedIn: Sendable, Equatable {
     var mode: String
     var returnUri: String
     var tokens: IssuedSessionTokens
+    /// The account's retained signup-survey facts; a just-created account has
+    /// neither.
+    var signupSurveyCompletedAt: Date?
+    var signupRole: String?
 }
 
 /// What one `complete` call decided and wrote.
@@ -439,7 +443,9 @@ struct OAuthFlowsStore: Sendable {
                 return .signedIn(MobileSignedIn(
                     userId: account.id, email: account.email, name: account.name,
                     provider: request.provider, mode: request.mode, returnUri: request.returnUri,
-                    tokens: tokens
+                    tokens: tokens,
+                    signupSurveyCompletedAt: account.signupSurveyCompletedAt,
+                    signupRole: account.signupRole
                 ))
             }
             if !acceptTerms { return .refused(.legalRequired) }
@@ -489,7 +495,9 @@ struct OAuthFlowsStore: Sendable {
             return .signedIn(MobileSignedIn(
                 userId: id, email: email, name: pendingName,
                 provider: request.provider, mode: request.mode, returnUri: request.returnUri,
-                tokens: tokens
+                tokens: tokens,
+                signupSurveyCompletedAt: nil,
+                signupRole: nil
             ))
         }
     }
