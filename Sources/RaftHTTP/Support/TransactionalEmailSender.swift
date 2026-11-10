@@ -2,6 +2,8 @@ import Foundation
 
 protocol TransactionalEmailSending: Sendable {
     func send(_ intent: TransactionalEmailIntent, outboxID: String, now: Date) async throws -> TransactionalEmailReceipt
+    /// Cancels outstanding tasks and retires the transport session. Idempotent.
+    func shutdown() async
 }
 
 /// Selects a real transport without changing the persisted intent codec. Provider
@@ -27,5 +29,11 @@ public struct TransactionalEmailSender: Sendable {
         _ intent: TransactionalEmailIntent, outboxID: String, now: Date = Date()
     ) async throws -> TransactionalEmailReceipt {
         try await sender.send(intent, outboxID: outboxID, now: now)
+    }
+
+    /// Stops new deliveries, cancels in-flight requests and prevents the
+    /// transport session's process-unsafe deallocation. Idempotent.
+    public func shutdown() async {
+        await sender.shutdown()
     }
 }

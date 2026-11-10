@@ -284,7 +284,21 @@ for _ in $(seq 1 240); do
     if docker exec "$REDIS_NAME" redis-cli ping 2>/dev/null | grep -q PONG; then break; fi
     sleep 0.25
 done
-docker exec "$PG_NAME" pg_isready -U raft -d raft >/dev/null 2>&1 || {
+# The image entrypoint runs a temporary init server and then restarts
+# PostgreSQL. One successful pg_isready can hit that temporary server and the
+# next connection then fails while the final server starts, so require a stable
+# window before the rehearsal uses the container.
+PG_READY_CHECKS=0
+for _ in $(seq 1 80); do
+    if docker exec "$PG_NAME" pg_isready -U raft -d raft >/dev/null 2>&1; then
+        PG_READY_CHECKS=$((PG_READY_CHECKS + 1))
+        [[ "$PG_READY_CHECKS" -ge 8 ]] && break
+    else
+        PG_READY_CHECKS=0
+    fi
+    sleep 0.25
+done
+[[ "$PG_READY_CHECKS" -ge 8 ]] || {
     docker logs "$PG_NAME" 2>&1 | tail -n 30 >&2 || true
     fail "throwaway PostgreSQL did not become ready"
 }

@@ -9,19 +9,19 @@ import FoundationNetworking
 /// response or lost durable acknowledgement can therefore cause duplicate mail.
 public final class CloudflareTransactionalEmailSender: TransactionalEmailSending {
     private let configuration: TransactionalEmailConfiguration
-    private let session: URLSession
+    private let transport: TransactionalEmailTransport
 
     public init(configuration: TransactionalEmailConfiguration) {
         self.configuration = configuration
-        let settings = URLSessionConfiguration.ephemeral
-        settings.timeoutIntervalForRequest = 30
-        settings.timeoutIntervalForResource = 40
-        settings.httpShouldSetCookies = false
-        settings.urlCache = nil
-        session = URLSession(configuration: settings, delegate: TransactionalEmailNoRedirects(), delegateQueue: nil)
+        transport = TransactionalEmailTransport()
     }
 
-    deinit { session.invalidateAndCancel() }
+    /// Stops new tasks, cancels outstanding ones, waits a bounded time for the
+    /// session invalidation callback, then retires the session so its
+    /// multi-handle teardown cannot run during process shutdown.
+    public func shutdown() async {
+        await transport.shutdown()
+    }
 
     public func send(
         _ intent: TransactionalEmailIntent, outboxID: String, now: Date = Date()
@@ -46,7 +46,7 @@ public final class CloudflareTransactionalEmailSender: TransactionalEmailSending
         ))
         let data: Data
         let response: URLResponse
-        do { (data, response) = try await session.data(for: request) }
+        do { (data, response) = try await transport.perform(request) }
         catch { throw TransactionalEmailError.transportFailure }
         guard let http = response as? HTTPURLResponse else {
             throw TransactionalEmailError.invalidProviderResponse

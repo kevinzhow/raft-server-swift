@@ -14,19 +14,19 @@ public struct TransactionalEmailReceipt: Sendable, Equatable {
 /// refused so a redirect cannot forward the recipient/token payload elsewhere.
 public final class ResendTransactionalEmailSender: TransactionalEmailSending {
     private let configuration: TransactionalEmailConfiguration
-    private let session: URLSession
+    private let transport: TransactionalEmailTransport
 
     public init(configuration: TransactionalEmailConfiguration) {
         self.configuration = configuration
-        let settings = URLSessionConfiguration.ephemeral
-        settings.timeoutIntervalForRequest = 30
-        settings.timeoutIntervalForResource = 40
-        settings.httpShouldSetCookies = false
-        settings.urlCache = nil
-        session = URLSession(configuration: settings, delegate: TransactionalEmailNoRedirects(), delegateQueue: nil)
+        transport = TransactionalEmailTransport()
     }
 
-    deinit { session.invalidateAndCancel() }
+    /// Stops new tasks, cancels outstanding ones, waits a bounded time for the
+    /// session invalidation callback, then retires the session so its
+    /// multi-handle teardown cannot run during process shutdown.
+    public func shutdown() async {
+        await transport.shutdown()
+    }
 
     public func deliver(
         kind: String, codec: String, payload: Data, outboxID: String, now: Date = Date()
@@ -58,7 +58,7 @@ public final class ResendTransactionalEmailSender: TransactionalEmailSending {
         ))
         let data: Data
         let response: URLResponse
-        do { (data, response) = try await session.data(for: request) }
+        do { (data, response) = try await transport.perform(request) }
         catch { throw TransactionalEmailError.transportFailure }
         guard let http = response as? HTTPURLResponse else {
             throw TransactionalEmailError.invalidProviderResponse
@@ -88,11 +88,23 @@ private struct ResendRequest: Encodable {
 private struct ResendAcceptance: Decodable { let id: String }
 
 final class TransactionalEmailNoRedirects: NSObject, URLSessionTaskDelegate {
+    /// The session retains this delegate until invalidation; the closure
+    /// intentionally captures only the invalidation signal.
+    private let onInvalidated: (@Sendable () -> Void)?
+
+    init(onInvalidated: (@Sendable () -> Void)? = nil) {
+        self.onInvalidated = onInvalidated
+    }
+
     func urlSession(
         _ session: URLSession, task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
         completionHandler: @escaping @Sendable (URLRequest?) -> Void
     ) {
         completionHandler(nil)
+    }
+
+    func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
+        onInvalidated?()
     }
 }

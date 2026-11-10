@@ -237,6 +237,8 @@ let package = Package(
                 "RaftServer", "RaftHTTP", "RaftMachineSocket", "RaftConnectAuth", "RaftPersistence",
                 "RaftRealtime", "RaftHTTPServer", "RaftShared", "TestSupport",
                 .product(name: "Vapor", package: "vapor"),
+                .product(name: "PostgresNIO", package: "postgres-nio"),
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOWebSocket", package: "swift-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),
