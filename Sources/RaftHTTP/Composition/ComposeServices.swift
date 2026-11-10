@@ -134,6 +134,7 @@ func composeServices(
     let socketMembership = SocketMembershipService(
         channels: channels,
         messages: messages,
+        tasks: tasks,
         oauth: oauth,
         flags: agents,
         attachmentCommentsEnabled: projection.commentsEnabled
@@ -329,7 +330,7 @@ func composeServices(
         oauth: oauth,
         dependencies: HumanMessageCreateDependencies(
             credentials: lookup,
-            writer: HumanMessageCommitService(messages: messages, channels: channels, profiles: profiles, ledger: ledger, emit: realtime.emit),
+            writer: HumanMessageCommitService(messages: messages, channels: channels, profiles: profiles, catalog: catalog, ledger: ledger, emit: realtime.emit),
             mentions: mentions,
             channels: channels,
             search: search

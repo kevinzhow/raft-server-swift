@@ -25,10 +25,12 @@ private struct MessagePayloadAuth: RealtimeAuthorizing {
 }
 
 /// The canonical manifest key set (`packages/shared/src/canonicalMessageManifest.ts`)
-/// plus `updatedAt`, which the producer emits but no canonical client consumes.
+/// plus `updatedAt`, which the producer emits but no canonical client consumes,
+/// plus the task-domain projection keys the producer spreads from the row.
 private let canonicalMessageKeys: Set<String> = [
     "id", "seq", "channelId", "senderType", "senderId", "randomId", "messageType", "content",
-    "actionMetadata", "threadId", "createdAt", "updatedAt", "senderName", "senderDescription",
+    "actionMetadata", "threadId", "taskStatus", "taskNumber", "taskAssigneeType", "taskAssigneeId",
+    "taskClaimedAt", "taskCompletedAt", "createdAt", "updatedAt", "senderName", "senderDescription",
     "senderMembershipStatus", "attachments", "mentions", "reactions", "commentRef", "externalAuthor",
 ]
 
@@ -221,7 +223,9 @@ struct HumanMessageWirePayloadTests {
                 let expected = "{\"message\":{\"id\":\"\(id)\",\"seq\":\(seq),\"channelId\":\"\(channelId)\","
                     + "\"senderType\":\"user\",\"senderId\":\"\(fixture.ownerId)\",\"randomId\":null,"
                     + "\"messageType\":\"chat\",\"content\":\"hello wire payload\",\"actionMetadata\":null,"
-                    + "\"threadId\":null,\"createdAt\":\"\(createdAt)\",\"updatedAt\":\"\(createdAt)\","
+                    + "\"threadId\":null,\"taskStatus\":null,\"taskNumber\":null,\"taskAssigneeType\":null,"
+                    + "\"taskAssigneeId\":null,\"taskClaimedAt\":null,\"taskCompletedAt\":null,"
+                    + "\"createdAt\":\"\(createdAt)\",\"updatedAt\":\"\(createdAt)\","
                     + "\"senderName\":\"wire-owner\",\"senderDescription\":null,\"senderMembershipStatus\":\"active\","
                     + "\"attachments\":[],\"mentions\":[],\"reactions\":[],\"commentRef\":null,\"externalAuthor\":null}}"
                 #expect(raw == expected)

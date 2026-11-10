@@ -529,7 +529,7 @@ private func body(_ error: any DomainError) -> String {
     #expect(store.task(id: taskId)?.claimedAt == now)
     #expect(store.task(id: taskId)?.status == "in_progress")
     #expect(store.task(id: taskId)?.revision == 1)
-    #expect(store.taskEvents.isEmpty)
+    #expect(store.publishedTaskEvents(taskId: taskId).map(\.eventType) == ["assignee_changed", "status_changed"])
     #expect(store.assigneeChangeEvents.isEmpty)
     switch store.applyHumanStatus(taskId: taskId, status: "done", userId: "u", channelDeletion: channelDeletion, now: now) {
     case .updated(let task):

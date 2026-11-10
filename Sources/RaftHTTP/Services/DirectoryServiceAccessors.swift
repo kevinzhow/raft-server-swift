@@ -301,6 +301,7 @@ extension EmailLoginDirectory {
                     messages: messagesAndThreadsStore,
                     channels: serversAndChannelsStore,
                     profiles: authProfileStore,
+                    catalog: taskCatalog,
                     ledger: MessageLedgerPort(oauth: oauth),
                     emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
                 ),
@@ -432,6 +433,7 @@ extension EmailLoginDirectory {
         SocketMembershipService(
             channels: serversAndChannelsStore,
             messages: messagesAndThreadsStore,
+            tasks: tasksAndRemindersStore,
             oauth: oauth,
             flags: agentsRuntimeStore,
             attachmentCommentsEnabled: { [self] serverId, userId in

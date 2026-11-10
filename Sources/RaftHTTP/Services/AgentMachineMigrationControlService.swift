@@ -657,7 +657,7 @@ public struct AgentMachineMigrationControlService: Sendable {
             lastErrorCode: nil,
             lastErrorAt: nil
         ))
-        tasks.releaseAgentWork(agentId: agentId)
+        tasks.releaseAgentWork(agentId: agentId, now: now())
         channels.appendServerMemberEvent(
             serverId: actor.info.serverId,
             eventType: "server.member_removed",

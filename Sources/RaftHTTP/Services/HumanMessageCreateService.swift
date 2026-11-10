@@ -182,8 +182,9 @@ public struct HumanMessageCreateService: Sendable {
             }
             randomId = value
         }
-        let written = dependencies.storeHumanMessage(
-            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions
+        let written = try dependencies.storeHumanMessage(
+            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions,
+            Self.asTaskValue(request.asTask)
         )
         guard written.status == 200 else {
             throw HumanMessageCreateError.messageWriteRejected(status: UInt(written.status), body: written.body)
@@ -583,6 +584,13 @@ public struct HumanMessageCreateService: Sendable {
             if !ids.contains(id) { ids.append(id) }
         }
         return ids
+    }
+
+    /// The optional `asTask` flag: the body check already refused a present
+    /// non-boolean value, and an absent flag is the ordinary send.
+    static func asTaskValue(_ value: JSONValue?) -> Bool {
+        if case .bool(let flag)? = value { return flag }
+        return false
     }
 
     /// The legacy body check: a UUID `channelId`, an `attachmentIds` that is an

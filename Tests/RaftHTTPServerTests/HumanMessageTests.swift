@@ -298,7 +298,16 @@ private func deleteJSON(
             #expect(replayed?["id"] as? String == sentId)
             let replayAttachmentIds = (replayed?["attachments"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
             #expect(replayAttachmentIds == requestedOrder)
-            #expect(realtimeEvents.withLock { $0.count } == 1)
+            // Upstream `broadcastAndDeliver` re-emits the enriched row on an
+            // idempotent randomId replay; the committed row is unchanged.
+            let replayEvents = realtimeEvents.withLock { $0 }
+            #expect(replayEvents.count == 2)
+            let replayEvent = try #require(replayEvents.last)
+            #expect(replayEvent.room == "channel:\(channelId)")
+            #expect(replayEvent.name == "message:new")
+            let replayPayload = try #require(replayEvent.payload)
+            let replayObject = try #require(try JSONSerialization.jsonObject(with: Data(replayPayload.utf8)) as? [String: Any])
+            #expect(replayObject["id"] as? String == sentId)
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"

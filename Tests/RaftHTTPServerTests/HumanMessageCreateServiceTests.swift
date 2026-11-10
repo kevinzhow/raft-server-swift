@@ -105,6 +105,8 @@ private func canonicalCreateBody(
     "{\"id\":\"\(id)\",\"seq\":\(seq),\"channelId\":\"\(channelId)\",\"senderType\":\"user\""
         + ",\"senderId\":\"\(senderId)\",\"randomId\":\"\(randomId)\",\"messageType\":\"chat\""
         + ",\"content\":\"\(contentJSON)\",\"actionMetadata\":null,\"threadId\":null"
+        + ",\"taskStatus\":null,\"taskNumber\":null,\"taskAssigneeType\":null"
+        + ",\"taskAssigneeId\":null,\"taskClaimedAt\":null,\"taskCompletedAt\":null"
         + ",\"createdAt\":\"\(createdAt)\",\"updatedAt\":\"\(createdAt)\""
         + ",\"senderName\":\"\(senderName)\",\"senderDescription\":null"
         + ",\"senderMembershipStatus\":\"active\",\"attachments\":[],\"mentions\":[]"
@@ -132,7 +134,8 @@ private func canonicalCreateBody(
         ))
         #expect(Set(sentObject.keys) == [
             "id", "seq", "channelId", "senderType", "senderId", "randomId", "messageType", "content",
-            "actionMetadata", "threadId", "createdAt", "updatedAt", "senderName", "senderDescription",
+            "actionMetadata", "threadId", "taskStatus", "taskNumber", "taskAssigneeType", "taskAssigneeId",
+            "taskClaimedAt", "taskCompletedAt", "createdAt", "updatedAt", "senderName", "senderDescription",
             "senderMembershipStatus", "attachments", "mentions", "reactions", "commentRef", "externalAuthor",
         ])
         #expect(header(sent, "Content-Length") == String(text(sent).utf8.count))

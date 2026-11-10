@@ -178,7 +178,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         #expect(summarySeq == Int64(summary.seq))
         let taskNumber = try #require(batch.tasks.first?.taskNumber)
         _ = try #require(fixture.accounts.tasksAndRemindersStore.amendTask(channelId: fixture.channelId, taskNumber: taskNumber,
-            title: "Current amended task text", description: "current description", amendedByName: "materializer-agent", now: Date()))
+            title: "Current amended task text", description: "current description", actorId: "materializer-agent", amendedByName: "materializer-agent", now: Date()))
         guard case .delivery(let updated, let sameSeq) = try service.materializeInTransaction(command: command) else { Issue.record("Expected amended projection"); return }
         let amended = try materializationObject(updated)
         #expect(amended["content"] as? String == "Original immutable title")
@@ -313,4 +313,52 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
         let credential = try #require(fixture.accounts.agentsRuntimeStore.agentCredential(token: key))
         #expect((credential.revokedAt != nil) == (attempt == "none"))
     }
+}
+
+/// `POST /api/v2/messages {asTask:true}` links the canonical task before agent
+/// delivery is staged, so the existing human-message delivery producer
+/// materializes the same task facts the task board sees. No new deliverer is
+/// introduced for the task link itself.
+@Test func asTaskHumanSendMaterializesCanonicalTaskFactsForTheRecipient() async throws {
+    let fixture = try MaterializationFixture()
+    let context = TransactionContext()
+    try await withTransactionContext(context) {
+        defer { context.discard() }
+        _ = try fixture.stageStart()
+        let exec = AgentExecutionService(producerTransactionAgents: fixture.accounts.agentsRuntimeStore,
+            machines: fixture.accounts.machinesAndComputersStore, oauth: fixture.accounts.oauth,
+            channels: fixture.accounts.serversAndChannelsStore, messages: fixture.accounts.messagesAndThreadsStore)
+        let service = fixture.accounts.humanMessageCreate.bindingExecution(exec)
+        let response = try service.createHumanMessage(
+            HumanMessageCreateRequest(channelId: .string(fixture.channelId), content: .string("asTask agent delivery"),
+                                      asTask: .bool(true)),
+            authorization: "Bearer \(fixture.accounts.mintAccessTokenForTesting(userId: fixture.userId))",
+            serverId: fixture.serverId
+        )
+        let message = try #require(try materializationObject(Data(response.messageJSON.utf8)))
+        let messageId = try #require(message["id"] as? String)
+        #expect(message["taskStatus"] as? String == "todo")
+        let task = try #require(fixture.accounts.tasksAndRemindersStore.task(messageId: messageId))
+        #expect(task.title == "asTask agent delivery")
+        let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values
+            .first { $0.messageId == messageId })
+        let materializer = fixture.materializer()
+        guard case .delivery(let data, let sequence) = try materializer.materializeInTransaction(command: command) else {
+            Issue.record("Expected a delivery command for the asTask host message")
+            return
+        }
+        let body = try materializationObject(data)
+        #expect(body["message_id"] as? String == messageId)
+        #expect(body["sender_type"] as? String == "human")
+        #expect(body["task_status"] as? String == "todo")
+        #expect(body["task_number"] as? Int == task.taskNumber)
+        #expect(body["task_assignee_id"] is NSNull)
+        #expect(body["task_assignee_type"] is NSNull)
+        let projection = try #require(body["task_current_projection"] as? [String: Any])
+        #expect(projection["title"] as? String == "asTask agent delivery")
+        #expect(projection["source"] as? String == "tasks_current_projection")
+        #expect(sequence > 0)
+        try context.prepareCommit()
+    }
+    #expect(fixture.accounts.tasksAndRemindersStore.taskRecords.isEmpty)
 }

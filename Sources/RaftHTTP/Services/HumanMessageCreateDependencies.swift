@@ -18,8 +18,9 @@ struct HumanMessageCreateDependencies: Sendable {
         _ randomId: String?,
         _ attachmentIds: [String],
         _ senderTimezone: String?,
-        _ mentions: [MentionInput]
-    ) -> HumanMessageWrite
+        _ mentions: [MentionInput],
+        _ asTask: Bool
+    ) throws -> HumanMessageWrite
     var resolveMentions: @Sendable (
         _ serverId: String,
         _ channelId: String,
@@ -63,9 +64,9 @@ extension HumanMessageCreateDependencies {
                 guard credential.scopes.contains("mentions") else { return .capabilityNotAuthorized }
                 return .success(agentId: credential.agentId)
             },
-            storeHumanMessage: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
-                writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
-                    attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions)
+            storeHumanMessage: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions, asTask in
+                try writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
+                    attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions, asTask: asTask)
             },
             resolveMentions: { serverId, channelId, senderId, content, typed, warn in
                 try mentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId, content: content, typed: typed, warnUnresolved: warn)

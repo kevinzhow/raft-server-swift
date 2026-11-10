@@ -210,6 +210,63 @@ public struct TasksAndLabsService: Sendable {
         return ChannelTaskResponse(task: producer.project(task, to: surface).projection)
     }
 
+    // MARK: - GET /api/tasks/:taskId/history
+
+    /// The canonical append-only task timeline.
+    ///
+    /// Order mirrors upstream `routes/tasks.ts`: the global auth/verification/
+    /// server middleware, then `requireTaskInServer`'s task + channel read
+    /// checks. A legacy task (no host message / no canonical row) answers the
+    /// service's 409 message; canonical events come only from rows that carry
+    /// the complete `task_events` group.
+    public func taskHistory(
+        authorization: String?,
+        serverId: String,
+        taskId: String
+    ) throws -> TaskHistoryResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw TaskHistoryError.authRequired(bearerPresent: authorization?.hasPrefix("Bearer ") == true)
+        }
+        guard producer.profiles.isEmailVerified(userId: userId) else {
+            throw TaskHistoryError.emailVerificationRequired
+        }
+        guard !serverId.isEmpty else { throw TaskHistoryError.missingServerId }
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId) else {
+            throw TaskHistoryError.notServerMember
+        }
+        guard let task = tasks.task(id: taskId),
+              producer.readableTaskSurface(task, serverId: serverId, userId: userId) != nil
+        else {
+            throw TaskHistoryError.taskNotFound
+        }
+        guard task.hasHostMessage else { throw TaskHistoryError.legacyTask }
+        let events = tasks.publishedTaskEvents(taskId: task.id).compactMap { record -> TaskHistoryEventDTO? in
+            guard let history = record.history else { return nil }
+            return TaskHistoryEventDTO(
+                id: history.id,
+                seq: history.seq,
+                eventType: record.eventType,
+                actorType: record.actorType,
+                actorName: Self.taskHistoryActorName(
+                    type: record.actorType, id: history.actorId, oauth: oauth, profiles: producer.profiles),
+                payloadJSON: history.payloadJSON,
+                createdAt: DateText.isoString(history.createdAt)
+            )
+        }
+        return TaskHistoryResponse(events: events)
+    }
+
+    private static func taskHistoryActorName(
+        type: String, id: String?, oauth: OAuthLedger, profiles: AuthProfileStore
+    ) -> String? {
+        guard let id else { return nil }
+        switch type {
+        case "user": return profiles.account(userId: id)?.name
+        case "agent": return oauth.agentRuntimeInfo(id: id)?.name
+        default: return nil
+        }
+    }
+
     // MARK: - POST /internal/agent-api/tasks/amend
 
     /// Amends one task's title and description.
@@ -250,6 +307,7 @@ public struct TasksAndLabsService: Sendable {
             taskNumber: taskNumber,
             title: title,
             description: body.description,
+            actorId: auth.agentId,
             amendedByName: oauth.agentRuntimeInfo(id: auth.agentId)?.name ?? "agent",
             now: now()
         ) else {

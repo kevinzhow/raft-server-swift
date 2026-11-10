@@ -316,7 +316,7 @@ extension HumanMessageCreateService {
             items: itemRecords,
             destinationTargetId: destinationChannelId
         )
-        let written = dependencies.storeHumanMessage(storageChannelId, userId, content, randomId, [], nil, [])
+        let written = try dependencies.storeHumanMessage(storageChannelId, userId, content, randomId, [], nil, [], false)
         guard written.status == 200 else {
             throw HumanMessageCreateError.messageWriteRejected(status: UInt(written.status), body: written.body)
         }
