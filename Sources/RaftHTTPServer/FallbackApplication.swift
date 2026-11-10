@@ -271,7 +271,13 @@ public func configure(_ app: Application, services: FallbackServices) {
         ),
         reactions: services.emailAccounts.reactionsRealtime,
         inbox: services.emailAccounts.inboxAndWake,
-        assignments: services.emailAccounts.channelAssignments().bindingTaskPublication(publishTaskUpdated: { _ in }),
+        assignments: services.emailAccounts.channelAssignments()
+            .bindingTaskPublication(publishTaskUpdated: { _ in })
+            .bindingFirstThreadReply { serverId, channelId, userId, content in
+                try services.humanMessageCreate.createThreadFirstReply(
+                    serverId: serverId, channelId: channelId, userId: userId, content: content
+                )
+            },
         readState: services.emailAccounts.managedMCPToolExecution,
         membership: services.emailAccounts.channelMembership,
         search: services.emailAccounts.searchMentions,

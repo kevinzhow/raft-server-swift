@@ -38,37 +38,16 @@ struct HumanMessageCommitService: Sendable {
         )
         switch messages.commitHumanMessage(request, ledger: ledger) {
         case .created(let message):
-            // A new DM has no room members yet. Join every participant's live
-            // sockets before publishing so the first frame is not lost
-            // (upstream `emitPersistedMessageToFrontend`).
-            if let channel {
-                let relay = RealtimeRelayService(messages: messages)
-                if kind == "dm" {
-                    for participantId in channel.memberIds {
-                        relay.joinUserServerSessions(participantId, channel.serverId, "channel:\(channelId)")
-                    }
-                } else if kind == "thread", let parentMessageId = channel.parentMessageId {
-                    // Upstream records the reply sender and, when present and
-                    // not the sender, the parent author before joining the
-                    // follower audience. The store write must precede the room
-                    // grant or the sender's own first reply is lost.
-                    let parent = messages.humanMessageRows.first { $0.id == parentMessageId }
-                    messages.recordThreadReplyJoinFollows(
-                        serverId: channel.serverId,
-                        threadChannelId: channelId,
-                        parentMessageId: parentMessageId,
-                        senderId: senderId,
-                        parentAuthorId: ThreadFollowerRealtimeService.parentAuthorId(
-                            of: parent, replyingSenderId: senderId
-                        )
-                    )
-                    ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
-                        .joinHumanFollowers(threadChannelId: channelId, serverId: channel.serverId)
-                }
-            }
             let body = payload(message, conversationContext: nil)
-            emit("channel:\(channelId)", "message:new",
-                 payload(message, conversationContext: conversationContext(channelId: channelId)))
+            // Upstream `emitPersistedMessageToFrontend`: the DM/thread room
+            // grants and reply follows run before `message:new`; the same
+            // service then publishes `dm:new` or the parent `thread:updated`.
+            let realtime = MessageRealtimeService(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth
+            )
+            for frame in realtime.frames(for: message) {
+                emit(frame.room, frame.event, frame.payload)
+            }
             return HumanMessageWrite(status: 200, body: body, created: true)
         case .replayed(let message):
             return HumanMessageWrite(

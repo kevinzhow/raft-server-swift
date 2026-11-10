@@ -577,8 +577,18 @@ struct HumanMessageWirePayloadTests {
                 #expect(created.status == .ok)
                 let createdBody = try messagePayloadObject(messagePayloadBodyText(created))
                 let threadId = try #require(createdBody["threadChannelId"] as? String)
-                let seedMessageId = try #require(createdBody["messageId"] as? String)
-                let seedSeq = try #require(fixture.accounts.messageSeqForTesting(messageId: seedMessageId))
+                let seedHistory = try await client.get(
+                    URI(string: "/api/messages/channel/\(threadId)?limit=50"), headers: ownerHeaders
+                )
+                #expect(seedHistory.status == .ok)
+                let seedMessages = try #require(
+                    try messagePayloadObject(messagePayloadBodyText(seedHistory))["messages"] as? [[String: Any]]
+                )
+                let seed = try #require(seedMessages.first {
+                    ($0["content"] as? String) == "agent thread seed"
+                })
+                let seedMessageId = try #require(seed["id"] as? String)
+                let seedSeq = try #require(seed["seq"] as? Int)
                 #expect(seedSeq > 0)
 
                 var agentHeaders = HTTPFields()

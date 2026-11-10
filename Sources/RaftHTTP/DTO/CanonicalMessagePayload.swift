@@ -64,7 +64,10 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
     let mentions: [StoredMessageMention]
     let conversationContext: OrderedJSON?
 
-    var jsonBody: OrderedJSON {
+    /// The same members `jsonBody` publishes, exposed so the thread-summary
+    /// `latestReply` projection can append its display-only fields without
+    /// re-rendering and re-sorting the canonical object.
+    var orderedObject: OrderedJSONObject {
         var body = OrderedJSONObject([
             OrderedJSONField("id", message.id),
             OrderedJSONField("seq", message.seq),
@@ -99,6 +102,8 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
         if let conversationContext {
             body.append("conversationContext", conversationContext)
         }
-        return body.json
+        return body
     }
+
+    var jsonBody: OrderedJSON { orderedObject.json }
 }

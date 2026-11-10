@@ -262,7 +262,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
     #expect(fixture.accounts.messagesAndThreadsStore.threadUnfollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
 }
 
-@Test func threadFollowResolvesTheParentMessageAndPublishesOnlyTheNamedThread() throws {
+@Test func threadFollowResolvesTheParentMessageAndPublishesTheResolvedThread() throws {
     let fixture = makeThreadsFixture()
     let collector = FollowerPublishCollector()
     let service = makeService(fixture.accounts, publish: { collector.append($0) })
@@ -275,9 +275,9 @@ private final class FollowerPublishCollector: @unchecked Sendable {
     )
     #expect(byParent.jsonBody.render() == "{\"ok\":true,\"following\":true}")
     #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
-    // The legacy frame guard decoded `threadChannelId` from the request body, so
-    // a parent-only request wrote the row but emitted no event.
-    #expect(collector.payloads.isEmpty)
+    // Upstream emits for the thread resolved from `parentMessageId`, not only
+    // for a directly named `threadChannelId`.
+    #expect(collector.payloads == [ThreadFollowersUpdatedPayload(threadChannelId: fixture.threadA)])
 
     _ = try service.setThreadFollow(
         ThreadFollowMutationDTO(threadChannelId: fixture.threadB),
@@ -285,7 +285,10 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         serverId: fixture.serverId,
         follow: true
     )
-    #expect(collector.payloads == [ThreadFollowersUpdatedPayload(threadChannelId: fixture.threadB)])
+    #expect(collector.payloads == [
+        ThreadFollowersUpdatedPayload(threadChannelId: fixture.threadA),
+        ThreadFollowersUpdatedPayload(threadChannelId: fixture.threadB),
+    ])
 
     do {
         _ = try service.setThreadFollow(
@@ -302,7 +305,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
     } catch {
         Issue.record("unexpected error: \(error)")
     }
-    #expect(collector.payloads.count == 1)
+    #expect(collector.payloads.count == 2)
 }
 
 // MARK: - Unfollowed inbox

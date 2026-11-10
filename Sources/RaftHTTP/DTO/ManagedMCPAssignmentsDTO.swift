@@ -177,32 +177,35 @@ public struct ChannelMembersBatchResponse: JSONBodyConvertible, Sendable, Equata
 }
 
 /// `200` body of `POST /api/channels/:channelId/threads`.
-public enum ChannelThreadResponse: JSONBodyConvertible, Sendable, Equatable {
-    /// A live thread already hangs off the parent message: `threadChannelId`,
-    /// `replyCount`, `lastReplyAt`, `participantIds`.
-    case existing(threadChannelId: String, replyCount: Int, lastReplyAt: String?, participantIds: [String])
-    /// A thread was created: `threadChannelId`, `messageId` (`null` without a
-    /// first reply), `replyCount` 0, `lastReplyAt` `null`, `participantIds` `[]`.
-    case created(threadChannelId: String, messageId: String?)
+///
+/// The route publishes `{ threadChannelId, ...getThreadInfoForChannel }` after
+/// the optional first reply has been posted, so a creation response already
+/// carries the reply count and participants. There is no `messageId` member.
+public struct ChannelThreadResponse: JSONBodyConvertible, Sendable, Equatable {
+    public var threadChannelId: String
+    public var replyCount: Int
+    public var lastReplyAt: String?
+    public var participantIds: [String]
+
+    public init(
+        threadChannelId: String,
+        replyCount: Int,
+        lastReplyAt: String?,
+        participantIds: [String]
+    ) {
+        self.threadChannelId = threadChannelId
+        self.replyCount = replyCount
+        self.lastReplyAt = lastReplyAt
+        self.participantIds = participantIds
+    }
 
     public var jsonBody: OrderedJSON {
-        switch self {
-        case .existing(let threadChannelId, let replyCount, let lastReplyAt, let participantIds):
-            return .object([
-                OrderedJSONField("threadChannelId", threadChannelId),
-                OrderedJSONField("replyCount", replyCount),
-                OrderedJSONField("lastReplyAt", optional: lastReplyAt),
-                OrderedJSONField("participantIds", stringArray(participantIds)),
-            ])
-        case .created(let threadChannelId, let messageId):
-            return .object([
-                OrderedJSONField("threadChannelId", threadChannelId),
-                OrderedJSONField("messageId", optional: messageId),
-                OrderedJSONField("replyCount", 0),
-                OrderedJSONField("lastReplyAt", .null),
-                OrderedJSONField("participantIds", .array([])),
-            ])
-        }
+        .object([
+            OrderedJSONField("threadChannelId", threadChannelId),
+            OrderedJSONField("replyCount", replyCount),
+            OrderedJSONField("lastReplyAt", optional: lastReplyAt),
+            OrderedJSONField("participantIds", stringArray(participantIds)),
+        ])
     }
 }
 

@@ -216,6 +216,11 @@ public struct AgentSendDeliveryService: Sendable {
     private let searchVisible: @Sendable (_ messageChannelId: String, _ serverId: String?, _ viewer: SearchViewer) -> Bool
     private let commitSend: @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome
     private let integrationServices: @Sendable (_ serverId: String) -> [AgentIntegrationServiceSnapshot]
+    /// The persisted-chat frontend publisher (`emitPersistedMessageToFrontend`):
+    /// joins the DM/thread audience, then emits the canonical `message:new`,
+    /// `dm:new` or `thread:updated`. The default keeps focused service tests
+    /// silent; the HTTP composition installs the real socket relay.
+    private let publishCommittedMessage: @Sendable (StoredHumanMessage) -> Void
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
 
@@ -232,6 +237,7 @@ public struct AgentSendDeliveryService: Sendable {
         prepare: ActionCardPrepareService,
         search: SearchMentionsService,
         ledger: MessageLedgerPort,
+        publishCommittedMessage: @escaping @Sendable (StoredHumanMessage) -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
@@ -260,6 +266,7 @@ public struct AgentSendDeliveryService: Sendable {
             integrationServices: { serverId in
                 oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
             },
+            publishCommittedMessage: publishCommittedMessage,
             now: now,
             makeMessageId: makeMessageId
         )
@@ -278,6 +285,7 @@ public struct AgentSendDeliveryService: Sendable {
         searchVisible: @escaping @Sendable (String, String?, SearchViewer) -> Bool,
         commitSend: @escaping @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome,
         integrationServices: @escaping @Sendable (String) -> [AgentIntegrationServiceSnapshot],
+        publishCommittedMessage: @escaping @Sendable (StoredHumanMessage) -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
@@ -299,6 +307,7 @@ public struct AgentSendDeliveryService: Sendable {
         self.searchVisible = searchVisible
         self.commitSend = commitSend
         self.integrationServices = integrationServices
+        self.publishCommittedMessage = publishCommittedMessage
         self.now = now
         self.makeMessageId = makeMessageId
     }
@@ -402,18 +411,19 @@ public struct AgentSendDeliveryService: Sendable {
 
         func commit() throws -> AgentSendResponse {
             let messageId = makeMessageId()
+            var committed = StoredHumanMessage(
+                id: messageId,
+                channelId: resolved.channelId,
+                senderId: agent.id,
+                content: content,
+                randomId: nil,
+                attachmentIds: request.attachmentIds,
+                messageType: "chat",
+                senderType: "agent"
+            )
             let seq: Int
             switch try commitSend(
-                StoredHumanMessage(
-                    id: messageId,
-                    channelId: resolved.channelId,
-                    senderId: agent.id,
-                    content: content,
-                    randomId: nil,
-                    attachmentIds: request.attachmentIds,
-                    messageType: "chat",
-                    senderType: "agent"
-                ),
+                committed,
                 request.attachmentIds,
                 resolved.channelId,
                 agent.id
@@ -439,6 +449,8 @@ public struct AgentSendDeliveryService: Sendable {
                     key: receiptKey
                 )
             }
+            committed.seq = seq
+            publishCommittedMessage(committed)
             return AgentSendResponse(messageId: messageId, messageSeq: seq)
         }
 

@@ -153,6 +153,17 @@ extension MessagesAndThreadsStore {
         )
     }
 
+    /// Upstream `clearThreadDoneForAll(threadChannelId)`: a new reply
+    /// reactivates a thread every follower marked Done. The human commit path
+    /// clears inside its own transaction; agent sends clear here before their
+    /// frontend emit.
+    func clearThreadDone(threadChannelId: String) {
+        withState { state in
+            state.inboxDoneScopes = state.inboxDoneScopes.filter { !$0.hasSuffix("\n\(threadChannelId)") }
+            state.inboxDoneFrontiers = state.inboxDoneFrontiers.filter { !$0.key.hasSuffix("\n\(threadChannelId)") }
+        }
+    }
+
     /// The reply-path follows that upstream writes before the frontend emit:
     /// the sender always reactivates (a new reply is an explicit re-follow),
     /// while the parent author is only ensured and never overrides an explicit

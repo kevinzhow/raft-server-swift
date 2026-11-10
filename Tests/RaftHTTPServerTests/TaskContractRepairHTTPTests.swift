@@ -668,7 +668,17 @@ func taskContractJointReviewUsesEachRoomProjectionAndActualPeerMembership(_ mode
                 #expect(threadResponse.status == .ok)
                 let thread = try contractTaskObject(threadResponse)
                 let threadId = try #require(thread["threadChannelId"] as? String)
-                let reply = try #require(thread["messageId"] as? String)
+                let threadHistory = try await client.send(
+                    .get, headers: owner, to: URI(string: "/api/messages/channel/\(threadId)?limit=50")
+                )
+                #expect(threadHistory.status == .ok)
+                let threadRows = try #require(
+                    try contractTaskObject(threadHistory)["messages"] as? [[String: Any]]
+                )
+                let replyRow = try #require(threadRows.first {
+                    ($0["content"] as? String) == "actual-all-thread-reply"
+                })
+                let reply = try #require(replyRow["id"] as? String)
                 let followed = try await client.send(.post, headers: owner, to: "/api/channels/threads/follow") { $0.body = .init(string: "{\"threadChannelId\":\"\(threadId)\"}") }
                 #expect(followed.status == .ok)
                 let cursor = try #require(accounts.messageSeqForTesting(messageId: sentinel))

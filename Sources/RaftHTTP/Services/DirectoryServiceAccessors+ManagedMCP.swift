@@ -139,6 +139,11 @@ extension EmailLoginDirectory {
                 visibility: visibility, notices: notices
             ),
             catalog: taskCatalog,
+            createThreadFirstReply: { [self] serverId, channelId, userId, content in
+                try humanMessageCreate.createThreadFirstReply(
+                    serverId: serverId, channelId: channelId, userId: userId, content: content
+                )
+            },
             publishTaskUpdated: publishTaskUpdated
         )
     }

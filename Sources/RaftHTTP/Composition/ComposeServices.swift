@@ -361,7 +361,15 @@ func composeServices(
         oauth: oauth,
         prepare: prepare,
         search: search,
-        ledger: ledger
+        ledger: ledger,
+        publishCommittedMessage: { message in
+            let realtimeFrames = MessageRealtimeService(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth
+            )
+            for frame in realtimeFrames.frames(for: message) {
+                realtime.emit(frame.room, frame.event, frame.payload)
+            }
+        }
     )
     let files = ProfileAndChannelFilesService(
         messages: messages,
@@ -473,6 +481,11 @@ func composeServices(
         channels: channels, messages: messages, tasks: tasks, agents: agents, profiles: profiles,
         oauth: oauth, auth: core, ownership: ownership, probe: probe, notices: notices,
         membership: membership, catalog: catalog,
+        createThreadFirstReply: { serverId, channelId, userId, content in
+            try humanCreate.createThreadFirstReply(
+                serverId: serverId, channelId: channelId, userId: userId, content: content
+            )
+        },
         publishTaskUpdated: channelMessaging.publishCommittedTaskUpdated
     )
     let labs = TasksAndLabsService(

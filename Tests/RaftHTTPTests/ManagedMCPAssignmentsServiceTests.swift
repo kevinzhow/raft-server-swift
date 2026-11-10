@@ -71,21 +71,20 @@ private func body(_ error: any DomainError) -> String {
     {"ok":true,"added":{"userIds":["u1"],"agentIds":[]},"alreadyMembers":{"userIds":[],"agentIds":["a1","a2"]}}
     """)
 
-    #expect(ChannelThreadResponse.existing(
+    #expect(ChannelThreadResponse(
         threadChannelId: "t1", replyCount: 2, lastReplyAt: "2026-01-01T00:00:00Z", participantIds: ["a", "b"]
     ).jsonBody.render() == """
     {"threadChannelId":"t1","replyCount":2,"lastReplyAt":"2026-01-01T00:00:00Z","participantIds":["a","b"]}
     """)
-    #expect(ChannelThreadResponse.existing(
+    #expect(ChannelThreadResponse(
         threadChannelId: "t1", replyCount: 0, lastReplyAt: nil, participantIds: []
     ).jsonBody.render() == """
     {"threadChannelId":"t1","replyCount":0,"lastReplyAt":null,"participantIds":[]}
     """)
-    #expect(ChannelThreadResponse.created(threadChannelId: "t2", messageId: "m2").jsonBody.render() == """
-    {"threadChannelId":"t2","messageId":"m2","replyCount":0,"lastReplyAt":null,"participantIds":[]}
-    """)
-    #expect(ChannelThreadResponse.created(threadChannelId: "t2", messageId: nil).jsonBody.render() == """
-    {"threadChannelId":"t2","messageId":null,"replyCount":0,"lastReplyAt":null,"participantIds":[]}
+    #expect(ChannelThreadResponse(
+        threadChannelId: "t2", replyCount: 1, lastReplyAt: "2026-01-01T00:00:05Z", participantIds: ["u1"]
+    ).jsonBody.render() == """
+    {"threadChannelId":"t2","replyCount":1,"lastReplyAt":"2026-01-01T00:00:05Z","participantIds":["u1"]}
     """)
 
     let agent = ChannelAgentRowDTO(id: "a1", name: "Atlas \"One\"", activity: "online", activityDetail: "")
@@ -290,28 +289,35 @@ private func body(_ error: any DomainError) -> String {
         authorization: f.ownerAuthorization, serverId: f.serverId, channelId: f.channelId,
         body: ChannelThreadRequest(parentMessageId: parent, content: "first reply")
     )
-    guard case .created(let threadId, let messageId) = created else {
-        Issue.record("the first call creates the thread")
-        return
-    }
-    #expect(messageId != nil)
+    let threadId = created.threadChannelId
+    // The first reply is an ordinary post, so the creation response already
+    // carries the retained summary (`getThreadInfoForChannel` after posting).
+    #expect(created.replyCount == 1)
+    #expect(created.lastReplyAt != nil)
+    #expect(created.participantIds == [f.ownerId])
     #expect(created.jsonBody.render() == """
-    {"threadChannelId":"\(threadId)","messageId":"\(messageId ?? "")","replyCount":0,"lastReplyAt":null,"participantIds":[]}
+    {"threadChannelId":"\(threadId)","replyCount":1,"lastReplyAt":"\(created.lastReplyAt ?? "")","participantIds":["\(f.ownerId)"]}
     """)
     // The creator follows the thread.
     #expect(f.accounts.messagesAndThreadsStore.threadFollows["\(f.serverId)\n\(f.ownerId)\n\(threadId)"] != nil)
 
     let again = try service.createThreadFromChannel(
         authorization: f.ownerAuthorization, serverId: f.serverId, channelId: f.channelId,
-        body: ChannelThreadRequest(parentMessageId: parent, content: "ignored")
+        body: ChannelThreadRequest(parentMessageId: parent)
     )
-    guard case .existing(let existingId, let replyCount, _, let participants) = again else {
-        Issue.record("the second call reuses the thread")
-        return
-    }
-    #expect(existingId == threadId)
-    #expect(replyCount == 1)
-    #expect(participants == [f.ownerId])
+    #expect(again.threadChannelId == threadId)
+    #expect(again.replyCount == 1)
+    #expect(again.participantIds == [f.ownerId])
+
+    // Upstream still posts `content` when the thread already exists; only the
+    // thread row is reused.
+    let postedAgain = try service.createThreadFromChannel(
+        authorization: f.ownerAuthorization, serverId: f.serverId, channelId: f.channelId,
+        body: ChannelThreadRequest(parentMessageId: parent, content: "second reply")
+    )
+    #expect(postedAgain.threadChannelId == threadId)
+    #expect(postedAgain.replyCount == 2)
+    #expect(postedAgain.participantIds == [f.ownerId])
 
     do {
         _ = try service.createThreadFromChannel(
