@@ -54,9 +54,9 @@ public struct AuthFeature: RouteCollection, Sendable {
     /// `signupSurveyServerId` fires the same idempotent trigger when the caller
     /// is that server's primary owner. The field is not persisted and never
     /// changes the response.
-    private func triggerSignupSurveyBriefing(_ request: UpdateProfileRequest?, userId: String) {
+    private func triggerSignupSurveyBriefing(_ request: UpdateProfileRequest?, userId: String) async {
         guard case .value(let serverId)? = request?.signupSurveyServerId, !serverId.isEmpty else { return }
-        _ = onboardingBriefing?.trigger(serverId: serverId, requestedByOwnerId: userId)
+        _ = await onboardingBriefing?.trigger(serverId: serverId, requestedByOwnerId: userId)
     }
 
 
@@ -365,7 +365,7 @@ public struct AuthFeature: RouteCollection, Sendable {
                     authorization: request.headers[.authorization], body,
                     onSessionsRevoked: self.closePasswordSessions
                 )
-                self.triggerSignupSurveyBriefing(body, userId: response.user.id)
+                await self.triggerSignupSurveyBriefing(body, userId: response.user.id)
                 return response
             }
         }

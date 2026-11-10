@@ -141,6 +141,7 @@ let package = Package(
                 .product(name: "PostgresNIO", package: "postgres-nio"),
             ],
             resources: [
+                .copy("Resources/owner-opener-team-mode.html"),
                 .copy("Resources/raft-markdown-parser.js"),
                 .copy("Resources/raft-markdown-parser.LICENSE.txt"),
                 .copy("Resources/raft-markdown-parser.provenance.json"),
@@ -184,7 +185,8 @@ let package = Package(
         .testTarget(
             name: "RaftHTTPTests",
             dependencies: [
-                "RaftHTTP", "RaftShared", "TestSupport",
+                "RaftHTTP", "RaftObjectStorage", "RaftShared", "TestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),

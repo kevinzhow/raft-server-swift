@@ -1,5 +1,18 @@
 import Foundation
+import RaftObjectStorage
 import RaftShared
+
+/// A server-generated onboarding artifact could not be produced faithfully. The
+/// caller releases the opener claim and writes no sent stamp, so the next
+/// activation retries the same idempotent step.
+enum OnboardingBriefingArtifactError: Error, Sendable, Equatable {
+    /// The deployment requires durable object storage but none is configured.
+    case storageUnavailable
+    /// A stable projection id already points at a different attachment row.
+    case projectionConflict
+    /// The reply's attachment could not be linked by the message owner.
+    case replyRejected
+}
 
 /// The owner onboarding briefing. Upstream `triggerOwnerOnboardingOnAgentActivation`
 /// (`services/onboardingService.ts:820-994`).
@@ -73,7 +86,7 @@ public struct OnboardingBriefingService: Sendable {
     ///   - activatedAgentId: set by activation/ready callers. Any other agent
     ///     activating is not an onboarding activation.
     public func trigger(serverId: String, requestedByOwnerId: String? = nil,
-                        activatedAgentId: String? = nil) -> OnboardingBriefingOutcome {
+                        activatedAgentId: String? = nil) async -> OnboardingBriefingOutcome {
         guard let server = oauth.serverProfile(id: serverId) else { return .noServer }
         let ownerId = server.ownerId
         if let requestedByOwnerId, requestedByOwnerId != ownerId { return .notOwner }
@@ -116,8 +129,8 @@ public struct OnboardingBriefingService: Sendable {
 
         let opener: OwnerOpenerDelivery
         do {
-            guard let delivered = try sendOwnerOpenerV2(serverId: serverId, ownerId: ownerId,
-                                                        agentId: agent.id, sentAt: sentAt) else {
+            guard let delivered = try await sendOwnerOpenerV2(serverId: serverId, ownerId: ownerId,
+                                                              agentId: agent.id, sentAt: sentAt) else {
                 channels.releaseOwnerOpenerClaim(serverId: serverId, ownerId: ownerId, token: claim)
                 return .targetChannelUnavailable
             }
@@ -128,8 +141,9 @@ public struct OnboardingBriefingService: Sendable {
         }
 
         // A dropped receipt means the briefing did not happen: warn, do not
-        // stamp, and retry on the next activation. Visible messages are already
-        // idempotent, so the retry is invisible to the human.
+        // stamp, and retry on the next activation. Visible messages and the
+        // artifact thread are already idempotent, so the retry is invisible to
+        // the human.
         let receipt: AgentExecutionNoticeReceipt
         do {
             receipt = try execution.requestNotice(AgentExecutionNoticeRequest(
@@ -139,6 +153,7 @@ public struct OnboardingBriefingService: Sendable {
                     userName: owner.name,
                     locationHint: "#\(opener.channelName) channel",
                     messageIds: opener.messageIds,
+                    artifactAttachmentId: opener.artifactAttachmentId,
                     roleLabel: OnboardingBriefingContent.roleLabel(owner.signupRole),
                     referralLabel: owner.referralSource.flatMap { OnboardingBriefingContent.referralLabel($0) }
                 ),
@@ -171,12 +186,12 @@ public struct OnboardingBriefingService: Sendable {
     /// Owner facts are deliberately not gated on the opener trigger, so a
     /// server that finished onboarding still re-teaches its agent the owner's
     /// facts on every wake.
-    public func connectionReady(serverId: String) {
+    public func connectionReady(serverId: String) async {
         guard let server = oauth.serverProfile(id: serverId) else { return }
         let snapshot = channels.onboardingSnapshot(serverId: serverId, userId: server.ownerId)
         guard let agentId = snapshot.agentId else { return }
         _ = deliverOwnerFacts(serverId: serverId)
-        _ = trigger(serverId: serverId, activatedAgentId: agentId)
+        _ = await trigger(serverId: serverId, activatedAgentId: agentId)
     }
 
     /// Upstream `deliverOwnerFactsContext`. Recomputed from the database on
@@ -218,6 +233,9 @@ public struct OnboardingBriefingService: Sendable {
         let channelId: String
         let channelName: String
         let messageIds: [String]
+        /// The Team-Mode artifact attachment id, when the thread step produced
+        /// one. Upstream's ledger line is conditional on it.
+        let artifactAttachmentId: String?
     }
 
     /// Upstream `sendOwnerOpenerV2`: four visible agent messages in the owner's
@@ -226,13 +244,13 @@ public struct OnboardingBriefingService: Sendable {
     /// next activation) never posts a second copy and the ledger message ids
     /// stay aligned with the four topics.
     ///
-    /// The Team-Mode artifact is deferred: the port has no transfer-intent /
-    /// attachment-projection writer for a server-generated `text/html` object,
-    /// so there is no thread reply and no `team_mode_artifact_attachment_id`
-    /// ledger line (the upstream line is conditional). The four visible
-    /// messages themselves are posted.
+    /// The second message's thread is part of the same producer: the canonical
+    /// thread under that message, the generated `text/html` artifact attachment
+    /// written through the ordinary attachment storage, and the
+    /// `team-mode-thread` reply that carries it. The thread reply stays out of
+    /// the ledger's message-id list, exactly like upstream.
     private func sendOwnerOpenerV2(serverId: String, ownerId: String,
-                                   agentId: String, sentAt: Date) throws -> OwnerOpenerDelivery? {
+                                   agentId: String, sentAt: Date) async throws -> OwnerOpenerDelivery? {
         guard let owner = profiles.account(userId: ownerId),
               let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId,
               let target = ownerOpenerTargetChannel(serverId: serverId, ownerId: ownerId) else {
@@ -242,20 +260,22 @@ public struct OnboardingBriefingService: Sendable {
         ensureOwnerOpenerMembership(target: target, ownerId: ownerId, agentId: agentId)
         let relay = RealtimeRelayService(messages: messages)
         var ids: [String] = []
+        var artifactAttachmentId: String?
         for message in OnboardingBriefingContent.openerMessages(userName: owner.name) {
             let key = "\(OnboardingBriefingContent.openerV2Version):\(serverId):\(ownerId):\(message.topic)"
             let candidate = StoredHumanMessage(
                 id: UUID().uuidString.lowercased(), channelId: target.id, senderId: agentId,
                 content: message.content, messageType: "chat", senderType: "agent", createdAt: sentAt
             )
+            let committed: StoredHumanMessage
             switch messages.commitAgentSendOnce(
                 candidate, agentSendKey: key, attachmentIds: [], channelId: target.id,
                 uploaderId: agentId, ledger: MessageLedgerPort(oauth: oauth)
             ) {
             case .existing(let existing):
-                ids.append(existing.id)
-            case .committed(let committed):
-                ids.append(committed.id)
+                committed = existing
+            case .committed(let newlyCommitted):
+                committed = newlyCommitted
                 try AgentExecutionPublication.publish(
                     room: "channel:\(target.id)", event: "message:new", identity: committed.id,
                     payloadJSON: AgentExecutionPublication.messagePayload(committed, senderName: senderName)
@@ -263,8 +283,177 @@ public struct OnboardingBriefingService: Sendable {
             case .rejected:
                 return nil
             }
+            ids.append(committed.id)
+            if message.attachesTeamModeArtifact {
+                artifactAttachmentId = try await ensureTeamModeArtifactThread(
+                    serverId: serverId, ownerId: ownerId, agentId: agentId,
+                    parentMessage: committed, senderName: senderName, sentAt: sentAt
+                )
+            }
         }
-        return OwnerOpenerDelivery(channelId: target.id, channelName: target.name, messageIds: ids)
+        return OwnerOpenerDelivery(channelId: target.id, channelName: target.name,
+                                   messageIds: ids, artifactAttachmentId: artifactAttachmentId)
+    }
+
+    /// Upstream `getOrCreateThread` (`channelService.ts:8076`) +
+    /// `createOwnerOpenerArtifactAttachment` (`onboardingService.ts:243-299`) +
+    /// the `team-mode-thread` reply, re-executed idempotently:
+    ///
+    /// - the thread is the canonical thread under the parent opener message;
+    /// - the attachment id is the upstream stable UUID, and its object bytes are
+    ///   written before the referencing row through the same storage the upload
+    ///   routes use;
+    /// - the reply is keyed by `<version>:<server>:<owner>:team-mode-thread`, so
+    ///   a replay reuses the committed reply and never publishes twice.
+    ///
+    /// Returns the artifact attachment id for the conditional ledger line.
+    private func ensureTeamModeArtifactThread(
+        serverId: String, ownerId: String, agentId: String,
+        parentMessage: StoredHumanMessage, senderName: String, sentAt: Date
+    ) async throws -> String {
+        let parentChannelId = parentMessage.channelId
+        let threadId: String
+        switch channels.findOrCreateThread(
+            serverId: serverId, parentChannelId: parentChannelId,
+            parentMessageId: parentMessage.id, creatorId: agentId,
+            threadChannels: ThreadChannelCommand(oauth: oauth)
+        ) {
+        case .existing(let id), .created(let id):
+            threadId = id
+        }
+        // The artifact is read by its intended audience through the ordinary
+        // attachment authority. This port's attachment reads use actual thread
+        // membership for thread scopes (the same model comment threads use), so
+        // the owner and the authoring agent are explicit members.
+        for memberId in [ownerId, agentId] {
+            channels.addPostableChannel(
+                serverId: serverId, channelId: threadId, memberId: memberId, kind: "thread",
+                parentChannelId: parentChannelId, parentMessageId: parentMessage.id, name: "thread"
+            )
+        }
+
+        let artifactID = OnboardingBriefingContent.teamModeArtifactAttachmentID(
+            serverId: serverId, ownerId: ownerId)
+        if let existing = messages.attachmentRow(id: artifactID) {
+            try Self.validateArtifact(existing, threadId: threadId, agentId: agentId)
+        } else {
+            let bytes = try OnboardingBriefingContent.teamModeArtifactBytes()
+            let storage = messages.withState { ($0.attachmentObjectStorage, $0.requiresDurableAttachmentStorage) }
+            let reference: AttachmentObjectReference?
+            if let objectStorage = storage.0 {
+                // Objects are written before the referencing row, like every other
+                // attachment. The stable id makes a retry overwrite the same key.
+                reference = try await objectStorage.put(attachmentID: artifactID, bytes: bytes)
+            } else if storage.1 {
+                throw OnboardingBriefingArtifactError.storageUnavailable
+            } else {
+                reference = nil
+            }
+            // A concurrent producer may have committed the same stable row while
+            // the object was written; never replace a different projection.
+            if let existing = messages.attachmentRow(id: artifactID) {
+                try Self.validateArtifact(existing, threadId: threadId, agentId: agentId)
+            } else {
+                messages.recordServerGeneratedAttachment(
+                    ChannelAttachment(
+                        id: artifactID, channelId: threadId, uploaderId: agentId,
+                        filename: OnboardingBriefingContent.teamModeArtifactFilename,
+                        messageId: nil, messagePosition: nil,
+                        mimeType: OnboardingBriefingContent.teamModeArtifactMimeType,
+                        sizeBytes: bytes.count, uploaderType: "agent", createdAt: sentAt,
+                        storageKey: reference?.objectKey
+                    ),
+                    reference: reference,
+                    developmentBytes: reference == nil ? bytes : nil
+                )
+            }
+        }
+        // The reply is driven by its own `agentSendKey`; replay reuses the
+        // committed row, so this is safe even when the attachment row already
+        // exists (for example, a producer that failed between the two writes in
+        // an older graph).
+        try postTeamModeReply(
+            serverId: serverId, ownerId: ownerId, agentId: agentId, threadId: threadId,
+            artifactID: artifactID, parentMessage: parentMessage, senderName: senderName, sentAt: sentAt
+        )
+        return artifactID
+    }
+
+    private static func validateArtifact(
+        _ row: ChannelAttachment, threadId: String, agentId: String
+    ) throws {
+        guard row.channelId == threadId,
+              row.uploaderId == agentId,
+              row.uploaderType == "agent",
+              row.filename == OnboardingBriefingContent.teamModeArtifactFilename,
+              row.mimeType == OnboardingBriefingContent.teamModeArtifactMimeType else {
+            throw OnboardingBriefingArtifactError.projectionConflict
+        }
+    }
+
+    /// Upstream's artifact reply body. It is a normal agent message: the thread
+    /// follow rows are written before the publication, and the reply is deduped
+    /// by its `agentSendKey`.
+    private func postTeamModeReply(
+        serverId: String, ownerId: String, agentId: String, threadId: String,
+        artifactID: String, parentMessage: StoredHumanMessage, senderName: String, sentAt: Date
+    ) throws {
+        let key = "\(OnboardingBriefingContent.openerV2Version):\(serverId):\(ownerId):team-mode-thread"
+        let candidate = StoredHumanMessage(
+            id: UUID().uuidString.lowercased(), channelId: threadId, senderId: agentId,
+            content: OnboardingBriefingContent.teamModeReplyContent,
+            attachmentIds: [artifactID], messageType: "chat", senderType: "agent", createdAt: sentAt
+        )
+        switch messages.commitAgentSendOnce(
+            candidate, agentSendKey: key, attachmentIds: [artifactID], channelId: threadId,
+            uploaderId: agentId, ledger: MessageLedgerPort(oauth: oauth)
+        ) {
+        case .existing:
+            // The first commit already wrote the follow rows and published.
+            return
+        case .committed(let committed):
+            // Upstream writes the sender's `replied` follow first; the parent
+            // author's `authored` follow is skipped when it is the same agent.
+            messages.applyThreadReplyFollows(
+                serverId: serverId, threadChannelId: threadId,
+                parentMessageId: parentMessage.id, senderId: agentId, mentioned: []
+            )
+            try publishTeamModeReply(committed, threadId: threadId, senderName: senderName)
+        case .rejected:
+            throw OnboardingBriefingArtifactError.replyRejected
+        }
+    }
+
+    /// The published reply is the canonical message manifest: it carries the
+    /// retained attachment row's seven-field object (id, filename, mimeType,
+    /// sizeBytes, width, height, thumbnailUrl), not an id stub, and the
+    /// creation-time thread conversation context the frontend reads.
+    private func publishTeamModeReply(
+        _ message: StoredHumanMessage, threadId: String, senderName: String
+    ) throws {
+        guard let thread = channels.postableChannel(id: threadId) else { return }
+        let agent = oauth.agentRuntimeInfo(id: message.senderId)
+        let sender = CanonicalMessagePayload.Sender(
+            name: senderName,
+            description: agent?.description.flatMap { $0.isEmpty ? nil : $0 },
+            membershipStatus: nil
+        )
+        let attachments = messages.orderedAttachmentRows(for: message)
+            .compactMap { $0.row }
+            .map(CanonicalMessagePayload.Attachment.init)
+        let payload = CanonicalMessagePayload(
+            message: message,
+            sender: sender,
+            attachments: attachments,
+            mentions: message.mentions,
+            conversationContext: messageConversationContext(
+                channel: thread, channels: channels.state.postableChannels)
+        ).jsonBody.render()
+        let relay = RealtimeRelayService(messages: messages)
+        try AgentExecutionPublication.publish(
+            room: "channel:\(threadId)", event: "message:new", identity: message.id,
+            payloadJSON: payload
+        ) { relay.emit($0, $1, $2) }
     }
 
     struct OwnerOpenerChannel {

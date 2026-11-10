@@ -18,13 +18,13 @@ public struct JoinLinksAndInvitesDependencies: Sendable {
     /// `OnboardingBriefingService`. The receipt is stored before this runs and is
     /// never derived from delivery: a briefing that fails here does not reopen
     /// the handoff.
-    public var triggerOnboardingBriefing: @Sendable (String, String) -> Void
+    public var triggerOnboardingBriefing: @Sendable (String, String) async -> Void
 
     public init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
         emitRealtime: @escaping @Sendable (String, String, String?) -> Void,
         setupAccountFacts: any SetupAccountFacts,
-        triggerOnboardingBriefing: @escaping @Sendable (String, String) -> Void = { _, _ in }
+        triggerOnboardingBriefing: @escaping @Sendable (String, String) async -> Void = { _, _ in }
     ) {
         self.sessionUserId = sessionUserId
         self.emitRealtime = emitRealtime
@@ -680,7 +680,7 @@ public struct JoinLinksAndInvitesService: Sendable {
         authorization: String?,
         serverId: String,
         headerServerId: String?
-    ) throws -> SetupProjectionResponseDTO {
+    ) async throws -> SetupProjectionResponseDTO {
         let actor = try setupScope(
             authorization: authorization,
             serverId: serverId,
@@ -712,7 +712,7 @@ public struct JoinLinksAndInvitesService: Sendable {
         // speaks for the user. The briefing owns every gate and idempotency
         // fact; the retained receipt, not the briefing, is what the projection
         // reads, so a dropped or failed wake never reopens the handoff.
-        dependencies.triggerOnboardingBriefing(serverId, receipt.originalOwnerId)
+        await dependencies.triggerOnboardingBriefing(serverId, receipt.originalOwnerId)
         return setupProjectionService()
             .project(serverId: serverId, userId: actor.userId, role: actor.role)
     }
@@ -938,7 +938,7 @@ extension EmailLoginDirectory {
                 // The trigger owns every gate and idempotency fact; a delivery
                 // failure never reopens the handoff.
                 triggerOnboardingBriefing: { [self] serverId, ownerId in
-                    _ = onboardingBriefing.trigger(serverId: serverId, requestedByOwnerId: ownerId)
+                    _ = await onboardingBriefing.trigger(serverId: serverId, requestedByOwnerId: ownerId)
                 }
             )
         )

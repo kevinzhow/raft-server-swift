@@ -115,14 +115,14 @@ import Testing
         func trigger(requestedBy: String? = nil, activated: String? = nil) async throws -> OnboardingBriefingOutcome {
             let serverId = self.serverId
             return try await briefingCommit {
-                [self] in service.trigger(serverId: serverId, requestedByOwnerId: requestedBy,
-                                          activatedAgentId: activated)
+                [self] in await service.trigger(serverId: serverId, requestedByOwnerId: requestedBy,
+                                                activatedAgentId: activated)
             }
         }
 
         func connectionReady() async throws {
             let serverId = self.serverId
-            try await briefingCommit { [self] in service.connectionReady(serverId: serverId) }
+            try await briefingCommit { [self] in await service.connectionReady(serverId: serverId) }
         }
 
         func deliverOwnerFacts() async throws -> Bool {
@@ -136,7 +136,7 @@ import Testing
             let context = TransactionContext()
             let serverId = self.serverId
             return try await withTransactionContext(context) { [self] in
-                service.connectionReady(serverId: serverId)
+                await service.connectionReady(serverId: serverId)
                 try context.prepareCommit()
                 let intents = try context.preparedDurableEffects()
                 context.publishCommitted()
@@ -173,14 +173,15 @@ import Testing
         // The visible opener: four agent messages, one per upstream topic, in
         // the owner's enabled #all (no onboarding-owner channel exists here).
         let rows = fixture.openerRows
-        #expect(rows.count == 4)
-        #expect(rows.map(\.id) == messageIds)
+        #expect(rows.count == 5)
+        let channelRows = rows.filter { $0.channelId == fixture.allChannelId }
+        #expect(channelRows.map(\.id) == messageIds)
         let expectedKeys = OnboardingBriefingContent.openerV2Topics.map {
             "owner-opener-v2.0:\(fixture.serverId):\(fixture.ownerId):\($0)"
         }
-        #expect(rows.map { $0.agentSendKey ?? "" } == expectedKeys)
-        #expect(rows.allSatisfy { $0.senderType == "agent" && $0.channelId == fixture.allChannelId })
-        #expect(rows.map(\.content) == OnboardingBriefingContent.openerMessages(userName: "owner").map(\.content))
+        #expect(channelRows.map { $0.agentSendKey ?? "" } == expectedKeys)
+        #expect(channelRows.allSatisfy { $0.senderType == "agent" })
+        #expect(channelRows.map(\.content) == OnboardingBriefingContent.openerMessages(userName: "owner").map(\.content))
 
         // The briefing itself: one transient system notice, never a chat row.
         let commands = fixture.noticeCommands
@@ -195,7 +196,7 @@ import Testing
         #expect(content.contains("opener_v2_version=owner-opener-v2.0"))
         #expect(content.contains("opener_v2_message_ids=\(messageIds.joined(separator: ","))"))
         #expect(content.contains("opener_v2_topics=language_preference,team_mode_artifact,message_like_teammates,workflow_migration_or_create_agent_card"))
-        #expect(!content.contains("team_mode_artifact_attachment_id="))
+        #expect(content.contains("team_mode_artifact_attachment_id=191cda91-0b96-4be3-9461-7f74f16a2326"))
         #expect(content.contains("Continue onboarding @owner in #all channel from the owner's reply."))
         #expect(content.contains("They told us their role is: Founder. Pitch Raft and pick a starting point that fits that."))
         #expect(content.contains("They found Raft via: Search."))
@@ -217,7 +218,7 @@ import Testing
         // no-op: no second notice, no duplicate opener.
         #expect(try await fixture.trigger(requestedBy: fixture.ownerId) == .alreadySent)
         #expect(fixture.noticeCommands.count == 1)
-        #expect(fixture.openerRows.count == 4)
+        #expect(fixture.openerRows.count == 5)
     }
 
     @Test func droppedLedgerLeavesTheStampUnsetAndTheRetryIsInvisible() async throws {
@@ -237,7 +238,9 @@ import Testing
         #expect(fixture.ledger.openerClaimedAt == nil)
         // Upstream posts the visible opener before the ledger; retry dedupes it.
         let firstIds = fixture.openerRows.map(\.id)
-        #expect(firstIds.count == 4)
+        #expect(firstIds.count == 5)
+        let firstChannelIds = fixture.openerRows.filter { $0.channelId == fixture.allChannelId }.map(\.id)
+        #expect(firstChannelIds.count == 4)
 
         // The agent actually starts; the identical trigger now delivers and
         // stamps, without a second copy of the visible opener.
@@ -247,7 +250,7 @@ import Testing
             Issue.record("expected sent on retry, got \(retried)")
             return
         }
-        #expect(messageIds == firstIds)
+        #expect(messageIds == firstChannelIds)
         #expect(fixture.openerRows.map(\.id) == firstIds)
         #expect(fixture.ledger.openerV2SentAt == fixture.fixedDate)
         #expect(fixture.noticeCommands.count == 1)
@@ -372,8 +375,9 @@ import Testing
         // Ready = owner facts first, then the idempotent opener trigger, in
         // that durable-intent order.
         let intents = try await fixture.connectionReadyRecordingIntents()
-        // Facts notice + four opener `realtime.publish` intents + ledger notice.
-        #expect(intents.count == 6)
+        // Facts notice + four opener `realtime.publish` intents + the Team-Mode
+        // reply publication + ledger notice.
+        #expect(intents.count == 7)
         let commandIds = intents.compactMap { intent -> UUID? in
             try? JSONDecoder().decode(AgentExecutionIntentReference.self, from: intent.payload).commandId
         }
@@ -437,10 +441,10 @@ import Testing
 }
 
 
-private func briefingCommit<Value: Sendable>(_ operation: @Sendable () throws -> Value) async throws -> Value {
+private func briefingCommit<Value: Sendable>(_ operation: @Sendable () async throws -> Value) async throws -> Value {
     let context = TransactionContext()
     return try await withTransactionContext(context) {
-        let value = try operation()
+        let value = try await operation()
         try context.prepareCommit()
         context.publishCommitted()
         context.flushDeferredEffects()

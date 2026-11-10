@@ -63,7 +63,7 @@ struct ProductionAgentExecutionIngress: Sendable {
                 let serverId = context.serverId
                 Task.detached {
                     try? await runtime.execute {
-                        onboardingBriefing.connectionReady(serverId: serverId)
+                        await onboardingBriefing.connectionReady(serverId: serverId)
                     }
                 }
             }
