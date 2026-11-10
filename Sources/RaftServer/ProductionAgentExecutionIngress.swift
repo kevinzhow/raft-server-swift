@@ -6,6 +6,11 @@ import RaftMachineSocket
 /// The registry consumes only post-COMMIT descriptors from the retained HTTP
 /// execution service. It keeps its own connection fence before relaying an ACK.
 struct ProductionAgentExecutionIngress: Sendable {
+    /// Upstream `MACHINE_DISCONNECT_PROJECTION_GRACE_MS`: a reconnect inside the
+    /// window cancels the offline agent activity projection, so a transport
+    /// flap does not transiently mark every active agent offline.
+    static let disconnectProjectionGraceMilliseconds = 2000
+
     let execution: AgentExecutionService
     /// The same fenced writer; used only for the best-effort briefing retry
     /// after a ready frame has already committed. A briefing failure can never
@@ -17,7 +22,18 @@ struct ProductionAgentExecutionIngress: Sendable {
         MachineDurableIngress(
             onOpened: { context in try await self.execution.connectionOpened(Self.context(context)) },
             onMessage: { context, message in try await self.receive(context, message: message) },
-            onClosed: { context in try await self.execution.connectionClosed(Self.context(context)) }
+            onClosed: { context in
+                let owner = Self.context(context)
+                try await self.execution.connectionClosed(owner)
+                // The socket loss is committed immediately; the activity
+                // projection is scheduled after the grace window and becomes a
+                // no-op if this epoch is no longer the machine's connection.
+                let execution = self.execution
+                Task.detached {
+                    try? await Task.sleep(for: .milliseconds(Self.disconnectProjectionGraceMilliseconds))
+                    try? await execution.projectMachineDisconnect(owner)
+                }
+            }
         )
     }
 

@@ -10,43 +10,65 @@ extension AgentExecutionDomain {
         let reported = Set((runningAgentIds ?? []) + unreliableAgentIds)
         let owned = Set(reported.filter { (try? boundMachine(serverId: context.serverId, agentId: $0)) == context.machineId })
         let inventoryOwned = owned == reported
-        try mutate { state in
-            guard var connection = state.connections[context.machineId], connection.online,
-                  connection.serverId == context.serverId, connection.connectionEpochId == context.connectionEpochId else {
-                throw AgentExecutionError.staleConnection
-            }
-            connection.ready = false
-            if let daemonInstanceId, !daemonInstanceId.isEmpty {
-                if let old = connection.daemonInstanceId, old != daemonInstanceId {
-                    for key in Array(state.agents.keys) where state.agents[key]?.machineId == context.machineId {
-                        if state.agents[key]?.hasUnsettledExecution == true { state.agents[key]?.needsManual = "daemon_restarted_with_unsettled_execution" }
-                    }
+        // Read the assigned agents' authoritative status before the owner borrow;
+        // the projection itself is written inside that borrow.
+        let machineAgents = readyReconcileAgents(context)
+        let now = Date()
+        var presence = AgentPresenceReconcile()
+        let outcome: Result<Void, any Error> = agents.withState { state in
+            do {
+                guard var connection = state.execution.connections[context.machineId], connection.online,
+                      connection.serverId == context.serverId, connection.connectionEpochId == context.connectionEpochId else {
+                    throw AgentExecutionError.staleConnection
                 }
-                connection.daemonInstanceId = daemonInstanceId
+                connection.ready = false
+                if let daemonInstanceId, !daemonInstanceId.isEmpty {
+                    if let old = connection.daemonInstanceId, old != daemonInstanceId {
+                        for key in Array(state.execution.agents.keys) where state.execution.agents[key]?.machineId == context.machineId {
+                            if state.execution.agents[key]?.hasUnsettledExecution == true {
+                                state.execution.agents[key]?.needsManual = "daemon_restarted_with_unsettled_execution"
+                            }
+                        }
+                    }
+                    connection.daemonInstanceId = daemonInstanceId
+                }
+                if let runtimes { connection.runtimes = Set(runtimes) }
+                if let capabilities { connection.capabilities = Set(capabilities) }
+                if let daemonInstanceId, !daemonInstanceId.isEmpty, let capabilities, let runtimes, let runningAgentIds,
+                   detectionComplete, inventoryOwned, capabilities.allSatisfy({ !$0.isEmpty }), runtimes.allSatisfy({ !$0.isEmpty }),
+                   runningAgentIds.allSatisfy({ !$0.isEmpty }) {
+                    let required: Set<String> = ["agent:start", "agent:deliver", "agent:stop", "agent:runtime-outcome-v1"]
+                    connection.ready = runtimes.contains("codex") && required.isSubset(of: Set(capabilities))
+                }
+                for agentId in runningAgentIds ?? [] where owned.contains(agentId) {
+                    var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
+                    if !agent.processes.values.contains(where: { !$0.exited }) { agent.needsManual = "untracked_running_process" }
+                    state.execution.agents[agentId] = agent
+                }
+                for agentId in unreliableAgentIds where owned.contains(agentId) {
+                    var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
+                    agent.needsManual = "daemon_outcome_storage_unreliable"
+                    state.execution.agents[agentId] = agent
+                }
+                state.execution.connections[context.machineId] = connection
+                reconcileConnectionRecovery(&state.execution, machineId: context.machineId,
+                    connectionEpochId: context.connectionEpochId, daemonInstanceId: connection.daemonInstanceId,
+                    runningAgentIds: runningAgentIds ?? [])
+                // A complete ready is the daemon's current process inventory:
+                // running agents become active/online, missing active agents stay
+                // wakeable/online, inactive/stopped agents stay offline.
+                if let runningAgentIds, daemonInstanceId != nil {
+                    presence = reconcileReadyPresence(&state, context: context, machineAgents: machineAgents,
+                                                       runningAgentIds: Set(runningAgentIds), now: now)
+                }
+                return .success(())
+            } catch {
+                return .failure(error)
             }
-            if let runtimes { connection.runtimes = Set(runtimes) }
-            if let capabilities { connection.capabilities = Set(capabilities) }
-            if let daemonInstanceId, !daemonInstanceId.isEmpty, let capabilities, let runtimes, let runningAgentIds,
-               detectionComplete, inventoryOwned, capabilities.allSatisfy({ !$0.isEmpty }), runtimes.allSatisfy({ !$0.isEmpty }),
-               runningAgentIds.allSatisfy({ !$0.isEmpty }) {
-                let required: Set<String> = ["agent:start", "agent:deliver", "agent:stop", "agent:runtime-outcome-v1"]
-                connection.ready = runtimes.contains("codex") && required.isSubset(of: Set(capabilities))
-            }
-            for agentId in runningAgentIds ?? [] where owned.contains(agentId) {
-                var agent = state.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                if !agent.processes.values.contains(where: { !$0.exited }) { agent.needsManual = "untracked_running_process" }
-                state.agents[agentId] = agent
-            }
-            for agentId in unreliableAgentIds where owned.contains(agentId) {
-                var agent = state.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                agent.needsManual = "daemon_outcome_storage_unreliable"
-                state.agents[agentId] = agent
-            }
-            state.connections[context.machineId] = connection
-            reconcileConnectionRecovery(&state, machineId: context.machineId,
-                connectionEpochId: context.connectionEpochId, daemonInstanceId: connection.daemonInstanceId,
-                runningAgentIds: runningAgentIds ?? [])
         }
+        try outcome.get()
+        applyReadyPresenceStatusUpdates(presence.statusUpdates)
+        queuePresenceEmissions(presence.emissions)
     }
 
     /// Reconnect reconciliation for a recovery flag that was derived only from
@@ -329,23 +351,43 @@ extension AgentExecutionDomain {
             return .hold(reason: "malformed_status")
         }
         let launchId = AgentExecutionOutcomeFrame.id(body["launchId"])
-        let decision = try mutate { state -> ReportedStatusDecision in
-            guard let connection = state.connections[context.machineId], connection.online,
+        let frameInstanceId = AgentExecutionOutcomeFrame.id(body["daemonInstanceId"])
+        let frameSequence = AgentExecutionOutcomeFrame.count(body["clientSeq"])
+        let decision: ReportedStatusDecision = try agents.withState { state -> Result<ReportedStatusDecision, any Error> in
+            guard let connection = state.execution.connections[context.machineId], connection.online,
                   connection.serverId == context.serverId,
                   connection.connectionEpochId == context.connectionEpochId else {
-                return .staleConnection
+                return .success(.staleConnection)
+            }
+            // RFC 069 §8: sequenced status frames are ordered per daemon
+            // process. A frame from another process, or at or below the last
+            // accepted sequence for this one, is a replay and is ignored.
+            var nextVersion: (daemonInstanceId: String, clientSeq: Int64)?
+            switch AgentPresenceSignal.sequencedStatus(
+                frameDaemonInstanceId: frameInstanceId, frameClientSeq: frameSequence,
+                connectionDaemonInstanceId: connection.daemonInstanceId,
+                last: state.sequencedStatusVersions[agentId]) {
+            case .staleInstance, .staleSequence:
+                return .success(.ignore)
+            case .unsequenced:
+                break
+            case .accept(let daemonInstanceId, let clientSeq):
+                nextVersion = (daemonInstanceId, clientSeq)
             }
             // A launch that is not the agent's current launch is stale. An
             // absent current launch (e.g. restored state without execution) or
             // an unsequenced legacy frame keeps the accept path.
-            if let launchId, let currentLaunch = state.agents[agentId]?.currentLaunchId, currentLaunch != launchId {
-                return .ignore
+            if let launchId, let currentLaunch = state.execution.agents[agentId]?.currentLaunchId, currentLaunch != launchId {
+                return .success(.ignore)
             }
             guard let next = AgentPresenceSignal.nextPersistedStatus(reported: reported, persisted: current.status) else {
-                return .ignore
+                return .success(.ignore)
             }
-            return .persist(next)
-        }
+            // Only an accepted frame consumes its sequence; a launch-guarded
+            // frame must not mask the frame that follows it.
+            if let nextVersion { state.sequencedStatusVersions[agentId] = nextVersion }
+            return .success(.persist(next))
+        }.get()
         switch decision {
         case .staleConnection:
             return .hold(reason: "stale_connection")
@@ -392,7 +434,8 @@ extension AgentExecutionDomain {
         let detail = AgentExecutionOutcomeFrame.string(body["detail"]) ?? ""
         let launchId = AgentExecutionOutcomeFrame.id(body["launchId"])
         let clientSeq = AgentExecutionOutcomeFrame.count(body["clientSeq"])
-        let nowMilliseconds = Int((Date().timeIntervalSince1970 * 1000).rounded(.down))
+        let now = Date()
+        let nowMilliseconds = Int((now.timeIntervalSince1970 * 1000).rounded(.down))
         let decision = agents.withState { state -> ReportedActivityDecision in
             guard let connection = state.execution.connections[context.machineId], connection.online,
                   connection.serverId == context.serverId,
@@ -403,6 +446,8 @@ extension AgentExecutionDomain {
                 return .staleLaunch
             }
             state.agentActivities[agentId] = (activity: signal.activity, detail: detail)
+            state.agentActivityDetailKind[agentId] = signal.detailKind
+            state.agentActivityObservedAt[agentId] = now
             // Upstream's `nextActivityServerSeq`: wall-clock milliseconds,
             // bumped monotonically for out-of-order socket dedupe.
             let sequence = max(nowMilliseconds, state.agentActivityServerSeq + 1)
@@ -474,6 +519,13 @@ extension AgentExecutionDomain {
             dispatches[match.key] = dispatch
             state.dispatches = dispatches
             state.commands[match.key]?.status = .accepted
+            // The accepted delivery settles its queued offline send; the
+            // canonical message row keeps the history.
+            if var pending = state.pendingHumanDeliveries {
+                let commandId = match.value.commandId
+                pending = pending.filter { $0.value.releasedCommandId != commandId }
+                state.pendingHumanDeliveries = pending.isEmpty ? nil : pending
+            }
             return .committed(ack: nil)
         }
     }

@@ -485,7 +485,8 @@ public struct AgentChannelsService: Sendable {
             )
         }
         let agentRows = agentIds.map { id in
-            AgentChannelMembersResponse.Agent(id: id, name: oauth.agentRuntimeInfo(id: id)?.name ?? "")
+            let info = oauth.agentRuntimeInfo(id: id)
+            return AgentChannelMembersResponse.Agent(id: id, name: info?.name ?? "", status: info?.status ?? "")
         }
         return AgentChannelMembersResponse(ref: reference, type: type, humans: humans, agents: agentRows)
     }
@@ -531,10 +532,12 @@ public struct AgentChannelsService: Sendable {
             .sorted { $0.id < $1.id }
         let agentRows = oauth.activeAgentIds(serverId: agent.serverId).map { otherId in
             let otherFacts = agents.runtimeFacts(agentId: otherId)
+            let info = oauth.agentRuntimeInfo(id: otherId)
             return AgentServerInfoResponse.Agent(
                 id: otherId,
-                name: oauth.agentRuntimeInfo(id: otherId)?.name ?? "",
+                name: info?.name ?? "",
                 role: oauth.agentRole(serverId: agent.serverId, agentId: otherId),
+                status: info?.status ?? "",
                 activity: otherFacts.activity,
                 activityDetail: otherFacts.detail
             )

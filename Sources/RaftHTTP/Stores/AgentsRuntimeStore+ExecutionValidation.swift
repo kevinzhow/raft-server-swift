@@ -21,6 +21,20 @@ extension AgentExecutionState {
                       command.serverId == intent.serverId, command.agentId == intent.agentId else { throw RuntimePersistenceError.invalidSnapshot }
             }
         }
+        for (key, pending) in pendingHumanDeliveries ?? [:] {
+            guard key == Self.key(pending.serverId, pending.agentId, pending.channelId, pending.messageId),
+                  !pending.serverId.isEmpty, !pending.agentId.isEmpty,
+                  !pending.channelId.isEmpty, !pending.messageId.isEmpty else {
+                throw RuntimePersistenceError.invalidSnapshot
+            }
+            if let released = pending.releasedCommandId {
+                guard let command = commands[released.uuidString], command.kind == .delivery,
+                      command.serverId == pending.serverId, command.agentId == pending.agentId,
+                      command.channelId == pending.channelId, command.messageId == pending.messageId else {
+                    throw RuntimePersistenceError.invalidSnapshot
+                }
+            }
+        }
         for (key, held) in heldDeliveries ?? [:] {
             guard key == held.commandId.uuidString, !held.serverId.isEmpty, !held.agentId.isEmpty,
                   !held.channelId.isEmpty, !held.messageId.isEmpty, stopIntents?[key] == nil,

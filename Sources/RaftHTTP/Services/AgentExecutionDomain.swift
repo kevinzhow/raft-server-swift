@@ -297,23 +297,38 @@ struct AgentExecutionDomain: Sendable {
                 throw AgentExecutionError.ownershipMismatch
             }
         }
-        try mutate { state in
-            guard state.connections[context.machineId]?.connectionEpochId == context.connectionEpochId,
-                  state.connections[context.machineId]?.online == true else { throw AgentExecutionError.staleConnection }
-            state.connections[context.machineId]?.daemonInstanceId = daemonInstanceId
-            state.connections[context.machineId]?.runtimes = Set(runtimes)
-            state.connections[context.machineId]?.ready = detectionComplete && runtimes.contains("codex")
-            for agentId in runningAgentIds {
-                var agent = state.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                if !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
-                    agent.needsManual = "untracked_running_process"
+        let machineAgents = readyReconcileAgents(context)
+        let now = Date()
+        var presence = AgentPresenceReconcile()
+        let outcome: Result<Void, any Error> = agents.withState { state in
+            do {
+                guard state.execution.connections[context.machineId]?.connectionEpochId == context.connectionEpochId,
+                      state.execution.connections[context.machineId]?.online == true else {
+                    throw AgentExecutionError.staleConnection
                 }
-                state.agents[agentId] = agent
+                state.execution.connections[context.machineId]?.daemonInstanceId = daemonInstanceId
+                state.execution.connections[context.machineId]?.runtimes = Set(runtimes)
+                state.execution.connections[context.machineId]?.ready = detectionComplete && runtimes.contains("codex")
+                for agentId in runningAgentIds {
+                    var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
+                    if !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
+                        agent.needsManual = "untracked_running_process"
+                    }
+                    state.execution.agents[agentId] = agent
+                }
+                reconcileConnectionRecovery(&state.execution, machineId: context.machineId,
+                    connectionEpochId: context.connectionEpochId, daemonInstanceId: daemonInstanceId,
+                    runningAgentIds: runningAgentIds)
+                presence = reconcileReadyPresence(&state, context: context, machineAgents: machineAgents,
+                                                  runningAgentIds: Set(runningAgentIds), now: now)
+                return .success(())
+            } catch {
+                return .failure(error)
             }
-            reconcileConnectionRecovery(&state, machineId: context.machineId,
-                connectionEpochId: context.connectionEpochId, daemonInstanceId: daemonInstanceId,
-                runningAgentIds: runningAgentIds)
         }
+        try outcome.get()
+        applyReadyPresenceStatusUpdates(presence.statusUpdates)
+        queuePresenceEmissions(presence.emissions)
     }
 
     func connectionClosed(_ context: AgentExecutionMachineContext) throws {

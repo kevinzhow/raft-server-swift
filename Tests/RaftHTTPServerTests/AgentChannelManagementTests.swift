@@ -139,7 +139,8 @@ private func channelMgmtServerInfo(
             let agents = try #require(body["agents"] as? [[String: Any]])
             let own = try #require(agents.first { $0["id"] as? String == f.agentId })
             #expect(own["role"] as? String == "member")
-            #expect(own["status"] as? String == "active")
+            // The stored agent status, not a hard-coded "active".
+            #expect(own["status"] as? String == "inactive")
             #expect(own["activity"] as? String == "offline")
             #expect(own["activityDetail"] as? String == "")
         }
