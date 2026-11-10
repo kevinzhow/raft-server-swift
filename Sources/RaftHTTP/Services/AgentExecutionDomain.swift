@@ -310,6 +310,9 @@ struct AgentExecutionDomain: Sendable {
                 }
                 state.agents[agentId] = agent
             }
+            reconcileConnectionRecovery(&state, machineId: context.machineId,
+                connectionEpochId: context.connectionEpochId, daemonInstanceId: daemonInstanceId,
+                runningAgentIds: runningAgentIds)
         }
     }
 

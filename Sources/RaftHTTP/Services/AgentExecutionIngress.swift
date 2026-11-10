@@ -43,8 +43,57 @@ extension AgentExecutionDomain {
                 state.agents[agentId] = agent
             }
             state.connections[context.machineId] = connection
+            reconcileConnectionRecovery(&state, machineId: context.machineId,
+                connectionEpochId: context.connectionEpochId, daemonInstanceId: connection.daemonInstanceId,
+                runningAgentIds: runningAgentIds ?? [])
         }
     }
+
+    /// Reconnect reconciliation for a recovery flag that was derived only from
+    /// the lost connection. The daemon's complete ready frame is the real fact
+    /// that it still holds this machine; a same-instance live process plus the
+    /// retained owner state prove whether a delivery or turn is still
+    /// unsettled. Only the two connection-history reasons are clearable, and
+    /// only from facts already retained: no blanket reset and no other
+    /// recovery reason.
+    func reconcileConnectionRecovery(_ state: inout AgentExecutionState, machineId: String,
+                                     connectionEpochId: String, daemonInstanceId: String?,
+                                     runningAgentIds: [String]) {
+        guard state.connections[machineId]?.ready == true,
+              let daemonInstanceId, !daemonInstanceId.isEmpty else { return }
+        let running = Set(runningAgentIds)
+        for agentId in Array(state.agents.keys) {
+            guard var agent = state.agents[agentId], agent.machineId == machineId else { continue }
+            guard agent.needsManual == "connection_lost_with_unsettled_execution"
+                    || agent.needsManual == "server_restarted_with_unsettled_execution" else { continue }
+            guard let currentId = agent.currentLaunchId, let current = agent.launches[currentId] else { continue }
+            // The current launch must be usable for the next delivery: a
+            // completed turn starts a new launch, and an incomplete one must
+            // have been admitted by the daemon.
+            guard current.completed || current.notSpawned || current.terminalFailure
+                    || current.startAccepted || current.processInstanceId != nil else { continue }
+            // The daemon's report is the only reconnect fact that proves this
+            // process survived; an absent report cannot be distinguished from
+            // a process that the daemon lost track of.
+            guard running.contains(agentId),
+                  agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId })
+            else { continue }
+            guard !state.hasUnsettledDeliveryWrite(agentId: agentId),
+                  !state.hasAcceptedTurnWithoutCompletion(agentId: agentId) else { continue }
+            // A pending delivery with no dispatch record was never written:
+            // upstream re-sends it on the new connection. Re-fence the command
+            // to the current epoch; never touch a command with a dispatch row.
+            for key in Array(state.commands.keys) {
+                guard let command = state.commands[key], command.agentId == agentId,
+                      command.kind == .delivery, command.status == .pending,
+                      state.dispatches?[key] == nil else { continue }
+                state.commands[key]?.connectionEpochId = connectionEpochId
+            }
+            agent.needsManual = nil
+            state.agents[agentId] = agent
+        }
+    }
+
     /// Internal pending decision. Never expose this result to transport until
     /// BusinessPersistenceRuntime.execute has completed its fenced COMMIT.
     func stageIngress(context: AgentExecutionMachineContext, type: String, payload: Data) throws -> AgentExecutionIngressResult {

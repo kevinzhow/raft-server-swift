@@ -8,7 +8,7 @@ enum HumanMessageExecutionDisposition: Sendable {
     case readableOnly(HumanMessageWakeRefusal)
 }
 
-enum HumanMessageWakeRefusal: Sendable {
+enum HumanMessageWakeRefusal: Sendable, Equatable {
     case unassigned, offline, recoveryRequired, breakerPaused, launchInProgress
 }
 

@@ -103,6 +103,15 @@ extension AgentsRuntimeStore {
         }
     }
 
+    /// The upstream `wake_suppressed` warning is not limited to the manual stop
+    /// intent: a recovery-gated agent drops the delivery too. Keep the same
+    /// sender-visible ledger facts without inventing a `stopped` status.
+    func recordSuppressedAgentDelivery(agentId: String, messageId: String, channelType: String) {
+        withState { state in
+            state.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channelType))
+        }
+    }
+
     /// OAuth is the membership authority. This writes only its existing local
     /// projection; real delivery is staged through AgentExecutionService.
     func recordMentionMembership(channelId: String, agentId: String) {

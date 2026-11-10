@@ -187,25 +187,76 @@ final class ProtocolPGSocket: Sendable {
     }
 }
 
-struct ControlledMachineProtocolPeer: Sendable {
+/// One real daemon keeps its outcome clientSeq monotonic across socket
+/// reconnects; a new peer instance for the same daemon shares this counter.
+final class ProtocolPGSequence: Sendable {
+    private let value = Mutex<Int64>(0)
+    func next() -> Int64 { value.withLock { current in current += 1; return current } }
+}
+
+final class ControlledMachineProtocolPeer: Sendable {
     let socket: ProtocolPGSocket
     let context: ProtocolPGObject
     let daemonId: String
-    static func connect(port: Int, key: String) async throws -> Self {
+    /// The same real daemon keeps one instance id across a Main restart; the
+    /// peer preserves it explicitly so a reconnect is not a daemon restart.
+    let sequence: ProtocolPGSequence
+    init(socket: ProtocolPGSocket, context: ProtocolPGObject, daemonId: String,
+         sequence: ProtocolPGSequence = ProtocolPGSequence()) {
+        self.socket = socket
+        self.context = context
+        self.daemonId = daemonId
+        self.sequence = sequence
+    }
+    static func connect(port: Int, key: String, daemonId: String? = nil,
+                        sequence: ProtocolPGSequence = ProtocolPGSequence()) async throws -> Self {
         let socket = try await ProtocolPGSocket.connect(port: port, path: "/daemon/connect", authorization: "Bearer \(key)")
         do {
             let context = try await socket.nextObject { $0.string("type") == "machine:context" }
-            return .init(socket: socket, context: context, daemonId: "protocol-peer-\(UUID().uuidString.lowercased())")
+            return Self(socket: socket, context: context,
+                        daemonId: daemonId ?? "protocol-peer-\(UUID().uuidString.lowercased())",
+                        sequence: sequence)
         } catch { await socket.close(); throw error }
     }
-    func sendControlledReady() async throws {
+    func sendControlledReady(runningAgentIds: [String] = []) async throws {
         try await socket.send(.init([
             "type": .string("ready"), "daemonInstanceId": .string(daemonId),
             "capabilities": .array(["agent:start", "agent:deliver", "agent:stop", "agent:runtime-outcome-v1"].map(JSONValue.string)),
-            "runtimes": .array([.string("codex")]), "runningAgents": .array([]),
+            "runtimes": .array([.string("codex")]),
+            "runningAgents": .array(runningAgentIds.map(JSONValue.string)),
             "runtimeDetection": .object(["status": .string("complete")]),
         ]))
         try await socket.applicationFence()
+    }
+    /// A sequenced outcome frame from the same daemon instance. The client
+    /// sequence is a per-daemon monotonic counter, never a fabricated receipt.
+    func sendOutcome(_ fields: [String: JSONValue]) async throws {
+        var body = fields
+        body["daemonInstanceId"] = .string(daemonId)
+        body["clientSeq"] = .integer(sequence.next())
+        try await socket.send(.init(body))
+        try await socket.applicationFence()
+    }
+    func sendProcessSpawned(agentId: String, launchId: String, processInstanceId: String) async throws {
+        try await sendOutcome([
+            "type": .string("agent:process_spawned"), "agentId": .string(agentId),
+            "launchId": .string(launchId), "processInstanceId": .string(processInstanceId),
+        ])
+    }
+    func sendRebound(agentId: String, launchId: String, processInstanceId: String) async throws {
+        try await sendOutcome([
+            "type": .string("agent:start:outcome"), "agentId": .string(agentId),
+            "launchId": .string(launchId),
+            "result": .object(["kind": .string("rebound"), "processInstanceId": .string(processInstanceId)]),
+        ])
+    }
+    func sendTurnCompleted(agentId: String, launchId: String, sessionId: String?) async throws {
+        try await sendOutcome([
+            "type": .string("agent:runtime:outcome"), "v": .integer(1), "agentId": .string(agentId),
+            "launchId": .string(launchId),
+            "sessionId": sessionId.map(JSONValue.string) ?? .null,
+            "outcome": .object(["kind": .string("turn_completed")]),
+        ])
     }
     func acknowledgeControlledStart(_ frame: ProtocolPGObject) async throws {
         try await socket.send(.init([

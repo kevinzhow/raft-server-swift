@@ -149,9 +149,37 @@ struct AgentExecutionAgent: Codable, Sendable {
     var launches: [String: AgentExecutionLaunch] = [:]
     var processes: [String: AgentExecutionProcess] = [:]
 
+    /// A launch whose turn has not completed is in flight (or its start result
+    /// is still unknown). A process that stays alive between turns is the
+    /// upstream idle runtime, not an in-flight turn, so it is not unsettled by
+    /// itself: `connectionClosed`/restore must not turn an idle agent into
+    /// manual recovery merely because its long-lived process survived.
     var hasUnsettledExecution: Bool {
-        processes.values.contains { !$0.exited }
-            || launches.values.contains { !$0.completed && !$0.notSpawned }
+        launches.values.contains { !$0.completed && !$0.notSpawned }
+    }
+}
+
+extension AgentExecutionState {
+    /// A delivery the daemon acknowledged on a launch whose turn never
+    /// completed. This is real retained turn-in-flight evidence.
+    func hasAcceptedTurnWithoutCompletion(agentId: String) -> Bool {
+        guard let agent = agents[agentId] else { return false }
+        return commands.values.contains { command in
+            guard command.agentId == agentId, command.kind == .delivery, command.status == .accepted,
+                  let launch = agent.launches[command.launchId] else { return false }
+            return !launch.completed && !launch.notSpawned && !launch.terminalFailure
+        }
+    }
+
+    /// A command write was attempted without a durable daemon acknowledgement.
+    /// A `.pending` delivery without a dispatch record is provably unsent; it
+    /// is retryable rather than ambiguous.
+    func hasUnsettledDeliveryWrite(agentId: String) -> Bool {
+        commands.contains { key, command in
+            guard command.agentId == agentId else { return false }
+            if let dispatch = dispatches?[key] { return dispatch.phase != .accepted }
+            return command.kind == .delivery && command.status == .dispatched
+        }
     }
 }
 
