@@ -244,7 +244,9 @@ private func orderedReply(
 }
 
 /// One `DomainError` projection shared by every success overload.
-private func domainErrorResponse(_ error: any DomainError) -> Response {
+/// Internal so the route-group middleware in `Features/Servers` projects the
+/// same typed body/header set as every handler reply.
+func domainErrorResponse(_ error: any DomainError) -> Response {
     response(orderedReply(
         status: error.status,
         body: error.publishedErrorBody.render(),

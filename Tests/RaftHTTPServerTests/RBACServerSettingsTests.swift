@@ -50,6 +50,7 @@ import VaporTesting
                 var fields = HTTPFields()
                 fields[.authorization] = "Bearer \(token)"
                 fields[.contentType] = "application/json"
+                fields[HTTPField.Name("X-Server-Id")!] = serverId
                 return fields
             }
             let tokens: [String: String] = [

@@ -48,6 +48,7 @@ private final class ManualRefreshBehavior: @unchecked Sendable {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(token)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(serverId)/machines/\(machine)/runtime-account-usage/\(provider)/refresh") { request in
                     request.body = .init(string: "{\"reason\":\"\(reason)\"}")
                 }

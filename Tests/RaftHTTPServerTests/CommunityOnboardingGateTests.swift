@@ -34,7 +34,9 @@ import VaporTesting
             headers[.authorization] = "Bearer \(token)"
             headers[HTTPField.Name("X-Server-Id")!] = communityId
             func wizardEnabled(_ serverId: String) async throws -> Bool? {
-                let response = try await client.send(.get, headers: headers, to: "/api/servers/\(serverId)/onboarding-settings")
+                var callHeaders = headers
+                callHeaders[HTTPField.Name("X-Server-Id")!] = serverId
+                let response = try await client.send(.get, headers: callHeaders, to: "/api/servers/\(serverId)/onboarding-settings")
                 #expect(response.status == .ok)
                 let body = try JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8)) as? [String: Any]
                 return body?["onboardingWizardEnabled"] as? Bool

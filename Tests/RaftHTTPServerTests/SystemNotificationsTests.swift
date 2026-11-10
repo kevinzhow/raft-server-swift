@@ -60,6 +60,7 @@ import VaporTesting
             func feed(_ bearer: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get("/api/servers/\(serverId)/system-notifications", headers: headers)
             }
 
