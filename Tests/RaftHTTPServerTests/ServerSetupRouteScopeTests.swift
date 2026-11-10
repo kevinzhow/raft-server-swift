@@ -219,3 +219,125 @@ import VaporTesting
         }
     }
 }
+
+/// `POST /api/servers/:id/setup-reset` sits under the same router-wide
+/// `requireServerMatchesParam` lockdown as the other setup routes
+/// (`routes/servers.ts:994`) and is *not* in the guest-hidden surface list
+/// (`routes/servers.ts:996–1004`), so a live Guest reaches the handler and gets
+/// its owner-only refusal. Handler-local reset authority then applies: a live
+/// owner passes, every other role is `INSUFFICIENT_PERMISSION`, and a server
+/// that already has an agent stays `SERVER_ALREADY_SET_UP`.
+@Test func setupResetAppliesThePinnedServerScopeFunnel() async throws {
+    let accounts = EmailLoginDirectory()
+    let ownerId = UUID().uuidString.lowercased()
+    let adminId = UUID().uuidString.lowercased()
+    let memberId = UUID().uuidString.lowercased()
+    let guestId = UUID().uuidString.lowercased()
+    let outsiderId = UUID().uuidString.lowercased()
+    let serverId = UUID().uuidString.lowercased()
+    let otherServerId = UUID().uuidString.lowercased()
+    accounts.addAccount(id: ownerId, email: "reset-scope-owner@example.test", password: "password123")
+    accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reset-scope", name: "Reset Scope", ownerId: ownerId)
+    accounts.oauth.addOwnedServer(id: otherServerId, slug: "reset-scope-other", name: "Reset Scope Other", ownerId: ownerId)
+    for (id, email, role) in [
+        (adminId, "reset-scope-admin@example.test", "admin"),
+        (memberId, "reset-scope-member@example.test", "member"),
+        (guestId, "reset-scope-guest@example.test", "guest"),
+    ] {
+        accounts.addAccount(id: id, email: email, password: "password123")
+        accounts.markEmailVerified(userId: id)
+        accounts.oauth.addMember(serverId: serverId, userId: id, role: role)
+    }
+    accounts.addAccount(id: outsiderId, email: "reset-scope-outsider@example.test", password: "password123")
+    accounts.markEmailVerified(userId: outsiderId)
+    // One attached computer gives the owner's successful reset an observable
+    // `revokedComputers` count instead of an empty projection.
+    let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "reset-scope-machine")
+    accounts.linkComputerForTesting(serverId: serverId, machineId: machine, attachedByUserId: ownerId)
+    // A soft-deleted server keeps its stale owner/member rows, but the pinned
+    // lockdown joins the live server row: it is not a live membership.
+    let deletedServerId = UUID().uuidString.lowercased()
+    accounts.oauth.addOwnedServer(id: deletedServerId, slug: "reset-scope-deleted", name: "Reset Scope Deleted", ownerId: ownerId)
+    accounts.oauth.deleteServer(id: deletedServerId)
+    let owner = accounts.mintAccessTokenForTesting(userId: ownerId)
+    let admin = accounts.mintAccessTokenForTesting(userId: adminId)
+    let member = accounts.mintAccessTokenForTesting(userId: memberId)
+    let guest = accounts.mintAccessTokenForTesting(userId: guestId)
+    let outsider = accounts.mintAccessTokenForTesting(userId: outsiderId)
+    let unknownServerId = UUID().uuidString.lowercased()
+
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            func reset(
+                _ bearer: String?,
+                serverId: String,
+                header: String?
+            ) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                if let bearer { headers[.authorization] = "Bearer \(bearer)" }
+                if let header { headers[HTTPField.Name("X-Server-Id")!] = header }
+                return try await client.send(
+                    .post, headers: headers, to: URI(string: "/api/servers/\(serverId)/setup-reset")
+                )
+            }
+
+            // `requireAuth` is mounted before the router: an anonymous caller
+            // is 401 even when the path/header checks would also fail.
+            #expect(try await reset(nil, serverId: serverId, header: nil).status == .unauthorized)
+            #expect(try await reset(nil, serverId: serverId, header: serverId).status == .unauthorized)
+
+            // A non-UUID names no server, before the header check.
+            let malformed = try await reset(owner, serverId: "not-a-uuid", header: nil)
+            #expect(malformed.status == .notFound)
+            #expect(malformed.body.string == "{\"error\":\"Server not found\"}")
+
+            let missingHeader = try await reset(owner, serverId: serverId, header: nil)
+            #expect(missingHeader.status == .badRequest)
+            #expect(missingHeader.body.string == "{\"error\":\"Missing X-Server-Id header\"}")
+
+            let mismatched = try await reset(owner, serverId: serverId, header: otherServerId)
+            #expect(mismatched.status == .badRequest)
+            #expect(mismatched.body.string == "{\"error\":\"X-Server-Id must match server id in URL\"}")
+
+            let nonMember = try await reset(outsider, serverId: serverId, header: serverId)
+            #expect(nonMember.status == .forbidden)
+            #expect(nonMember.body.string == "{\"error\":\"Not a member of this server\"}")
+
+            let unknownServer = try await reset(owner, serverId: unknownServerId, header: unknownServerId)
+            #expect(unknownServer.status == .forbidden)
+            #expect(unknownServer.body.string == "{\"error\":\"Not a member of this server\"}")
+
+            let deletedServer = try await reset(owner, serverId: deletedServerId, header: deletedServerId)
+            #expect(deletedServer.status == .forbidden)
+            #expect(deletedServer.body.string == "{\"error\":\"Not a member of this server\"}")
+
+            // `setup-reset` is not guest-hidden, so a live Guest reaches the
+            // handler and gets its owner-only refusal.
+            for denied in [admin, member, guest] {
+                let refused = try await reset(denied, serverId: serverId, header: serverId)
+                #expect(refused.status == .forbidden)
+                #expect(refused.body.string == "{\"error\":\"INSUFFICIENT_PERMISSION\"}")
+            }
+
+            // A live owner reaches the handler: the actual reset output.
+            let resetResponse = try await reset(owner, serverId: serverId, header: serverId)
+            #expect(resetResponse.status == .ok)
+            let resetBody = try #require(
+                JSONSerialization.jsonObject(with: resetResponse.body.data ?? Data()) as? [String: Any]
+            )
+            #expect(resetBody["phase"] as? String == "not_started")
+            #expect(resetBody["revokedComputers"] as? Int == 1)
+
+            // Handler-local boundary: an agent makes the reset a 409.
+            let agent = accounts.oauth.createAgent(serverId: serverId, name: "reset-scope-agent")
+            accounts.addServerAgent(serverId: serverId, id: agent, name: "reset-scope-agent", avatarUrl: nil, status: "inactive")
+            let alreadySetUp = try await reset(owner, serverId: serverId, header: serverId)
+            #expect(alreadySetUp.status == .conflict)
+            #expect(alreadySetUp.body.string == "{\"error\":\"SERVER_ALREADY_SET_UP\"}")
+        }
+    }
+}

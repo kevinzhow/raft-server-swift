@@ -640,16 +640,22 @@ public struct JoinLinksAndInvitesService: Sendable {
         return projection.project(serverId: serverId, userId: actor.userId, role: actor.role)
     }
 
+    /// `POST /api/servers/:id/setup-reset`. The router-wide lockdown runs
+    /// first; the handler then owns reset authority. `setup-reset` is not in
+    /// the guest-hidden surface list, so a live Guest reaches this owner-only
+    /// refusal instead of the management-data 403.
     public func serverSetupReset(
         authorization: String?,
-        serverId: String
+        serverId: String,
+        headerServerId: String?
     ) throws -> SetupProjectionResponseDTO {
-        guard let userId = dependencies.sessionUserId(authorization) else {
-            throw JoinLinksAndInvitesError.unauthorized
-        }
-        guard let role = oauth.memberRole(serverId: serverId, userId: userId),
-              role == "owner"
-        else {
+        let actor = try setupScope(
+            authorization: authorization,
+            serverId: serverId,
+            headerServerId: headerServerId,
+            hidesGuests: false
+        )
+        guard actor.role == "owner" else {
             throw JoinLinksAndInvitesError.insufficientPermission
         }
         guard !agents.hasServerAgent(serverId: serverId) else {
@@ -658,7 +664,7 @@ public struct JoinLinksAndInvitesService: Sendable {
         let revokedComputers = computers.revokeComputers(serverId: serverId, now: now())
         store.clearSetupState(serverId: serverId)
         return setupProjectionService()
-            .project(serverId: serverId, userId: userId, role: role, revokedComputers: revokedComputers)
+            .project(serverId: serverId, userId: actor.userId, role: actor.role, revokedComputers: revokedComputers)
     }
 
     /// "Let's Go": the PRIMARY owner accepts the handoff.

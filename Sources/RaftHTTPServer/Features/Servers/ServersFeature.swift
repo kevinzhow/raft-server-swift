@@ -331,7 +331,8 @@ public struct ServersFeature: RouteCollection, Sendable {
             return try await respond {
                 try services.emailAccounts.joinLinksAndInvites.serverSetupReset(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? ""
+                    serverId: request.parameters.get("id") ?? "",
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!]
                 )
             }
         }

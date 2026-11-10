@@ -65,9 +65,11 @@ import VaporTesting
             let reset = "/api/servers/\(serverId)/setup-reset"
             let handoff = "/api/servers/\(serverId)/setup-handoff"
 
-            #expect(try await post(admin, reset).status == .forbidden)
-            #expect(try await post(member, reset).status == .forbidden)
-            let resetResponse = try await post(owner, reset)
+            // The router-wide `/:id` lockdown precedes the handler: every
+            // call must carry the matching X-Server-Id.
+            #expect(try await post(admin, reset, headerServerId: serverId).status == .forbidden)
+            #expect(try await post(member, reset, headerServerId: serverId).status == .forbidden)
+            let resetResponse = try await post(owner, reset, headerServerId: serverId)
             #expect(resetResponse.status == .ok)
             let resetBody = try JSONSerialization.jsonObject(with: Data((resetResponse.body.string ?? "").utf8)) as? [String: Any]
             #expect(resetBody?["phase"] as? String == "not_started")
@@ -79,7 +81,7 @@ import VaporTesting
 
             let agent = accounts.oauth.createAgent(serverId: serverId, name: "setup-agent")
             accounts.addServerAgent(serverId: serverId, id: agent, name: "setup-agent", avatarUrl: nil, status: "inactive")
-            let refused = try await post(owner, reset)
+            let refused = try await post(owner, reset, headerServerId: serverId)
             #expect(refused.status == .conflict)
             #expect((try JSONSerialization.jsonObject(with: Data((refused.body.string ?? "").utf8)) as? [String: Any])?["error"] as? String == "SERVER_ALREADY_SET_UP")
 
