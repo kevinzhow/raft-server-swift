@@ -376,8 +376,9 @@ import Testing
         // that durable-intent order.
         let intents = try await fixture.connectionReadyRecordingIntents()
         // Facts notice + four opener `realtime.publish` intents + the Team-Mode
-        // reply publication + ledger notice.
-        #expect(intents.count == 7)
+        // reply's `message:new` and parent `thread:updated` publications + the
+        // ledger notice.
+        #expect(intents.count == 8)
         let commandIds = intents.compactMap { intent -> UUID? in
             try? JSONDecoder().decode(AgentExecutionIntentReference.self, from: intent.payload).commandId
         }

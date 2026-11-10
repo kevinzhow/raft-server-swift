@@ -374,7 +374,7 @@ public struct OnboardingBriefingService: Sendable {
         // an older graph).
         try postTeamModeReply(
             serverId: serverId, ownerId: ownerId, agentId: agentId, threadId: threadId,
-            artifactID: artifactID, parentMessage: parentMessage, senderName: senderName, sentAt: sentAt
+            artifactID: artifactID, sentAt: sentAt
         )
         return artifactID
     }
@@ -391,12 +391,12 @@ public struct OnboardingBriefingService: Sendable {
         }
     }
 
-    /// Upstream's artifact reply body. It is a normal agent message: the thread
-    /// follow rows are written before the publication, and the reply is deduped
-    /// by its `agentSendKey`.
+    /// Upstream's artifact reply body. It is a normal agent message, deduped by
+    /// its `agentSendKey`; a new commit is published through the persisted
+    /// frontend publisher, which writes the follow rows before the frames.
     private func postTeamModeReply(
         serverId: String, ownerId: String, agentId: String, threadId: String,
-        artifactID: String, parentMessage: StoredHumanMessage, senderName: String, sentAt: Date
+        artifactID: String, sentAt: Date
     ) throws {
         let key = "\(OnboardingBriefingContent.openerV2Version):\(serverId):\(ownerId):team-mode-thread"
         let candidate = StoredHumanMessage(
@@ -412,48 +412,25 @@ public struct OnboardingBriefingService: Sendable {
             // The first commit already wrote the follow rows and published.
             return
         case .committed(let committed):
-            // Upstream writes the sender's `replied` follow first; the parent
-            // author's `authored` follow is skipped when it is the same agent.
-            messages.applyThreadReplyFollows(
-                serverId: serverId, threadChannelId: threadId,
-                parentMessageId: parentMessage.id, senderId: agentId, mentioned: []
+            // Upstream `emitPersistedMessageToFrontend`: the publisher writes the
+            // sender's `replied` follow (and ensures the parent author's
+            // `authored` follow), clears Done, grants the thread room to the
+            // eligible followers, then emits `message:new` followed by the
+            // parent's `thread:updated`. Publication is durable and keyed by the
+            // frame identity, so a retried trigger cannot emit twice.
+            let realtime = MessageRealtimeService(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth
             )
-            try publishTeamModeReply(committed, threadId: threadId, senderName: senderName)
+            let relay = RealtimeRelayService(messages: messages)
+            for frame in realtime.frames(for: committed) {
+                try AgentExecutionPublication.publish(
+                    room: frame.room, event: frame.event, identity: frame.identity,
+                    payloadJSON: frame.payload
+                ) { relay.emit($0, $1, $2) }
+            }
         case .rejected:
             throw OnboardingBriefingArtifactError.replyRejected
         }
-    }
-
-    /// The published reply is the canonical message manifest: it carries the
-    /// retained attachment row's seven-field object (id, filename, mimeType,
-    /// sizeBytes, width, height, thumbnailUrl), not an id stub, and the
-    /// creation-time thread conversation context the frontend reads.
-    private func publishTeamModeReply(
-        _ message: StoredHumanMessage, threadId: String, senderName: String
-    ) throws {
-        guard let thread = channels.postableChannel(id: threadId) else { return }
-        let agent = oauth.agentRuntimeInfo(id: message.senderId)
-        let sender = CanonicalMessagePayload.Sender(
-            name: senderName,
-            description: agent?.description.flatMap { $0.isEmpty ? nil : $0 },
-            membershipStatus: nil
-        )
-        let attachments = messages.orderedAttachmentRows(for: message)
-            .compactMap { $0.row }
-            .map(CanonicalMessagePayload.Attachment.init)
-        let payload = CanonicalMessagePayload(
-            message: message,
-            sender: sender,
-            attachments: attachments,
-            mentions: message.mentions,
-            conversationContext: messageConversationContext(
-                channel: thread, channels: channels.state.postableChannels)
-        ).jsonBody.render()
-        let relay = RealtimeRelayService(messages: messages)
-        try AgentExecutionPublication.publish(
-            room: "channel:\(threadId)", event: "message:new", identity: message.id,
-            payloadJSON: payload
-        ) { relay.emit($0, $1, $2) }
     }
 
     struct OwnerOpenerChannel {

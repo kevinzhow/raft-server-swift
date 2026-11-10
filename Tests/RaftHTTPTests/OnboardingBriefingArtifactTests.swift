@@ -322,8 +322,20 @@ import Testing
             guard intent.kind == "realtime.publish" else { return nil }
             return try? JSONDecoder().decode(RealtimePublication.self, from: intent.payload)
         }
-        #expect(publications.count == 5)
+        // Four opener messages, the Team-Mode reply `message:new`, and the
+        // parent channel's `thread:updated`: the reply is emitted through the
+        // same persisted-frontend publisher as every other thread reply.
+        #expect(publications.count == 6)
         #expect(publications.filter { $0.room == "channel:\(thread.id)" }.count == 1)
+        let updates = publications.filter { $0.event == "thread:updated" }
+        #expect(updates.count == 1)
+        let update = try #require(updates.first)
+        #expect(update.room == "channel:\(fixture.allChannelId)")
+        let updatePayload = try #require(try JSONSerialization.jsonObject(
+            with: Data(update.payloadJSON.utf8)) as? [String: Any])
+        #expect(updatePayload["parentMessageId"] as? String == thread.channel.parentMessageId)
+        #expect(updatePayload["threadChannelId"] as? String == thread.id)
+        #expect(updatePayload["replyCount"] as? Int == 1)
         let replyPublication = try #require(publications.first { $0.room == "channel:\(thread.id)" })
         #expect(replyPublication.event == "message:new")
         let payload = try #require(try JSONSerialization.jsonObject(
