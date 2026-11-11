@@ -276,15 +276,14 @@ public struct ActionCardMarketplaceService: Sendable {
         if let denial = grantDenial(agentId: writer.agentId, scope: "task:write") { throw denial }
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              ),
               let taskNumber = body.taskNumber
         else {
             throw ActionCardMarketplaceError.invalidTaskDeleteRequest
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channelRef
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
         let isAdmin = oauth.agentRole(serverId: writer.serverId, agentId: writer.agentId) == "admin"
         switch tasks.deleteTask(
             channelId: channelId,
@@ -316,21 +315,14 @@ public struct ActionCardMarketplaceService: Sendable {
         if let denial = grantDenial(agentId: writer.agentId, scope: "task:write") { throw denial }
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              ),
               let messageRef = body.messageId
         else {
             throw ActionCardMarketplaceError.invalidTaskConvertRequest
         }
-        guard credentials.canAgentPost(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
-            throw AgentTaskApiError.agentCannotModifyTasks
-        }
-        guard !credentials.isChannelArchived(channelId) else {
-            throw AgentTaskApiError.channelArchived
-        }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channelRef
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
         guard let message = messages.messageForConvert(prefix: messageRef, channelId: channelId) else {
             throw ActionCardMarketplaceError.messageNotFound
         }
@@ -369,18 +361,24 @@ public struct ActionCardMarketplaceService: Sendable {
         if let denial = grantDenial(agentId: auth.agentId, scope: "task:write") { throw denial }
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: auth.serverId,
-                  agentId: auth.agentId,
-                  reference: channelRef
-              ),
               body.hasTasksKey,
               body.hasValidTasks
         else {
             throw ActionCardMarketplaceError.invalidTaskRequest
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: auth.serverId, agentId: auth.agentId, reference: channelRef
+        )
         if let replay = try idempotencyReplay(agentId: auth.agentId, rawBody: rawBody) {
             return replay
+        }
+        switch credentials.taskWriteBoundary(
+            serverId: auth.serverId, agentId: auth.agentId, channelId: channelId, refusesThread: true
+        ) {
+        case .allowed: break
+        case .thread: throw AgentTaskApiError.threadTaskWrite("Thread messages cannot become tasks")
+        case .notWritable: throw AgentTaskApiError.agentCannotModifyTasks
+        case .archived: throw AgentTaskApiError.channelArchived
         }
         let titles = body.tasks.compactMap { task -> String? in
             let title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -476,16 +474,15 @@ public struct ActionCardMarketplaceService: Sendable {
         if let denial = grantDenial(agentId: writer.agentId, scope: "task:write") { throw denial }
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              ),
               let taskNumber = body.taskNumber,
               let receipt = body.receipt
         else {
             throw ActionCardMarketplaceError.invalidResourceReceipt
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channelRef
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         guard let expiry = formatter.date(from: receipt.expiry) else {
@@ -545,16 +542,15 @@ public struct ActionCardMarketplaceService: Sendable {
         if let denial = grantDenial(agentId: agent.id, scope: "task:write") { throw denial }
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: agent.serverId,
-                  agentId: agent.id,
-                  reference: channelRef
-              ),
               let taskNumber = body.taskNumber,
               let rawAssignee = body.assignee, !rawAssignee.isEmpty
         else {
             throw ActionCardMarketplaceError.invalidTaskAssignRequest
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: agent.serverId, agentId: agent.id, reference: channelRef
+        )
+        try requireTaskWritable(serverId: agent.serverId, agentId: agent.id, channelId: channelId)
         guard let resolved = resolveAssignee(channelId: channelId, rawAssignee: rawAssignee) else {
             throw ActionCardMarketplaceError.assigneeNotAssignable
         }
@@ -873,6 +869,26 @@ public struct ActionCardMarketplaceService: Sendable {
         )
     }
 
+    private func resolvedTaskChannel(
+        serverId: String,
+        agentId: String,
+        reference: String
+    ) throws -> String {
+        try credentials.resolvedChannel(
+            serverId: serverId, agentId: agentId, reference: reference, allowThread: true
+        )
+    }
+
+    private func requireTaskWritable(serverId: String, agentId: String, channelId: String) throws {
+        switch credentials.taskWriteBoundary(
+            serverId: serverId, agentId: agentId, channelId: channelId, refusesThread: false
+        ) {
+        case .allowed: break
+        case .thread, .notWritable: throw AgentTaskApiError.agentCannotModifyTasks
+        case .archived: throw AgentTaskApiError.channelArchived
+        }
+    }
+
     private func taskAuth(
         _ authorization: String?,
         legacyAgentId: String?
@@ -885,10 +901,6 @@ public struct ActionCardMarketplaceService: Sendable {
         legacyAgentId: String?
     ) -> (agentId: String, serverId: String)? {
         credentials.writer(authorization: authorization, legacyAgentId: legacyAgentId)
-    }
-
-    private func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
-        credentials.channel(serverId: serverId, agentId: agentId, reference: reference)
     }
 
     /// Resolves `@handle` to exactly one visible agent or human channel member.
