@@ -70,7 +70,7 @@ func theServerProcessServesHealthAndAcceptsADaemon() async throws {
         port: httpPort,
         method: "POST",
         path: "/api/auth/register",
-        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Startup Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\",\"__e2eAutoVerify\":true}"
+        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"startup-owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\",\"__e2eAutoVerify\":true}"
     )
     #expect(registerStatus == 200)
     let token = try jsonObject(registerBody)["accessToken"] as? String ?? ""
@@ -316,7 +316,7 @@ func twoRaftServerProcessesStartAndStayIndependent() async throws {
         port: httpA,
         method: "POST",
         path: "/api/auth/register",
-        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"Two Server Owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\",\"__e2eAutoVerify\":true}"
+        body: "{\"email\":\(json(email)),\"password\":\"password123\",\"name\":\"two-server-owner\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\",\"__e2eAutoVerify\":true}"
     )
     #expect(registerStatus == 200)
     let token = try jsonObject(registerBody)["accessToken"] as? String ?? ""

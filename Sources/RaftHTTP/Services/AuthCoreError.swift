@@ -21,6 +21,7 @@ public enum AuthCoreError: DomainError, Equatable {
     case socialEmailExists(provider: String)
     case registerBodyInvalid([AuthRequestIssue])
     case stagingRegistrationUnavailable
+    case nameInvalid(String)
     case reservedName
     case emailAlreadyRegistered
     case missingAuthorization
@@ -44,9 +45,9 @@ public enum AuthCoreError: DomainError, Equatable {
     public var status: UInt {
         switch self {
         case .notFound, .userNotFound, .deviceLoginDisabled: 404
-        case .socialCompletionCodeRequired, .socialCompletionInvalid, .registerBodyInvalid, .reservedName,
-             .clientNameInvalid, .userCodeRequired, .deviceCodeRequired, .refreshTokenRequired,
-             .invalidRefreshBinding: 400
+        case .socialCompletionCodeRequired, .socialCompletionInvalid, .registerBodyInvalid, .nameInvalid,
+             .reservedName, .clientNameInvalid, .userCodeRequired, .deviceCodeRequired,
+             .refreshTokenRequired, .invalidRefreshBinding: 400
         case .linkAuthRequired, .missingAuthorization, .invalidToken, .invalidRefreshToken: 401
         case .linkUserMismatch, .pendingLinkAccountMismatch, .stagingRegistrationUnavailable,
              .retirementOwnershipMismatch, .invalidRetirementCapability, .unsupportedAccount: 403
@@ -75,6 +76,7 @@ public enum AuthCoreError: DomainError, Equatable {
             "An account with this email already exists. Sign in with email and password first, then connect \(provider) in Settings."
         case .registerBodyInvalid: "Invalid email registration body"
         case .stagingRegistrationUnavailable: "Staging self-account registration is unavailable"
+        case .nameInvalid(let message): message
         case .reservedName: "This username is reserved. Choose another name."
         case .emailAlreadyRegistered: "Email already registered"
         case .missingAuthorization: "Missing or invalid Authorization header"

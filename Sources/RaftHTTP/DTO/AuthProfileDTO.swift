@@ -1,4 +1,119 @@
 import Foundation
+import RaftShared
+
+/// `POST /api/auth/me/complete-profile` request body.
+///
+/// Pinned `routes/auth.ts:109` parses this body with a strict zod object:
+/// `name` is a non-empty string, `displayName` is trimmed and must then be
+/// 1...80 characters, and any other member is an unrecognized key. The route
+/// publishes every schema failure as `PROFILE_SETUP_BODY_INVALID` with one
+/// `issues` entry per failure, so the decoder keeps the raw JSON value and
+/// produces the same ordered issue list (and zod 4's exact messages) instead of
+/// letting a typed decode turn it into a different refusal.
+public struct CompleteProfileRequest: Sendable, Equatable {
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object. `displayName` is already trimmed when it is valid.
+    public var issues: [AuthRequestIssue]
+    public var name: String
+    public var displayName: String
+
+    public init(
+        issues: [AuthRequestIssue] = [],
+        name: String = "",
+        displayName: String = ""
+    ) {
+        self.issues = issues
+        self.name = name
+        self.displayName = displayName
+    }
+
+    /// The refusal for a body that never reached the schema (no body or invalid
+    /// JSON). Upstream parses `req.body ?? {}`, so both required members are
+    /// missing.
+    public static let missingBody = CompleteProfileRequest(issues: [
+        AuthRequestIssue(
+            path: "name",
+            message: "Invalid input: expected string, received undefined"
+        ),
+        AuthRequestIssue(
+            path: "displayName",
+            message: "Invalid input: expected string, received undefined"
+        ),
+    ])
+
+    private static func issue(_ path: String, _ message: String) -> AuthRequestIssue {
+        AuthRequestIssue(path: path, message: message)
+    }
+
+    private static func stringIssue(_ value: JSONValue, path: String) -> AuthRequestIssue {
+        issue(path, "Invalid input: expected string, received \(value.zodKind)")
+    }
+
+    static func parse(_ raw: JSONValue) -> CompleteProfileRequest {
+        guard case .object(let fields) = raw else {
+            // Upstream `req.body ?? {}` rewrites a JSON null to the empty
+            // object, so a null body reports the two required members rather
+            // than an object-type issue.
+            if case .null = raw { return parse(.object([:])) }
+            return CompleteProfileRequest(issues: [
+                issue("", "Invalid input: expected object, received \(raw.zodKind)"),
+            ])
+        }
+
+        var issues: [AuthRequestIssue] = []
+        var name = ""
+        switch fields["name"] {
+        case nil:
+            issues.append(issue("name", "Invalid input: expected string, received undefined"))
+        case .string(let value)?:
+            if value.isEmpty {
+                issues.append(issue("name", "Too small: expected string to have >=1 characters"))
+            } else {
+                name = value
+            }
+        case .some(let value):
+            issues.append(stringIssue(value, path: "name"))
+        }
+
+        var displayName = ""
+        switch fields["displayName"] {
+        case nil:
+            issues.append(issue("displayName", "Invalid input: expected string, received undefined"))
+        case .string(let value)?:
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.utf16.count == 0 {
+                issues.append(issue("displayName", "Too small: expected string to have >=1 characters"))
+            } else if trimmed.utf16.count > 80 {
+                issues.append(issue("displayName", "Too big: expected string to have <=80 characters"))
+            } else {
+                displayName = trimmed
+            }
+        case .some(let value):
+            issues.append(stringIssue(value, path: "displayName"))
+        }
+
+        // `.strict()` reports one issue for every member the shape does not
+        // know, after the shape's own issues. The dictionary has no source
+        // order, so the keys are sorted to keep the published bytes stable.
+        let unknown = fields.keys
+            .filter { $0 != "name" && $0 != "displayName" }
+            .sorted()
+        if !unknown.isEmpty {
+            let label = unknown.count > 1 ? "Unrecognized keys" : "Unrecognized key"
+            let keys = unknown.map { "\"\($0)\"" }.joined(separator: ", ")
+            issues.append(issue("", "\(label): \(keys)"))
+        }
+        return CompleteProfileRequest(issues: issues, name: name, displayName: displayName)
+    }
+}
+
+extension CompleteProfileRequest: Decodable {
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(JSONValue.self)
+        self = Self.parse(raw)
+    }
+}
 
 /// `POST /api/auth/pending-link/cancel` request body.
 ///

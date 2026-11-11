@@ -225,6 +225,12 @@ public struct AuthCoreService: Sendable {
         }
         var requestedName: String?
         if case .string(let name) = body.name {
+            // Pinned `routes/auth.ts:647-658`: the chosen handle passes the
+            // shared `validateName(name, "Name", 5)` (length and pattern) before
+            // the reserved-name gate. Both refusals are a bare `error` body.
+            if let nameError = AccountNaming.validateName(name, "Name", minLength: 5) {
+                throw AuthCoreError.nameInvalid(nameError)
+            }
             if AccountNaming.isReservedAgentName(name) { throw AuthCoreError.reservedName }
             requestedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         }

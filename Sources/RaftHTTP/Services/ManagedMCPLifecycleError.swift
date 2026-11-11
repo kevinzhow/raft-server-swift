@@ -20,7 +20,8 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
     case invalidMutationPayload
     case mutationPayloadMismatch
     // Profile and server.
-    case profileSetupInvalid
+    case profileSetupBodyInvalid([AuthRequestIssue])
+    case profileSetupNameInvalid(String)
     case profileSetupNameReserved
     case profileSetupAlreadyCompleted
     case profileSetupNameTaken
@@ -68,8 +69,9 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
             502
         case .noPushSubscription:
             409
-        case .invalidMutationId, .invalidMutationPayload, .profileSetupInvalid,
-             .profileSetupNameReserved, .invalidServerRequest, .slugTooShort,
+        case .invalidMutationId, .invalidMutationPayload,
+             .profileSetupBodyInvalid, .profileSetupNameInvalid, .profileSetupNameReserved,
+             .invalidServerRequest, .slugTooShort,
              .productAnalyticsNotBoolean, .invalidProviderConnection, .rotateCredentialSeparately,
              .apiKeyRequired, .invalidPushRegistration, .invalidPushSubscription,
              .invalidCapability, .installationIdRequired, .invalidPushPromptEvent,
@@ -90,7 +92,8 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
         case .invalidMutationId: "Invalid mutation id"
         case .invalidMutationPayload: "Invalid mutation payload"
         case .mutationPayloadMismatch: "Mutation id reused with a different payload"
-        case .profileSetupInvalid: "name and displayName are required"
+        case .profileSetupBodyInvalid: "Invalid profile setup body"
+        case .profileSetupNameInvalid(let message): message
         case .profileSetupNameReserved: "This username is reserved. Choose another name."
         case .profileSetupAlreadyCompleted: "Profile setup is already completed"
         case .profileSetupNameTaken: "That username is taken"
@@ -123,13 +126,34 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
         case .invalidMutationId: "INVALID_MUTATION_ID"
         case .invalidMutationPayload: "INVALID_MUTATION_PAYLOAD"
         case .mutationPayloadMismatch: "MUTATION_ID_PAYLOAD_MISMATCH"
-        case .profileSetupInvalid: "PROFILE_SETUP_INVALID"
+        case .profileSetupBodyInvalid: "PROFILE_SETUP_BODY_INVALID"
+        case .profileSetupNameInvalid: "PROFILE_SETUP_NAME_INVALID"
         case .profileSetupNameReserved: "PROFILE_SETUP_NAME_RESERVED"
         case .profileSetupAlreadyCompleted: "PROFILE_SETUP_ALREADY_COMPLETED"
         case .profileSetupNameTaken: "PROFILE_SETUP_NAME_TAKEN"
         case .profileSetupRequired: "PROFILE_SETUP_REQUIRED"
         case .providerConnectionsDisabled: "provider_connections_disabled"
         default: nil
+        }
+    }
+
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .profileSetupBodyInvalid(let issues):
+            // Pinned `routes/auth.ts:1408-1412` publishes `error`, `code`, then
+            // `issues`; the default two-key body cannot carry the list.
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "PROFILE_SETUP_BODY_INVALID"),
+                OrderedJSONField("issues", .array(issues.map {
+                    .object([
+                        OrderedJSONField("path", $0.path),
+                        OrderedJSONField("message", $0.message),
+                    ])
+                })),
+            ])
+        default:
+            return nil
         }
     }
 }

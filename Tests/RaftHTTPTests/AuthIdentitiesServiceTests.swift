@@ -208,6 +208,36 @@ private func render(_ error: AuthIdentitiesError) -> String {
     #expect(scene.analyticsId(userId: userId) != nil && scene.analyticsId(userId: userId) != before)
 }
 
+@Test func authIdentitiesPatchWritesDisplayNameVerbatimAndNeverDerivesItFromTheHandle() throws {
+    let (scene, _, bearer) = makeFixture("12")
+    let service = scene.identities
+    let auth = "Bearer \(bearer)"
+    func patch(_ json: String) throws -> AuthProfileUserResponse {
+        try service.updateProfile(
+            authorization: auth,
+            try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(json.utf8))
+        )
+    }
+
+    // A fresh completed row has no display name. The public body prints null;
+    // it is not back-filled from `name`.
+    #expect(try service.me(authorization: auth).user.displayName == nil)
+
+    // Upstream copies a present string verbatim: no trim and no validation.
+    #expect(try patch(#"{"displayName":"  Kevin  "}"#).user.displayName == "  Kevin  ")
+    #expect(try service.me(authorization: auth).user.displayName == "  Kevin  ")
+
+    // An absent key leaves the stored value alone.
+    #expect(try patch(#"{"shareUsageData":true}"#).user.displayName == "  Kevin  ")
+
+    // The empty string is a present string, so it is stored as sent.
+    #expect(try patch(#"{"displayName":""}"#).user.displayName == "")
+
+    // JSON null clears it; the published body goes back to null.
+    #expect(try patch(#"{"displayName":null}"#).user.displayName == nil)
+    #expect(try service.me(authorization: auth).user.displayName == nil)
+}
+
 @Test func authIdentitiesPatchWritesThePasswordBeforeLaterFieldsAreValidated() throws {
     let (scene, _, bearer) = makeFixture("05")
     let service = scene.identities

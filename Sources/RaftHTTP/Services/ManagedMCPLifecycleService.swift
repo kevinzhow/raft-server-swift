@@ -379,21 +379,36 @@ public struct ManagedMCPLifecycleService: Sendable {
 
     public func completeProfile(
         authorization: String?,
-        body: LenientJSONObjectRequest?
+        body: CompleteProfileRequest?
     ) throws -> ProfileCompletionResponse {
         let userId = try requireUser(authorization)
-        guard let object = body,
-              let rawName = object["name"]?.legacyString,
-              let rawDisplay = object["displayName"]?.legacyString
-        else { throw ManagedMCPLifecycleError.profileSetupInvalid }
-        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayName = rawDisplay.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !displayName.isEmpty else {
-            throw ManagedMCPLifecycleError.profileSetupInvalid
+        // Pinned `routes/auth.ts:1405-1413`: the strict body schema runs first
+        // and publishes every issue before any name check.
+        guard let body else {
+            throw ManagedMCPLifecycleError.profileSetupBodyInvalid(
+                CompleteProfileRequest.missingBody.issues
+            )
         }
-        let lowered = name.lowercased()
-        if lowered.hasPrefix("pending_") || AccountNaming.reservedAgentNames.contains(lowered) {
+        guard body.issues.isEmpty else {
+            throw ManagedMCPLifecycleError.profileSetupBodyInvalid(body.issues)
+        }
+        let name = body.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Pinned `routes/auth.ts:1416-1421`: `validateName(name, "Name", 5)`
+        // (length, pattern) before the reserved-name gate.
+        if let nameError = AccountNaming.validateName(name, "Name", minLength: 5) {
+            throw ManagedMCPLifecycleError.profileSetupNameInvalid(nameError)
+        }
+        if name.lowercased().hasPrefix("pending_") || AccountNaming.isReservedAgentName(name) {
             throw ManagedMCPLifecycleError.profileSetupNameReserved
+        }
+        // The schema already trimmed and capped `displayName`; the service also
+        // carries upstream `userService.completeProfile`'s own guard so a caller
+        // that builds the request directly cannot bypass it.
+        let displayName = body.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !displayName.isEmpty, displayName.utf16.count <= 80 else {
+            throw ManagedMCPLifecycleError.profileSetupNameInvalid(
+                "Display name must be between 1 and 80 characters"
+            )
         }
         let completedAt = now()
         switch profiles.completeProfile(userId: userId, name: name, displayName: displayName, now: completedAt) {

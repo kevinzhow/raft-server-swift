@@ -63,6 +63,63 @@ public enum AccountNaming {
         return reservedAgentNames.contains(normalized.lowercased())
     }
 
+    // MARK: - Shared handle validation
+
+    /// Pinned `packages/shared/src/index.ts` `NAME_MAX_LENGTH`.
+    static let nameMaxLength = 32
+
+    /// Pinned `NAME_REGEX`: a letter first, then letters, numbers, `_` and `-`.
+    ///
+    /// The upstream pattern runs with the Unicode `u` flag, so `\p{L}` and
+    /// `\p{N}` are Unicode general categories, not ASCII classes.
+    private static let nameRegex = #"^[\p{L}][\p{L}\p{N}_-]*$"#
+
+    /// Why a handle is invalid, matching pinned `validateNameReason`.
+    enum NameValidationReason: Sendable, Equatable {
+        case required
+        case tooShort(minLength: Int)
+        case tooLong(maxLength: Int)
+        case pattern
+    }
+
+    /// Pinned `validateNameReason`: trim, then empty / minimum / maximum /
+    /// pattern, in that order.
+    ///
+    /// Lengths count UTF-16 code units because the upstream checks JavaScript
+    /// `String.length`; `String.count` would accept some multi-scalar names the
+    /// server rejects.
+    static func validateNameReason(_ name: String, minLength: Int = 1) -> NameValidationReason? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let length = trimmed.utf16.count
+        if length == 0 { return .required }
+        if length < minLength { return .tooShort(minLength: minLength) }
+        if length > nameMaxLength { return .tooLong(maxLength: nameMaxLength) }
+        guard let match = trimmed.range(of: nameRegex, options: [.regularExpression]),
+              match == trimmed.startIndex..<trimmed.endIndex
+        else { return .pattern }
+        return nil
+    }
+
+    /// Pinned `validateName`: the exact English sentence the server publishes,
+    /// or `nil` when the handle is valid.
+    ///
+    /// `label` and `minLength` are parameters so `complete-profile`/register
+    /// (`Name`, 5) and the account username-available precheck (`Username`, 5)
+    /// share one implementation and produce the same text.
+    static func validateName(_ name: String, _ label: String = "Name", minLength: Int = 1) -> String? {
+        guard let reason = validateNameReason(name, minLength: minLength) else { return nil }
+        switch reason {
+        case .required:
+            return "\(label) is required"
+        case .tooShort(let minimum):
+            return "\(label) must be at least \(minimum) characters"
+        case .tooLong(let maximum):
+            return "\(label) must be at most \(maximum) characters"
+        case .pattern:
+            return "\(label) must start with a letter and can only contain letters, numbers, hyphens, and underscores"
+        }
+    }
+
     static let maxProfileAvatarBytes = 5 * 1024 * 1024
 
     /// Pinned `routes/auth.ts:93` `MAX_USER_DESCRIPTION_LENGTH`.

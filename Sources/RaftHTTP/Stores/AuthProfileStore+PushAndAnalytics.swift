@@ -44,7 +44,13 @@ extension AuthProfileStore {
                   var account = state.accountSurface.accounts[key]
             else { return .unknownAccount }
             if account.profileSetupCompletedAt != nil {
-                let replay = account.name == name && (account.displayName ?? account.name) == displayName
+                // Upstream `userService.completeProfile` replays only an exact
+                // payload: `existing.name !== name || existing.displayName !==
+                // displayName`. The stored display name is compared as stored;
+                // it is never stood in for by the handle, because a completed
+                // account may legitimately carry a null display name after
+                // `PATCH /api/auth/me` cleared it.
+                let replay = account.name == name && account.displayName == displayName
                 return replay ? .replay(account) : .alreadyCompleted
             }
             let lowered = name.lowercased()
@@ -53,6 +59,9 @@ extension AuthProfileStore {
             account.name = name
             account.displayName = displayName
             account.profileSetupCompletedAt = now
+            // Upstream clears the editable suggestion when it writes the final
+            // identity, so a completed public user publishes null here.
+            account.profileSetupSuggestedHandle = nil
             state.accountSurface.accounts[key] = account
             return .completed(account)
         }
