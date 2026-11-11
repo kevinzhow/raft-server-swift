@@ -87,6 +87,17 @@ public struct ManagedMCPToolExecutionService: Sendable {
         }
     }
 
+    /// Human channel-read authority. A thread is readable through its parent
+    /// message's channel, the same recursion `canUserAccessChannel` applies
+    /// (`channelService.ts:4994-5016`).
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        if HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+            .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
+        guard channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     /// The agent credential must carry the capability; a missing one is the
     /// published `capability_not_authorized` refusal.
     private func requireCapability(_ authorization: String?, _ capability: String) throws {
@@ -715,9 +726,9 @@ public struct ManagedMCPToolExecutionService: Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             throw ChannelMembershipError.channelNotFound
         }
-        let readable = channels.postableChannel(id: channelId).map { $0.kind == "channel" || $0.memberIds.contains(userId) }
-            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
-        guard readable else { throw ChannelMembershipError.channelNotFound }
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
+        }
         guard let seq = body?.seq, seq >= 0 else { throw ManagedMCPToolExecutionError.invalidReadSeq }
         switch messages.advanceChannelRead(
             channelId: channelId,
@@ -757,10 +768,9 @@ public struct ManagedMCPToolExecutionService: Sendable {
         guard let channel = channels.postableChannel(id: channelId), channel.serverId == serverId else {
             throw ChannelMembershipError.channelNotFound
         }
-        let readable = channel.kind == "channel"
-            || channel.memberIds.contains(userId)
-            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
-        guard readable else { throw ChannelMembershipError.channelNotFound }
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
+        }
         let channelAgentIds = Array(agents.channelAgentMembers[channelId] ?? []).sorted()
         let targets = requestedAgentIds.map { requested in channelAgentIds.filter { requested.contains($0) } }
             ?? channelAgentIds
@@ -831,8 +841,10 @@ public struct ManagedMCPToolExecutionService: Sendable {
             }
             return ChannelReadAllResponse(seq: advance.seq, readStateVersion: max(advance.version, 1))
         }
-        let readableAll = channels.postableChannel(id: channelId).map { $0.kind == "channel" || $0.memberIds.contains(userId) }
-            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
+        let deletedInboxResidueRead = channels.postableChannel(id: channelId)?.deletedAt != nil
+            && oauth.channelType(id: channelId) != "dm"
+        let readableAll = deletedInboxResidueRead
+            || canReadChannel(channelId: channelId, serverId: serverId, userId: userId)
         guard readableAll else {
             let facts = inboxFacts.all().filter {
                 $0.receiverType == "user" && $0.receiverId == userId

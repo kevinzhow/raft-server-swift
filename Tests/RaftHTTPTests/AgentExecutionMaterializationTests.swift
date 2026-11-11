@@ -362,3 +362,56 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
     }
     #expect(fixture.accounts.tasksAndRemindersStore.taskRecords.isEmpty)
 }
+
+/// The agent delivery body carries the same attachment metadata the pinned
+/// `agent:deliver` payload does (`messageService.ts:10477-10492`): id,
+/// filename, resolved MIME type and size. Human `sender_name` is the retained
+/// account handle (`users.name` via `getSenderIdentity`, `messageService.ts:2203`),
+/// never a stale pre-profile display placeholder.
+@Test func agentDeliveryMaterializesAttachmentMetadataAndRetainedHumanHandle() async throws {
+    let fixture = try MaterializationFixture()
+    let service = fixture.materializer()
+    let attachmentId = UUID().uuidString.lowercased()
+    let messageId = UUID().uuidString.lowercased()
+    fixture.accounts.setAccountProfileForTesting(
+        id: fixture.userId, name: "kevinchou-c", displayName: "pending_7808a39c4efb92d4cb34")
+    let record = fixture.accounts.oauth.createMessageRecord(
+        channelId: fixture.channelId, content: "please read acceptance.txt",
+        senderId: fixture.userId, id: messageId, seq: 1)
+    fixture.accounts.messagesAndThreadsStore.withState { state in
+        state.humanMessageRows.append(StoredHumanMessage(
+            id: messageId, channelId: fixture.channelId, senderId: fixture.userId,
+            content: "please read acceptance.txt", seq: record.seq, attachmentIds: [attachmentId]))
+        state.channelAttachments[attachmentId] = ChannelAttachment(
+            id: attachmentId, channelId: fixture.channelId, uploaderId: fixture.userId,
+            filename: "acceptance.txt", messageId: messageId, messagePosition: 0,
+            mimeType: "application/octet-stream", sizeBytes: 130, uploaderType: "user")
+    }
+    let context = TransactionContext()
+    try await withTransactionContext(context) {
+        defer { context.discard() }
+        _ = try fixture.stageStart()
+        let disposition = try fixture.domain.requestHumanMessageDelivery(.init(
+            serverId: fixture.serverId, agentId: fixture.agentId,
+            channelId: fixture.channelId, messageId: messageId))
+        guard case .staged(let admission) = disposition else {
+            Issue.record("Expected a staged delivery, got \(disposition)")
+            return
+        }
+        let command = try #require(
+            fixture.accounts.agentsRuntimeStore.state.execution.commands[admission.commandId.uuidString])
+        guard case .delivery(let data, _) = try service.materializeInTransaction(command: command) else {
+            Issue.record("Expected delivery materialization")
+            return
+        }
+        let body = try materializationObject(data)
+        #expect(body["sender_name"] as? String == "kevinchou-c")
+        let attachments = try #require(body["attachments"] as? [[String: Any]])
+        #expect(attachments.count == 1)
+        #expect(attachments.first?["id"] as? String == attachmentId)
+        #expect(attachments.first?["filename"] as? String == "acceptance.txt")
+        #expect(attachments.first?["mimeType"] as? String == "text/plain")
+        #expect(attachments.first?["sizeBytes"] as? Int == 130)
+        try context.prepareCommit()
+    }
+}

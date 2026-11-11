@@ -453,6 +453,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     attachmentId: request.parameters.get("id") ?? "", admission: admission)
             }
         }
+        attachments.get(":id", "preview") { request async throws -> Response in
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                return try await services.emailAccounts.agentsLifecycle.attachmentPreview(
+                    attachmentId: request.parameters.get("id") ?? "", admission: admission)
+            }
+        }
         tasks.get("server", "snapshot-metrics") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.serverMembersAndSidebar.taskSnapshotMetrics(

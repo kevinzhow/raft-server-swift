@@ -6,9 +6,10 @@ import Vapor
 import VaporTesting
 
 /// Complete `method path` table owned by `MessagingFeature`: the 15
-/// `/api/messages/*`, 15 `/api/attachments/*`, 13 `/api/tasks/*`,
-/// 3 `/api/actions/*` and 2 `/api/read-mutations*` registrations (48 pairs).
-/// This includes the batch URL and both HTML preview leaves. `/api/v2/messages`
+/// `/api/messages/*`, 16 `/api/attachments/*`, 13 `/api/tasks/*`,
+/// 3 `/api/actions/*` and 2 `/api/read-mutations*` registrations (49 pairs).
+/// This includes the batch URL, the JSON preview leaf and both HTML preview
+/// leaves. `/api/v2/messages`
 /// is intentionally absent: it is not one of the extracted prefixes.
 private let expectedMessagingRoutes: [String] = [
     "POST /api/actions/:messageId/execute",
@@ -19,6 +20,7 @@ private let expectedMessagingRoutes: [String] = [
     "POST /api/attachments/:id/comments",
     "GET /api/attachments/:id/html-preview",
     "GET /api/attachments/:id/html-preview-url",
+    "GET /api/attachments/:id/preview",
     "GET /api/attachments/:id/url",
     "GET /api/attachments/comments/counts",
     "POST /api/attachments/upload",
@@ -81,8 +83,8 @@ private func messagingRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedMessagingRoutes.count == 48)
-        #expect(Set(expectedMessagingRoutes).count == 48)
+        #expect(expectedMessagingRoutes.count == 49)
+        #expect(Set(expectedMessagingRoutes).count == 49)
 
         // One route per table entry, and no route outside the five families.
         #expect(routes.count == expected.count)

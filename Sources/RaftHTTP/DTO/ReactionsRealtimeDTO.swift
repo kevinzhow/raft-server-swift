@@ -263,6 +263,7 @@ public enum AgentEventEntry: Sendable, Equatable {
         channelName: String,
         channelType: String,
         timestamp: String,
+        attachments: [AgentHistoryMessage.Attachment],
         external: ExternalMessage?
     )
     case action(seq: Int, messageId: String, content: String)
@@ -279,7 +280,7 @@ public enum AgentEventEntry: Sendable, Equatable {
         switch self {
         case let .message(
             seq, messageId, senderId, senderName, senderType, content, mentioned,
-            channelId, channelName, channelType, timestamp, external
+            channelId, channelName, channelType, timestamp, attachments, external
         ):
             var body = OrderedJSONObject()
             body.append("seq", seq)
@@ -294,6 +295,7 @@ public enum AgentEventEntry: Sendable, Equatable {
             body.append("channel_name", channelName)
             body.append("channel_type", channelType)
             body.append("timestamp", timestamp)
+            body.append("attachments", .array(attachments.map(\.jsonBody)))
             if let external {
                 body.append("external_message", .object([
                     OrderedJSONField("message_id", optional: external.messageId),

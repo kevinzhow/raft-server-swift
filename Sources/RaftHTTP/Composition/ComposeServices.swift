@@ -210,7 +210,15 @@ func composeServices(
     )
     let channelRoutes = ManagedMCPChannelRoutesService(
         sessionUserId: lifecycle.sessionUserId,
-        channelActorCanSee: visibility.actorCanSee,
+        channelActorCanSee: { channelId, userId in
+            guard let serverId = channels.postableChannels[channelId]?.serverId
+                ?? oauth.channelInfo(id: channelId)?.serverId else { return false }
+            if HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+                .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
+            guard channels.postableChannel(id: channelId) == nil else { return false }
+            return LedgerChannelReadFallback.canReadHuman(
+                channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+        },
         oauth: oauth,
         channels: channels,
         messages: messages,
