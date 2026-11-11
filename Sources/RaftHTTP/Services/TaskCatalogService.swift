@@ -181,6 +181,31 @@ public struct TaskCatalogService: Sendable {
         }
     }
 
+    /// The `task:created` board row for an agent claim that converted a plain
+    /// host message. The host is unchanged, so there is no message update; the
+    /// payload is the same `projectTaskCreated` projection the send path uses.
+    func publishClaimCreatedTask(_ task: TaskRecord) throws {
+        let relay = RealtimeRelayService(messages: producer.messages)
+        for target in producer.surfaces(for: task.channelId) {
+            let payload = producer.project(task, to: target)
+            try AgentExecutionPublication.publish(room: "channel:\(target.channelId)", event: "task:created",
+                identity: task.id, payloadJSON: OrderedJSON.object([.init("channelId", target.channelId),
+                    .init("tasks", .array([payload.createdEventBody]))]).render(), emit: { relay.emit($0, $1, $2) })
+        }
+    }
+
+    /// The `task:updated` board row for a claim of an already-linked task.
+    func publishClaimUpdatedTask(_ task: TaskRecord) throws {
+        let relay = RealtimeRelayService(messages: producer.messages)
+        for target in producer.activeTaskSurfaces(for: task.channelId) {
+            let payload = producer.project(task, to: target)
+            try AgentExecutionPublication.publish(room: "channel:\(target.channelId)", event: "task:updated",
+                identity: "\(task.id):\(task.revision)",
+                payloadJSON: OrderedJSON.object([.init("channelId", target.channelId),
+                    .init("task", payload.jsonBody)]).render(), emit: { relay.emit($0, $1, $2) })
+        }
+    }
+
     /// The projection surface is retained OAuth/channel state, never the request
     /// header substituted for an absent resource. Admission remains with callers.
     func readProjection(_ task: TaskRecord, channelId: String? = nil) throws -> TaskReadProjection {

@@ -349,24 +349,61 @@ final class TasksAndRemindersStore: Sendable {
         }
     }
 
+    /// The row facts the authoritative claim check observed. `reason` is the
+    /// pinned `getTaskClaimConflictReason` prose; the assignee fields are the
+    /// same observation, so the service can project `claim_conflict` without a
+    /// second read that might describe a different row.
+    struct TaskClaimRejectionFacts: Sendable, Equatable {
+        var reason: String
+        var assigneeType: String?
+        var assigneeId: String?
+        var status: String
+        var claimedAt: Date?
+    }
+
+    enum TaskClaimOutcome: Sendable, Equatable {
+        case taskNotFound(taskNumber: Int)
+        case taskUnavailable(taskNumber: Int)
+        case alreadyClaimedByYou(taskNumber: Int)
+        /// Any other rejection: a different assignee, a closed task or a done
+        /// unassigned task. Carries the writer's own observed facts.
+        case rejected(taskNumber: Int?, messageId: String?, facts: TaskClaimRejectionFacts)
+        case claimed(taskNumber: Int, messageId: String)
+        case messageNotFound(prefix: String)
+        case messageAlreadyClaimedByYou(messageId: String, taskNumber: Int)
+        case claimedMessage(messageId: String, taskNumber: Int)
+    }
+
+    /// Upstream `getTaskClaimConflictReason`, evaluated on the row in the same
+    /// critical section as the write. `nil` means the claim may proceed.
+    private static func claimRejection(task: TaskRecord, agentId: String) -> TaskClaimRejectionFacts? {
+        let facts = TaskClaimRejectionFacts(
+            reason: "", assigneeType: task.assigneeType, assigneeId: task.assigneeId,
+            status: task.status, claimedAt: task.claimedAt
+        )
+        func rejecting(_ reason: String) -> TaskClaimRejectionFacts {
+            var copy = facts
+            copy.reason = reason
+            return copy
+        }
+        if task.status == "closed" { return rejecting("task is closed; reopen it before claiming") }
+        if let assigneeId = task.assigneeId {
+            let assignedToRequester = task.assigneeType == "agent" && assigneeId == agentId
+            // Assignment and work-start are distinct: a todo task preassigned
+            // to this agent, not yet claimed, may be claimed once to start it.
+            if assignedToRequester, task.status == "todo", task.claimedAt == nil { return nil }
+            return rejecting(assignedToRequester ? "already claimed by you" : "already assigned")
+        }
+        if task.status == "done" { return rejecting("task is done") }
+        return nil
+    }
+
     /// One claim pass over the task ledger.
     ///
     /// The lookup, the claimability policy and every mutation run in a single
     /// locked critical section. The legacy handler iterated a directory-locked
     /// `taskRecords` array; splitting the read and the write here would let two
     /// concurrent claimers both observe an unclaimed row.
-    enum TaskClaimOutcome: Sendable, Equatable {
-        case taskNotFound(taskNumber: Int)
-        case taskUnavailable(taskNumber: Int)
-        case alreadyClaimedByYou(taskNumber: Int)
-        case alreadyClaimed(taskNumber: Int)
-        case claimed(taskNumber: Int, messageId: String)
-        case messageNotFound(prefix: String)
-        case messageAlreadyClaimedByYou(messageId: String, taskNumber: Int)
-        case messageAlreadyClaimed(messageId: String, taskNumber: Int)
-        case claimedMessage(messageId: String, taskNumber: Int)
-    }
-
     func claimTasks(
         channelId: String,
         agentId: String,
@@ -387,12 +424,12 @@ final class TasksAndRemindersStore: Sendable {
                     results.append(.taskUnavailable(taskNumber: number))
                     continue
                 }
-                if storage.taskRecords[index].assigneeId == agentId {
-                    results.append(.alreadyClaimedByYou(taskNumber: number))
-                    continue
-                }
-                if let assignee = storage.taskRecords[index].assigneeId, assignee != agentId {
-                    results.append(.alreadyClaimed(taskNumber: number))
+                if let rejection = Self.claimRejection(task: storage.taskRecords[index], agentId: agentId) {
+                    if rejection.reason == "already claimed by you" {
+                        results.append(.alreadyClaimedByYou(taskNumber: number))
+                    } else {
+                        results.append(.rejected(taskNumber: number, messageId: nil, facts: rejection))
+                    }
                     continue
                 }
                 let previousStatus = storage.taskRecords[index].status
@@ -433,18 +470,19 @@ final class TasksAndRemindersStore: Sendable {
                     continue
                 }
                 let task = storage.taskRecords[index]
-                if task.assigneeId == agentId {
-                    results.append(.messageAlreadyClaimedByYou(
-                        messageId: task.messageId,
-                        taskNumber: task.taskNumber
-                    ))
-                    continue
-                }
-                if let assignee = task.assigneeId, assignee != agentId {
-                    results.append(.messageAlreadyClaimed(
-                        messageId: task.messageId,
-                        taskNumber: task.taskNumber
-                    ))
+                if let rejection = Self.claimRejection(task: task, agentId: agentId) {
+                    if rejection.reason == "already claimed by you" {
+                        results.append(.messageAlreadyClaimedByYou(
+                            messageId: task.messageId,
+                            taskNumber: task.taskNumber
+                        ))
+                    } else {
+                        results.append(.rejected(
+                            taskNumber: task.taskNumber,
+                            messageId: task.messageId,
+                            facts: rejection
+                        ))
+                    }
                     continue
                 }
                 let previousStatus = storage.taskRecords[index].status

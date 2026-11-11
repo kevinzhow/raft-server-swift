@@ -23,6 +23,10 @@ private func makeDmTargetFixture() -> DmTargetFixture {
     accounts.addAccount(id: twinHumanId, email: "Twin@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: twinHumanId)
+    // The handle is a profile fact, not the email local part: the fixture needs
+    // the human's canonical `users.name` to be exactly `Twin` so the cross-kind
+    // twin rule (exact names) is what makes the bare ref ambiguous.
+    accounts.setAccountProfileForTesting(id: twinHumanId, name: "Twin")
     accounts.oauth.addOwnedServer(id: serverId, slug: "dm-target", name: "DM Target", ownerId: ownerId)
     accounts.oauth.addMember(serverId: serverId, userId: twinHumanId, role: "member")
     _ = accounts.oauth.createAgent(serverId: serverId, name: "Twin", creatorUserId: ownerId)

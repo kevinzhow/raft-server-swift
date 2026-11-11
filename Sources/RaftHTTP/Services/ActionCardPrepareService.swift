@@ -176,6 +176,11 @@ public struct ActionCardPrepareService: Sendable {
     private let assistantOwner: @Sendable (String, String) -> String?
     private let environment: @Sendable (String) -> String?
 
+    /// The account ledger the shared task-channel resolver matches DM peer
+    /// names against. Exposed read-only so the execute service can construct
+    /// the same `AgentTaskCredentials` policy without a second account store.
+    var accountStore: AuthProfileStore { accounts }
+
     init(
         oauth: OAuthLedger,
         cards: ManagedMCPAndCardsStore,
@@ -474,73 +479,39 @@ public struct ActionCardPrepareService: Sendable {
 
     /// Resolves one `dm:@name[~kind]` target.
     ///
-    /// A migration-receipt DM has no peer account: its only member is the
-    /// migrated agent, and only that agent may name it.
+    /// This mirrors the pinned `channelService.resolveDMByPeerName`; the exact
+    /// rules (receipt fall-through, exact typed kind, canonical handle, stable
+    /// cross-kind twin) live in `AgentDMPeerResolver`, which the send, history
+    /// and search domains share so they cannot drift.
     func resolveDMPeer(
         serverId: String,
         agentId: String,
         name rawName: String,
         kind rawKind: String?
     ) -> DMPeerResolution {
-        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let kind = rawKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let kind, kind != "agent", kind != "human" {
-            return .invalidKind(kind, name)
-        }
-        if kind == nil, name.hasPrefix("migration-receipt-") {
-            let postable = channels.postableChannels
-            let owned = postable.first { id, channel in
-                channel.serverId == serverId && channel.deletedAt == nil
-                    && channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
-                    && oauth.channelAgentIds(channelId: id) == [agentId]
-                    && oauth.channelHumanIds(channelId: id).isEmpty
-            }
-            guard let owned else { return .notFound }
-            return .resolved(peerId: agentId, peerKind: "agent", name: name)
-        }
-        let accounts = self.accounts.accounts
-        let humans = accounts.values.filter {
-            ($0.name.caseInsensitiveCompare(name) == .orderedSame
-                    || ($0.displayName ?? "").caseInsensitiveCompare(name) == .orderedSame)
-                && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
-        }.map(\.id)
-        let agents = oauth.serverAgents(serverId: serverId)
-            .filter { $0.id != agentId && $0.name.caseInsensitiveCompare(name) == .orderedSame }
-            .map(\.id)
-        switch kind {
-        case "agent":
-            guard let id = agents.first else { return .notFound }
-            return .resolved(peerId: id, peerKind: "agent", name: name)
-        case "human":
-            guard let id = humans.first else { return .notFound }
-            return .resolved(peerId: id, peerKind: "human", name: name)
-        default:
-            if !humans.isEmpty, !agents.isEmpty { return .ambiguous(name) }
-            if let id = humans.first { return .resolved(peerId: id, peerKind: "human", name: name) }
-            if let id = agents.first { return .resolved(peerId: id, peerKind: "agent", name: name) }
-            return .notFound
-        }
+        dmPeerResolver.resolvePeer(
+            serverId: serverId, agentId: agentId, name: rawName, kind: rawKind
+        )
     }
 
     /// Finds the live DM channel between an agent and a peer.
     func dmChannelId(serverId: String, agentId: String, peerId: String, peerKind: String, peerName: String? = nil) -> String? {
-        if peerKind == "agent", peerId == agentId {
-            // A receipt is a retained named singleton surface, not a self DM.
-            // Resolve only its verified original identity; never manufacture one.
-            guard let peerName, peerName.hasPrefix("migration-receipt-") else { return nil }
-            return channels.postableChannels.first { id, channel in
-                channel.serverId == serverId && channel.deletedAt == nil && channel.kind == "dm"
-                    && channel.name == peerName && channel.memberIds == [agentId]
-                    && oauth.channelAgentIds(channelId: id) == [agentId]
-                    && oauth.channelHumanIds(channelId: id).isEmpty
-            }?.key
-        }
-        guard let id = oauth.directChannelId(serverId: serverId, firstUserId: agentId,
-            secondUserId: peerId, firstKind: .agent, secondKind: peerKind == "agent" ? .agent : .human),
-              let channel = channels.postableChannel(id: id), channel.serverId == serverId,
-              channel.kind == "dm", channel.deletedAt == nil,
-              channel.memberIds.contains(agentId), channel.memberIds.contains(peerId) else { return nil }
-        return id
+        dmPeerResolver.channelId(
+            serverId: serverId, agentId: agentId, peerId: peerId,
+            peerKind: peerKind, peerName: peerName
+        )
+    }
+
+    /// The exact DM peer rules, shared with the history and search domains.
+    var dmPeerResolver: AgentDMPeerResolver {
+        AgentDMPeerResolver(oauth: oauth, channels: channels, accounts: accounts)
+    }
+
+    /// The agent's durable reminders surface. `resolveAgentFacingChannelRef`
+    /// labels a thread parented on it `dm:@reminders`, so the thread-list
+    /// projection needs the same fact the history surface reads.
+    func reminderSurfaceId(agentId: String) -> String? {
+        feedback.agentReminderSurfaceChannelId(agentId: agentId)
     }
 
     /// The peer card exists only when the peer has a profile description or a

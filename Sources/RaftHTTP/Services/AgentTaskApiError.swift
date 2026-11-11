@@ -13,6 +13,9 @@ public enum AgentTaskApiError: DomainError, Equatable {
     case channelArchived
     /// `canAgentPostToChannel` refused the task write.
     case agentCannotModifyTasks
+    /// The route cannot address a thread target; the associated value is the
+    /// route-specific published refusal (`claim` and `create` differ upstream).
+    case threadTaskWrite(String)
     /// A joint task older than this participant workspace is read-only.
     case historicalJointReadOnly
     case taskDone
@@ -29,7 +32,8 @@ public enum AgentTaskApiError: DomainError, Equatable {
         switch self {
         case .agentOrChannelNotFound, .taskNotFound:
             404
-        case .channelArchived, .legacyTaskHistory, .taskDone, .taskNotAssigned, .taskChangedConcurrently:
+        case .channelArchived, .legacyTaskHistory, .taskDone, .taskNotAssigned, .taskChangedConcurrently,
+             .threadTaskWrite:
             409
         case .agentCannotModifyTasks, .historicalJointReadOnly:
             403
@@ -50,6 +54,8 @@ public enum AgentTaskApiError: DomainError, Equatable {
             "This channel is archived"
         case .agentCannotModifyTasks:
             "Agent must join this channel to modify tasks"
+        case .threadTaskWrite(let message):
+            message
         case .historicalJointReadOnly:
             "Historical tasks are read-only from a participant workspace"
         case .taskDone:
@@ -74,8 +80,8 @@ public enum AgentTaskApiError: DomainError, Equatable {
         case .historicalJointReadOnly:
             "joint_task_read_only"
         case .agentOrChannelNotFound, .taskNotFound, .legacyTaskHistory, .agentCannotModifyTasks,
-             .taskDone, .taskNotAssigned, .taskChangedConcurrently, .invalidLegacyUnclaimRequest,
-             .invalidStatusFilter, .channelQueryRequired:
+             .taskDone, .taskNotAssigned, .taskChangedConcurrently, .threadTaskWrite,
+             .invalidLegacyUnclaimRequest, .invalidStatusFilter, .channelQueryRequired:
             nil
         }
     }

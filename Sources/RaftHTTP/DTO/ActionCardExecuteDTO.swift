@@ -168,6 +168,53 @@ public struct AgentTasksListResponse: JSONBodyConvertible, Sendable, Equatable {
     }
 }
 
+/// The effect-boundary projection of a claim held by another actor.
+///
+/// This is the pinned `agentApiTaskClaimConflictSchema`: it names what the
+/// conflict blocks (`start_conflicting_execution`) and explicitly says the
+/// other actions are only examples, not a permission table. It never rules on
+/// lane ownership.
+public struct AgentTaskClaimConflict: Sendable, Equatable {
+    public static let blockedActions = ["start_conflicting_execution"]
+    public static let unblockedActionExamples = ["read", "coordinate", "review", "request_reassign", "handoff"]
+
+    public var currentAssigneeType: String
+    public var currentAssigneeName: String?
+    public var taskStatus: String
+    public var claimedAt: String?
+    public var observedAt: String
+
+    public init(
+        currentAssigneeType: String,
+        currentAssigneeName: String?,
+        taskStatus: String,
+        claimedAt: String?,
+        observedAt: String
+    ) {
+        self.currentAssigneeType = currentAssigneeType
+        self.currentAssigneeName = currentAssigneeName
+        self.taskStatus = taskStatus
+        self.claimedAt = claimedAt
+        self.observedAt = observedAt
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("kind", "claim_conflict"),
+            OrderedJSONField("conflictScope", "implementation_execution"),
+            OrderedJSONField("blockedActions", .array(Self.blockedActions.map(OrderedJSON.string))),
+            OrderedJSONField("unblockedActionExamples", .array(Self.unblockedActionExamples.map(OrderedJSON.string))),
+            OrderedJSONField("currentAssignee", .object([
+                OrderedJSONField("type", currentAssigneeType),
+                OrderedJSONField("name", optional: currentAssigneeName),
+            ])),
+            OrderedJSONField("taskStatus", taskStatus),
+            OrderedJSONField("claimedAt", optional: claimedAt),
+            OrderedJSONField("observedAt", observedAt),
+        ])
+    }
+}
+
 /// One `results` member of the claim reply.
 ///
 /// The legacy handler built each member with a fixed key order; the cases keep
@@ -176,11 +223,14 @@ public enum AgentTaskClaimResult: Sendable, Equatable {
     case taskNotFound(taskNumber: Int)
     case taskUnavailable(taskNumber: Int)
     case alreadyClaimedByYou(taskNumber: Int)
-    case alreadyClaimed(taskNumber: Int)
+    /// The writer's rejection of a task held by another actor, a closed task,
+    /// or a done unassigned task. `taskNumber` and `messageId` follow the
+    /// request mode: a task-number claim carries the number, a message-id
+    /// claim carries both.
+    case rejected(taskNumber: Int?, messageId: String?, reason: String, conflict: AgentTaskClaimConflict?)
     case claimed(taskNumber: Int, messageId: String)
     case messageNotFound(prefix: String)
     case messageAlreadyClaimedByYou(messageId: String, taskNumber: Int)
-    case messageAlreadyClaimed(messageId: String, taskNumber: Int)
     case claimedMessage(messageId: String, taskNumber: Int)
 
     public var json: OrderedJSON {
@@ -203,12 +253,23 @@ public enum AgentTaskClaimResult: Sendable, Equatable {
                 OrderedJSONField("success", false),
                 OrderedJSONField("reason", "already claimed by you"),
             ])
-        case .alreadyClaimed(let taskNumber):
-            return .object([
-                OrderedJSONField("taskNumber", taskNumber),
-                OrderedJSONField("success", false),
-                OrderedJSONField("reason", "already claimed"),
-            ])
+        case .rejected(let taskNumber, let messageId, let reason, let conflict):
+            if let messageId {
+                var fields: [OrderedJSONField] = [
+                    OrderedJSONField("messageId", messageId),
+                    OrderedJSONField("success", false),
+                    OrderedJSONField("reason", reason),
+                ]
+                if let conflict { fields.append(OrderedJSONField("conflict", conflict.jsonBody)) }
+                if let taskNumber { fields.append(OrderedJSONField("taskNumber", taskNumber)) }
+                return .object(fields)
+            }
+            var fields: [OrderedJSONField] = []
+            if let taskNumber { fields.append(OrderedJSONField("taskNumber", taskNumber)) }
+            fields.append(OrderedJSONField("success", false))
+            fields.append(OrderedJSONField("reason", reason))
+            if let conflict { fields.append(OrderedJSONField("conflict", conflict.jsonBody)) }
+            return .object(fields)
         case .claimed(let taskNumber, let messageId):
             return .object([
                 OrderedJSONField("taskNumber", taskNumber),
@@ -219,20 +280,13 @@ public enum AgentTaskClaimResult: Sendable, Equatable {
             return .object([
                 OrderedJSONField("messageId", prefix),
                 OrderedJSONField("success", false),
-                OrderedJSONField("reason", "not found"),
+                OrderedJSONField("reason", "message not found"),
             ])
         case .messageAlreadyClaimedByYou(let messageId, let taskNumber):
             return .object([
                 OrderedJSONField("messageId", messageId),
                 OrderedJSONField("success", false),
                 OrderedJSONField("reason", "already claimed by you"),
-                OrderedJSONField("taskNumber", taskNumber),
-            ])
-        case .messageAlreadyClaimed(let messageId, let taskNumber):
-            return .object([
-                OrderedJSONField("messageId", messageId),
-                OrderedJSONField("success", false),
-                OrderedJSONField("reason", "already claimed"),
                 OrderedJSONField("taskNumber", taskNumber),
             ])
         case .claimedMessage(let messageId, let taskNumber):
