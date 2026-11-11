@@ -134,6 +134,7 @@ final class EngineIOSession: Sendable {
     ) -> PollAttachResult {
         var result: PollAttachResult = .accepted
         var shouldDrain = false
+        var probeNoop: PendingPoll?
         state.withLock { state in
             if state.closed || state.finalized {
                 result = .unknownSid
@@ -147,18 +148,29 @@ final class EngineIOSession: Sendable {
                 result = .overlap
                 return
             }
-            state.pendingPoll = PendingPoll(
+            let poll = PendingPoll(
                 connectionID: connectionID, channel: channel, origin: origin,
                 userAgent: userAgent, keepAlive: keepAlive
             )
-            if !state.queue.isEmpty || state.closeWhenFlushed {
-                shouldDrain = true
+            if state.upgrading, state.probeReceived, state.queue.isEmpty, !state.closeWhenFlushed {
+                // engine.io releases the polling cycle during an upgrade as
+                // soon as the probe pong was written (the 100 ms fast-upgrade
+                // loop checks `polling && writable`). A GET can arrive after
+                // the probe because it is a different TCP connection, so the
+                // probe itself cannot rely on a poll being attached already.
+                probeNoop = poll
+            } else {
+                state.pendingPoll = poll
+                if !state.queue.isEmpty || state.closeWhenFlushed {
+                    shouldDrain = true
+                }
             }
         }
         if result == .overlap {
             close()
             return result
         }
+        if let probeNoop { writePollResponse(engineIONoopPacket, to: probeNoop) }
         if shouldDrain { startDrain() }
         return result
     }
@@ -319,11 +331,7 @@ final class EngineIOSession: Sendable {
         }
         timer?.cancel()
         if let pending {
-            let bytes = engineIOPollResponseBytes(
-                body: engineIONoopPacket, cors: cors, origin: pending.origin,
-                userAgent: pending.userAgent, keepAlive: pending.keepAlive
-            )
-            engineIOWrite(bytes, to: pending.channel, closeAfterWrite: false)
+            writePollResponse(engineIONoopPacket, to: pending)
         }
         if shouldDrain { startDrain() }
     }
@@ -374,17 +382,22 @@ final class EngineIOSession: Sendable {
 
     private func sendNoopToPendingPoll() {
         var pending: PendingPoll?
+        var shouldDrain = false
         state.withLock { state in
+            guard state.upgrading, state.probeReceived else { return }
             guard let poll = state.pendingPoll else { return }
+            guard state.queue.isEmpty, !state.closeWhenFlushed else {
+                // A queued business frame or the terminal close packet is
+                // already the polling cycle's response. Releasing that poll
+                // with a noop would hold the frame until another GET.
+                shouldDrain = true
+                return
+            }
             pending = poll
             state.pendingPoll = nil
         }
-        guard let pending else { return }
-        let bytes = engineIOPollResponseBytes(
-            body: engineIONoopPacket, cors: cors, origin: pending.origin,
-            userAgent: pending.userAgent, keepAlive: pending.keepAlive
-        )
-        engineIOWrite(bytes, to: pending.channel, closeAfterWrite: false)
+        if let pending { writePollResponse(engineIONoopPacket, to: pending) }
+        if shouldDrain { startDrain() }
     }
 
     // MARK: - Engine packet handling
@@ -671,6 +684,17 @@ final class EngineIOSession: Sendable {
         }
     }
 
+    /// A polling response is one HTTP exchange. `Connection: close` means the
+    /// response's TCP connection ends after the body, but the Engine.IO
+    /// session continues (or closes) on its own state, not on this channel.
+    private func writePollResponse(_ body: String, to pending: PendingPoll) {
+        let bytes = engineIOPollResponseBytes(
+            body: body, cors: cors, origin: pending.origin,
+            userAgent: pending.userAgent, keepAlive: pending.keepAlive
+        )
+        engineIOWrite(bytes, to: pending.channel, closeAfterWrite: !pending.keepAlive)
+    }
+
     private func perform(_ action: DrainAction) {
         switch action {
         case .websocket(let packets, let close, let channel):
@@ -684,11 +708,7 @@ final class EngineIOSession: Sendable {
                 engineIOWrite(bytes, to: channel, closeAfterWrite: false)
             }
         case .poll(let pending, let body):
-            let bytes = engineIOPollResponseBytes(
-                body: body, cors: cors, origin: pending.origin,
-                userAgent: pending.userAgent, keepAlive: pending.keepAlive
-            )
-            engineIOWrite(bytes, to: pending.channel, closeAfterWrite: false)
+            writePollResponse(body, to: pending)
         case .websocketClose(let channel):
             channel.close(promise: nil)
         }
@@ -698,6 +718,7 @@ final class EngineIOSession: Sendable {
         var socketIO: SocketIOSession?
         var heartbeatTimer: Scheduled<Void>?
         var upgradeTimer: Scheduled<Void>?
+        var upgradeChannel: (any Channel)?
         let shouldFinalize = state.withLock { state in
             guard state.closed, !state.finalized else { return false }
             state.finalized = true
@@ -708,11 +729,20 @@ final class EngineIOSession: Sendable {
             state.heartbeatTimer = nil
             upgradeTimer = state.upgradeTimer
             state.upgradeTimer = nil
+            // A terminal Socket.IO frame can arrive while the WebSocket probe
+            // is still in flight. The session is gone, so the probe transport
+            // must not outlive it waiting for an upgrade packet.
+            upgradeChannel = state.upgradeChannel
+            state.upgradeChannel = nil
+            state.upgrading = false
+            state.upgradeConnectionID = nil
+            state.probeReceived = false
             return true
         }
         guard shouldFinalize else { return }
         heartbeatTimer?.cancel()
         upgradeTimer?.cancel()
+        upgradeChannel?.close(promise: nil)
         socketIO?.markClosed()
         onClose(socketIO)
     }
