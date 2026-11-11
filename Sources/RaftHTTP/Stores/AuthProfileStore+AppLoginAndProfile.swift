@@ -101,6 +101,10 @@ extension AuthProfileStore {
                 return nil
             }
             var changed = false
+            if let displayName = update.displayName {
+                account.displayName = displayName
+                changed = true
+            }
             if let description = update.description {
                 account.description = description
                 changed = true

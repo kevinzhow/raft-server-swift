@@ -195,6 +195,11 @@ private extension KeyedDecodingContainer {
 public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     public var currentPassword: ProfileField<String> = .absent
     public var newPassword: ProfileField<String> = .absent
+    /// The upstream `displayName` profile field: absent leaves it alone, JSON
+    /// null clears it, and a string is written exactly as sent (the pinned
+    /// handler copies it into the update without trimming or deriving it from
+    /// the handle).
+    public var displayName: ProfileField<String> = .absent
     /// The upstream `description` profile field: absent leaves it alone, JSON
     /// null clears it, and a string is trimmed (empty becomes null).
     public var description: ProfileField<String> = .absent
@@ -224,6 +229,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case currentPassword
         case newPassword
+        case displayName
         case description
         case displayLanguage
         case shareUsageData
@@ -245,6 +251,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         currentPassword = container.profileString(.currentPassword)
         newPassword = container.profileString(.newPassword)
+        displayName = container.profileString(.displayName)
         description = container.profileString(.description)
         displayLanguage = container.profileString(.displayLanguage)
         shareUsageData = container.profileBool(.shareUsageData)

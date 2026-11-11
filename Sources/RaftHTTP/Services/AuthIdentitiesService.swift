@@ -578,6 +578,23 @@ public struct AuthIdentitiesService: Sendable {
     private static func validatedUpdate(_ request: UpdateProfileRequest) throws -> AccountProfileUpdate {
         var update = AccountProfileUpdate()
 
+        // Pinned `routes/auth.ts:1529-1530`: a present `displayName` is copied
+        // into the update verbatim — no trim, no length check and no derivation
+        // from the handle. This is also the only published way to repair a
+        // display name written earlier (completion is one-shot). A JSON value
+        // that is neither a string nor null has no published body: the pinned
+        // server would pass it to the text column, where only the driver's
+        // stringification defined the result, so the port leaves the stored
+        // value alone rather than inventing that mapping.
+        switch request.displayName {
+        case .absent, .invalid:
+            break
+        case .null:
+            update.displayName = .some(nil)
+        case .value(let raw):
+            update.displayName = .some(raw)
+        }
+
         // Pinned `routes/auth.ts:1531-1537`: the raw value is capped at 3000
         // JavaScript UTF-16 units, then `.trim() || null`. The check runs before
         // the preference, survey and referral fields, and nothing is written

@@ -20,13 +20,19 @@ private func identityRegister(_ client: any Client, email: String) async throws 
     return (body, body["accessToken"] as? String ?? "", user["id"] as? String ?? "")
 }
 
-private func identityPost(_ client: any Client, path: String, token: String, body: String) async throws -> ClientResponse {
+private func identityRequest(
+    _ client: any Client, _ method: HTTPRequest.Method, path: String, token: String, body: String
+) async throws -> ClientResponse {
     var headers = HTTPFields()
     headers[.authorization] = "Bearer \(token)"
     headers[.contentType] = "application/json"
-    return try await client.send(.post, headers: headers, to: URI(string: path)) { request in
+    return try await client.send(method, headers: headers, to: URI(string: path)) { request in
         request.body = .init(string: body)
     }
+}
+
+private func identityPost(_ client: any Client, path: String, token: String, body: String) async throws -> ClientResponse {
+    try await identityRequest(client, .post, path: path, token: token, body: body)
 }
 
 @Test func identitySetupCreatesPendingAccountAndCompletesWithCAS() async throws {
@@ -43,6 +49,12 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             let pendingName = registered.body["user"] as? [String: Any]
             let name = pendingName?["name"] as? String ?? ""
             #expect(name.range(of: "^pending_[0-9a-f]{20}$", options: .regularExpression) != nil)
+            // The pending handle is an internal reservation. It is never copied
+            // into the person-facing display name: upstream inserts
+            // `displayName: null` for a deferred account and the public body
+            // publishes that null, so the Web's identity form starts empty and
+            // mirrors the handle the person chooses.
+            #expect(pendingName?["displayName"] is NSNull)
             #expect(pendingName?["profileSetupCompletedAt"] is NSNull)
             #expect(pendingName?["profileSetupSuggestedHandle"] as? String == "identity-pending-flow")
             #expect(pendingName?["profileSetupProvider"] is NSNull)
@@ -53,6 +65,7 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             #expect(me.status == .ok)
             let meBody = (try? JSONSerialization.jsonObject(with: Data((me.body.string ?? "").utf8))) as? [String: Any] ?? [:]
             #expect(meBody["profileSetupProvider"] is NSNull)
+            #expect(meBody["displayName"] is NSNull)
             #expect(meBody["profileSetupCompletedAt"] is NSNull)
 
             accounts.markEmailVerified(userId: registered.userId)
@@ -89,6 +102,9 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             let completed = (try? JSONSerialization.jsonObject(with: Data((complete.body.string ?? "").utf8))) as? [String: Any]
             #expect(completed?["name"] as? String == "final-handle")
             #expect(completed?["displayName"] as? String == "Final User")
+            // Upstream clears the editable handle suggestion when it writes the
+            // final identity, so the completed public body carries null.
+            #expect(completed?["profileSetupSuggestedHandle"] is NSNull)
             #expect(completed?["profileSetupCompletedAt"] is String)
             // The pinned auth store replaces its whole user with this flat body.
             #expect(completed?["id"] as? String == registered.userId)
@@ -117,6 +133,13 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             #expect(changed.status == .conflict)
             let changedBody = (try? JSONSerialization.jsonObject(with: Data((changed.body.string ?? "").utf8))) as? [String: Any]
             #expect(changedBody?["code"] as? String == "PROFILE_SETUP_ALREADY_COMPLETED")
+
+            let completedMe = try await client.get("/api/auth/me", headers: meHeaders)
+            #expect(completedMe.status == .ok)
+            let completedMeBody = (try? JSONSerialization.jsonObject(with: Data((completedMe.body.string ?? "").utf8))) as? [String: Any] ?? [:]
+            #expect(completedMeBody["name"] as? String == "final-handle")
+            #expect(completedMeBody["displayName"] as? String == "Final User")
+            #expect(completedMeBody["profileSetupSuggestedHandle"] is NSNull)
 
             let allowed = try await identityPost(
                 client,
@@ -147,6 +170,91 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
             let loser = responses.first { $0.status == .conflict }
             let loserBody = (try? JSONSerialization.jsonObject(with: Data((loser?.body.string ?? "").utf8))) as? [String: Any]
             #expect(loserBody?["code"] as? String == "PROFILE_SETUP_ALREADY_COMPLETED")
+        }
+    }
+}
+
+@Test func completedProfileKeepsANullSuggestionAndPatchMeRepairsTheDisplayName() async throws {
+    let accounts = EmailLoginDirectory()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let registered = try await identityRegister(client, email: "identity-display-repair@slock.test")
+            accounts.markEmailVerified(userId: registered.userId)
+
+            // The production shape: a completed identity whose display name is a
+            // pending handle. Upstream accepts it here — only the handle is
+            // checked for the `pending_` prefix — and the completion write is
+            // one-shot, so PATCH is the published repair path.
+            let complete = try await identityPost(
+                client,
+                path: "/api/auth/me/complete-profile",
+                token: registered.token,
+                body: "{\"name\":\"chosen-handle\",\"displayName\":\"pending_0123456789abcdef0123\"}"
+            )
+            #expect(complete.status == .ok)
+            let completed = try #require(try JSONSerialization.jsonObject(with: Data((complete.body.string ?? "").utf8)) as? [String: Any])
+            #expect(completed["name"] as? String == "chosen-handle")
+            #expect(completed["displayName"] as? String == "pending_0123456789abcdef0123")
+            #expect(completed["profileSetupSuggestedHandle"] is NSNull)
+
+            let patched = try await identityRequest(
+                client, .patch, path: "/api/auth/me", token: registered.token,
+                body: "{\"displayName\":\"Kevin Chou\"}"
+            )
+            #expect(patched.status == .ok)
+            let patchedBody = try #require(try JSONSerialization.jsonObject(with: Data((patched.body.string ?? "").utf8)) as? [String: Any])
+            #expect(patchedBody["displayName"] as? String == "Kevin Chou")
+            #expect(patchedBody["name"] as? String == "chosen-handle")
+
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(registered.token)"
+            let me = try await client.get("/api/auth/me", headers: headers)
+            let meBody = try #require(try JSONSerialization.jsonObject(with: Data((me.body.string ?? "").utf8)) as? [String: Any])
+            #expect(meBody["displayName"] as? String == "Kevin Chou")
+
+            // The exact-payload replay still answers 200 after the repair.
+            let replay = try await identityPost(
+                client,
+                path: "/api/auth/me/complete-profile",
+                token: registered.token,
+                body: "{\"name\":\"chosen-handle\",\"displayName\":\"Kevin Chou\"}"
+            )
+            #expect(replay.status == .ok)
+
+            // A present null clears the display name. The replay comparison is
+            // against the stored value, never the handle standing in for null:
+            // upstream answers 409 for this payload on a completed account.
+            let cleared = try await identityRequest(
+                client, .patch, path: "/api/auth/me", token: registered.token,
+                body: "{\"displayName\":null}"
+            )
+            #expect(cleared.status == .ok)
+            let clearedBody = try #require(try JSONSerialization.jsonObject(with: Data((cleared.body.string ?? "").utf8)) as? [String: Any])
+            #expect(clearedBody["displayName"] is NSNull)
+            let derivedReplay = try await identityPost(
+                client,
+                path: "/api/auth/me/complete-profile",
+                token: registered.token,
+                body: "{\"name\":\"chosen-handle\",\"displayName\":\"chosen-handle\"}"
+            )
+            #expect(derivedReplay.status == .conflict)
+            let derivedReplayBody = (try? JSONSerialization.jsonObject(with: Data((derivedReplay.body.string ?? "").utf8))) as? [String: Any]
+            #expect(derivedReplayBody?["code"] as? String == "PROFILE_SETUP_ALREADY_COMPLETED")
+
+            // An absent key leaves the stored null alone; the public body prints
+            // null instead of deriving the handle.
+            let untouched = try await identityRequest(
+                client, .patch, path: "/api/auth/me", token: registered.token,
+                body: "{\"shareUsageData\":true}"
+            )
+            let untouchedBody = try #require(try JSONSerialization.jsonObject(with: Data((untouched.body.string ?? "").utf8)) as? [String: Any])
+            #expect(untouchedBody["displayName"] is NSNull)
         }
     }
 }
