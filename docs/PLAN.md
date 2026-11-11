@@ -34,7 +34,7 @@ re-encoded Set-backed values, added a connection epoch and one synthetic notice
 rotations; `machines_and_computers` changed detection metadata, per-kind model
 `updatedAt` and status-version increments (the two presence transitions).
 
-Owner, password hash, roles, secrets, rights, sessions and durable lists stayed
+Owner, password hash, roles, secrets, rights, session families and business lists stayed
 unchanged; no message, task, OAuth, server or domain was lost. Raw payloads are
 not claimed identical during the upgrade.
 
