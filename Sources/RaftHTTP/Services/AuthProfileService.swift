@@ -144,7 +144,7 @@ public struct AuthProfileService: Sendable {
             throw AuthProfileError.unauthenticated
         }
         let candidate = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if let message = Self.usernameValidationMessage(candidate) {
+        if let message = AccountNaming.validateName(candidate, "Username", minLength: 5) {
             return UsernameAvailabilityResponse(available: false, reason: "invalid", message: message)
         }
         if candidate.lowercased().hasPrefix("pending_") || AccountNaming.isReservedAgentName(candidate) {
@@ -159,18 +159,6 @@ public struct AuthProfileService: Sendable {
             reason: available ? nil : "taken",
             message: available ? nil : "This username is already taken."
         )
-    }
-
-    /// Pinned `validateName(name, "Username", 5)`
-    /// (`packages/shared/src/index.ts:4368-4430`).
-    private static func usernameValidationMessage(_ name: String) -> String? {
-        if name.isEmpty { return "Username is required" }
-        if name.count < 5 { return "Username must be at least 5 characters" }
-        if name.count > 32 { return "Username must be at most 32 characters" }
-        guard name.wholeMatch(of: /^[\p{L}][\p{L}\p{N}_-]*$/) != nil else {
-            return "Username must start with a letter and can only contain letters, numbers, hyphens, and underscores"
-        }
-        return nil
     }
 
     /// `POST /api/auth/pending-link/cancel`. Always 204, including a second
