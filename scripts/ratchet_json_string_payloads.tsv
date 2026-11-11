@@ -25,7 +25,7 @@ Sources/RaftHTTP/RuntimeFormCatalog.swift	19
 Sources/RaftHTTP/ServerScope.swift	1
 Sources/RaftHTTP/Services/ActionCardIntegrationRegisterService.swift	3
 Sources/RaftHTTP/Services/ActionCardPrepareService.swift	4
-Sources/RaftHTTP/Services/AgentHistoryError.swift	3
+Sources/RaftHTTP/Services/AgentHistoryError.swift	1
 Sources/RaftHTTP/Services/AgentHistoryService.swift	1
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	5
 Sources/RaftHTTP/Services/AgentMessageLookupService.swift	2

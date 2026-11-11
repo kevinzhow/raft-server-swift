@@ -268,7 +268,7 @@ public struct AgentHistoryService: Sendable {
             case .unknownKind(let invalid):
                 // Pinned `resolveChannelByName` refuses a malformed peer kind
                 // even when a thread suffix follows.
-                throw AgentHistoryError.dmTargetInvalidPeerKind(kind: invalid)
+                throw AgentHistoryError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: invalid)
             case .emptyName:
                 throw AgentHistoryError.channelNotVisible
             case .ok(let name, let kind):
@@ -281,7 +281,7 @@ public struct AgentHistoryService: Sendable {
             case .ambiguous(let name):
                 throw AgentHistoryError.dmTargetAmbiguous(name: name)
             case .invalidKind(let kind, _):
-                throw AgentHistoryError.dmTargetInvalidPeerKind(kind: kind)
+                throw AgentHistoryError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: kind)
             case .notFound:
                 throw AgentHistoryError.channelNotVisible
             case .resolved(let peerId, let peerKind, let peerName):

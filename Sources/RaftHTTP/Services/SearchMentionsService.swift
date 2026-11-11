@@ -97,12 +97,9 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
         case .invalidMemberRef(let message):
             message
         case .dmTargetAmbiguous(let peerName):
-            "dm:@\(peerName) matches both a human and an agent named \(peerName). "
-                + "Name the one you mean: dm:@\(peerName)~agent for the agent, or dm:@\(peerName)~human for the human "
-                + "(for example: raft message read --target \"dm:@\(peerName)~agent\")."
+            DMTargetResolutionWire.ambiguous(peerName).message
         case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
-            "dm:@\(rawPeer) has an unknown peer kind \"\(suffix)\". "
-                + "Use dm:@<name>, dm:@<name>~agent or dm:@<name>~human."
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
         case .agentSearchMissingOffset(let label):
             "\(label) filter is missing a timezone offset; add an explicit offset such as +08:00 (raft CLI adds it automatically)"
         case .agentSearchInvalidInstant(let label):
@@ -158,23 +155,9 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
                 OrderedJSONField("errorCode", "invalid_member_ref"),
             ])
         case .dmTargetAmbiguous(let peerName):
-            return .object([
-                OrderedJSONField("error", errorMessage),
-                OrderedJSONField("code", "DM_TARGET_AMBIGUOUS"),
-                OrderedJSONField(
-                    "suggestedNextAction",
-                    "retry with dm:@\(peerName)~agent for the agent or dm:@\(peerName)~human for the human"
-                ),
-            ])
-        case .dmTargetInvalidPeerKind:
-            return .object([
-                OrderedJSONField("error", errorMessage),
-                OrderedJSONField("code", "DM_TARGET_INVALID_PEER_KIND"),
-                OrderedJSONField(
-                    "suggestedNextAction",
-                    "retry with dm:@<name>, dm:@<name>~agent or dm:@<name>~human"
-                ),
-            ])
+            return DMTargetResolutionWire.ambiguous(peerName).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
         case .agentSearchMissingOffset, .agentApiMissingOffset,
              .agentSearchInvalidInstant, .agentApiInvalidDate:
             return .object([

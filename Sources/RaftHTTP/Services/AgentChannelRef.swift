@@ -90,6 +90,23 @@ enum AgentChannelRef {
         return "\(name)~\(kind)"
     }
 
+    /// `resolveWritableAgentTarget`'s `isDmThread` split: a last `:` followed
+    /// by an ANY-length hex run is the writable DM's thread-shaped arm, even
+    /// though `parseChannelRef` only accepts exactly eight hex as a real
+    /// thread. Such a ref falls back to a peer/thread lookup and never takes
+    /// the create-a-DM branch (`agentWritableTarget.ts:228-233`).
+    static func isThreadShapedPeer(_ rawPeer: String) -> Bool {
+        guard let colon = rawPeer.lastIndex(of: ":"),
+              rawPeer.distance(from: rawPeer.startIndex, to: colon) > 0,
+              rawPeer.index(after: colon) < rawPeer.endIndex else { return false }
+        let suffix = rawPeer[rawPeer.index(after: colon)...]
+        return suffix.utf8.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39)      // 0-9
+                || (byte >= 0x61 && byte <= 0x66) // a-f
+                || (byte >= 0x41 && byte <= 0x46) // A-F
+        }
+    }
+
     static func dmRef(name: String, kind: String?) -> String {
         "dm:@\(formatPeer(name, kind: kind))"
     }
@@ -224,6 +241,10 @@ struct AgentDMPeerResolver: Sendable {
             }
             // No receipt for this agent: keep going to the peer rules below.
         }
+        // `parseDmPeerRef` refuses an empty name before it looks at the kind,
+        // so `dm:@~bot` is the same neutral not-found as `dm:@~agent`; the
+        // unknown suffix is never the error the caller sees.
+        guard !rawName.isEmpty else { return .notFound }
         let kind: String?
         switch rawKind {
         case nil:
@@ -233,9 +254,6 @@ struct AgentDMPeerResolver: Sendable {
         case .some(let invalid):
             return .invalidKind(invalid, rawName)
         }
-        // `parseDmPeerRef` refuses an empty name instead of matching an empty
-        // display name; keep the neutral not-found.
-        guard !rawName.isEmpty else { return .notFound }
         let humans = accounts.accounts.values.filter {
             $0.name == rawName && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
         }.map(\.id)

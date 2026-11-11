@@ -42,12 +42,20 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
     case forbiddenThreadTarget
     case peerNotFound(peer: String)
     case selfDM
+    // `dmTargetResolutionError.ts` refusals; the legacy machine send answers
+    // the exact `{error, code, suggestedNextAction}` bodies.
+    case dmTargetAmbiguous(name: String)
+    case dmTargetInvalidPeerKind(rawPeer: String, suffix: String?)
+    case dmTargetNotSendable
+    case migrationReceiptReadOnly(target: String)
 
     public var status: UInt {
         switch self {
         case .missingAuthorization, .invalidToken, .machineAuthenticationRequired,
              .invalidMachineAPIKey:
             401
+        case .dmTargetNotSendable:
+            403
         case .agentNotParentMember, .agentNotChannelMember, .capabilityNotAuthorized,
              .agentNotAssignedToMachine, .missingAgentScope, .forbiddenChannelTarget,
              .forbiddenThreadTarget:
@@ -55,6 +63,10 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
         case .agentNotFound, .threadNotFound, .channelNotFound, .channelTargetNotFound,
              .threadTargetNotFound, .peerNotFound:
             404
+        case .dmTargetAmbiguous, .migrationReceiptReadOnly:
+            409
+        case .dmTargetInvalidPeerKind:
+            400
         case .channelArchived:
             409
         case .invalidTarget, .activityInvalid, .transcriptPathForbidden, .statusInvalid,
@@ -126,6 +138,14 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
             "User or agent not found: @\(peer)"
         case .selfDM:
             "Cannot create a DM with yourself"
+        case .dmTargetAmbiguous(let name):
+            DMTargetResolutionWire.ambiguous(name).message
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
+        case .dmTargetNotSendable:
+            DMTargetResolutionWire.privateReminderSurface().message
+        case .migrationReceiptReadOnly(let target):
+            DMTargetResolutionWire.migrationReceiptReadOnly(target: target).message
         }
     }
 
@@ -154,7 +174,9 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
              .targetMustBeThread, .receiveAckEmpty, .machineAuthenticationRequired,
              .invalidMachineAPIKey, .agentNotAssignedToMachine, .targetRequired,
              .missingAgentScope, .channelTargetNotFound, .threadTargetNotFound,
-             .forbiddenChannelTarget, .forbiddenThreadTarget, .peerNotFound, .selfDM:
+             .forbiddenChannelTarget, .forbiddenThreadTarget, .peerNotFound, .selfDM,
+             .dmTargetAmbiguous, .dmTargetInvalidPeerKind, .dmTargetNotSendable,
+             .migrationReceiptReadOnly:
             nil
         }
     }
@@ -180,6 +202,14 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
             body.append("requiredScope", scope)
             body.append("reason", "missing_scope")
             return body.json
+        case .dmTargetAmbiguous(let name):
+            return DMTargetResolutionWire.ambiguous(name).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
+        case .dmTargetNotSendable:
+            return DMTargetResolutionWire.privateReminderSurface().body
+        case .migrationReceiptReadOnly(let target):
+            return DMTargetResolutionWire.migrationReceiptReadOnly(target: target).body
         default:
             return nil
         }
@@ -250,8 +280,13 @@ public struct AgentSendDeliveryService: Sendable {
             managedMCP: managedMCP,
             oauth: oauth,
             prepare: prepare,
-            assistantOwner: { agentId, serverId in
-                AssistantOwnershipQuery(agents: agents, oauth: oauth).liveOwner(agentId: agentId, serverId: serverId)
+            assistantOwner: { agentId, _ in
+                // POST authority uses the RAW retained assistant binding: the
+                // pinned `assistantMayPostTo` reads `assistant_owner_user_id`
+                // regardless of the `identity_borrowing` display flag or the
+                // owner's current server membership. `liveOwner` stays the
+                // display/context query elsewhere.
+                AssistantOwnershipQuery(agents: agents, oauth: oauth).rawOwner(agentId: agentId)
             },
             searchVisible: search.messageVisible,
             commitSend: { message, attachmentIds, channelId, uploaderId in
@@ -607,8 +642,13 @@ public struct AgentSendDeliveryService: Sendable {
             options: [.regularExpression, .caseInsensitive]
         )
         if reminderRef.lowercased() == "reminders" {
-            throw AgentSendError.reminderTargetNotSendable
+            throw AgentSendDeliveryError.dmTargetNotSendable
         }
+        // `resolveWritableAgentTarget` takes the thread-shaped arm for any
+        // last `:` plus any-length hex run. That arm never creates a DM: a
+        // fallback lookup only reuses an existing one, otherwise the route's
+        // plain not-found applies (`agentWritableTarget.ts:228-233, 245-249`).
+        let threadShaped = suffix == nil && AgentChannelRef.isThreadShapedPeer(rawPeer)
         let resolution = prepare.resolveDMPeer(
             serverId: agent.serverId,
             agentId: agent.id,
@@ -624,10 +664,15 @@ public struct AgentSendDeliveryService: Sendable {
             peerKind = peerType
             resolvedName = name
         case .ambiguous(let name):
-            throw AgentSendError.dmTargetAmbiguous(name: name)
+            throw AgentSendDeliveryError.dmTargetAmbiguous(name: name)
         case .invalidKind(let invalidKind, _):
-            throw AgentSendError.dmTargetInvalidKind(kind: invalidKind)
+            throw AgentSendDeliveryError.dmTargetInvalidPeerKind(
+                rawPeer: rawPeer, suffix: invalidKind
+            )
         case .notFound:
+            if threadShaped {
+                throw AgentSendDeliveryError.channelTargetNotFound(target: target)
+            }
             // `resolveDMPeer` excludes the caller from the agent roster; the
             // pinned resolver includes it so `dm:@<self>` is the self-DM 400.
             // The name comparison is exact: a case variant is an unknown peer.
@@ -636,11 +681,26 @@ public struct AgentSendDeliveryService: Sendable {
             }
             throw AgentSendDeliveryError.peerNotFound(peer: rawPeer)
         }
+        if threadShaped {
+            guard let existing = prepare.dmChannelId(
+                serverId: agent.serverId,
+                agentId: agent.id,
+                peerId: peerId,
+                peerKind: peerKind,
+                peerName: resolvedName
+            ) else {
+                throw AgentSendDeliveryError.channelTargetNotFound(target: target)
+            }
+            guard agentCanPost(agentId: agent.id, serverId: agent.serverId, channelId: existing) else {
+                throw AgentSendDeliveryError.forbiddenChannelTarget
+            }
+            return existing
+        }
         // A migration receipt is a one-way notice: the pinned writable-target
         // resolver answers the read-only conflict before any sendability or
         // self-DM classification.
         if peerKind == "agent", peerId == agent.id, resolvedName.hasPrefix("migration-receipt-") {
-            throw AgentSendError.migrationReceiptReadOnly
+            throw AgentSendDeliveryError.migrationReceiptReadOnly(target: target)
         }
         if let owner = assistantOwner(agent.id, agent.serverId), peerId != owner {
             // RFC 074 §2: an assistant may open a DM only with its owner.
@@ -747,16 +807,13 @@ public struct AgentSendDeliveryService: Sendable {
         return threadId
     }
 
-    /// Upstream `canAgentPostToChannel`: the enabled `#all` surface is open to
-    /// every agent in the server; every other channel needs an actual agent
-    /// membership, including public ones.
+    /// Upstream `canAgentPostToChannel`: the assistant owner-DM confinement
+    /// comes first (raw retained binding), then the enabled `#all` surface is
+    /// open to every agent in the server; every other channel needs an actual
+    /// agent membership, including public ones.
     private func agentCanPost(agentId: String, serverId: String, channelId: String) -> Bool {
-        guard let channel = channels.postableChannel(id: channelId) else { return false }
-        if channel.kind == "channel", oauth.allChannelId(serverId: serverId) == channelId {
-            return true
-        }
-        return channel.memberIds.contains(agentId)
-            || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+        AgentPostAuthority(oauth: oauth, channels: channels, agents: agents)
+            .canPost(serverId: serverId, agentId: agentId, channelId: channelId)
     }
 
     // MARK: - POST /internal/agent/:agentId/receive-ack
