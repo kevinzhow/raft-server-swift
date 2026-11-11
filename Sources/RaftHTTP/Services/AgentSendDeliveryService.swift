@@ -526,17 +526,13 @@ public struct AgentSendDeliveryService: Sendable {
         agent: OAuthLedger.AgentRuntimeInfo,
         target: String
     ) throws -> (channelId: String, kind: String, archived: Bool) {
+        // `parseChannelRef` is the one suffix rule: only a full 8-hex suffix
+        // is a thread id. Any other `:...` stays in the base target, so a
+        // `dm:@peer:1` / `#room:1` can never create or join a phantom thread.
+        let parsedRef = AgentChannelRef.parse(target)
         if target.hasPrefix("dm:@") || target.hasPrefix("DM:@") {
-            let rest = String(target.dropFirst(4))
-            var peerPart = rest
-            var suffix: String?
-            if let colon = rest.lastIndex(of: ":") {
-                let candidate = String(rest[rest.index(after: colon)...])
-                if !candidate.isEmpty {
-                    suffix = candidate
-                    peerPart = String(rest[..<colon])
-                }
-            }
+            let peerPart = String(parsedRef.baseRef.dropFirst(4))
+            let suffix = parsedRef.threadShortId
             let channelId = try resolveLegacyDM(
                 agent: agent,
                 rawPeer: peerPart,
@@ -547,15 +543,8 @@ public struct AgentSendDeliveryService: Sendable {
             return (channelId, channel?.kind ?? "dm", channel?.archived ?? false)
         }
         if target.hasPrefix("#") {
-            var raw = String(target.dropFirst())
-            var suffix: String?
-            if let colon = raw.lastIndex(of: ":") {
-                let candidate = String(raw[raw.index(after: colon)...])
-                if !candidate.isEmpty {
-                    suffix = candidate
-                    raw = String(raw[..<colon])
-                }
-            }
+            let raw = String(parsedRef.baseRef.dropFirst())
+            let suffix = parsedRef.threadShortId
             guard let parent = channels.postableChannel(serverId: agent.serverId, name: raw),
                   parent.channel.kind == "channel"
                     || parent.channel.kind == "private"
@@ -719,15 +708,18 @@ public struct AgentSendDeliveryService: Sendable {
         target: String,
         peerId: String? = nil
     ) throws -> String {
-        if let existing = channels.historyThread(parentId: parentChannelId, idPrefix: suffix)
-            ?? channels.historyThread(parentId: parentChannelId, anchorPrefix: suffix) {
+        // `MESSAGE_SHORT_ID_RE` is case-insensitive; UUIDs are stored lowercase,
+        // so the 8-hex suffix is compared in its canonical lowercase form.
+        let shortId = suffix.lowercased()
+        if let existing = channels.historyThread(parentId: parentChannelId, idPrefix: shortId)
+            ?? channels.historyThread(parentId: parentChannelId, anchorPrefix: shortId) {
             return existing
         }
         let anchorId = oauth.historyMessages(channelId: parentChannelId).first {
-            $0.id.hasPrefix(suffix)
+            $0.id.lowercased().hasPrefix(shortId)
         }?.id
             ?? messages.humanMessageRows.first {
-                $0.channelId == parentChannelId && $0.id.hasPrefix(suffix)
+                $0.channelId == parentChannelId && $0.id.lowercased().hasPrefix(shortId)
             }?.id
         guard let anchorId else {
             throw AgentSendDeliveryError.threadTargetNotFound(target: target)

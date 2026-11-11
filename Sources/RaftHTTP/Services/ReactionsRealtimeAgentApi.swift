@@ -89,22 +89,51 @@ extension ReactionsRealtimeService {
             sinceSeq: sinceSeq,
             prefs: notificationPrefs(agentId: agentId, conversations: conversations)
         )
-        let targets = conversations.map { wakeTarget($0, agentId: agentId, postable: postable) }
+        let directory = AgentDMRefDirectory(
+            serverId: agent.serverId, oauth: oauth,
+            humanName: { [dependencies] userId in dependencies.userName(userId) }
+        )
+        let targets = conversations.map {
+            wakeTarget($0, agent: agent, postable: postable, directory: directory)
+        }
         let hints = pending.prefix(limit).map { entry in
             AgentWakeHint(seq: entry.seq, messageId: entry.message.id, target: targets[entry.conversationIndex])
         }
         return (hints, pending.count > limit)
     }
 
-    /// What a hint for this conversation is addressed to.
+    /// What a hint for this conversation is addressed to. A DM uses the
+    /// canonical typed peer and the stable cross-kind twin rule (pinned
+    /// `agentFacingDmRef`), so two conversations are never labelled with the
+    /// same bare `dm:@name` when a human and an agent share it.
     private func wakeTarget(
         _ conversation: AgentConversation,
-        agentId: String,
-        postable: [String: PostableChannel]
+        agent: OAuthLedger.AgentRuntimeInfo,
+        postable: [String: PostableChannel],
+        directory: AgentDMRefDirectory
     ) -> String {
         switch conversation.kind {
         case "dm":
-            let peer = postable[conversation.id]?.memberIds.first { $0 != agentId }
+            if let channel = postable[conversation.id],
+               let ref = AgentFacingDMRef.canonical(
+                   serverId: agent.serverId,
+                   agentId: agent.id,
+                   channelId: conversation.id,
+                   channel: channel,
+                   humanIds: oauth.channelHumanIds(channelId: conversation.id),
+                   agentIds: oauth.channelAgentIds(channelId: conversation.id),
+                   reminderSurfaceId: nil,
+                   labels: directory,
+                   humanName: { [dependencies] userId in dependencies.userName(userId) },
+                   agentName: { [oauth] peerId in
+                       guard let peer = oauth.agentRuntimeInfo(id: peerId), !peer.deleted,
+                             peer.serverId == agent.serverId else { return nil }
+                       return peer.name
+                   }
+               ) {
+                return ref
+            }
+            let peer = postable[conversation.id]?.memberIds.first { $0 != agent.id }
                 .flatMap { dependencies.userName($0) }
             return "dm:@\(peer ?? conversation.name)"
         case "thread":
