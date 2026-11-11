@@ -484,9 +484,19 @@ public struct ManagedMCPAssignmentsService: Sendable {
         if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
             throw ChannelMembershipError.channelNotFound
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
-              visibility.actorCanSee(channelId: channelId, userId: userId)
-        else {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw ChannelMembershipError.channelNotFound
+        }
+        // A thread has no membership of its own; its readers are the parent
+        // channel's. The same parent resolution `GET /members` and
+        // `GET /api/channels/:id` use applies here.
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
+        let canSee = threadParentId.map { parentId in
+            oauth.channelInfo(id: parentId)?.serverId == serverId
+                && visibility.actorCanSee(channelId: parentId, userId: userId)
+        } ?? visibility.actorCanSee(channelId: channelId, userId: userId)
+        guard canSee else {
             throw ChannelMembershipError.channelNotFound
         }
         return ChannelAgentsResponse(agents: agentRows(channelId: channelId))
@@ -548,10 +558,20 @@ public struct ManagedMCPAssignmentsService: Sendable {
         if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
             throw ChannelMembershipError.channelNotFound
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
-              oauth.isChannelParticipant(channelId: channelId, userId: userId)
-                  || oauth.channelType(id: channelId) == "channel"
-        else {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw ChannelMembershipError.channelNotFound
+        }
+        // Threads inherit their parent's read policy: a thread row has no
+        // membership of its own, so testing only the thread id denied the
+        // parent channel's members (and its owner) even though GET
+        // /api/channels/:id resolves the same thread through its parent.
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
+        let canSee = threadParentId.map { parentId in
+            oauth.channelInfo(id: parentId)?.serverId == serverId
+                && visibility.actorCanSee(channelId: parentId, userId: userId)
+        } ?? visibility.actorCanSee(channelId: channelId, userId: userId)
+        guard canSee else {
             throw ChannelMembershipError.channelNotFound
         }
         let snapshot = channels.state

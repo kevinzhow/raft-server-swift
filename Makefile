@@ -1,7 +1,7 @@
 SWIFT := /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift
 PYTHON ?= python3
 
-.PHONY: test test-e2e test-pg pg-up pg-down pg-url parity parity-check architecture
+.PHONY: test test-e2e test-pg pg-up pg-down pg-url parity parity-check architecture route-inventory
 test:
 	$(SWIFT) test --no-parallel
 
@@ -17,6 +17,11 @@ parity-check:
 
 architecture:
 	$(PYTHON) scripts/check_architecture.py
+
+# Boot the FallbackApplication route table through the pinned toolchain and
+# regenerate the committed upstream/Swift route diff.
+route-inventory:
+	$(PYTHON) scripts/route_inventory.py --swift $(SWIFT) --write docs/route-inventory.md
 
 pg-up:
 	docker compose -f docker-compose.pg.yml up -d --wait

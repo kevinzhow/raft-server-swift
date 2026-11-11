@@ -131,6 +131,35 @@ public struct ManagedMCPToolExecutionService: Sendable {
         return SavedCheckResponse(savedIds: visible)
     }
 
+    // MARK: - DELETE /api/channels/saved/:messageId
+
+    /// Upstream deletes the caller's saved row without verifying that the
+    /// message still exists or is visible to this server, so an already-unsaved
+    /// or unknown id is the same success as a removed row.
+    public func unsaveMessage(
+        authorization: String?,
+        messageId: String
+    ) throws -> OkResponse {
+        let userId = try requireSession(authorization)
+        oauth.unsaveMessage(userId: userId, messageId: messageId)
+        return OkResponse()
+    }
+
+    // MARK: - Channel conversion routes
+
+    /// The pinned default gate for `convert-to-joint` and the three
+    /// conversion-job routes: the flag is absent or off, so the request is
+    /// refused before any channel/job lookup with the documented 404. This port
+    /// does not implement joint conversion.
+    public func conversionDisabled(
+        authorization: String?,
+        serverId: String
+    ) throws -> OkResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        throw ChannelConversionError.disabled
+    }
+
     // MARK: - GET /api/channels/saved
 
     public func listSavedMessages(
@@ -550,8 +579,10 @@ public struct ManagedMCPToolExecutionService: Sendable {
         // A thread is visible to whoever can see its parent; a private parent
         // must not leak its child thread's existence or metadata.
         let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
-        let canSee = threadParentId.map { visibility.actorCanSee(channelId: $0, userId: userId) }
-            ?? visibility.actorCanSee(channelId: channelId, userId: userId)
+        let canSee = threadParentId.map { parentId in
+            oauth.channelInfo(id: parentId)?.serverId == serverId
+                && visibility.actorCanSee(channelId: parentId, userId: userId)
+        } ?? visibility.actorCanSee(channelId: channelId, userId: userId)
         guard canSee else { throw ChannelMembershipError.channelNotFound }
         let snapshot = channels.state
         let joined = channel.name == "all"

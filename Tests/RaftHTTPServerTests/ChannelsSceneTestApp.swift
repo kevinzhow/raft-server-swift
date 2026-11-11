@@ -32,6 +32,7 @@ func makeChannelsSceneFeature(_ scene: ChannelsScene, realtime: RealtimeHub?) ->
         socketMembership: services.messaging.socketMembership,
         channelRoutes: services.integrations.channelRoutes,
         channelMessaging: messaging,
+        runtimeControl: services.agents.machineMigration,
         realtime: realtime
     )
 }

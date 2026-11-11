@@ -289,6 +289,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         socketMembership: services.emailAccounts.socketMembership,
         channelRoutes: services.emailAccounts.managedMCPChannelRoutes,
         channelMessaging: hostMessaging,
+        runtimeControl: services.agentMachineMigrationControl,
         realtime: services.realtime
     ).register(routes: app)
     MessagingFeature(services: services).register(routes: app)
