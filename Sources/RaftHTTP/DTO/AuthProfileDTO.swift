@@ -77,8 +77,10 @@ extension CompleteProfileRequest: Decodable {
 
 /// `POST /api/auth/pending-link/cancel` request body.
 ///
-/// The route decodes this and falls back to `CancelPendingLinkRequest()` on an
-/// empty or malformed body, so cancel stays idempotent and always answers 204.
+/// Pinned `routes/auth.ts:1285-1291` requires `pendingLinkToken` before the
+/// cancellation runs; the route answers its two
+/// `pending_link_token_invalid` 400s and only then calls the idempotent
+/// service.
 public struct CancelPendingLinkRequest: Codable, Sendable, Equatable {
     public var pendingLinkToken: String?
 

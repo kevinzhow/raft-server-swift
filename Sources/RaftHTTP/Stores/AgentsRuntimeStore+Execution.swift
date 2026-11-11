@@ -176,6 +176,9 @@ struct AgentExecutionAgent: Codable, Sendable {
     /// recovery merely because its long-lived process survived.
     var hasUnsettledExecution: Bool {
         launches.values.contains {
+            // A launch the new daemon instance proved it cannot run is
+            // history; its retained in-flight evidence may never complete.
+            guard $0.retiredAfterDaemonRestart != true else { return false }
             // A human takeover increments `takeoverEpoch` and thereby
             // acknowledges every older epoch (the same rule
             // `hasBlockingUnexitedExecution` applies). An abandoned turn from a
@@ -228,6 +231,40 @@ extension AgentExecutionState {
         pendingHumanDeliveries = pending.isEmpty ? nil : pending
     }
 
+    /// A start that never reached the wire carried the only durable obligation
+    /// for its human message when the send was accepted online (the readable-only
+    /// queue was never involved). Retiring that launch must hand the same
+    /// canonical identity back to the durable queued inbox before the command is
+    /// superseded; the ordinary strict release then rechecks current authority
+    /// and stages the one replacement. Identity-only, so it never queries another
+    /// owner inside an Agents borrow. Idempotent; a command with a dispatch row
+    /// or a live accepted status was attempted and keeps its manual history.
+    mutating func reobligeNeverAttemptedMessage(_ command: AgentExecutionCommand) {
+        guard command.status == .pending || command.status == .dispatched,
+              dispatches?[command.commandId.uuidString] == nil else { return }
+        let channelId: String
+        let messageId: String
+        switch command.kind {
+        case .start:
+            guard let wake = command.wakeMessage else { return }
+            channelId = wake.channelId
+            messageId = wake.messageId
+        case .delivery:
+            guard let channel = command.channelId, let message = command.messageId else { return }
+            channelId = channel
+            messageId = message
+        case .notice, .stop:
+            return
+        }
+        let key = Self.key(command.serverId, command.agentId, channelId, messageId)
+        var pending = pendingHumanDeliveries ?? [:]
+        guard pending[key] == nil else { return }
+        pending[key] = AgentExecutionPendingDelivery(
+            serverId: command.serverId, agentId: command.agentId, channelId: channelId,
+            messageId: messageId, createdAt: command.createdAt)
+        pendingHumanDeliveries = pending
+    }
+
     /// A delivery the daemon acknowledged on a launch whose turn the server has
     /// not observed complete. A resident runtime keeps one launch across turns,
     /// so this retained set (not `launch.completed`) is the in-flight-turn fact.
@@ -236,8 +273,25 @@ extension AgentExecutionState {
         return commands.values.contains { command in
             guard command.agentId == agentId, command.kind == .delivery, command.status == .accepted,
                   let launch = agent.launches[command.launchId],
+                  launch.retiredAfterDaemonRestart != true,
                   launch.takeoverEpoch == agent.takeoverEpoch else { return false }
             return launch.inFlightDeliveryCommandIds?.contains(command.commandId) == true
+        }
+    }
+
+    /// A start that carried a human message and was written without the daemon
+    /// acknowledging it. Unlike a delivery, its message left the durable queue
+    /// at the wire write, so a daemon restart cannot distinguish "the runtime
+    /// got it" from "it never arrived". Keep manual recovery instead of
+    /// re-sending (duplicate) or dropping (loss).
+    func hasUnsettledWakeStart(agentId: String) -> Bool {
+        guard let agent = agents[agentId] else { return false }
+        return commands.contains { key, command in
+            guard command.agentId == agentId, command.kind == .start,
+                  command.wakeMessage != nil, command.takeoverEpoch == agent.takeoverEpoch,
+                  agent.launches[command.launchId]?.retiredAfterDaemonRestart == true else { return false }
+            if let dispatch = dispatches?[key] { return dispatch.phase != .accepted }
+            return command.status == .dispatched
         }
     }
 
@@ -275,6 +329,12 @@ struct AgentExecutionLaunch: Codable, Sendable {
     var notSpawned = false
     var terminalFailure = false
     var stopRequested = false
+    /// A launch created by a daemon instance that a later complete `ready`
+    /// proved replaced, while that ready reported this agent not running. The
+    /// old instance can never admit this launch again, so it is history: it is
+    /// not a completed turn and not a spawn failure. Optional so snapshots
+    /// written before daemon-restart retirement still decode.
+    var retiredAfterDaemonRestart: Bool?
     var runnerCredentialId: String?
     /// Deliveries the daemon acknowledged on this launch without a later
     /// observed turn completion. A resident `codex app-server` keeps carrying

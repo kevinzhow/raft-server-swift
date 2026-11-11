@@ -473,6 +473,32 @@ and `express.json()`'s error path; zod 4 `unrecognized_keys` ordering.
 **Re-evaluate.** If the request layer exposes whether a body was parsed, or an
 ordered JSON object is adopted for request bodies.
 
+### D33. Timezone alias canonicalization is a finite map
+
+**What.** `parseCanonicalBrowserTimezone` keeps its explicit alias table for the
+`US/*` legacy names and the `Etc/*`/`Asia/Kolkata` cases. Every other
+`Area/Location` id is stored exactly as the client sent it. Upstream asks ICU
+(`Intl.DateTimeFormat().resolvedOptions().timeZone`) for the canonical id, which
+also rewrites, for example, `Europe/Kyiv` -> `Europe/Kiev`,
+`Asia/Kathmandu` -> `Asia/Katmandu`, `Australia/Canberra` -> `Australia/Sydney`
+and `Asia/Ho_Chi_Minh` -> `Asia/Saigon` (Node 22 / ICU 78.2).
+**Why.** Foundation on this Linux toolchain exposes no canonical-id API:
+`TimeZone(identifier: "US/Pacific")!.identifier` returns `"US/Pacific"`, not
+`"America/Los_Angeles"`, and neither the `TimeZone` Swift API nor its
+`CFTimeZoneCreateWithName` bridge has a canonicalization option. ICU's
+`ucal_getCanonicalTimeZoneID` exists only as the private
+`swift_ucal_getCanonicalTimeZoneID` symbol of `lib_FoundationICU.so`, which is
+not a package dependency and is not linkable portably. The alternative, a
+complete ICU alias table derived from CLDR/tzdata, cannot be generated from the
+shipped runtime without that symbol.
+**Upstream.** `packages/server/src/lib/ianaTimezone.ts`
+`parseCanonicalBrowserTimezone`, `routes/auth.ts:1406-1413`, and the ICU-backed
+`Intl` canonicalization (Node `process.versions.icu` = 78.2 on this host).
+**Re-evaluate.** When Foundation exposes a canonical time-zone id API (or this
+project takes an explicit ICU/tzdata dependency); then replace
+`AccountNaming.timezoneAliases` and the special cases with that lookup and add
+the alias cases above to `TimezoneObservationTests`.
+
 ## Maintaining this list
 
 1. Add an entry only after the excluded assertion is understood and the

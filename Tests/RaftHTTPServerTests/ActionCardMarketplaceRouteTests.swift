@@ -100,7 +100,7 @@ private func makeMarketplaceRouteFixture(_ suffix: String) -> MarketplaceRouteFi
 
             let invalid = try await post("{\"channel\":123}")
             #expect(invalid.status == .badRequest)
-            #expect(invalid.body.string == "{\"error\":\"Invalid task delete request\"}")
+            #expect(invalid.body.string == #"{"error":"Invalid agent-api taskDelete body","code":"agent_api_contract_invalid","issues":[{"path":"channel","message":"Invalid input: expected string, received number"},{"path":"task_number","message":"Invalid input: expected number, received undefined"}]}"#)
 
             let missing = try await post("{\"channel\":\"#route-room-02\",\"task_number\":99}")
             #expect(missing.status == .notFound)
