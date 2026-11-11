@@ -230,7 +230,13 @@ enum Entrypoint {
                 if let runtime { admittedAuth = ProductionRealtimeAuth(base: auth, runtime: runtime) }
                 else { admittedAuth = auth }
                 realtimeServer = try await RealtimeServer.start(
-                    auth: admittedAuth, host: realtimeHost, port: configuredSocketPort, hub: hub
+                    auth: admittedAuth, host: realtimeHost, port: configuredSocketPort, hub: hub,
+                    // Upstream `getWebCorsOriginOption()`: CORS_ORIGIN entries
+                    // plus APP_URL, defaulting to the Web dev origin.
+                    corsOrigins: WebCORS.origins(
+                        corsOrigin: processEnvironment["CORS_ORIGIN"],
+                        appURL: processEnvironment["APP_URL"]
+                    )
                 )
             }
             if configuredDaemonPort != 0 {

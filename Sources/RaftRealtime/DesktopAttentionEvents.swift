@@ -107,15 +107,20 @@ public final class DesktopAttentionHandler: Sendable {
     public var listens: Bool { clientKind == .desktop }
 
     public func handle(_ payload: Any?) {
-        guard listens else { return }
         guard let object = payload as? [String: Any] else { return }
-        let attended = object["attended"]
+        handle(attended: object["attended"] as? Bool)
+    }
+
+    /// Typed entry point for the polling/WebSocket event decoder, which parses
+    /// the Socket.IO event array without an `Any` payload.
+    public func handle(attended: Bool?) {
+        guard listens else { return }
         let at = now()
         let action: Action
-        if (attended as? Bool) == false {
+        if attended == false {
             action = .clear
         } else {
-            guard (attended as? Bool) == true else { return }
+            guard attended == true else { return }
             action = .record
         }
         let shouldDeliver = state.withLock { state in
