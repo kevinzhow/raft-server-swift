@@ -1,7 +1,8 @@
 # Delivery plan and current status
 
 Current status only. Fixed defects live in their commits; deliberate differences
-in [DEVIATIONS.md](DEVIATIONS.md), [PARITY.tsv](PARITY.tsv) and [ARCHITECTURE.md](ARCHITECTURE.md).
+in [DEVIATIONS.md](DEVIATIONS.md), [PARITY.tsv](PARITY.tsv) and
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Objective
 
@@ -10,137 +11,125 @@ HTTP/socket contract, fixed Web/CLI consumers, PostgreSQL persistence, the
 daemon/Computer path and deployment. Parity tests evidence the contract, not a
 complete user path.
 
-## Current stage
+## Delivered runtime
 
-Production runs `b23b251667a3740d4e25fc4ed9f161ad959e3145` (`b23b2516`), merged
-to trunk as `07a9bce02be669253ae685623230f0bdb78477c4`; the full tree equals
-candidate `232f219230025297a9920dd58b64145b2f422e71`. The previous `db2ebc71`
-release and dump remain for rollback; the upgrade kept a 143,283-byte backup.
+Production runs `ab04cacf` from the real upgrade off `b23b2516`; `/health` and
+`/api/version` answer 200 at `1.21.23`/`ab04cacf`. The release selector stays
+immutable at `ab04`; documentation commits never become the runtime. The b23
+release, its 175,278-byte dump (checksum `b6599ade…`) and the 223,640-byte public
+backup remain for rollback; gateway config `1b0fd817…` and manifest `c4ebd84a…`
+are pinned.
 
-b23 is normally usable: acceptance is 14/14, official Web/CLI consumers use its
-WebSocket path, and the authenticated pages and full-static profile are healthy.
-The source still lacks upstream Engine.IO polling/upgrade, an existing gap, not
-a new gateway regression; closing it needs the new candidate and qualification.
+The qualified source was landed by the no-ff merge
+`d244fe30d8840f56fe679c37e229538069179964`; later documentation commits leave
+`Sources/` and `Tests/` unchanged.
 
-## Release qualification
+## Durable-state clearance
 
-- **Gate.** `make gate` passed all five steps on b23: 3,209 tests in 6 shards
-  (build 221.7 s, tests 377.3 s, total 601.6 s), one isolated Kimi known-gap
-  retry passed, `failures[]` empty; E2E, smoke, architecture and parity-check
-  passed. Logs: `/mnt/data/raft-swift-development/batch/integrate-4/.build/gate-logs/20261111T165554Z/`.
-- **Persistence.** Full `make test-pg` passed: 49 gated startup cases, 0 failed;
-  database-health and infrastructure check passed. Logs:
-  `/mnt/data/raft-swift-development/batch/integrate-4/.build/test-pg/20261111T170912Z/`.
-- **Artifact.** Release build 391 s; tracked-file hash unchanged
-  `6f38abe06430cffe99e0aba9235b8288a78a95382038951e8b580892fbdf86c1` (1,690 files);
-  binary `7eae69e694613b38ab987ed3d5123819c546d6bdd3c6d89f8b30cec694314cb1`;
-  staging, verify, upgrade, deploy installed b23.
+The original comparison kept `post-deploy-verification.json` `passed: false`;
+reviewed `post-deploy-reviewed.json` records `passed: true` as expected lifecycle
+writes, not corruption; 11 of 14 payloads were identical. `agents_runtime`
+re-encoded Set-backed values, added a connection epoch and one synthetic notice
+(not a messages row) plus dispatch; `auth_profiles` had two owner-family refresh
+rotations; `machines_and_computers` changed detection metadata, per-kind model
+`updatedAt` and status-version increments (the two presence transitions).
 
-## Actual acceptance
+Owner, password hash, roles, secrets, rights, session families and business lists stayed
+unchanged; no message, task, OAuth, server or domain was lost. Raw payloads are
+not claimed identical during the upgrade.
 
-The real 14-check acceptance finished 14 PASS, 0 FAIL, 0 BLOCKED, 0 SKIP in
-217.6 s. The hidden nonce existed only in the uploaded bytes; Cindy read it in
-two consecutive real replies (seq 114, 116). Main restart produced reply 121;
-Computer restart replies 123 and 125; keep-session `mode=restart` returned 202
-with replies 127 and 129. Owner login and refresh passed, all 14 durable rows
-stayed unchanged, and DM, mention, task, attachment preview and thread passed.
-Proof: `/mnt/data/raft-swift-development/tmp/qualification-b23b2516/acceptance-full.json`
-and driver log; the browser pass is not a persistence test for a new UI account.
+## Qualified candidate
 
-## Web, full-static and canary
+`ab04cacf` is fully qualified on its frozen tree:
 
-Five authenticated pages are healthy; only the known D5 Hands-feedback 404
-remains. On b23 the 10-minute browser canary completed with exit 0 (job
-`bash-60b2`, received by the Lead): 10 rounds × 5 pages = 50 authenticated page
-checks, `alerts[]` empty, `changes` 0 every round, HEALTHY. It started
-17:43:43Z and last captured 17:52:54Z; the script waits 600 s before exit, so
-the last capture is not a short run. Post-canary live facts on b23: public
-`/api/version` 200 with SHA b23, main health 200, both units active, full-static
-hash `1b0fd817da7515a55b8c33ce527f3f9e5b1d50c41fb5c7474f69f3a381b7ee1f`.
-Proof: `/mnt/data/raft-swift-development/tmp/qualification-b23b2516/browser-canary/monitor-report.json`
-and `post-canary-live-facts.json`.
+- **Gate.** All five steps PASS: 3,250 tests in 6 shards (485.5 s), the known
+  Kimi retry passed, and `failures[]` is empty; E2E, smoke, architecture and
+  parity-check passed. Logs: `/mnt/data/raft-swift-development/batch/integrate-4/.build/gate-logs/20261111T200430Z/`.
+- **Persistence.** Full serial `make test-pg` PASS: 49 cases, 0 failed.
+- **Release.** Initial build 423 s produced `5f69c8bc…`; 1,700 tracked files kept
+  hash `9c98039d…`; deployment reused it in 12 s (cached no-op, not a build); artifacts stay on the data disk.
+- **Deployment.** Build/stage/verify, `pg_dump`, upgrade and gateway restore ended `UPGRADE OK`/`DEPLOY OK`; `actualObserved: true`.
+- **Privacy.** Two production JSON env files parsed; four configured private patterns
+  plus one host pattern had zero matches. Searched scope only, not every key/config.
 
-Full-static is loaded; the corrected publication run rehearsed closed-all and
-restricted rollback, then applied the full profile with the same Main PID and a
-preserved inode. Profile SHA-256 `1b0fd817da7515a55b8c33ce527f3f9e5b1d50c41fb5c7474f69f3a381b7ee1f`;
-the first rehearsal stopped only because a restricted local entry expected 200,
-and the restricted profile restored automatically, not an application failure. Proof:
-`/mnt/data/raft-swift-development/tmp/qualification-b23b2516/publication-r2/publication.json`.
+## Behavior delivered in ab04
 
-This canary qualifies b23 only; the polling/upgrade candidate still needs its
-own full gate, persistence, deploy, 14-check acceptance, Web pass and canary.
+`ab04` carries the completed Engine.IO v4 polling transport (auth, hub, default
+client), Content-Length/chunked framing including illegal framing and the
+negative-Range defect, late GET with close and final-Probe cleanup, probe pings
+answered with probe pongs, and per-request response slots fixing the synchronous
+noop response hang (noop6 still required). Responses remain ordered under
+multi-SID failure; header overflow answers 431 like Node. D2 only separates
+listeners; fixed WebSocket client transport is not server parity, and this is
+not a full upstream semantic test-suite port.
 
-## Qualified fixes in b23
+## Acceptance, Web and soak
 
-The source fixes qualified in b23 are merged, each with focused/affected tests
-plus the full gate and PostgreSQL qualification. The 14-check acceptance proves
-attachment, Main restart and continuous DM recovery specifically, not per-case
-coverage of every contract.
+The actual ab04 14-check acceptance passed: 14 PASS, 0 FAIL/BLOCKED/SKIP in
+204.7 s; attachment nonces at seq 170/173, Computer restart at 180/182, keep at
+184/186, 14 durable rows. Reproduce: `scripts/acceptance/acceptance.py --full --restart-main --restart-computer --computer-service-unit raft-swift-production-computer.service --restart-agent keep-session --reply-timeout 180`.
 
-- A completed Main turn clears the recoverable restart fence and releases
-  queued DMs; unacknowledged or ambiguous writes remain manual.
-- DM task claim converts a plain message, keeps the host unchanged, and publishes
-  only the task event with durable PostgreSQL state.
-- Exact canonical peer/assignee matching, 8-hex and typed DM grammar. A raw
-  retained assistant owner binding restricts posting regardless of
-  `identity_borrowing` or membership; `liveOwner` still borrows, no new flag.
-- History, search, action card, modern/legacy send and DM thread list share
-  canonical DM references; one escaping path defines the DM wire.
+The five-page authenticated Web round and post-cleanup Node Web job both passed:
+five pages at HTTP 200, only the known D5 `/api/product-feedback/tickets` 404,
+`alerts` empty — zero monitored regressions (errors, status, performance), not
+page-content identity; messages and tasks differ. Lead inspected the five screens;
+layout was normal. The gateway rehearsal kept Main on ab04 at the same PID, config
+inode, root 503/503/200 and five authenticated pages.
 
-No new deliberate difference was added; D12 still excludes the built-in app conversation.
+`postload-origin-final.json`/`postload-public-final.json` each pass 36/36 on ab04.
+The 600 s monitor finalized `HEALTHY`: 600.373 s, exit 0, 10 rounds, 50
+authenticated pages at HTTP 200, zero alerts/changes; `canary-completed.json`
+selects the monitor and reports.
 
-## Open work
+## Cleanup execution
 
-Polling is a real existing source gap, not a D2 listener split or intentional deviation.
-Upstream `socket/index.ts` lines 77-83 call `newServer` without `transports`, so
-the default is polling plus WebSocket. The Swift NIO listener serves WebSocket
-only and answers polling with 400 and an empty body. The Web client's fixed WS
-transport is not server parity; D2 only separates listeners, and the 75-worker
-private verified helper (31/31) proves only current WS, not upstream polling.
+The read-only preflight was `READY_TO_EXECUTE`: 19 objects, 18 READY, one KEEP
+(`B-ccf41374`, qualified copy absent). Execution handled exactly 18: 2 scopes
+STOPPED, 3 containers removed (images and bind data kept), 13 directories
+(7 scratch, 6 release) removed; 0 failures, no abort. Six stage ports gone;
+production units, gateway config and DB were unmodified during cleanup; no production deploy/API/message/login change.
 
-A candidate is being prepared on `fix-engineio-polling` in the warm
-`restart-recovery` worktree (DeepSeek 0564) to implement Engine.IO 4 GET/POST
-long-poll, auth, frames, ping and upgrade; the live deployment is unchanged. The
-postload helper expected no `sha256-` ETag prefix and flagged two traversal
-differences; those are QA-script-only. The real body hash, strong ETag, 304
-response, pinned SPA hash, no-secret response and edge 400 are correct; do not
-add this to `DEVIATIONS.md` or use D2 to exclude polling.
+The postcheck is clean: `noExtraDeletions` true, 63 KEEP, stage images, restore containers,
+four backups, owner/Codex, tunnel and ab04/b23/db2/152/94a/1c40/f70 unchanged; disk fell 21,745,786,880 bytes (~20.25 GiB), apparent removal 21,206,786,882.
 
-1. Land the polling/upgrade fix on a verified candidate.
-2. Run one full gate and PostgreSQL serial gate, take the backup, deploy it, and
-   repeat the real 14-check acceptance, authenticated Web pass and public canary.
-3. Recheck the route proof, then run the planned stage cleanup.
+## Route and module limits
 
-## Cleanup and route proof
+Route baseline C0: 644 upstream versus 611 Swift, 583 exact, 1 variant, 57 raw
+missing (5 false positives, 52 exclusions) and 27 extra; 0 reachable Class C.
+`PARITY.tsv` has 406 modules, 230 mapped — explicit limits, not full parity.
 
-Stage cleanup has not run; stage remains at zero stop/delete and only cleanup
-executor `6d7` prepared privately. No cleanup is claimed. Port 28443 is
-`PROVEN_UNUSED`: live connector configuration version 9 has 8 ingress rules and
-zero references to it, observed read-only; recheck before cleanup because it can
-change. The b23 canary alone does not authorize cleanup or a final all-parity
-closure; both wait for the polling/upgrade candidate and the Lead's final record.
+## Delivery status and next steps
 
-## Completion, limits and evidence
+Delivery is COMPLETE within the agreed scope. Remaining operations: keep the b23
+rollback release and dumps available, and leave the `B-ccf41374` scratch until its
+qualified copy is available; no new work without need.
 
-- Gate and PostgreSQL pass on the deployed commit; the 14-check acceptance
-  records 14 PASS, 0 FAIL/BLOCKED/SKIP with hidden-nonce, restart and Web proof
-  (met for b23; required again for the polling/upgrade candidate).
-- Audited Web pages have no console/HTTP errors except documented exclusions,
-  and the official Computer/Codex path survives restart and stop/start (met for
-  b23; required again).
-- Engine.IO 4 polling and WebSocket upgrade match upstream observable behavior;
-  fixed WS client transport is not server parity.
-- Full-static is published, the 10-minute public browser canary passes and
-  rollback is rehearsed on the same release (publication/rollback met for b23;
-  the final release still needs its canary).
-- Remaining differences are in `docs/DEVIATIONS.md`; no undocumented deviation,
-  test mapping, test count or route match is claimed as parity.
-- Route baseline C0: 644 upstream versus 611 Swift, 583 exact, 1 variant, 57 raw
-  missing (5 false positives, 52 exclusions), 27 extra; 0 reachable Class C.
-  `PARITY.tsv`: 406 modules, 230 mapped; explicit limits, not full upstream parity.
+## Completed checks
 
-Evidence stays on the data disk under
-`/mnt/data/raft-swift-development/tmp/qualification-b23b2516/` (release,
-deployment, acceptance and browser logs), the logs above and the upgrade
-provision directory. Quote paths, not logs; keep the owner environment, data
-disk and credentials intact.
+All completion checks are MET. The gate, PostgreSQL and 14-check acceptance
+passed on ab04 with 14 PASS, 0 FAIL/BLOCKED/SKIP, real nonce reads, correlated
+restart replies, and Computer/Codex keep-session intact. The five-page Web round,
+gateway-closed restricted rehearsal and both 36-case origin/public reports passed
+with only the known D5 404; the 600 s monitor passed with 10 rounds, 50
+authenticated pages and zero monitored regressions. The rollback release, dump
+and path stay intact.
+
+Cleanup executed only the unchanged 18 READY objects of the 19-object whitelist
+after the pinned manifest, final canary and read-only preflight, with one KEEP,
+0 failures and a clean postcheck. Only intentional differences remain in
+`docs/DEVIATIONS.md`: D5 leaves the `/api/product-feedback/tickets` UI path at
+404, D12 leaves built-in app conversations/DM absent, and the route/module
+limits stay explicit. No new deviation, widened exclusion, full test-suite port
+or route match is claimed.
+
+## Evidence
+
+The ab04 qualification root
+`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/` holds the
+candidate, gate/PG logs, build proof, deployment log, browser baseline,
+`browser-canary/`, monitor/canary/acceptance JSON, both 36-case reports, gateway
+publication, verification/reviewed JSON and deployment-state facts. The cleanup root
+`/mnt/data/raft-swift-development/tmp/stage-cleanup-execution-ab04cacf/` has the
+manifest, preflight, execution result and postcheck; its prior `REPORT.md` stays
+historical. Upgrade provision holds the record, dump and launch specs; keep the
+owner environment, data disk and credentials intact.
