@@ -11,150 +11,139 @@ HTTP/socket contract, fixed Web/CLI consumers, PostgreSQL persistence, the
 daemon/Computer path and deployment. Parity tests evidence the contract, not a
 complete user path.
 
-## Runtime and frozen candidate
+## Deployed runtime
 
-Production still runs `b23b2516`
-(`b23b251667a3740d4e25fc4ed9f161ad959e3145`), merged to trunk as
-`07a9bce02be669253ae685623230f0bdb78477c4`; its full tree equals candidate
-`232f219230025297a9920dd58b64145b2f422e71`. The previous `db2ebc71` release and
-dump remain for rollback.
+Production now runs `ab04cacf` (`ab04cacf8e0cb45252eb379f08bcc7274242d11d`),
+installed by the real upgrade from `b23b2516`. The post-swap health check
+returned 200 with version `1.21.23` and SHA `ab04cacf`; the Main launch spec
+(`/mnt/data/services/raft-swift/production/supervision/main.launch.json`)
+records the same `gitCommit`, with MainPID 4059509. The previous b23 release and
+its pre-upgrade dump remain for rollback.
 
-Frozen candidate `ab04cacf` (`ab04cacf8e0cb45252eb379f08bcc7274242d11d`) is
-neither deployed nor accepted. Its full tree is
-`92bfd00849a2fbc34f3c06fb52836b7260fa32da`, Sources
-`0f169a0def324ab5b8be32a6ee735f4fb23a31c0`, Tests
-`a016d6ff840922f8061a093226d3a8bb9d982271`. Qualification is in flight, so b23
-remains the only runtime claim.
+The trunk result is the real merge `d244fe30d8840f56fe679c37e229538069179964`
+of the prior trunk and `ab04cacf`; its full tree is
+`92bfd00849a2fbc34f3c06fb52836b7260fa32da`, equal to the candidate tree.
+`deploy-linux-docker` and `integrate-4` are both pushed at these commits.
 
-b23 is normally usable: acceptance 14/14, official Web/CLI consumers use its
-WebSocket path, and the authenticated pages and full-static profile are healthy.
-It serves fixed-WebSocket transport only; upstream polling and upgrade are a
-real gap at that commit, not a gateway regression or a D2 split.
+The b23 baseline remains the rollback reference: it previously passed the actual
+14-check acceptance and a 10-minute, 50-check browser canary, not evidence for
+ab04.
 
-## Retained b23 qualification
+## Qualified candidate
 
-- **Gate.** `make gate` passed all five steps on b23: 3,209 tests in 6 shards,
-  one isolated Kimi known-gap retry passed, `failures[]` empty; E2E, smoke,
-  architecture and parity-check passed. Logs:
-  `/mnt/data/raft-swift-development/batch/integrate-4/.build/gate-logs/20261111T165554Z/`.
-- **Persistence.** Full `make test-pg` passed: 49 gated startup cases, 0 failed;
-  database-health and infrastructure checks passed. Logs:
-  `/mnt/data/raft-swift-development/batch/integrate-4/.build/test-pg/20261111T170912Z/`.
-- **Artifact.** Release build and staged verification passed; staging, verify,
-  upgrade and deploy installed b23.
+`ab04cacf` is fully qualified on its frozen tree. The unified gates passed:
 
-These facts qualify b23 only; ab04 needs its own full qualification.
+- **Gate.** All five steps PASS: 3,250 sharded tests in 6 shards (build 118.6 s,
+  tests 359.5 s, elapsed 485.5 s, under 10 minutes); one known Kimi isolated
+  retry passed and `failures[]` is empty. E2E 62 s, smoke 25 s, architecture 22
+  checks in 2 s, parity-check 3 s. Logs:
+  `/mnt/data/raft-swift-development/batch/integrate-4/.build/gate-logs/20261111T200430Z/`.
+- **Persistence.** Full serial `make test-pg` PASS: 49 gated startup cases,
+  0 failed (311 s), database health PASS (0 s), infrastructure PASS (3 s).
+  Logs:
+  `/mnt/data/raft-swift-development/batch/integrate-4/.build/test-pg/20261111T201408Z/`.
+- **Release.** The independent initial release build took 423 s, tracked 1,700
+  files with hash `9c98039d65dc988c32b2eb2896eacedea3948c5cf28a6c2ea539223c0f3ba30b`
+  unchanged, and produced binary
+  `5f69c8bc625ee049280fb3272d36c2ecf0fd8bbf0dd914b7ef2a9eee289141a0`. Proof:
+  `/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/initial-release-build-proof.json`.
+  Deployment reused the same clean worktree and binary in 12 s; that cached
+  no-op is not a second 423 s build and does not replace the initial proof.
+- **Deployment.** The driver ran build, stage, verify, quick `pg_dump`, upgrade,
+  gateway restore and previous-release retention, ending `UPGRADE OK` and
+  `DEPLOY OK`. The upgrade record has `actualObserved: true`, from b23 to ab04.
+  Evidence:
+  `/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/deploy-driver.log`
+  and
+  `/mnt/data/services/raft-swift/production/provision/upgrade-ab04cacf/upgrade-record.json`.
+- **Privacy.** Two production JSON environment files were parsed and four
+  private patterns produced zero matches; one configured deployment host also
+  produced zero matches. The scan is not a claim that every key or all
+  configurations were searched.
 
-## Retained b23 actual acceptance
+## Behavior delivered in ab04
 
-The real 14-check acceptance finished 14 PASS, 0 FAIL, 0 BLOCKED, 0 SKIP in
-217.6 s. The hidden nonce existed only in the uploaded bytes; the recipient read it in
-two consecutive real replies (seq 114, 116). Main restart produced reply 121;
-Computer restart replies 123 and 125; keep-session `mode=restart` returned 202
-with replies 127 and 129. Owner login and refresh passed, all 14 durable rows
-stayed unchanged, and DM, mention, task, attachment preview and thread passed.
-Proof: `/mnt/data/raft-swift-development/tmp/qualification-b23b2516/acceptance-full.json`
-and driver log. The browser pass is not a persistence test for a new UI account.
+`ab04` carries the completed Engine.IO v4 polling transport (auth, hub and
+default client), Content-Length and chunked framing including illegal framing
+and the negative-Range defect, late GET with close and final-Probe cleanup,
+repeated probe pings answered with probe pongs, and per-request response
+bindings that remove the synchronous no-op, preserve order under multi-SID
+failure and answer header overflow with 431 like Node.
 
-## Retained b23 Web, full-static and canary
+D2 only separates listeners. Fixed WebSocket client transport is not server
+parity, and this work is not a full upstream semantic test-suite port.
 
-Five authenticated pages are healthy; only D5 Hands-feedback 404 remains. The
-10-minute canary completed exit 0: 10 rounds x 5 pages = 50 authenticated
-checks, `alerts[]` empty, `changes` 0 every round, HEALTHY, started 17:43:43Z
-and last captured 17:52:54Z after the 600 s wait.
+## Acceptance status
 
-Full-static remains loaded at profile
-`1b0fd817da7515a55b8c33ce527f3f9e5b1d50c41fb5c7474f69f3a381b7ee1f`; the
-publication rehearsal covered closed-all and restricted rollback, then applied
-it with the same Main PID and inode. Live facts: `/api/version` 200 with SHA
-b23, main health 200, both units active. Proof:
-`/mnt/data/raft-swift-development/tmp/qualification-b23b2516/browser-canary/monitor-report.json`
-and `.../publication-r2/publication.json`. This canary qualifies b23 only.
+No ab04 actual 14-check run JSON is recorded yet. Only a pre-deploy five-page
+authenticated browser baseline exists (the D5 feedback 404 is the only error), and
+the 36-case public HTTP helper is prepared but has not run against production.
+Neither item accepts the release.
 
-## Frozen candidate ab04
+The ab04 acceptance must show 14 PASS, 0 FAIL/BLOCKED/SKIP; the hidden nonce
+read in two consecutive real replies; the restart reply correlated to its
+request; no console or HTTP errors beyond D5; and the official Computer/Codex
+keep-session path intact. It must also pass the 10-minute canary over the five
+authenticated pages. No such result is claimed here.
 
-`ab04cacf` merges the completed Engine.IO transport work, no longer missing or
-in progress, frozen for unified qualification. The source slices are:
+## Cleanup
 
-- Engine.IO v4 polling transport, auth, hub and default client.
-- Content-Length and chunked framing, legal and illegal framing, and the
-  original negative-Range fatal defect.
-- Late GET, close and final Probe cleanup; repeated probe pings answered with
-  probe pongs.
-- Per-request response slots that remove the synchronous no-op and pipeline
-  multi-SID failure for ordered HTTP responses, releasing all pending work on
-  disconnect; header overflow answers 431 like Node.
+The ab04 retarget is prepared at
+`/mnt/data/raft-swift-development/tmp/stage-cleanup-execution-ab04cacf`. It
+keeps the 19-object whitelist unchanged (2 scopes, 3 containers, 14 files) and
+retains all 55 old KEEP entries plus 8 new ab04 contexts, 63 in total. The
+18 READY / 1 KEEP split is only the earlier read-only inventory, not an actual
+outcome. All 48 safety self-tests pass with zero mutation and no real candidate
+touched, but those are not a cleanup run.
 
-Focused proof at source tip `9eeb13b3`: 75 tests PASS (68 realtime in 6 suites,
-7 active auth/publication in 2); architecture 22 and parity-check PASS; official
-client default, polling, WebSocket and invalid token pass. That proves the
-source commit, not the unified ab04 gate; no new deliberate difference was
-added, and D2 only separates listeners. Fixed WebSocket client transport is not
-server parity.
+No stop or delete operation has run. After the real upgrade the Lead must pin
+the actual current manifest SHA (`manifest.currentSha` is still unpinned); then
+the final canary file must be created; only then may the read-only preflight and
+an explicit execute run. No `canary-completed.json` exists, so cleanup is not
+authorized or claimed.
 
-## Qualification in flight
+Port 28443 remains `PROVEN_UNUSED`: live connector configuration version 9 has
+8 ingress rules and zero references, observed read-only; recheck before cleanup.
 
-On frozen ab04 the unified `make gate` has started, followed by `make test-pg`
-serially in the same worktree; it has produced no result, so no gate or
-PostgreSQL pass is claimed. A release build runs in a separate immutable
-worktree. Both avoid production writes; no Source writers are active, the
-integration worktree and HEAD are untouched, and this merge waits for the Lead.
+## Route and module limits
 
-## New qualification record
-
-`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/candidate.json`
-records candidate `ab04cacf`, the hashes above, baseline b23, `frozen: true`,
-`worktreeClean: true`, and qualification pending the full gate then serial
-PostgreSQL. A fresh b23 baseline captured five authenticated screenshots with
-only D5 feedback 404. The 36-case HTTP public helper has a prepared 6/6 Node
-reference but has not run against production; neither item accepts the release.
+Route baseline C0: 644 upstream versus 611 Swift, 583 exact, 1 variant, 57 raw
+missing (5 false positives, 52 exclusions) and 27 extra; 0 reachable Class C.
+`PARITY.tsv` has 406 modules, 230 mapped. These are explicit limits, not full
+coverage or parity.
 
 ## Next steps
 
-1. Finish `make gate`, then the serial `make test-pg`, on frozen ab04; record
-   logs and any isolated retry honestly.
-2. Build and verify the artifact, take the pre-deploy backup, deploy ab04 and
-   preserve the previous release and dump for rollback.
-3. On production, repeat the actual 14-check acceptance, the authenticated Web
-   pass, the 36-case HTTP origin plus public check and the 10-minute monitor.
-4. Run guarded stage cleanup, then publish the final current-state plan and
-   acceptance record.
+1. Run the actual 14-check acceptance on deployed ab04, with nonce, restart and
+   keep-session evidence, then the five-page Web pass, the 36-case public HTTP
+   check and the 10-minute monitor.
+2. Keep the b23 release and dump available, and verify the rollback path before
+   closing the release.
+3. Have the Lead pin the current manifest SHA, create the final canary file,
+   run the cleanup preflight and execute only the 19 whitelisted objects;
+   postcheck for collateral changes.
+4. Publish the final current-state plan and acceptance record after those steps.
 
-## Cleanup and route proof
+## Completion conditions
 
-Stage cleanup has run zero stop/delete operations. The earlier read-only
-inventory recorded 19 entries as 18 READY and 1 KEEP (a Bccf missing artifact
-copy); that is not an actual deletion count. The hardened b23 executor's 42
-self-tests covered non-real cleanup only, and the private ab04 retarget is being
-prepared. No final canary file exists, so no cleanup is claimed.
-
-Port 28443 is `PROVEN_UNUSED`: live connector configuration version 9 has 8
-ingress rules and zero references, observed read-only; recheck before cleanup.
-Cleanup and final closure wait for the new candidate and the Lead's record.
-Route baseline C0: 644 upstream versus 611 Swift, 583 exact, 1 variant, 57 raw
-missing (5 false positives, 52 exclusions), 27 extra; 0 reachable Class C.
-`PARITY.tsv`: 406 modules, 230 mapped; explicit limits, not full coverage.
-
-## Completion conditions and limits
-
-- Gate and PostgreSQL pass on the deployed commit; the 14-check acceptance is
-  14 PASS, 0 FAIL/BLOCKED/SKIP with hidden-nonce, restart and Web proof (met
-  for b23; required again for ab04).
-- Audited Web pages have no console/HTTP errors except documented exclusions,
-  and the official Computer/Codex path survives restart (met for b23; required
-  again for ab04).
-- Engine.IO 4 polling and WebSocket upgrade match upstream observable
+- Gate and PostgreSQL pass on the deployed commit (met for ab04); acceptance is
+  14 PASS, 0 FAIL/BLOCKED/SKIP with two consecutive nonce reads, a correlated
+  restart reply, no console/HTTP errors except D5, and the Computer/Codex
+  keep-session path intact (not yet met for ab04).
+- The 36-case public HTTP check and the 10-minute Web canary pass on ab04; the
+  rollback release and dump remain intact and the rollback path is verified.
+- Engine.IO v4 polling and WebSocket upgrade match upstream observable
   behavior; fixed WebSocket client transport is not server parity.
-- Full-static is published, the 10-minute canary passes and rollback is
-  rehearsed on the same release (met for b23; required again for ab04).
-- Remaining differences are in `docs/DEVIATIONS.md`; no undocumented
-  deviation, widened exclusion or route match is claimed as parity.
+- Cleanup executes only the unchanged 19 whitelisted objects after the manifest
+  pin, final canary and read-only preflight, with a clean postcheck.
+- Remaining differences stay in `docs/DEVIATIONS.md`; no new deviation, widened
+  exclusion, full test-suite port or route match is claimed as parity.
 
 ## Evidence
 
-Evidence stays on the data disk under
-`/mnt/data/raft-swift-development/tmp/qualification-b23b2516/` and
-`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/` (release,
-deployment, acceptance and browser logs), the gate and PostgreSQL logs above,
-and the upgrade provision directory. Quote paths, not logs; keep the owner
-environment, data disk and credentials intact.
+The ab04 qualification root is
+`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/`, holding the
+candidate record, gate and PostgreSQL driver logs, initial build proof,
+deployment log and browser baseline. Gate and persistence logs are at the paths
+above; the upgrade provision directory holds the record, dump and previous launch
+specs. Keep the owner environment, data disk and credentials intact.
