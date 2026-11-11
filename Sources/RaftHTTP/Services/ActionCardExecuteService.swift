@@ -119,15 +119,12 @@ public struct ActionCardExecuteService: Sendable {
         }
         let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
         try requireGrant(agentId: identity.agentId, scope: "task:read")
-        guard let channelRef,
-              let channelId = taskChannel(
-                  serverId: identity.serverId,
-                  agentId: identity.agentId,
-                  reference: channelRef
-              )
-        else {
-            throw ActionCardExecuteError.channelNotFound
-        }
+        guard let channelRef else { throw ActionCardExecuteError.channelNotFound }
+        let channelId = try resolvedTaskChannel(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            reference: channelRef
+        )
         return AgentTasksListResponse(
             tasks: tasks.taskRows(channelId: channelId).map { task in
                 AgentTasksListResponse.Task(
@@ -175,15 +172,17 @@ public struct ActionCardExecuteService: Sendable {
         // pinned 409, `canAgentPostToChannel` is the 403, and an archived
         // channel is the 409 `channel_archived`. Membership alone is not
         // writability, so an archived or private surface must not be converted
-        // just because the agent is a member.
-        if (oauth.channelType(id: channelId)
-            ?? channels.postableChannel(id: channelId)?.kind) == "thread" {
-            throw ActionCardExecuteError.threadTaskClaim
+        // just because the agent is a member. The decision is shared with every
+        // other task write in `AgentTaskCredentials`.
+        switch credentials.taskWriteBoundary(
+            serverId: writer.serverId, agentId: writer.agentId,
+            channelId: channelId, refusesThread: true
+        ) {
+        case .allowed: break
+        case .thread: throw ActionCardExecuteError.threadTaskClaim
+        case .notWritable: throw AgentTaskApiError.agentCannotModifyTasks
+        case .archived: throw AgentTaskApiError.channelArchived
         }
-        guard canAgentModifyTasks(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
-            throw AgentTaskApiError.agentCannotModifyTasks
-        }
-        guard !isChannelArchived(channelId) else { throw AgentTaskApiError.channelArchived }
         if let hold = taskWriteHold(
             agentId: writer.agentId,
             channelId: channelId,
@@ -242,12 +241,12 @@ public struct ActionCardExecuteService: Sendable {
             case .claimedMessage(_, let taskNumber):
                 guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else { continue }
                 try publishClaimTask(task, created: convertedMessageIds.contains(task.messageId))
-            case .taskNotFound, .taskUnavailable, .alreadyClaimedByYou, .alreadyClaimed,
-                 .messageNotFound, .messageAlreadyClaimedByYou, .messageAlreadyClaimed:
+            case .taskNotFound, .taskUnavailable, .alreadyClaimedByYou,
+                 .messageNotFound, .messageAlreadyClaimedByYou, .rejected:
                 continue
             }
         }
-        return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
+        return .claimed(AgentTaskClaimResponse(results: results.map(claimResult)))
     }
 
     // MARK: - POST /internal/agent-api/tasks/unclaim
@@ -270,15 +269,10 @@ public struct ActionCardExecuteService: Sendable {
             throw FeedbackLocatorError.invalidAccessToken
         }
         try requireGrant(agentId: writer.agentId, scope: "task:write")
-        guard let channelId = taskChannel(
+        let channelId = try resolvedTaskChannel(
             serverId: writer.serverId, agentId: writer.agentId, reference: channel
-        ) else {
-            throw AgentTaskApiError.agentOrChannelNotFound
-        }
-        guard canAgentModifyTasks(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
-            throw AgentTaskApiError.agentCannotModifyTasks
-        }
-        guard !isChannelArchived(channelId) else { throw AgentTaskApiError.channelArchived }
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
         guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
             throw AgentTaskApiError.taskNotFound
         }
@@ -291,15 +285,18 @@ public struct ActionCardExecuteService: Sendable {
         }
     }
 
-    /// Upstream `channelService.canAgentPostToChannel`: the enabled `#all`
-    /// surface is open to every agent in the server; every other channel needs
-    /// an actual agent membership.
-    private func canAgentModifyTasks(serverId: String, agentId: String, channelId: String) -> Bool {
-        credentials.canAgentPost(serverId: serverId, agentId: agentId, channelId: channelId)
-    }
-
-    private func isChannelArchived(_ channelId: String) -> Bool {
-        credentials.isChannelArchived(channelId)
+    /// The shared write boundary for every task route: `canAgentPostToChannel`
+    /// then the archived row, with no thread special case (the routes that
+    /// refuse threads call `taskWriteBoundary(refusesThread: true)` instead).
+    func requireTaskWritable(serverId: String, agentId: String, channelId: String) throws {
+        switch credentials.taskWriteBoundary(
+            serverId: serverId, agentId: agentId, channelId: channelId, refusesThread: false
+        ) {
+        case .allowed: break
+        case .thread: throw AgentTaskApiError.agentCannotModifyTasks
+        case .notWritable: throw AgentTaskApiError.agentCannotModifyTasks
+        case .archived: throw AgentTaskApiError.channelArchived
+        }
     }
 
     // MARK: - POST /internal/agent-api/tasks/update-status
@@ -320,17 +317,18 @@ public struct ActionCardExecuteService: Sendable {
         try requireGrant(agentId: writer.agentId, scope: "task:write")
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              ),
               let taskNumber = body.taskNumber,
               let status = body.status,
               TaskCatalogPolicy.validTaskStatuses.contains(status)
         else {
             throw ActionCardExecuteError.invalidTaskStatus
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId,
+            agentId: writer.agentId,
+            reference: channelRef
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
         if let hold = taskWriteHold(
             agentId: writer.agentId,
             channelId: channelId,
@@ -925,23 +923,14 @@ public struct ActionCardExecuteService: Sendable {
     /// The claim/convert resolution: keeps the caller-fixable DM failures so
     /// the published `DM_TARGET_AMBIGUOUS` / `DM_TARGET_INVALID_PEER_KIND`
     /// bodies survive instead of collapsing into a generic 400/404.
-    private func resolvedTaskChannel(
+    func resolvedTaskChannel(
         serverId: String,
         agentId: String,
         reference: String
     ) throws -> String {
-        switch credentials.resolution(
+        try credentials.resolvedChannel(
             serverId: serverId, agentId: agentId, reference: reference, allowThread: true
-        ) {
-        case .resolved(let channelId):
-            return channelId
-        case .notFound:
-            throw AgentTaskApiError.agentOrChannelNotFound
-        case .ambiguous(let peerName):
-            throw ActionCardExecuteError.dmTargetAmbiguous(peerName: peerName)
-        case .invalidPeerKind(let rawPeer, let suffix):
-            throw ActionCardExecuteError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: suffix)
-        }
+        )
     }
 
     /// Publishes the board row for a committed claim. A converted plain host
@@ -1023,7 +1012,11 @@ public struct ActionCardExecuteService: Sendable {
         }
     }
 
-    private static func claimResult(_ outcome: TasksAndRemindersStore.TaskClaimOutcome) -> AgentTaskClaimResult {
+    /// Project one store observation into the published result. A conflict is
+    /// built only from the same facts the writer used: the canonical assignee
+    /// handle, the observed status and claim instant, and this request's
+    /// observation time. Closed/done/self rejections carry no effect boundary.
+    private func claimResult(_ outcome: TasksAndRemindersStore.TaskClaimOutcome) -> AgentTaskClaimResult {
         switch outcome {
         case .taskNotFound(let taskNumber):
             return .taskNotFound(taskNumber: taskNumber)
@@ -1031,16 +1024,32 @@ public struct ActionCardExecuteService: Sendable {
             return .taskUnavailable(taskNumber: taskNumber)
         case .alreadyClaimedByYou(let taskNumber):
             return .alreadyClaimedByYou(taskNumber: taskNumber)
-        case .alreadyClaimed(let taskNumber):
-            return .alreadyClaimed(taskNumber: taskNumber)
+        case .rejected(let taskNumber, let messageId, let facts):
+            guard facts.reason == "already assigned",
+                  let assigneeType = facts.assigneeType,
+                  let assigneeId = facts.assigneeId
+            else {
+                return .rejected(
+                    taskNumber: taskNumber, messageId: messageId,
+                    reason: facts.reason, conflict: nil
+                )
+            }
+            let name = credentials.taskActorName(type: assigneeType, id: assigneeId)
+            let reason = name.map { "already assigned to @\($0)" } ?? "already assigned to <unresolved>"
+            let conflict = AgentTaskClaimConflict(
+                currentAssigneeType: assigneeType,
+                currentAssigneeName: name,
+                taskStatus: facts.status,
+                claimedAt: facts.claimedAt.map(DateText.isoString),
+                observedAt: DateText.isoString(now())
+            )
+            return .rejected(taskNumber: taskNumber, messageId: messageId, reason: reason, conflict: conflict)
         case .claimed(let taskNumber, let messageId):
             return .claimed(taskNumber: taskNumber, messageId: messageId)
         case .messageNotFound(let prefix):
             return .messageNotFound(prefix: prefix)
         case .messageAlreadyClaimedByYou(let messageId, let taskNumber):
             return .messageAlreadyClaimedByYou(messageId: messageId, taskNumber: taskNumber)
-        case .messageAlreadyClaimed(let messageId, let taskNumber):
-            return .messageAlreadyClaimed(messageId: messageId, taskNumber: taskNumber)
         case .claimedMessage(let messageId, let taskNumber):
             return .claimedMessage(messageId: messageId, taskNumber: taskNumber)
         }

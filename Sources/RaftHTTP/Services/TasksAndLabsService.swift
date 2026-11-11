@@ -282,11 +282,9 @@ public struct TasksAndLabsService: Sendable {
         case .allowed: break
         case .missingScope(let scope): throw FeedbackLocatorError.missingScope(scope: scope)
         }
-        guard let channelId = agentTasks.taskChannel(
+        let channelId = try agentTasks.resolvedTaskChannel(
             serverId: identity.serverId, agentId: identity.agentId, reference: channelRef
-        ) else {
-            throw AgentTaskApiError.agentOrChannelNotFound
-        }
+        )
         guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
             throw AgentTaskApiError.taskNotFound
         }
@@ -363,14 +361,17 @@ public struct TasksAndLabsService: Sendable {
         }
         guard let body,
               let channelRef = body.channel,
-              let channelId = agentTasks.taskChannel(
-                  serverId: auth.serverId, agentId: auth.agentId, reference: channelRef
-              ),
               let taskNumber = body.taskNumber,
               let title = body.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty
         else {
             throw TasksAndLabsError.invalidTaskRequest
         }
+        let channelId = try agentTasks.resolvedTaskChannel(
+            serverId: auth.serverId, agentId: auth.agentId, reference: channelRef
+        )
+        try agentTasks.requireTaskWritable(
+            serverId: auth.serverId, agentId: auth.agentId, channelId: channelId
+        )
         for _ in 0..<2 {
             if let hold = agentTasks.taskWriteHold(
                 agentId: auth.agentId, channelId: channelId,
