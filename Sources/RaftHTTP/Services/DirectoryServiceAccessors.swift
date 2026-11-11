@@ -601,6 +601,7 @@ extension EmailLoginDirectory {
             feedbackLocators: feedbackLocators,
             cards: managedMCPAndCardsStore,
             prepare: actionCardPrepare,
+            catalog: taskCatalog,
             ownership: AssistantOwnershipQuery(agents: agentsRuntimeStore, oauth: oauth),
             suppression: MessageSuppressionService(messages: messagesAndThreadsStore, oauth: oauth),
             mentions: messageMentions,

@@ -407,6 +407,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 try services.emailAccounts.searchMentions.searchAgentMessages(
                     agentId: request.parameters.get("agentId") ?? "",
                     query: desktopQuery(request.url.query, "q"),
+                    channelRef: desktopQuery(request.url.query, "channel"),
                     limit: desktopQuery(request.url.query, "limit"),
                     authorization: request.headers[.authorization],
                     sender: desktopQuery(request.url.query, "sender"),
