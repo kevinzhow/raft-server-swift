@@ -222,6 +222,12 @@ enum AgentPresenceSignal {
         if let needsManual {
             let why: String
             switch needsManual {
+            // A ready-reported running agent the server has no launch for is a
+            // presence fact, not a terminal breaker block: upstream
+            // `planReadyReconcileAction` marks it active/online and
+            // `reconcileForeignRunningAgents` never writes breaker state, so
+            // there is no stopped process to blame. The retained activity wins.
+            case "untracked_running_process": return nil
             case "outcome_evidence_lost": why = "Runtime outcome reports for this agent were lost."
             case "daemon_outcome_storage_unreliable": why = "This computer can no longer report runtime outcomes for this agent."
             default: why = "The previous runtime process could not be confirmed stopped."
