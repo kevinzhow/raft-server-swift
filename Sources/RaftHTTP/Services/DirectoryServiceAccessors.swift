@@ -195,6 +195,17 @@ extension EmailLoginDirectory {
         machinesAndHostedRuntime.machineIdForCredential(authorization: authorization)
     }
 
+    /// The one machine-auth + agent-scope gate for the legacy
+    /// `/internal/agent/:id/*` surface.
+    public var legacyAgentMachineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            cards: managedMCPAndCardsStore
+        )
+    }
+
     func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
         machinesAndHostedRuntime.canMachineServeAgent(machineId: machineId, agent: agent)
     }
