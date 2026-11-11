@@ -49,6 +49,9 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
     case agentNotExternal
     case invalidCreator
     case avatarTooLarge(maxBytes: Int)
+    case noAvatarProvided
+    case avatarBadFormat
+    case avatarUploadFailed
     case bootstrapDisabled
     case bootstrapTokenRequired
     case tokenInvalid
@@ -95,10 +98,12 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
              .deprecatedRuntime, .runtimeConfigModelNameRequired,
              .runtimeConfigProviderNotSupportedForCursor, .runtimeConfigProviderAPIKeyRequired,
              .invalidEnvVars, .commandNotSupported, .agentNotExternalCoded, .agentNotExternal,
-             .invalidCreator, .avatarTooLarge, .bootstrapTokenRequired, .sinceInvalid,
+             .invalidCreator, .avatarTooLarge, .noAvatarProvided, .avatarBadFormat, .bootstrapTokenRequired, .sinceInvalid,
              .webhookFieldsRequired, .invalidAgentUpdate, .invalidRestartMode,
              .externalRuntimeImmutable, .serverRoleMustBeString, .invalidServerRole:
             400
+        case .avatarUploadFailed:
+            500
         }
     }
 
@@ -176,6 +181,12 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
             "Invalid creator"
         case .avatarTooLarge:
             "Avatar image must be 5 MB or smaller"
+        case .noAvatarProvided:
+            "No file provided"
+        case .avatarBadFormat:
+            "Only image files are allowed (JPEG, PNG, GIF, WebP)"
+        case .avatarUploadFailed:
+            "Failed to upload avatar"
         case .bootstrapDisabled:
             "Self-hosted runner bootstrap is not enabled"
         case .bootstrapTokenRequired:
@@ -302,6 +313,11 @@ public enum AgentPrivateSurfaceError: DomainError, Equatable {
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("errorCode", "PROFILE_AVATAR_TOO_LARGE"),
                 OrderedJSONField("maxBytes", maxBytes),
+            ])
+        case .avatarBadFormat:
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_BAD_FORMAT"),
             ])
         default:
             nil

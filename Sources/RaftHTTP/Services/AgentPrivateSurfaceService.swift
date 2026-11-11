@@ -878,15 +878,27 @@ public struct AgentPrivateSurfaceService: Sendable {
     public func uploadAgentAvatar(
         authorization: String?,
         agentId: String,
-        byteCount: Int
-    ) throws -> AgentAvatarResponse {
-        _ = try authorizedActor(authorization: authorization, agentId: agentId)
-        let maxBytes = 5 * 1024 * 1024
-        guard byteCount <= maxBytes else { throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: maxBytes) }
-        let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
-        let avatarUrl = "/api/avatars/users/\(key).webp"
-        oauth.updateAgentAvatar(id: agentId, avatarUrl: avatarUrl)
-        return AgentAvatarResponse(avatarUrl: avatarUrl)
+        contentType: String?,
+        body: Data
+    ) async throws -> AgentAvatarResponse {
+        let actor = try authorizedActor(authorization: authorization, agentId: agentId)
+        guard let file = FormPayload.multipartFilePart(named: "avatar", contentType: contentType, body: body) else {
+            throw AgentPrivateSurfaceError.noAvatarProvided
+        }
+        let stored: AvatarStoredFile
+        do {
+            stored = try await AvatarService(storage: oauth.assets, oauth: oauth)
+                .storeAgentAvatar(serverId: actor.info.serverId, existingAvatarUrl: actor.info.avatarUrl, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge(let maxBytes): throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: maxBytes)
+            case .badFormat: throw AgentPrivateSurfaceError.avatarBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure:
+                throw AgentPrivateSurfaceError.avatarUploadFailed
+            }
+        }
+        oauth.updateAgentAvatar(id: agentId, avatarUrl: stored.url)
+        return AgentAvatarResponse(avatarUrl: stored.url)
     }
 
     // MARK: - Credential use and the push webhook

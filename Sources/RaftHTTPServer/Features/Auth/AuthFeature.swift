@@ -330,7 +330,7 @@ public struct AuthFeature: RouteCollection, Sendable {
         me.on(.post, "avatar", maxBodySize: "6mb") { request async throws -> Response in
             let data = try await request.body.collect() ?? Data()
             return try await respond {
-                try self.identities.uploadAvatar(
+                try await self.identities.uploadAvatar(
                     authorization: request.headers[.authorization],
                     contentType: request.headers[.contentType],
                     body: data

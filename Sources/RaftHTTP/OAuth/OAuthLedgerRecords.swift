@@ -89,6 +89,10 @@ extension OAuthLedger {
         var setupUrl: String? = nil
         var setupDescription: String? = nil
         var setupRevision: Int = 1
+        /// The published capability URL and the private object key. The key is
+        /// never projected by a public response.
+        var logoUrl: String? = nil
+        var logoStorageKey: String? = nil
     }
 
     struct IntegrationAuditEvent: Sendable {

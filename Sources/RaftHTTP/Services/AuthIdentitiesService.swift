@@ -34,6 +34,8 @@ public enum AuthIdentitiesError: DomainError, Equatable {
     case wrongCurrentPassword
     case noAvatarProvided
     case avatarTooLarge(maxBytes: Int)
+    case avatarBadFormat
+    case avatarUploadFailed
 
     public var status: UInt {
         switch self {
@@ -50,8 +52,11 @@ public enum AuthIdentitiesError: DomainError, Equatable {
             410
         case .invalidLoginBody, .invalidAppLoginRequest, .returnUriNotAllowed,
              .challengeMethodInvalid, .challengeInvalid, .invalidAppLoginCompletion, .pkceMismatch,
-             .profileUpdateFailed, .invalidProfile, .noAvatarProvided, .avatarTooLarge:
+             .profileUpdateFailed, .invalidProfile, .noAvatarProvided, .avatarTooLarge,
+             .avatarBadFormat:
             400
+        case .avatarUploadFailed:
+            500
         }
     }
 
@@ -84,6 +89,8 @@ public enum AuthIdentitiesError: DomainError, Equatable {
         case .wrongCurrentPassword: "Current password is incorrect"
         case .noAvatarProvided: "No avatar file provided"
         case .avatarTooLarge: "Avatar image must be 5 MB or smaller"
+        case .avatarBadFormat: "Only image files are allowed (JPEG, PNG, GIF, WebP)"
+        case .avatarUploadFailed: "Failed to upload avatar"
         }
     }
 
@@ -147,6 +154,11 @@ public enum AuthIdentitiesError: DomainError, Equatable {
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("errorCode", "PROFILE_AVATAR_TOO_LARGE"),
                 OrderedJSONField("maxBytes", maxBytes),
+            ])
+        case .avatarBadFormat:
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_BAD_FORMAT"),
             ])
         default:
             nil
@@ -484,16 +496,26 @@ public struct AuthIdentitiesService: Sendable {
         authorization: String?,
         contentType: String?,
         body: Data
-    ) throws -> AuthProfileUserResponse {
+    ) async throws -> AuthProfileUserResponse {
         let userId = try authorizedUser(authorization)
-        guard let file = FormPayload.multipartFile(named: "avatar", contentType: contentType, body: body) else {
+        guard let current = store.account(userId: userId), current.retiredAt == nil else {
+            throw AuthIdentitiesError.invalidToken
+        }
+        guard let file = FormPayload.multipartFilePart(named: "avatar", contentType: contentType, body: body) else {
             throw AuthIdentitiesError.noAvatarProvided
         }
-        if file.count > AccountNaming.maxProfileAvatarBytes {
-            throw AuthIdentitiesError.avatarTooLarge(maxBytes: AccountNaming.maxProfileAvatarBytes)
+        let stored: AvatarStoredFile
+        do {
+            stored = try await AvatarService(storage: oauth.assets, oauth: oauth)
+                .storeUserAvatar(existingAvatarUrl: current.avatarUrl, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge(let maxBytes): throw AuthIdentitiesError.avatarTooLarge(maxBytes: maxBytes)
+            case .badFormat: throw AuthIdentitiesError.avatarBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure: throw AuthIdentitiesError.avatarUploadFailed
+            }
         }
-        let hash = String(AuthTokenCodec.sha256(file).prefix(32))
-        guard let account = store.setAvatarURL(userId: userId, url: "/api/avatars/users/\(hash).webp") else {
+        guard let account = store.setAvatarURL(userId: userId, url: stored.url) else {
             throw AuthIdentitiesError.invalidToken
         }
         return AuthProfileUserResponse(user: userDTO(account))

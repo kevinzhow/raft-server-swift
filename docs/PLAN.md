@@ -66,6 +66,7 @@ confirmation.
 | G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; sharded runner now isolates and retries | Re-run `make gate`; keep the shard log if it recurs |
 | G8 | Activity trajectory entries and gap recovery are not stored | Deliberate (see DEVIATIONS D10) | Re-open only if the pinned Web consumes them |
 | G9 | `make test-pg` with one fresh database per test exposes gated tests that were only passing on a warm database or under low load: `postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims` (`.invalidSnapshot`, expects 14 durable documents), `postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks` (`.timeout` after 30s) and `postgresRuntimeFormSourcesUseActualMachineQueries` (projection expectations). `writerLeaseLoss...` and `RuntimeFormSources` also appeared load-sensitive. | Tooling is correct; these are test-fixture or product gaps outside the process slice | Owning area (agent execution/persistence) should re-run each test alone on a fresh database and fix the fixture dependency or the product path; do not mask them with a retry |
+| G10 | Profile avatar and integration-logo uploads only wrote URL metadata, so uploaded images never displayed and the public asset paths did not serve bytes | Fixed on branch `gap-avatar-storage`; not yet merged or deployed (D23/D24) | Merge, run the gate, then verify upload → published URL → GET bytes on the deployed release |
 
 ## Next steps
 

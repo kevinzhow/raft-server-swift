@@ -29,6 +29,8 @@ extension OAuthLedger.Client: Codable {
         case setupUrl
         case setupDescription
         case setupRevision
+        case logoUrl
+        case logoStorageKey
     }
 
     init(from decoder: any Decoder) throws {
@@ -59,6 +61,8 @@ extension OAuthLedger.Client: Codable {
         self.setupUrl = try values.decode(String?.self, forKey: .setupUrl)
         self.setupDescription = try values.decode(String?.self, forKey: .setupDescription)
         self.setupRevision = try values.decode(Int.self, forKey: .setupRevision)
+        self.logoUrl = try values.decodeIfPresent(String.self, forKey: .logoUrl)
+        self.logoStorageKey = try values.decodeIfPresent(String.self, forKey: .logoStorageKey)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -89,6 +93,8 @@ extension OAuthLedger.Client: Codable {
         try values.encode(setupUrl, forKey: .setupUrl)
         try values.encode(setupDescription, forKey: .setupDescription)
         try values.encode(setupRevision, forKey: .setupRevision)
+        try values.encodeIfPresent(logoUrl, forKey: .logoUrl)
+        try values.encodeIfPresent(logoStorageKey, forKey: .logoStorageKey)
     }
 }
 

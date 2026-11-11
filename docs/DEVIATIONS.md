@@ -295,6 +295,48 @@ excluded; the observable attachment HTTP behavior is locked by
 **Upstream.** `attachments`, `attachmentUploadSessions.api` enabled-fake cases.
 **Re-evaluate.** If a new public upload path is added.
 
+### D23. Profile avatar and integration-logo image processing
+
+**What.** Uploaded profile avatars and integration logos are not resized to
+256×256 WebP. The server validates the multipart part type (`image/jpeg`,
+`image/png`, `image/gif`, `image/webp`, 5 MB limit), checks the real image
+signature, stores the original bytes, and serves them with their real content
+type under the upstream capability path (`/api/avatars/<namespace>/<sha256-prefix>.webp`
+and `/api/integration-logos/<clientId>/<sha256-prefix>.webp`). The filename hash
+is the SHA-256 prefix of the stored bytes; the `.webp` suffix is retained for
+consumer and OAuth `picture` URL compatibility.
+**Why.** Upstream uses `sharp` to decode and re-encode. The Swift release
+closure contains only the Swift runtime and JavaScriptCore; ImageMagick and
+`libwebp` exist on the development host but are not in the verified release
+closure, so depending on them would make the production artifact unverified.
+**Upstream.** `services/avatarService.ts` (`storeProfileAvatar`),
+`services/oauthService.ts` (`storeIntegrationLogo`).
+**Re-evaluate.** When a packaged WebP encoder is accepted into the release
+closure and its artifact inventory; then restore the 256×256 cover resize,
+`image/webp` responses and the WebP-content hash.
+
+### D24. Profile asset storage, CDN URLs and unknown-object status
+
+**What.** Avatar and logo bytes use the existing encrypted R2/S3 bucket and
+attachment credentials through `S3AttachmentStorage`
+(`PUT`/`GET`/`DELETE` public asset methods, AES-GCM with the attachment key and
+a `raft-public-asset:v1:` associated-data domain). A development process without
+S3 keeps the bytes in memory, mirroring the attachment development fallback.
+Published URLs stay on the application paths even when `CDN_BASE_URL` is set. A
+missing avatar object answers `404 {"error":"Avatar not found"}`.
+**Why.** This deployment has one private encrypted bucket and no public CDN
+bucket; publishing `<CDN_BASE_URL>/avatars/...` would expose ciphertext. The
+parent task's published-path contract requires an unknown object to answer 404
+rather than upstream's catch-all 500.
+**Upstream.** `services/storageService.ts` (`getCdnStorage`,
+`resolvePublicAssetUrl`), `routes/agents.ts` avatar route, `routes/integrations.ts`
+logo route. Upstream's catch-all turns a missing avatar object into
+`500 {"error":"Failed to serve avatar"}`; integration logos already answer 404
+`{"error":"Logo not found"}`.
+**Re-evaluate.** If a public unencrypted CDN bucket is provisioned, publish CDN
+URLs from `resolvePublicAssetUrl` and serve bytes without the encryption
+boundary; revisit the missing-avatar status only with that storage change.
+
 ## Maintaining this list
 
 1. Add an entry only after the excluded assertion is understood and the

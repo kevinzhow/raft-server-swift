@@ -60,6 +60,11 @@ public final class OAuthLedger: Sendable {
     }
     let state = TransactionalState(State())
 
+    /// Transient profile-asset port shared by the user/server/agent avatar
+    /// routes and the integration-logo routes. It is never part of persisted
+    /// OAuth state; production installs the encrypted S3 actor here.
+    public let assets = AvatarStorageRegistry()
+
     struct State: Sendable {
         var servers: [String: Server] = [:]
         var agents: [String: Agent] = [:]

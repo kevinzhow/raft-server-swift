@@ -204,6 +204,7 @@ enum Entrypoint {
                 guard let production else { throw ProductionStartupError.unavailable }
                 let storage = try S3AttachmentStorage(configuration: .fromEnvironment(processEnvironment))
                 emailAccounts.configureAttachmentStorage(storage)
+                emailAccounts.configureAvatarStorage(storage)
                 app.addLifecycleHandler(AttachmentStorageLifecycle(storage: storage))
                 try await runtime.activate()
                 try await ProductionBootstrap.ping(runtime: runtime, redis: production.redis)

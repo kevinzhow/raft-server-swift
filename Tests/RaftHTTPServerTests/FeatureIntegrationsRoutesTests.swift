@@ -13,7 +13,7 @@ import VaporTesting
 /// mounts the collection.
 @Suite
 struct FeatureIntegrationsRoutesTests {
-    /// Complete table of the 42 registrations extracted from
+    /// Complete table of the 44 registrations extracted from
     /// `FallbackApplication.configure` at extraction time.
     private let expectedIntegrationsRoutes: [(HTTPRequest.Method, String)] = [
         (.get, "api/mcp/servers"),
@@ -36,6 +36,8 @@ struct FeatureIntegrationsRoutesTests {
         (.post, "api/integrations/grants/:grantId/revoke"),
         (.get, "api/integrations/clients/:clientId/setup"),
         (.patch, "api/integrations/clients/:clientId"),
+        (.post, "api/integrations/clients/:clientId/logo"),
+        (.delete, "api/integrations/clients/:clientId/logo"),
         (.post, "api/integrations/marketplace/:clientId/install"),
         (.delete, "api/integrations/marketplace/:clientId/install"),
         (.get, "api/integrations/marketplace"),
@@ -83,8 +85,8 @@ struct FeatureIntegrationsRoutesTests {
 
             // The table is authoritative: reject an accidental duplicate or gap
             // in the table itself before comparing it to the router.
-            #expect(expectedIntegrationsRoutes.count == 42)
-            #expect(expected.count == 42)
+            #expect(expectedIntegrationsRoutes.count == 44)
+            #expect(expected.count == 44)
 
             // One route per table entry, and no route outside the five
             // extracted families.

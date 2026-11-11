@@ -730,6 +730,19 @@ extension EmailLoginDirectory {
         }
     }
 
+    /// The avatar and integration-logo port shared by every profile route.
+    public var avatars: AvatarService {
+        AvatarService(storage: oauth.assets, oauth: oauth)
+    }
+
+    public func configureAvatarStorage(_ storage: any PublicAssetObjectStoring) {
+        oauth.assets.configure(storage)
+    }
+
+    public func requireDurableAvatarStorage() {
+        oauth.assets.requireDurable()
+    }
+
     public func requireDurableAttachmentStorage() {
         messagesAndThreadsStore.withState { $0.requiresDurableAttachmentStorage = true }
     }

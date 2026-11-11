@@ -576,7 +576,7 @@ public struct AppLoginCompleteResponse: JSONBodyConvertible, Equatable {
 }
 
 /// One App row of `GET /api/integrations/clients`.
-public struct IntegrationSettingsClient: Sendable, Equatable {
+public struct IntegrationSettingsClient: Sendable, Equatable, JSONBodyConvertible {
     public let id: String
     public let clientId: String
     public let name: String
@@ -584,6 +584,7 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
     public let description: String?
     public let homepageUrl: String?
     public let publishStatus: String
+    public let logoUrl: String?
 
     public init(
         id: String,
@@ -592,7 +593,8 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
         appType: String,
         description: String?,
         homepageUrl: String?,
-        publishStatus: String
+        publishStatus: String,
+        logoUrl: String? = nil
     ) {
         self.id = id
         self.clientId = clientId
@@ -601,7 +603,10 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
         self.description = description
         self.homepageUrl = homepageUrl
         self.publishStatus = publishStatus
+        self.logoUrl = logoUrl
     }
+
+    public var jsonBody: OrderedJSON { json }
 
     var json: OrderedJSON {
         .object([
@@ -612,6 +617,7 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
             OrderedJSONField("description", optional: description),
             OrderedJSONField("homepageUrl", optional: homepageUrl),
             OrderedJSONField("publishStatus", publishStatus),
+            OrderedJSONField("logoUrl", optional: logoUrl),
         ])
     }
 }

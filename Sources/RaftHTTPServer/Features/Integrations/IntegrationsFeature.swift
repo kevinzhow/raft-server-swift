@@ -252,6 +252,29 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
+        integrations.on(.post, "clients", ":clientId", "logo", maxBodySize: "6mb") { request async throws -> Response in
+            let data = try await request.body.collect() ?? Data()
+            return try await respond {
+                try await self.apps.uploadIntegrationClientLogo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    contentType: request.headers[.contentType],
+                    body: data
+                )
+            }
+        }
+
+        integrations.delete("clients", ":clientId", "logo") { request async throws -> Response in
+            try await respond {
+                try await self.apps.clearIntegrationClientLogo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
         integrations.post("marketplace", ":clientId", "install") { request async throws -> Response in
             try await respond {
                 try self.apps.installMarketplaceClient(
