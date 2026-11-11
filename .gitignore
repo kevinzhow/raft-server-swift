@@ -15,3 +15,7 @@ deploy/private/
 deploy/caddy-data/
 deploy/caddy-config/
 deploy/reference-production/
+# Scripted acceptance reports and deployment-local settings.
+acceptance-*.json
+deploy/swift-production/local.env
+__pycache__/

@@ -17,10 +17,13 @@ enum ProductionDaemonIntegration {
     /// no optional/noop materializer, Directory bridge or environment bypass.
     static func connect(
         execution: AgentExecutionService, runtime: BusinessPersistenceRuntime,
-        materializer: AgentExecutionMaterializationService
+        materializer: AgentExecutionMaterializationService,
+        onboardingBriefing: OnboardingBriefingService? = nil
     ) throws -> ProductionAgentExecutionConnection {
         guard runtime.readinessSnapshot.isReady else { throw ProductionStartupError.unavailable }
-        let ingress = ProductionAgentExecutionIngress(execution: execution)
+        let ingress = ProductionAgentExecutionIngress(
+            execution: execution, runtime: runtime, onboardingBriefing: onboardingBriefing
+        )
         let registry = MachineCommandRegistry(durableIngress: ingress.callbacks)
         let worker = try ProductionAgentExecutionWorker(runtime: runtime, execution: execution,
                                                        materializer: materializer, registry: registry)

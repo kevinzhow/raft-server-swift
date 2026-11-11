@@ -5,8 +5,11 @@ import RaftShared
 extension OAuthLedger {
     public struct ChannelListInfo: Sendable {
         public var id: String
+        public var serverId: String
         public var name: String
+        public var description: String?
         public var type: String
+        public var createdAt: Date?
         public var joined: Bool
         public var lastMessageAt: Date?
         public var activityMuted: Bool
@@ -23,7 +26,7 @@ extension OAuthLedger {
     public func createChannel(serverId: String, name: String, creatorUserId: String, type: String = "channel", description: String? = nil) -> String {
         let id = UUID().uuidString.lowercased()
         self.state.withLock { ledgerState in
-            ledgerState.channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: name, type: type, description: description))
+            ledgerState.channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: name, type: type, description: description, createdAt: Date()))
             if type == "channel" {
                 ledgerState.channelHumans.insert("\(id)\n\(creatorUserId)")
             }
@@ -103,7 +106,7 @@ extension OAuthLedger {
                 return existing
             }
             let id = UUID().uuidString.lowercased()
-            ledgerState.channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: "", type: "dm"))
+            ledgerState.channelRecords.append(ChannelRecord(id: id, serverId: serverId, name: "", type: "dm", createdAt: Date()))
             // Only the actual new identity acquires these verified typed facts.
             // Existing namespaces are never repaired from projected member ids.
             for (participantId, kind) in [(firstUserId, firstKind), (secondUserId, secondKind)] {
@@ -316,6 +319,15 @@ extension OAuthLedger {
         }
     }
 
+    /// The channel row's retained creation time. `nil` for rows restored from a
+    /// snapshot written before the fact was retained; callers publish JSON
+    /// `null` instead of deriving a time from messages or build order.
+    public func channelCreatedAt(id: String) -> Date? {
+        return self.state.withLock { ledgerState in
+            return ledgerState.channelRecords.first(where: { $0.id == id })?.createdAt
+        }
+    }
+
     @discardableResult
     public func updateChannel(id: String, name: String?, description: String?, systemMessage: String?) -> Int? {
         return self.state.withLock { ledgerState in
@@ -429,8 +441,11 @@ extension OAuthLedger {
                     let prefs = ledgerState.channelNotificationPrefs["\(channel.id)\n\(userId)"] ?? ChannelNotificationPrefs()
                     return ChannelListInfo(
                         id: channel.id,
+                        serverId: channel.serverId,
                         name: channel.name,
+                        description: channel.description,
                         type: channel.type,
+                        createdAt: channel.createdAt,
                         joined: ledgerState.channelHumans.contains("\(channel.id)\n\(userId)"),
                         lastMessageAt: last,
                         activityMuted: prefs.activityMuted,

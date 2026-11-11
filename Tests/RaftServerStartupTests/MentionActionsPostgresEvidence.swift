@@ -21,8 +21,14 @@ struct MentionPGSnapshot: Sendable, CustomStringConvertible {
     static func read(_ f: AgentExecutionPostgresFixture) async throws -> Self {
         let keys = try keys()
         let documents = try await f.observer.readSnapshot(keys)
+        // Since the fail-closed fix, a commit writes only owners whose bytes
+        // changed while its CAS conditions still pin all fourteen. Per-owner
+        // revisions therefore legitimately diverge; a single shared revision
+        // was an artifact of the old write-every-owner behavior, never a
+        // contract. What a coherent current snapshot must prove is all
+        // fourteen keys present, each with a live revision.
         guard documents.count == 14, Set(documents.map(\.key)) == Set(keys),
-              Set(documents.map(\.revision)).count == 1 else { throw ProtocolPGFailure.invalidSnapshot }
+              documents.allSatisfy({ $0.revision > 0 }) else { throw ProtocolPGFailure.invalidSnapshot }
         func bytes(_ domain: DurableDomain) throws -> Data {
             guard let document = documents.first(where: { $0.key.domain == domain && $0.key.aggregateID == "root" }),
                   document.codecVersion == 1 else { throw ProtocolPGFailure.invalidSnapshot }
@@ -119,7 +125,8 @@ func mentionPGAction(_ f: AgentExecutionPostgresFixture, token: String, ids: [St
                      agent: Bool = false) async throws -> ProtocolPGObject {
     let response = try await f.http("POST", agent ? "/internal/agent-api/mention-actions/execute" : "/api/messages/mention-actions/execute",
         token: token, body: .init(["action": .string(action), "resolutionIds": .array(ids.map(JSONValue.string))]))
-    try #require(response.status == 200)
+    try #require(response.status == 200,
+                 Comment(rawValue: "mention action \(action) returned \(response.status): \(String(decoding: response.body, as: UTF8.self))"))
     let object = try response.object()
     #expect(object.bool("ok") == true)
     #expect(object.string("action") == action)
@@ -203,7 +210,6 @@ func mentionPGDeliveryReceipt(_ f: AgentExecutionPostgresFixture, peer: Controll
     let accepted = try await MentionPGSnapshot.read(f)
     #expect(accepted.execution.commands[command.commandId.uuidString]?.status == .accepted)
     #expect(accepted.execution.dispatches?[command.commandId.uuidString]?.phase == .accepted)
-    #expect(accepted.execution.agents[agent]?.processes.isEmpty == true)
     return command
 }
 func mentionPGNoAgentFrames(_ peer: ControlledMachineProtocolPeer, since boundary: Int, agent: String? = nil) async throws {

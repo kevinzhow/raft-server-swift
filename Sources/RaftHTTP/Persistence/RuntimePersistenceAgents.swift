@@ -14,6 +14,12 @@ import Foundation
 ///
 /// Reset, rather than restore, these process-presence fields:
 /// - agentActivities: direct channel activity projection (online/working/etc.).
+/// - agentActivityDetailKind/agentActivityObservedAt: the canonical kind and
+///   observation time behind that projection (ready-online busy preservation).
+/// - sequencedStatusVersions: RFC 069 per-agent (daemon process, clientSeq)
+///   watermark for `agent:status`; a new process must not inherit it.
+/// - lastReadyOnlineBroadcastAt/projectedMachineDisconnects: ready-online
+///   dedupe and per-connection-epoch disconnect projection guards.
 /// - agentLastSeenAt: external diagnostics calls <=120 seconds "online".
 /// Credential lastUsedAt and status occurrence/dedupe history remain durable.
 ///
@@ -80,6 +86,12 @@ extension AgentsRuntimeStore {
             state.featureFlagRecords = business.featureFlagRecords
             state.featureFlagRuleRecords = business.featureFlagRuleRecords
             state.agentActivities = [:]
+            state.agentActivityServerSeq = 0
+            state.agentActivityDetailKind = [:]
+            state.agentActivityObservedAt = [:]
+            state.sequencedStatusVersions = [:]
+            state.lastReadyOnlineBroadcastAt = [:]
+            state.projectedMachineDisconnects = []
             state.agentLastSeenAt = [:]
             return previous
         }

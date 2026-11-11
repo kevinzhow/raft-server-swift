@@ -1,9 +1,86 @@
 import Foundation
+import RaftShared
+
+/// `POST /api/auth/me/complete-profile` request body.
+///
+/// Pinned `routes/auth.ts:109` parses this body with a strict zod object:
+/// `name` is a non-empty string, `displayName` is trimmed and must then be
+/// 1...80 characters, and any other member is an unrecognized key. The route
+/// publishes every schema failure as `PROFILE_SETUP_BODY_INVALID` with one
+/// `issues` entry per failure, so the decoder keeps the raw JSON value and
+/// produces the same ordered issue list (and zod 4's exact messages) instead of
+/// letting a typed decode turn it into a different refusal.
+public struct CompleteProfileRequest: Sendable, Equatable {
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object. `displayName` is already trimmed when it is valid.
+    public var issues: [AuthRequestIssue]
+    public var name: String
+    public var displayName: String
+
+    public init(
+        issues: [AuthRequestIssue] = [],
+        name: String = "",
+        displayName: String = ""
+    ) {
+        self.issues = issues
+        self.name = name
+        self.displayName = displayName
+    }
+
+    /// The refusal for a body that never reached the schema (no body or invalid
+    /// JSON). Upstream parses `req.body ?? {}`, so both required members are
+    /// missing.
+    public static let missingBody = parse(nil)
+
+    /// Pinned `completeProfileRequestSchema`: a strict object whose `name` is a
+    /// non-empty string and whose `displayName` is trimmed before the 1...80
+    /// length check.
+    static func parse(_ raw: JSONValue?) -> CompleteProfileRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return CompleteProfileRequest(issues: [rootIssue])
+        }
+
+        var issues: [AuthRequestIssue] = []
+        let name = AuthRequestSchema.string(fields["name"], path: "name", min: 1)
+        issues += name.issues
+        let displayName = AuthRequestSchema.string(
+            fields["displayName"],
+            path: "displayName",
+            min: 1,
+            max: 80,
+            trim: true
+        )
+        issues += displayName.issues
+
+        // `.strict()` reports one issue for every member the shape does not
+        // know, after the shape's own issues.
+        let unknown = fields.keys.filter { $0 != "name" && $0 != "displayName" }
+        if let unrecognized = AuthRequestSchema.unrecognizedKeys(unknown) {
+            issues.append(unrecognized)
+        }
+        return CompleteProfileRequest(
+            issues: issues,
+            name: name.value ?? "",
+            displayName: displayName.value ?? ""
+        )
+    }
+}
+
+extension CompleteProfileRequest: Decodable {
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(JSONValue.self)
+        self = Self.parse(raw)
+    }
+}
 
 /// `POST /api/auth/pending-link/cancel` request body.
 ///
-/// The route decodes this and falls back to `CancelPendingLinkRequest()` on an
-/// empty or malformed body, so cancel stays idempotent and always answers 204.
+/// Pinned `routes/auth.ts:1285-1291` requires `pendingLinkToken` before the
+/// cancellation runs; the route answers its two
+/// `pending_link_token_invalid` 400s and only then calls the idempotent
+/// service.
 public struct CancelPendingLinkRequest: Codable, Sendable, Equatable {
     public var pendingLinkToken: String?
 
@@ -24,7 +101,7 @@ public struct ForgotPasswordRequest: Codable, Sendable, Equatable {
 }
 
 /// The non-revealing `POST /api/auth/forgot-password` success body.
-public struct ForgotPasswordResponse: Codable, Sendable, Equatable {
+public struct ForgotPasswordResponse: Codable, JSONBodyConvertible, Sendable, Equatable {
     public static let acceptedMessage =
         "If an account exists with that email, a reset link has been sent."
 
@@ -34,6 +111,37 @@ public struct ForgotPasswordResponse: Codable, Sendable, Equatable {
     public init(ok: Bool = true, message: String = ForgotPasswordResponse.acceptedMessage) {
         self.ok = ok
         self.message = message
+    }
+
+    /// Upstream `res.json({ ok, message })` keeps `ok` before `message`.
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", ok),
+            OrderedJSONField("message", message),
+        ])
+    }
+}
+
+/// `GET /api/auth/me/username-available` answer.
+///
+/// `reason` and `message` are absent on success (`res.json` serializes the
+/// `undefined` values away) and present for every refusal.
+public struct UsernameAvailabilityResponse: Codable, JSONBodyConvertible, Sendable, Equatable {
+    public var available: Bool
+    public var reason: String?
+    public var message: String?
+
+    public init(available: Bool, reason: String? = nil, message: String? = nil) {
+        self.available = available
+        self.reason = reason
+        self.message = message
+    }
+
+    public var jsonBody: OrderedJSON {
+        var fields = [OrderedJSONField("available", available)]
+        if let reason { fields.append(OrderedJSONField("reason", reason)) }
+        if let message { fields.append(OrderedJSONField("message", message)) }
+        return .object(fields)
     }
 }
 
@@ -66,41 +174,56 @@ public struct ResetPasswordRequest: Codable, Sendable, Equatable {
 
 /// `POST /api/auth/me/timezone-observation` request body.
 ///
-/// The published shape is exactly one key, `timezone`, holding a string. The
-/// decoder rejects any other key set so the typed route keeps the upstream
-/// `{"timezone": …, "source": …}` 400 without a raw JSON parser.
+/// Pinned `routes/auth.ts:119` is a strict zod object with exactly one string
+/// member. The decoder keeps the raw JSON value and publishes the zod 4.3.6
+/// issue list (missing/wrong-typed member, unknown key, non-object root) before
+/// the zone value is validated.
 public struct TimezoneObservationRequest: Codable, Sendable, Equatable {
     public var timezone: String?
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object.
+    public var issues: [AuthRequestIssue]
 
-    public init(timezone: String? = nil) {
-        self.timezone = timezone
+    /// The no-body request: pinned routes parse `req.body ?? {}`, so an absent
+    /// body is the empty object and reports the missing member.
+    public init() {
+        self = Self.parse(nil)
     }
+
+    public init(timezone: String?) {
+        self.timezone = timezone
+        self.issues = []
+    }
+
+    init(timezone: String?, issues: [AuthRequestIssue]) {
+        self.timezone = timezone
+        self.issues = issues
+    }
+
+    private enum CodingKeys: String, CodingKey { case timezone }
 
     public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        guard container.allKeys.map(\.stringValue) == ["timezone"] else {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "timezone must be the only key"
-            ))
-        }
-        guard let key = container.allKeys.first else {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "timezone is required"
-            ))
-        }
-        // A null or non-string value reads as absent; the service answers the
-        // published 400 either way.
-        self.timezone = try? container.decode(String.self, forKey: key)
+        let container = try decoder.singleValueContainer()
+        self = Self.parse(try container.decode(JSONValue.self))
     }
 
-    private struct AnyCodingKey: CodingKey {
-        var stringValue: String
-        var intValue: Int? { nil }
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(timezone, forKey: .timezone)
+    }
 
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { return nil }
+    static func parse(_ raw: JSONValue?) -> TimezoneObservationRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return TimezoneObservationRequest(timezone: nil, issues: [rootIssue])
+        }
+        let timezone = AuthRequestSchema.string(fields["timezone"], path: "timezone")
+        var issues = timezone.issues
+        let unknown = fields.keys.filter { $0 != "timezone" }
+        if let unrecognized = AuthRequestSchema.unrecognizedKeys(unknown) {
+            issues.append(unrecognized)
+        }
+        return TimezoneObservationRequest(timezone: timezone.value, issues: issues)
     }
 }
 

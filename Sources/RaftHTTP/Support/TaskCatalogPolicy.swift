@@ -22,7 +22,7 @@ public enum TaskCatalogPolicy {
         return (channelId, taskNumber)
     }
 
-    static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "cancelled"]
+    static let validTaskStatuses: Set<String> = ["todo", "in_progress", "in_review", "done", "closed", "cancelled"]
 
     static let labDefinitions: [(key: String, name: String, description: String, state: String)] = [
         ("open_lab", "Open Lab", "Available", "open"),

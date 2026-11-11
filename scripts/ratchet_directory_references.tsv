@@ -1,5 +1,4 @@
 Sources/RaftHTTP/DTO/AgentsAndComputersDTO.swift	1
-Sources/RaftHTTP/DTO/AuthIdentitiesDTO.swift	1
 Sources/RaftHTTP/DTO/ServersAndTasksDTO.swift	1
 Sources/RaftHTTP/EmailLogin.swift	1
 Sources/RaftHTTP/Services/ActionCardService.swift	2

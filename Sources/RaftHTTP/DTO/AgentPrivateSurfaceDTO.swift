@@ -160,6 +160,10 @@ public struct AgentSummary: Sendable, Equatable {
     public var avatarUrl: String?
     public var activity: String?
     public var activityDetail: String?
+    /// Upstream typed activity carrier (`agentLifecycleReducer` detail kind):
+    /// present when a retained snapshot exists. `terminal_failure_paused` is
+    /// the manual-recovery/breaker warning the Web renders.
+    public var activityDetailKind: String?
 
     public struct Config: Sendable, Equatable {
         public var runtimeConfigJSON: String
@@ -190,7 +194,8 @@ public struct AgentSummary: Sendable, Equatable {
         reasoningEffort: String? = nil,
         avatarUrl: String? = nil,
         activity: String? = nil,
-        activityDetail: String? = nil
+        activityDetail: String? = nil,
+        activityDetailKind: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -211,6 +216,7 @@ public struct AgentSummary: Sendable, Equatable {
         self.avatarUrl = avatarUrl
         self.activity = activity
         self.activityDetail = activityDetail
+        self.activityDetailKind = activityDetailKind
     }
 
     var json: OrderedJSON {
@@ -234,6 +240,7 @@ public struct AgentSummary: Sendable, Equatable {
         }
         if let activity { fields.append(OrderedJSONField("activity", activity)) }
         if let activityDetail { fields.append(OrderedJSONField("activityDetail", activityDetail)) }
+        if let activityDetailKind { fields.append(OrderedJSONField("activityDetailKind", activityDetailKind)) }
         if includesLastSeen {
             fields.append(OrderedJSONField("lastSeenAt", optional: lastSeenAt))
         }

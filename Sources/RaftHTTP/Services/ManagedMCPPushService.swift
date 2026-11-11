@@ -98,6 +98,97 @@ public struct ManagedMCPPushService: Sendable {
         return OkResponse()
     }
 
+    // MARK: - GET /api/push/vapid-key
+
+    /// The VAPID public key is intentionally unauthenticated; without one the
+    /// published 503 makes the Web treat push as unavailable
+    /// (`routes/push.ts:77-88`).
+    public func vapidKey(configuredKey: String?) throws -> WebPushVapidKeyResponse {
+        guard let key = configuredKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            throw ManagedMCPLifecycleError.pushNotConfigured
+        }
+        return WebPushVapidKeyResponse(publicKey: key)
+    }
+
+    // MARK: - POST /api/push/prompt-events
+
+    private static let promptEvents: Set<String> = [
+        "web_push_prompt_shown", "web_push_native_result",
+        "web_push_subscription_saved", "web_push_subscription_failed",
+    ]
+    private static let maxEventFieldLength = 128
+
+    /// `routes/push.ts:92-139`: authenticated (not verified), the event must be
+    /// in the closed set and the trigger non-empty; the optional `X-Server-Id`
+    /// is retained only when the caller is a member.
+    public func recordPushPromptEvent(
+        authorization: String?,
+        headerServerId: String?,
+        body: LenientJSONObjectRequest?
+    ) throws -> OkResponse {
+        let principal = try principal(authorization)
+        guard let event = Self.cleanEventField(body?["event"]?.legacyString),
+              Self.promptEvents.contains(event),
+              let trigger = Self.cleanEventField(body?["trigger"]?.legacyString)
+        else { throw ManagedMCPLifecycleError.invalidPushPromptEvent }
+        var serverId: String?
+        if let headerServerId, !headerServerId.isEmpty,
+           oauth.memberRole(serverId: headerServerId, userId: principal.userId) != nil {
+            serverId = headerServerId
+        }
+        notifications.recordPushPromptEvent(PushPromptEvent(
+            userId: principal.userId,
+            serverId: serverId,
+            event: event,
+            trigger: trigger,
+            result: Self.cleanEventField(body?["result"]?.legacyString),
+            permissionBefore: Self.cleanEventField(body?["permissionBefore"]?.legacyString),
+            permissionAfter: Self.cleanEventField(body?["permissionAfter"]?.legacyString),
+            detail: Self.cleanEventField(body?["detail"]?.legacyString),
+            createdAt: now()
+        ))
+        return OkResponse()
+    }
+
+    private static func cleanEventField(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(Self.maxEventFieldLength))
+    }
+
+    // MARK: - DELETE /api/push/subscribe
+
+    /// `routes/push.ts:182-208`: no push-enabled gate; an absent endpoint is
+    /// the published 400 and a repeat removal is the same success.
+    public func removeWebPushSubscription(
+        authorization: String?,
+        body: WebPushSubscribeRequest?
+    ) throws -> OkResponse {
+        let principal = try principal(authorization)
+        guard let endpoint = body?.endpoint, !endpoint.isEmpty else {
+            throw ManagedMCPLifecycleError.missingPushEndpoint
+        }
+        notifications.removeWebPushSubscription(userId: principal.userId, endpoint: endpoint)
+        return OkResponse()
+    }
+
+    // MARK: - POST /api/push/test
+
+    /// `routes/push.ts:349-397`: the disabled contract is the 503; a caller
+    /// without a stored subscription is the 409; this port has no web-push
+    /// transport, so a stored subscription is the truthful 502.
+    public func sendTestPush(authorization: String?, configuredKey: String?) throws -> OkResponse {
+        guard let key = configuredKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            throw ManagedMCPLifecycleError.pushNotConfigured
+        }
+        let principal = try principal(authorization)
+        guard notifications.webPushSubscriptionCount(userId: principal.userId) > 0 else {
+            throw ManagedMCPLifecycleError.noPushSubscription
+        }
+        throw ManagedMCPLifecycleError.pushDeliveryFailed
+    }
+
     // MARK: - POST /api/push/family-revoke
 
     public func revokePushFamily(body: PushFamilyRevokeRequest?) throws -> NoContentResponse {

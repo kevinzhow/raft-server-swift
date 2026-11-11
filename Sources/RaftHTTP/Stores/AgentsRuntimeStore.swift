@@ -75,6 +75,24 @@ final class AgentsRuntimeStore: Sendable {
         var agentChannelJoinedAt: [String: Date] = [:]
         var agentChannelPosted: Set<String> = []
         var agentActivities: [String: (activity: String, detail: String)] = [:]
+        /// Process-lifetime observation facts behind `agentActivities`: the
+        /// canonical detailKind and when the server wrote it. They let a ready
+        /// broadcast preserve a fresh busy activity instead of overwriting it.
+        /// Reset with the presence rows on restore; neither is a durable fact.
+        var agentActivityDetailKind: [String: String] = [:]
+        var agentActivityObservedAt: [String: Date] = [:]
+        /// RFC 069 §8 per-agent (daemon process, clientSeq) watermark for
+        /// `agent:status`. A new daemon process owns an independent sequence
+        /// space, so this is process/connection state, not durable presence.
+        var sequencedStatusVersions: [String: (daemonInstanceId: String, clientSeq: Int64)] = [:]
+        /// `broadcastReadyOnline`'s one-second per-agent dedupe window.
+        var lastReadyOnlineBroadcastAt: [String: Date] = [:]
+        /// One offline activity projection per machine connection epoch.
+        var projectedMachineDisconnects: Set<String> = []
+        /// Process-lifetime monotonic sequence for `agent:activity` socket
+        /// pushes (upstream `lastActivityServerSeq`). Reset with the presence
+        /// rows on restore; it is not a durable fact.
+        var agentActivityServerSeq: Int = 0
         var agentLastSeenAt: [String: Date] = [:]
         var agentAttachmentBytes: [String: Data] = [:]
         var externalPushWebhooks: [String: (url: String, secret: String)] = [:]

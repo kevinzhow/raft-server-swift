@@ -69,6 +69,7 @@ public struct IntegrationServices: Sendable {
     public let cards: ActionCardService
     public let registration: ActionCardIntegrationRegisterService
     public let apps: IntegrationsAndAppAccessService
+    public let appManagement: IntegrationAppManagementService
     public let agentApps: AgentIntegrationAppsService
     public let messageLookup: AgentMessageLookupService
     public let lifecycle: ManagedMCPLifecycleService

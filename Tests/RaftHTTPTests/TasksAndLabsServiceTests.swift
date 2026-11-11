@@ -99,6 +99,7 @@ private func tasksFixture(slug: String, suffix: String) -> (
                     taskNumber: 1,
                     title: "amended-\(writer)",
                     description: nil,
+                    actorId: "bot-id",
                     amendedByName: "bot",
                     now: Date()
                 )
@@ -112,7 +113,7 @@ private func tasksFixture(slug: String, suffix: String) -> (
     #expect(task?.amendedByType == "agent")
     #expect(store.amendTask(
         channelId: fixture.channelId, taskNumber: 9, title: "x", description: nil,
-        amendedByName: "bot", now: Date()
+        actorId: "bot-id", amendedByName: "bot", now: Date()
     ) == nil)
 }
 

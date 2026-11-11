@@ -55,6 +55,8 @@ extension AgentsRuntimeStore {
                     if effective >= (state.agentStatusOccurredAt[agentId] ?? .distantPast) {
                         state.agentStatusOccurredAt[agentId] = effective
                         state.agentActivities[agentId] = (activity: status, detail: detailText)
+                        state.agentActivityDetailKind[agentId] = "other"
+                        state.agentActivityObservedAt[agentId] = effective
                     }
                 } else if let hookName = event.hookEventName, !state.agentStatusAdopted.contains(agentId) {
                     let hookStatus: String
@@ -67,6 +69,8 @@ extension AgentsRuntimeStore {
                     if effective >= (state.agentStatusOccurredAt[agentId] ?? .distantPast) {
                         state.agentStatusOccurredAt[agentId] = effective
                         state.agentActivities[agentId] = (activity: hookStatus, detail: "")
+                        state.agentActivityDetailKind[agentId] = "other"
+                        state.agentActivityObservedAt[agentId] = effective
                     }
                 }
             }
@@ -100,6 +104,15 @@ extension AgentsRuntimeStore {
             guard state.serverAgents[agentId]?.status == "stopped" else { return false }
             state.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channelType))
             return true
+        }
+    }
+
+    /// The upstream `wake_suppressed` warning is not limited to the manual stop
+    /// intent: a recovery-gated agent drops the delivery too. Keep the same
+    /// sender-visible ledger facts without inventing a `stopped` status.
+    func recordSuppressedAgentDelivery(agentId: String, messageId: String, channelType: String) {
+        withState { state in
+            state.storedAgentDeliveries.append((agentId: agentId, messageId: messageId, channelType: channelType))
         }
     }
 

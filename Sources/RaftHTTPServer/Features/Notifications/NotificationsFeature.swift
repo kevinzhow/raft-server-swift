@@ -317,6 +317,42 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 )
             }
         }
+        // VAPID is deployment configuration; without it the Web treats push as
+        // unavailable (503). The route is intentionally unauthenticated.
+        push.get("vapid-key") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPPush.vapidKey(
+                    configuredKey: services.releaseEnvironment["VAPID_PUBLIC_KEY"]
+                )
+            }
+        }
+        push.post("prompt-events") { request async throws -> Response in
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPPush.recordPushPromptEvent(
+                    authorization: request.headers[.authorization],
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    body: body
+                )
+            }
+        }
+        push.delete("subscribe") { request async throws -> Response in
+            let body = await jsonRequestBody(WebPushSubscribeRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPPush.removeWebPushSubscription(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
+        }
+        push.post("test") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPPush.sendTestPush(
+                    authorization: request.headers[.authorization],
+                    configuredKey: services.releaseEnvironment["VAPID_PUBLIC_KEY"]
+                )
+            }
+        }
         releaseNotes.get { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
                 try ReleaseNotes.list(
@@ -541,3 +577,4 @@ private func mobileAppEmailUnsubscribeResponse(_ outcome: MobileAppEmailUnsubscr
     headers[HTTPField.Name("Referrer-Policy")!] = "no-referrer"
     return Response(status: status, headers: headers, body: .init(string: html))
 }
+

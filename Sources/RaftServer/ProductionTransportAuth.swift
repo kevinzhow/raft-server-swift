@@ -28,6 +28,11 @@ struct ProductionRealtimeAuth: RealtimeAuthorizing {
             base.syncResumePayload(serverId: serverId, userId: userId, lastSeq: lastSeq, limit: limit)
         }
     }
+    func maxMessageSeq(serverId: String) -> Int? {
+        try? runtime.withCommittedReadView {
+            base.maxMessageSeq(serverId: serverId)
+        }
+    }
 }
 
 /// Credential lookups can update last-used facts. Complete their PG commit

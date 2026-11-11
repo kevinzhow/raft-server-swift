@@ -81,10 +81,13 @@ private func publicBytesServices(
 }
 
 @Test func publicSettingsKeepLastDuplicateMemberAndLegacyBooleanCoercion() async throws {
+    let serverId = "33333333-3333-4333-8333-000001320001"
     let directory = PublicServerDirectory()
-    _ = directory.addServer(id: "srv", name: "Settings", slug: "settings", ownerId: "owner", ownerToken: "owner-token")
+    let accounts = publicServerAuthAccounts([("owner", "owner-token")])
+    accounts.oauth.addOwnedServer(id: serverId, slug: "settings", name: "Settings", ownerId: "owner")
+    _ = directory.addServer(id: serverId, name: "Settings", slug: "settings", ownerId: "owner", ownerToken: "owner-token")
     try await withApp { app in
-        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: publicServerAuthAccounts([("owner", "owner-token")])))
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, publicServerDirectory: directory, emailAccounts: accounts))
         try await app.testing { client in
             for (body, expected) in [
                 (#"{"publiclyVisible":false,"publiclyVisible":1}"#, true),
@@ -92,18 +95,29 @@ private func publicBytesServices(
                 (#"{"publiclyVisible":1.0,"ignored":{"anything":true}}"#, true),
                 (#"{"publiclyVisible":1,"publiclyVisible":false}"#, false),
             ] {
-                let response = try await client.send(.patch, headers: [.authorization: "Bearer owner-token", .contentType: "application/json"], to: "/api/servers/srv/public-visibility") {
+                let response = try await client.send(.patch, headers: [
+                    .authorization: "Bearer owner-token",
+                    .contentType: "application/json",
+                    HTTPField.Name("X-Server-Id")!: serverId,
+                ], to: "/api/servers/\(serverId)/public-visibility") {
                     $0.body = .init(string: body)
                 }
                 #expect(response.status == .ok)
                 #expect(response.body.string == "{\"publiclyVisible\":\(expected),\"publicGuestJoinEnabled\":false,\"publicSearchEnabled\":true}")
             }
-            let invalid = try await client.send(.patch, headers: [.authorization: "Bearer owner-token", .contentType: "application/json"], to: "/api/servers/srv/public-visibility") {
+            let invalid = try await client.send(.patch, headers: [
+                .authorization: "Bearer owner-token",
+                .contentType: "application/json",
+                HTTPField.Name("X-Server-Id")!: serverId,
+            ], to: "/api/servers/\(serverId)/public-visibility") {
                 $0.body = .init(string: #"{"publiclyVisible":2}"#)
             }
             #expect(invalid.status == .badRequest)
             #expect(invalid.body.string == #"{"error":"publiclyVisible must be a boolean"}"#)
-            let anonymous = try await client.send(.patch, headers: [.contentType: "application/json"], to: "/api/servers/srv/public-visibility") {
+            let anonymous = try await client.send(.patch, headers: [
+                .contentType: "application/json",
+                HTTPField.Name("X-Server-Id")!: serverId,
+            ], to: "/api/servers/\(serverId)/public-visibility") {
                 $0.body = .init(string: #"{"publiclyVisible":"invalid"}"#)
             }
             #expect(anonymous.status == .unauthorized)

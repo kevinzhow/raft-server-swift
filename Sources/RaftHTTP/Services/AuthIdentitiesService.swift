@@ -13,6 +13,7 @@ public enum AuthIdentitiesError: DomainError, Equatable {
     case passwordCredentialRequired
     case notAServerMember
     case invalidLoginBody([AuthRequestIssue])
+    case pendingLinkTokenInvalid
     case invalidCredentials
     case pendingLinkExpired
     case pendingLinkAccountMismatch
@@ -34,6 +35,8 @@ public enum AuthIdentitiesError: DomainError, Equatable {
     case wrongCurrentPassword
     case noAvatarProvided
     case avatarTooLarge(maxBytes: Int)
+    case avatarBadFormat
+    case avatarUploadFailed
 
     public var status: UInt {
         switch self {
@@ -48,10 +51,13 @@ public enum AuthIdentitiesError: DomainError, Equatable {
             409
         case .pendingLinkExpired, .requestExpired, .codeConsumed, .codeExpired:
             410
-        case .invalidLoginBody, .invalidAppLoginRequest, .returnUriNotAllowed,
-             .challengeMethodInvalid, .challengeInvalid, .invalidAppLoginCompletion, .pkceMismatch,
-             .profileUpdateFailed, .invalidProfile, .noAvatarProvided, .avatarTooLarge:
+        case .invalidLoginBody, .pendingLinkTokenInvalid, .invalidAppLoginRequest,
+             .returnUriNotAllowed, .challengeMethodInvalid, .challengeInvalid,
+             .invalidAppLoginCompletion, .pkceMismatch, .profileUpdateFailed, .invalidProfile,
+             .noAvatarProvided, .avatarTooLarge, .avatarBadFormat:
             400
+        case .avatarUploadFailed:
+            500
         }
     }
 
@@ -63,6 +69,7 @@ public enum AuthIdentitiesError: DomainError, Equatable {
         case .passwordCredentialRequired: "Set a password before disconnecting your final sign-in account."
         case .notAServerMember: "Not a member of this server"
         case .invalidLoginBody: "Invalid email login body"
+        case .pendingLinkTokenInvalid: "pendingLinkToken must be a string"
         case .invalidCredentials: "Invalid email or password"
         case .pendingLinkExpired: "This sign-in link expired. Sign in again to connect the account."
         case .pendingLinkAccountMismatch: "The pending link belongs to a different account"
@@ -84,6 +91,8 @@ public enum AuthIdentitiesError: DomainError, Equatable {
         case .wrongCurrentPassword: "Current password is incorrect"
         case .noAvatarProvided: "No avatar file provided"
         case .avatarTooLarge: "Avatar image must be 5 MB or smaller"
+        case .avatarBadFormat: "Only image files are allowed (JPEG, PNG, GIF, WebP)"
+        case .avatarUploadFailed: "Failed to upload avatar"
         }
     }
 
@@ -129,12 +138,13 @@ public enum AuthIdentitiesError: DomainError, Equatable {
             .object([
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("code", "email_login_body_invalid"),
-                OrderedJSONField("issues", .array(issues.map {
-                    .object([
-                        OrderedJSONField("path", $0.path),
-                        OrderedJSONField("message", $0.message),
-                    ])
-                })),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
+            ])
+        case .pendingLinkTokenInvalid:
+            // Pinned `routes/auth.ts:169-178` writes `code` first.
+            .object([
+                OrderedJSONField("code", "pending_link_token_invalid"),
+                OrderedJSONField("error", errorMessage),
             ])
         case .requestExpired(let redirectUrl):
             .object([
@@ -147,6 +157,11 @@ public enum AuthIdentitiesError: DomainError, Equatable {
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("errorCode", "PROFILE_AVATAR_TOO_LARGE"),
                 OrderedJSONField("maxBytes", maxBytes),
+            ])
+        case .avatarBadFormat:
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_BAD_FORMAT"),
             ])
         default:
             nil
@@ -273,16 +288,29 @@ public struct AuthIdentitiesService: Sendable {
     }
 
     private static func loginInput(_ request: LoginRequest?) throws -> (email: String, password: String, pendingLinkToken: String?) {
-        guard let request else {
-            throw AuthIdentitiesError.invalidLoginBody([
-                AuthRequestIssue(path: "", message: "Expected object, received string"),
-            ])
+        // Pinned `routes/auth.ts:147` parses `req.body ?? {}` with the zod
+        // login schema; the DTO has already produced that issue list.
+        let request = request ?? LoginRequest.parse(nil)
+        guard request.issues.isEmpty else {
+            throw AuthIdentitiesError.invalidLoginBody(request.issues)
         }
-        var issues: [AuthRequestIssue] = []
-        let email = Self.requiredString(request.email, path: "email", into: &issues)
-        let password = Self.requiredString(request.password, path: "password", into: &issues)
-        if !issues.isEmpty { throw AuthIdentitiesError.invalidLoginBody(issues) }
-        return (AccountNaming.normalize(email ?? ""), password ?? "", request.pendingLinkToken)
+        guard !request.pendingLinkTokenInvalid else {
+            throw AuthIdentitiesError.pendingLinkTokenInvalid
+        }
+        guard let email = request.email, let password = request.password else {
+            throw AuthIdentitiesError.invalidLoginBody(request.issues)
+        }
+        return (AccountNaming.normalize(email), password, request.pendingLinkToken)
+    }
+
+    /// The full public user projection, including the separately stored
+    /// timezone observation pair `toPublicUser` reads from the same row.
+    private func userDTO(_ account: Account) -> AuthUserDTO {
+        AuthUserDTO(
+            account: account,
+            observation: store.timezoneObservation(userId: account.id),
+            profileSetupProvider: store.profileSetupProvider(userId: account.id)
+        )
     }
 
     private func finishLogin(_ candidate: PasswordCredentialCandidate, pendingLinkToken: String?) throws -> LoginResponse {
@@ -295,7 +323,7 @@ public struct AuthIdentitiesService: Sendable {
         ) {
         case .authenticated(let account, let tokens, let linkedProvider):
             return LoginResponse(
-                user: AuthUserDTO(account: account),
+                user: userDTO(account),
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
                 linkedProvider: linkedProvider
@@ -306,26 +334,6 @@ public struct AuthIdentitiesService: Sendable {
             throw AuthIdentitiesError.pendingLinkAccountMismatch
         case .rejected:
             throw AuthIdentitiesError.invalidCredentials
-        }
-    }
-
-    private static func requiredString(
-        _ field: LoginBodyField,
-        path: String,
-        into issues: inout [AuthRequestIssue]
-    ) -> String? {
-        switch field {
-        case .absent:
-            issues.append(AuthRequestIssue(path: path, message: "Required"))
-            return nil
-        case .string(let value) where value.isEmpty:
-            issues.append(AuthRequestIssue(path: path, message: "String must contain at least 1 character(s)"))
-            return nil
-        case .string(let value):
-            return value
-        case .wrongType(let name):
-            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(name)"))
-            return nil
         }
     }
 
@@ -438,7 +446,7 @@ public struct AuthIdentitiesService: Sendable {
         ) {
         case .completed(let account, let tokens):
             return AppLoginCompleteResponse(
-                user: AuthUserDTO(account: account),
+                user: userDTO(account),
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken
             )
@@ -466,15 +474,7 @@ public struct AuthIdentitiesService: Sendable {
         guard let account = store.account(userId: userId), account.retiredAt == nil else {
             throw AuthIdentitiesError.invalidToken
         }
-        let observed = store.timezoneObservation(userId: userId).map {
-            TimezoneObservationResponse(
-                firstObservedTimezone: $0.firstTimezone,
-                firstObservedTimezoneAt: DateText.iso8601($0.firstAt),
-                lastObservedTimezone: $0.lastTimezone,
-                lastObservedTimezoneAt: DateText.iso8601($0.lastAt)
-            )
-        }
-        return AuthMeResponse(user: AuthUserDTO(account: account), observedTimezone: observed)
+        return AuthMeResponse(user: userDTO(account))
     }
 
     /// `POST /api/auth/me/avatar`. A file over 5 MB is refused before the stored path changes.
@@ -482,19 +482,29 @@ public struct AuthIdentitiesService: Sendable {
         authorization: String?,
         contentType: String?,
         body: Data
-    ) throws -> AuthProfileUserResponse {
+    ) async throws -> AuthProfileUserResponse {
         let userId = try authorizedUser(authorization)
-        guard let file = FormPayload.multipartFile(named: "avatar", contentType: contentType, body: body) else {
-            throw AuthIdentitiesError.noAvatarProvided
-        }
-        if file.count > AccountNaming.maxProfileAvatarBytes {
-            throw AuthIdentitiesError.avatarTooLarge(maxBytes: AccountNaming.maxProfileAvatarBytes)
-        }
-        let hash = String(AuthTokenCodec.sha256(file).prefix(32))
-        guard let account = store.setAvatarURL(userId: userId, url: "/api/avatars/users/\(hash).webp") else {
+        guard let current = store.account(userId: userId), current.retiredAt == nil else {
             throw AuthIdentitiesError.invalidToken
         }
-        return AuthProfileUserResponse(user: AuthUserDTO(account: account))
+        guard let file = FormPayload.multipartFilePart(named: "avatar", contentType: contentType, body: body) else {
+            throw AuthIdentitiesError.noAvatarProvided
+        }
+        let stored: AvatarStoredFile
+        do {
+            stored = try await AvatarService(storage: oauth.assets, oauth: oauth)
+                .storeUserAvatar(existingAvatarUrl: current.avatarUrl, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge(let maxBytes): throw AuthIdentitiesError.avatarTooLarge(maxBytes: maxBytes)
+            case .badFormat: throw AuthIdentitiesError.avatarBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure: throw AuthIdentitiesError.avatarUploadFailed
+            }
+        }
+        guard let account = store.setAvatarURL(userId: userId, url: stored.url) else {
+            throw AuthIdentitiesError.invalidToken
+        }
+        return AuthProfileUserResponse(user: userDTO(account))
     }
 
     /// `PATCH /api/auth/me`. A wrong current password is refused before any
@@ -542,7 +552,9 @@ public struct AuthIdentitiesService: Sendable {
     private static func passwordChange(_ request: UpdateProfileRequest) throws -> (current: String, next: String)? {
         guard case .value(let current) = request.currentPassword, !current.isEmpty,
               case .value(let next) = request.newPassword, !next.isEmpty else { return nil }
-        guard next.count >= 8 else { throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters") }
+        // Pinned `routes/auth.ts:1503-1506` checks JavaScript `String.length`,
+        // so the floor counts UTF-16 code units.
+        guard next.utf16.count >= 8 else { throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters") }
         return (current, next)
     }
 
@@ -565,13 +577,54 @@ public struct AuthIdentitiesService: Sendable {
             now: now(),
             newAnalyticsId: UUID().uuidString.lowercased()
         ) else { throw AuthIdentitiesError.invalidToken }
-        return AuthProfileUserResponse(user: AuthUserDTO(account: account))
+        return AuthProfileUserResponse(user: userDTO(account))
     }
+
+    private static let descriptionValidationMessage =
+        "Description must be a string of at most \(AccountNaming.maxUserDescriptionLength) characters"
 
     /// The per-field checks in the order the retired handler ran them: the
     /// first failing field decides the 400.
     private static func validatedUpdate(_ request: UpdateProfileRequest) throws -> AccountProfileUpdate {
         var update = AccountProfileUpdate()
+
+        // Pinned `routes/auth.ts:1529-1530`: a present `displayName` is copied
+        // into the update verbatim — no trim, no length check and no derivation
+        // from the handle. This is also the only published way to repair a
+        // display name written earlier (completion is one-shot). A JSON value
+        // that is neither a string nor null has no published body: the pinned
+        // server would pass it to the text column, where only the driver's
+        // stringification defined the result, so the port leaves the stored
+        // value alone rather than inventing that mapping.
+        switch request.displayName {
+        case .absent, .invalid:
+            break
+        case .null:
+            update.displayName = .some(nil)
+        case .value(let raw):
+            update.displayName = .some(raw)
+        }
+
+        // Pinned `routes/auth.ts:1531-1537`: the raw value is capped at 3000
+        // JavaScript UTF-16 units, then `.trim() || null`. The check runs before
+        // the preference, survey and referral fields, and nothing is written
+        // until every field has passed.
+        switch request.description {
+        case .absent:
+            break
+        case .null:
+            update.description = .some(nil)
+        case .invalid:
+            throw AuthIdentitiesError.invalidProfile(Self.descriptionValidationMessage)
+        case .value(let raw):
+            guard raw.utf16.count <= AccountNaming.maxUserDescriptionLength else {
+                throw AuthIdentitiesError.invalidProfile(Self.descriptionValidationMessage)
+            }
+            // JavaScript `.trim()` is the ECMAScript whitespace set; Foundation
+            // also trims NEL, which the source preserves.
+            let trimmed = MessageMentionRules.trimmingJavaScriptWhitespace(raw)
+            update.description = .some(trimmed.isEmpty ? nil : trimmed)
+        }
 
         switch request.displayLanguage {
         case .absent:
@@ -621,13 +674,20 @@ public struct AuthIdentitiesService: Sendable {
         case .absent: break
         case .value(let value) where ["off", "manual", "auto"].contains(value):
             update.preferredTranslationMode = value
+            update.autoTranslationEnabled = value == "auto"
         default:
             throw AuthIdentitiesError.invalidProfile("Invalid preferredTranslationMode")
         }
 
         switch request.autoTranslationEnabled {
         case .absent: break
-        case .value(let value): update.autoTranslationEnabled = value
+        case .value(let value):
+            // Upstream derives the mode-less boolean into the mode too; when
+            // the request named a mode, that mode's derivation wins.
+            if case .absent = request.preferredTranslationMode {
+                update.autoTranslationEnabled = value
+                update.preferredTranslationMode = value ? "auto" : "off"
+            }
         default:
             throw AuthIdentitiesError.invalidProfile("Invalid autoTranslationEnabled")
         }

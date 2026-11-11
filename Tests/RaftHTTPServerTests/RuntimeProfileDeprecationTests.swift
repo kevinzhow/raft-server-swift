@@ -15,6 +15,7 @@ import VaporTesting
     accounts.oauth.addOwnedServer(id: serverId, slug: "runtime-profile", name: "Runtime Profile", ownerId: ownerId)
     let agentId = accounts.oauth.createAgent(serverId: serverId, name: "runtime-profile-agent")
     let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "runtime-profile-machine")
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
     let apiKey = accounts.machineAPIKey(machineId: machineId) ?? ""
     let message = "Runtime Profile migration acknowledgments are deprecated; runtime changes reset the session automatically."
 

@@ -306,10 +306,10 @@ private func admissionRegister(
                     : #"{"error":"Email verification required"}"#
                 for base in acceptedMounts {
                     for leaf in ["/runtime-options", "/runtime-models/codex", "/runtime%2Dmodels/codex"] {
-                        let denied = try await admissionSend(client, .get, base + leaf, token: registered.token)
+                        let denied = try await admissionSend(client, .get, base + leaf, token: registered.token, serverId: serverId)
                         #expect(denied.status == .forbidden)
                         #expect(denied.body.string == expected)
-                        let head = try await admissionSend(client, .head, base + leaf, token: registered.token)
+                        let head = try await admissionSend(client, .head, base + leaf, token: registered.token, serverId: serverId)
                         #expect(head.status == .forbidden)
                         #expect((head.body.string ?? "").isEmpty)
                         #expect(head.headers[.contentLength] == denied.headers[.contentLength])
@@ -332,10 +332,10 @@ private func admissionRegister(
                 body: "{\"name\":\"mount-boundary-owner\",\"displayName\":\"Mount Boundary\"}")
             #expect(complete.status == .ok)
             for base in acceptedMounts {
-                let options = try await admissionSend(client, .get, base + "/runtime-options", token: registered.token)
+                let options = try await admissionSend(client, .get, base + "/runtime-options", token: registered.token, serverId: serverId)
                 #expect(options.status == .ok)
                 for leaf in ["/runtime-models/codex", "/runtime%2Dmodels/codex"] {
-                    let unbound = try await admissionSend(client, .get, base + leaf, token: registered.token)
+                    let unbound = try await admissionSend(client, .get, base + leaf, token: registered.token, serverId: serverId)
                     #expect(unbound.status == .ok)
                     #expect(unbound.body.string == #"{"kind":"error","retryable":true,"code":"computer_offline"}"#)
                     #expect(unbound.headers[.cacheControl] == "private, no-store")

@@ -210,6 +210,140 @@ public struct TasksAndLabsService: Sendable {
         return ChannelTaskResponse(task: producer.project(task, to: surface).projection)
     }
 
+    // MARK: - GET /api/tasks/:taskId/history
+
+    /// The canonical append-only task timeline.
+    ///
+    /// Order mirrors upstream `routes/tasks.ts`: the global auth/verification/
+    /// server middleware, then `requireTaskInServer`'s task + channel read
+    /// checks. A legacy task (no host message / no canonical row) answers the
+    /// service's 409 message; canonical events come only from rows that carry
+    /// the complete `task_events` group.
+    public func taskHistory(
+        authorization: String?,
+        serverId: String,
+        taskId: String
+    ) throws -> TaskHistoryResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw TaskHistoryError.authRequired(bearerPresent: authorization?.hasPrefix("Bearer ") == true)
+        }
+        guard producer.profiles.isEmailVerified(userId: userId) else {
+            throw TaskHistoryError.emailVerificationRequired
+        }
+        guard !serverId.isEmpty else { throw TaskHistoryError.missingServerId }
+        guard oauth.activeRegularServerMember(serverId: serverId, userId: userId) else {
+            throw TaskHistoryError.notServerMember
+        }
+        guard let task = tasks.task(id: taskId),
+              producer.readableTaskSurface(task, serverId: serverId, userId: userId) != nil
+        else {
+            throw TaskHistoryError.taskNotFound
+        }
+        guard task.hasHostMessage else { throw TaskHistoryError.legacyTask }
+        return TaskHistoryResponse(events: canonicalTaskEvents(taskId: task.id))
+    }
+
+    /// The `task_events` projection both the human and the agent history reads
+    /// publish. Rows without the complete event group are skipped; an
+    /// unresolvable actor keeps `actorName` null rather than inventing a name.
+    func canonicalTaskEvents(taskId: String) -> [TaskHistoryEventDTO] {
+        tasks.publishedTaskEvents(taskId: taskId).compactMap { record -> TaskHistoryEventDTO? in
+            guard let history = record.history else { return nil }
+            return TaskHistoryEventDTO(
+                id: history.id,
+                seq: history.seq,
+                eventType: record.eventType,
+                actorType: record.actorType,
+                actorName: Self.taskHistoryActorName(
+                    type: record.actorType, id: history.actorId, oauth: oauth, profiles: producer.profiles),
+                payloadJSON: history.payloadJSON,
+                createdAt: DateText.isoString(history.createdAt)
+            )
+        }
+    }
+
+    // MARK: - GET /internal/agent-api/tasks/history
+
+    /// The credential-surface task history read.
+    ///
+    /// Order: credential capability (`tasks`), the `task:read` grant, the
+    /// channel reference (404 `Agent or channel not found`), the task row
+    /// (404 `Task not found`), then the canonical-only guard (409). The
+    /// request validator has already guaranteed `channel` and a positive
+    /// `task_number`.
+    public func agentTaskHistory(
+        authorization: String?,
+        legacyAgentId: String?,
+        channelRef: String,
+        taskNumber: Int
+    ) throws -> AgentTaskHistoryResponse {
+        let identity = try agentTasks.taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
+        switch feedbackLocators.grantDecision(agentId: identity.agentId, scope: "task:read") {
+        case .allowed: break
+        case .missingScope(let scope): throw FeedbackLocatorError.missingScope(scope: scope)
+        }
+        guard let channelId = agentTasks.taskChannel(
+            serverId: identity.serverId, agentId: identity.agentId, reference: channelRef
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+            throw AgentTaskApiError.taskNotFound
+        }
+        guard task.hasHostMessage else { throw AgentTaskApiError.legacyTaskHistory }
+        return AgentTaskHistoryResponse(
+            task: AgentTaskCardProjection(
+                taskNumber: task.taskNumber,
+                title: task.title,
+                description: task.description,
+                revision: task.revision
+            ),
+            events: canonicalTaskEvents(taskId: task.id)
+        )
+    }
+
+    // MARK: - GET /internal/agent/:id/tasks (legacy machine surface)
+
+    /// The legacy machine task list. `LegacyAgentSurfaceService` has already
+    /// authenticated the machine and checked the `task:read` grant; this method
+    /// owns the channel resolution, the `?status` filter and the projection.
+    public func legacyAgentTasks(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        channelRef: String,
+        rawQuery: String?
+    ) throws -> LegacyAgentTaskListResponse {
+        guard let channelId = agentTasks.taskChannel(
+            serverId: agent.serverId, agentId: agent.id, reference: channelRef
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard let surface = producer.surfaces(for: channelId).first(where: {
+            $0.channelId == channelId && $0.serverId == agent.serverId
+        }) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        let status: String?
+        switch Self.statusFilter(rawQuery) {
+        case .invalid: throw AgentTaskApiError.invalidStatusFilter
+        case .valid(let value): status = value
+        }
+        let rows = tasks.tasks(channelId: producer.storageChannelId(channelId), status: status)
+        return LegacyAgentTaskListResponse(tasks: rows.map { row in
+            LegacyAgentTaskProjection(base: producer.project(row, to: surface).projection)
+        })
+    }
+
+    private static func taskHistoryActorName(
+        type: String, id: String?, oauth: OAuthLedger, profiles: AuthProfileStore
+    ) -> String? {
+        guard let id else { return nil }
+        switch type {
+        case "user": return profiles.account(userId: id)?.name
+        case "agent": return oauth.agentRuntimeInfo(id: id)?.name
+        default: return nil
+        }
+    }
+
     // MARK: - POST /internal/agent-api/tasks/amend
 
     /// Amends one task's title and description.
@@ -250,6 +384,7 @@ public struct TasksAndLabsService: Sendable {
             taskNumber: taskNumber,
             title: title,
             description: body.description,
+            actorId: auth.agentId,
             amendedByName: oauth.agentRuntimeInfo(id: auth.agentId)?.name ?? "agent",
             now: now()
         ) else {

@@ -45,6 +45,7 @@ import VaporTesting
                 let agentId = agentId ?? agent
                 var headers = HTTPFields()
                 if let bearer { headers[.authorization] = "Bearer \(bearer)" }
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get("/api/servers/\(serverId)/machines/\(machineId)/agents/\(agentId)/diagnostic/session-transcript", headers: headers)
             }
             let owner = try await token("transcript-owner@slock.test")

@@ -353,59 +353,47 @@ public struct NativeAppleAuthorized: JSONBodyConvertible, Equatable {
     }
 }
 
-/// `200` of `POST /api/auth/mobile/oauth/complete`.
-public enum MobileOAuthCompleted: JSONBodyConvertible, Equatable {
-    /// A handoff that is the sign-in or the sign-up of the provider account.
-    case signedIn(
-        id: String,
-        email: String,
-        name: String,
+/// `200` of `POST /api/auth/mobile/oauth/complete`. Both the existing-account
+/// sign-in, the just-created account and the spent pending-link handoff publish
+/// the same body: the complete `toPublicUser` projection, then the provider,
+/// mode, return URI, session tokens and the optional linked provider.
+public struct MobileOAuthCompleted: JSONBodyConvertible, Equatable {
+    public var user: AuthUserDTO
+    public var provider: String
+    public var mode: String
+    public var returnUri: String
+    public var accessToken: String
+    public var refreshToken: String
+    public var linkedProvider: String?
+
+    public init(
+        user: AuthUserDTO,
         provider: String,
         mode: String,
         returnUri: String,
         accessToken: String,
         refreshToken: String,
-        /// The signed-in account's retained signup-survey facts. The published
-        /// user object carries both nullable members like `toPublicUser`.
-        signupSurveyCompletedAt: Date?,
-        signupRole: String?
-    )
-    /// A pending link token spent against the handoff: the account that now has
-    /// the provider linked is signed in.
-    case pendingLinkSpent(
-        userId: String,
-        accessToken: String,
-        refreshToken: String,
-        linkedProvider: String
-    )
+        linkedProvider: String? = nil
+    ) {
+        self.user = user
+        self.provider = provider
+        self.mode = mode
+        self.returnUri = returnUri
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.linkedProvider = linkedProvider
+    }
 
     public var jsonBody: OrderedJSON {
-        switch self {
-        case .signedIn(let id, let email, let name, let provider, let mode, let returnUri, let accessToken, let refreshToken,
-                       let signupSurveyCompletedAt, let signupRole):
-            return .object([
-                OrderedJSONField("user", .object([
-                    OrderedJSONField("id", id),
-                    OrderedJSONField("email", email),
-                    OrderedJSONField("name", name),
-                    OrderedJSONField("profileSetupCompletedAt", .null),
-                    OrderedJSONField("profileSetupProvider", provider),
-                    OrderedJSONField("signupSurveyCompletedAt", optional: signupSurveyCompletedAt.map(DateText.iso8601)),
-                    OrderedJSONField("signupRole", optional: signupRole),
-                ])),
-                OrderedJSONField("accessToken", accessToken),
-                OrderedJSONField("refreshToken", refreshToken),
-                OrderedJSONField("mode", mode),
-                OrderedJSONField("returnUri", returnUri),
-            ])
-        case .pendingLinkSpent(let userId, let accessToken, let refreshToken, let linkedProvider):
-            return .object([
-                OrderedJSONField("user", .object([OrderedJSONField("id", userId)])),
-                OrderedJSONField("accessToken", accessToken),
-                OrderedJSONField("refreshToken", refreshToken),
-                OrderedJSONField("linkedProvider", linkedProvider),
-            ])
-        }
+        var body = OrderedJSONObject()
+        body.append("user", user.jsonBody)
+        body.append("provider", provider)
+        body.append("mode", mode)
+        body.append("returnUri", returnUri)
+        body.append("accessToken", accessToken)
+        body.append("refreshToken", refreshToken)
+        body.append("linkedProvider", ifPresent: linkedProvider)
+        return body.json
     }
 }
 

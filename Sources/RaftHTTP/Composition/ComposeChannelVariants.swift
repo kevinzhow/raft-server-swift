@@ -43,6 +43,7 @@ func composeChannelAssignments(
     notices: SystemNoticeAppender,
     membership: ChannelMembershipService,
     catalog: TaskCatalogService,
+    createThreadFirstReply: @escaping @Sendable (String, String, String, String) throws -> Void,
     publishTaskUpdated: @escaping @Sendable (String) -> Void
 ) -> ManagedMCPAssignmentsService {
     ManagedMCPAssignmentsService(
@@ -58,6 +59,7 @@ func composeChannelAssignments(
         notices: notices,
         membership: membership,
         catalog: catalog,
+        createThreadFirstReply: createThreadFirstReply,
         publishTaskUpdated: publishTaskUpdated
     )
 }

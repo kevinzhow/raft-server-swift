@@ -28,16 +28,25 @@ public enum AgentsLifecycleError: DomainError, Equatable {
     case invalidPrincipal
     case surfaceUnregistered
     case unknownRuntimeProvider
+    case runtimeProviderModelsUnknown
+    case runtimeProviderUnavailable
+    case runtimeProviderForbidden
+    case hostedRuntimeModelUnavailable
 
     public var status: UInt {
         switch self {
         case .unauthorized, .invalidOrExpiredToken, .computerUnauthorized, .invalidPrincipal,
              .surfaceUnregistered:
             return 401
+        case .runtimeProviderForbidden:
+            return 403
+        case .runtimeProviderModelsUnknown, .runtimeProviderUnavailable, .unknownRuntimeProvider:
+            return 404
+        case .hostedRuntimeModelUnavailable:
+            return 502
         case .capabilityNotAuthorized, .forbidden, .notAMember, .uploadForbidden:
             return 403
-        case .channelNotFound, .agentMissing, .uploadSessionNotFound, .attachmentNotFound,
-             .unknownRuntimeProvider:
+        case .channelNotFound, .agentMissing, .uploadSessionNotFound, .attachmentNotFound:
             return 404
         case .emptyFile, .tooManyFiles, .invalidCursor, .invalidAttachmentId, .serverIdRequired,
              .invalidEventBatch, .invalidAppVersion:
@@ -72,7 +81,10 @@ public enum AgentsLifecycleError: DomainError, Equatable {
         case .invalidAppVersion: return "Invalid app_version"
         case .invalidPrincipal: return "Invalid principal for this surface"
         case .surfaceUnregistered: return "This internal surface is not registered"
-        case .unknownRuntimeProvider: return "Unknown runtime provider"
+        case .unknownRuntimeProvider, .runtimeProviderModelsUnknown: return "Unknown runtime provider"
+        case .runtimeProviderUnavailable: return "Cloud agents are not available on this server"
+        case .runtimeProviderForbidden: return "createAgents capability required"
+        case .hostedRuntimeModelUnavailable: return "The cloud runtime is unavailable right now"
         }
     }
 
@@ -123,6 +135,26 @@ public enum AgentsLifecycleError: DomainError, Equatable {
                 OrderedJSONField("code", "UPLOAD_SESSION_NOT_FOUND"),
                 OrderedJSONField("message", errorMessage),
                 OrderedJSONField("retryable", false),
+            ])
+        case .runtimeProviderModelsUnknown:
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "agent_runtime_provider_unknown"),
+            ])
+        case .runtimeProviderUnavailable:
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "agent_runtime_provider_unavailable"),
+            ])
+        case .runtimeProviderForbidden:
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "agent_runtime_provider_forbidden"),
+            ])
+        case .hostedRuntimeModelUnavailable:
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "hosted_runtime_model_unavailable"),
             ])
         default:
             return nil

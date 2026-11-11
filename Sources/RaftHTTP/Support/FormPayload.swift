@@ -24,6 +24,63 @@ public enum FormPayload {
         return fields.isEmpty ? nil : fields
     }
 
+    /// The same part lookup as `multipartFile`, retaining the part's declared
+    /// `Content-Type` and `filename` because the avatar routes validate MIME
+    /// the way multer's `fileFilter` does.
+    public static func multipartFilePart(
+        named name: String, contentType: String?, body: Data
+    ) -> AvatarUploadFile? {
+        guard let boundary = FormPayload.boundaryParameter(contentType) else { return nil }
+        let delimiter = Data("--\(boundary)".utf8)
+        let headerBreak = Data("\r\n\r\n".utf8)
+        let crlf = Data("\r\n".utf8)
+        let marker = "name=\"\(name)\""
+        var remainder = body[body.startIndex...]
+        var parts: [Data] = []
+        while let range = remainder.range(of: delimiter) {
+            let piece = remainder[..<range.lowerBound]
+            if !piece.isEmpty { parts.append(Data(piece)) }
+            remainder = remainder[range.upperBound...]
+        }
+        if !remainder.isEmpty { parts.append(Data(remainder)) }
+        for var part in parts {
+            if part.starts(with: crlf) { part.removeFirst(crlf.count) }
+            guard let split = part.range(of: headerBreak) else { continue }
+            let headers = part[..<split.lowerBound]
+            var file = Data(part[split.upperBound...])
+            if file.count >= crlf.count, file.suffix(crlf.count) == crlf {
+                file.removeLast(crlf.count)
+            }
+            guard let headerText = String(data: Data(headers), encoding: .utf8), headerText.contains(marker) else {
+                continue
+            }
+            return AvatarUploadFile(
+                bytes: file,
+                contentType: FormPayload.headerValue("content-type", in: headerText),
+                filename: FormPayload.headerValue("filename", in: headerText)
+            )
+        }
+        return nil
+    }
+
+    private static func headerValue(_ name: String, in headerText: String) -> String? {
+        for line in headerText.split(whereSeparator: { $0.isNewline }) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let separator = trimmed.firstIndex(of: ":") else { continue }
+            let key = trimmed[..<separator].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard key == name else { continue }
+            let raw = trimmed[trimmed.index(after: separator)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            var value = raw
+            if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+                value.removeFirst()
+                value.removeLast()
+            }
+            return value.isEmpty ? nil : value
+        }
+        return nil
+    }
+
     static func multipartFile(named name: String, contentType: String?, body: Data) -> Data? {
         guard let boundary = FormPayload.boundaryParameter(contentType) else { return nil }
         let delimiter = Data("--\(boundary)".utf8)

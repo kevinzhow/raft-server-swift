@@ -34,6 +34,7 @@ extension OAuthLedger.ChannelRecord: Codable {
         case parentMessageId
         case archived
         case archivedAt
+        case createdAt
     }
 
     init(from decoder: any Decoder) throws {
@@ -47,6 +48,8 @@ extension OAuthLedger.ChannelRecord: Codable {
         self.parentMessageId = try values.decode(String?.self, forKey: .parentMessageId)
         self.archived = try values.decode(Bool.self, forKey: .archived)
         self.archivedAt = try values.decode(Date?.self, forKey: .archivedAt)
+        // Absent in snapshots written before the fact was retained.
+        self.createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -60,6 +63,7 @@ extension OAuthLedger.ChannelRecord: Codable {
         try values.encode(parentMessageId, forKey: .parentMessageId)
         try values.encode(archived, forKey: .archived)
         try values.encode(archivedAt, forKey: .archivedAt)
+        try values.encodeIfPresent(createdAt, forKey: .createdAt)
     }
 }
 

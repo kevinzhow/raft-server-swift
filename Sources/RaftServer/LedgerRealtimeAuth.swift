@@ -36,4 +36,8 @@ struct LedgerRealtimeAuth: RealtimeAuthorizing {
             limit: limit
         )?.jsonBody()
     }
+
+    func maxMessageSeq(serverId: String) -> Int? {
+        membership.maxMessageSeq(serverId: serverId)
+    }
 }

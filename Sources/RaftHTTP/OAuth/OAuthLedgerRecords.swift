@@ -89,9 +89,73 @@ extension OAuthLedger {
         var setupUrl: String? = nil
         var setupDescription: String? = nil
         var setupRevision: Int = 1
+        var category: String = "Other"
+        var dataAccessSummary: String? = nil
+        var publishRejectionReason: String? = nil
+        var publishRequestedAt: Date? = nil
+        var publishReviewedAt: Date? = nil
+        /// The stored App logo URL projection and the object-store key of the
+        /// retained original bytes.
+        var logoUrl: String? = nil
+        var logoStorageKey: String? = nil
+        var createdAt: Date = Date()
+        var updatedAt: Date = Date()
+        var outboundEvents: [String] = []
+        var outboundRequestRevision: Int = 0
+        var outboundCurrentRevisionId: String? = nil
+        var outboundPendingEvents: [String] = []
+        var outboundPendingRevisionState: String? = nil
+    }
+
+    /// One private integration-app share link. The token itself is never
+    /// retained, only its hash, so an issued URL cannot be re-read from the
+    /// ledger.
+    ///
+    /// Two producer generations use the same durable list: the agent-managed
+    /// apps record the client key in `clientId`, the developer-platform apps
+    /// record the client record id in `clientRecordId`. Both fields carry the
+    /// same value; the coders accept either key so every retained snapshot
+    /// restores.
+    struct ClientShareLink: Sendable {
+        var id: String
+        var clientId: String
+        var clientRecordId: String
+        var tokenHash: String
+        var createdByUserId: String?
+        var createdByAgentId: String?
+        var expiresAt: Date?
+        var createdAt: Date
+        var updatedAt: Date
+        var revokedAt: Date?
+        var lastUsedAt: Date?
+
+        init(id: String, clientId: String, tokenHash: String, createdByUserId: String?,
+             createdByAgentId: String?, expiresAt: Date?, createdAt: Date, updatedAt: Date,
+             revokedAt: Date?, lastUsedAt: Date?) {
+            self.id = id
+            self.clientId = clientId
+            self.clientRecordId = clientId
+            self.tokenHash = tokenHash
+            self.createdByUserId = createdByUserId
+            self.createdByAgentId = createdByAgentId
+            self.expiresAt = expiresAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.revokedAt = revokedAt
+            self.lastUsedAt = lastUsedAt
+        }
+
+        init(id: String, clientRecordId: String, tokenHash: String, expiresAt: Date?,
+             createdAt: Date, updatedAt: Date, revokedAt: Date?, lastUsedAt: Date?) {
+            self.init(id: id, clientId: clientRecordId, tokenHash: tokenHash,
+                      createdByUserId: nil, createdByAgentId: nil, expiresAt: expiresAt,
+                      createdAt: createdAt, updatedAt: updatedAt, revokedAt: revokedAt,
+                      lastUsedAt: lastUsedAt)
+        }
     }
 
     struct IntegrationAuditEvent: Sendable {
+        var id: String = UUID().uuidString.lowercased()
         var eventType: String
         var clientRecordId: String
         var installationId: String
@@ -120,6 +184,31 @@ extension OAuthLedger {
         var agentJwtEnabled: Bool? = false
         var setupCompletedRevision: Int? = nil
         var setupCompletedAt: Date? = nil
+        var createdAt: Date = Date()
+        var approvedRequestRevisionId: String? = nil
+        var subscribedEvents: [String] = []
+        var subscriptionRevision: Int = 0
+    }
+
+    struct AppWebhookConfig: Sendable {
+        var clientRecordId: String
+        var endpointUrl: String
+        var secret: String
+        var previousSecret: String?
+        var previousValidUntil: Date?
+        var revision: Int
+        var enabled: Bool
+        var updatedAt: Date
+    }
+
+    struct AppPermissionRevision: Sendable {
+        var id: String
+        var clientRecordId: String
+        var revision: Int
+        var requestedGroups: [String]
+        var requestedEvents: [String]
+        var state: String
+        var createdAt: Date
     }
 
     struct AccessRequest: Sendable {
@@ -140,6 +229,12 @@ extension OAuthLedger {
         var oidcRedirectURI: String? = nil
         var createdAt: Date
         var consumedAt: Date? = nil
+        var remember: Bool = false
+        var resolvedByUserId: String? = nil
+        var resolvedAt: Date? = nil
+        var updatedAt: Date? = nil
+        var resource: String? = nil
+        var principalType: String = "agent"
     }
 
     struct AccessToken: Sendable {

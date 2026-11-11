@@ -39,6 +39,7 @@ import VaporTesting
             func usage() async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(token)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.get("/api/servers/\(serverId)/usage", headers: headers)
             }
             // Two calls: the legacy reply was one hand-built string, so key
@@ -79,6 +80,7 @@ import VaporTesting
         try await app.testing { client in
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(token)"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
             let response = try await client.get(
                 "/api/servers/\(serverId)/machines/\(machine)/agents/\(agent)/diagnostic/session-transcript",
                 headers: headers
@@ -117,6 +119,7 @@ import VaporTesting
             func headers() -> HTTPFields {
                 var fields = HTTPFields()
                 fields[.authorization] = "Bearer \(token)"
+                fields[HTTPField.Name("X-Server-Id")!] = serverId
                 return fields
             }
             // No `Content-Type`: the archive parsed the raw body anyway, so the

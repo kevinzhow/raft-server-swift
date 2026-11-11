@@ -43,6 +43,7 @@ import VaporTesting
             func get(_ bearer: String, _ path: String, language: String? = nil) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 if let language { headers[HTTPField.Name("Accept-Language")!] = language }
                 return try await client.get(URI(string: path), headers: headers)
             }

@@ -35,18 +35,6 @@ struct AgentSendDependencies: Sendable {
         _ resolution: ResolvedMentions
     ) -> Void
     var targetAvatar: @Sendable (_ type: String, _ id: String) -> String?
-    var recordAttestedSendEvent: @Sendable (
-        _ eventType: String,
-        _ agentId: String,
-        _ messageId: String?,
-        _ metadata: AttestedSendEventMetadata
-    ) -> Void
-    var recordAgentSendActivity: @Sendable (
-        _ agentId: String,
-        _ title: String,
-        _ text: String,
-        _ producerFactId: String?
-    ) -> Void
     var commitAgentSend: @Sendable (
         _ message: StoredHumanMessage,
         _ attachmentIds: [String],
@@ -113,22 +101,6 @@ extension AgentSendDependencies {
                 type == "user" ? mentionService.profiles.account(userId: id)?.avatarUrl
                     : mentionService.oauth.agentRuntimeInfo(id: id)?.avatarUrl
             },
-            recordAttestedSendEvent: { eventType, agentId, messageId, metadata in
-                messages.recordAttestedSendEvent(AttestedSendEventRecord(
-                    eventType: eventType,
-                    agentId: agentId,
-                    messageId: messageId,
-                    metadataJSON: metadata.jsonBody.render()
-                ))
-            },
-            recordAgentSendActivity: { agentId, title, text, producerFactId in
-                messages.recordAgentSendActivity(
-                    agentId: agentId,
-                    title: title,
-                    text: text,
-                    producerFactId: producerFactId
-                )
-            },
             commitAgentSend: { message, attachmentIds, channelId, uploaderId in
                 let outcome = messages.commitAgentSend(
                     message, attachmentIds: attachmentIds, channelId: channelId,
@@ -137,10 +109,20 @@ extension AgentSendDependencies {
                 if case .committed(let seq) = outcome {
                     var committed = message
                     committed.seq = seq
+                    // The same persisted frontend pipeline as a human send:
+                    // DM/thread room grants and reply follows first, then the
+                    // canonical `message:new`, `dm:new` or `thread:updated`.
+                    let realtime = MessageRealtimeService(
+                        messages: messages, channels: channels, profiles: mentionService.profiles,
+                        oauth: mentionService.oauth
+                    )
                     let relay = RealtimeRelayService(messages: messages)
-                    try AgentExecutionPublication.publish(room: "channel:\(channelId)", event: "message:new", identity: message.id,
-                        payloadJSON: AgentExecutionPublication.messagePayload(committed, senderName: mentionService.oauth.agentRuntimeInfo(id: message.senderId).map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? "Unknown", includeAttachments: true),
-                        emit: { relay.emit($0, $1, $2) })
+                    for frame in realtime.frames(for: committed) {
+                        try AgentExecutionPublication.publish(
+                            room: frame.room, event: frame.event, identity: frame.identity,
+                            payloadJSON: frame.payload, emit: { relay.emit($0, $1, $2) }
+                        )
+                    }
                 }
                 return outcome
             }

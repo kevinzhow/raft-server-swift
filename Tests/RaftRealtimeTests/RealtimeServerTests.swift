@@ -27,10 +27,272 @@ struct RealtimeTransportTests {
 
 @Test func protocolFramesUseTheSocketIOShapes() {
     #expect(engineIOOpenFrame(sid: "abc") == "0{\"sid\":\"abc\",\"upgrades\":[],\"pingInterval\":25000,\"pingTimeout\":20000,\"maxPayload\":1000000}")
+    let short = RealtimeHeartbeatConfiguration(pingIntervalMilliseconds: 200, pingTimeoutMilliseconds: 150)
+    #expect(engineIOOpenFrame(sid: "abc", heartbeat: short) == "0{\"sid\":\"abc\",\"upgrades\":[],\"pingInterval\":200,\"pingTimeout\":150,\"maxPayload\":1000000}")
+    #expect(socketIOApplicationHeartbeatFrame(seq: 12, timestampMilliseconds: 1_700_000_000_123)
+        == "42[\"heartbeat\",{\"seq\":12,\"ts\":1700000000123}]")
+    #expect(RealtimeHeartbeatConfiguration.production.applicationIntervalMilliseconds == 15_000)
     #expect(socketIOConnectFrame(sid: "abc") == "40{\"sid\":\"abc\"}")
     #expect(socketIOEventFrame("rooms:joined") == "42[\"rooms:joined\"]")
     #expect(socketIOEventFrame("message:new", payloadJSON: "{\"id\":\"m1\"}") == "42[\"message:new\",{\"id\":\"m1\"}]")
     #expect(socketIOErrorFrame(socketNotServerMemberMessage) == "44{\"message\":\"Not a member of this server\"}")
+}
+
+/// Application-level socket.io `heartbeat`: every connection with a `serverId`
+/// gets `42["heartbeat",{"seq":<getMaxSeq>,"ts":<Date.now()>}]` every
+/// `HEARTBEAT_INTERVAL_MS` (15 seconds upstream). The sequence is the retained
+/// server message max, not a transport counter: a message created after connect
+/// advances it, and a message in another server does not.
+@Test func applicationHeartbeatPublishesTheRetainedServerMessageSeq() async throws {
+    let ledger = ApplicationHeartbeatLedger()
+    let heartbeat = RealtimeHeartbeatConfiguration(
+        pingIntervalMilliseconds: 60_000,
+        pingTimeoutMilliseconds: 60_000,
+        applicationIntervalMilliseconds: 100
+    )
+    let server = try await RealtimeServer.start(auth: ledger.auth, heartbeat: heartbeat)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"\(ledger.token)\",\"serverId\":\"\(ledger.serverId)\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    let empty = try #require(await client.waitForText({ $0.hasPrefix("42[\"heartbeat\",") }, timeout: 2))
+    #expect(empty.hasPrefix("42[\"heartbeat\",{\"seq\":0,\"ts\":"))
+    #expect(empty.hasSuffix("}]"))
+    let emptyTimestamp = try #require(applicationHeartbeatTimestamp(empty))
+    #expect(emptyTimestamp > Int(Date().timeIntervalSince1970 * 1000) - 60_000)
+    #expect(emptyTimestamp <= Int(Date().timeIntervalSince1970 * 1000) + 60_000)
+
+    ledger.appendMessage(channelId: ledger.channelId, content: "first")
+    #expect(await client.waitForText({
+        $0.hasPrefix("42[\"heartbeat\",{\"seq\":1,\"ts\":")
+    }, timeout: 2) != nil)
+
+    // A higher global sequence in a different server is not this server's max.
+    ledger.appendMessage(channelId: ledger.otherChannelId, content: "other server")
+    try? await Task.sleep(for: .milliseconds(350))
+    let heartbeatSeqs = client.textFrames.compactMap(applicationHeartbeatSeq)
+    #expect(heartbeatSeqs.contains(1))
+    #expect(heartbeatSeqs.allSatisfy { $0 <= 1 })
+
+    // Messages in the same server advance the published value again.
+    let secondChannel = ledger.addChannel(serverId: ledger.serverId, name: "second")
+    ledger.appendMessage(channelId: secondChannel, content: "second")
+    #expect(await client.waitForText({
+        $0.hasPrefix("42[\"heartbeat\",{\"seq\":3,\"ts\":")
+    }, timeout: 2) != nil)
+}
+
+/// Upstream only creates the timer inside `if (serverId)`. A user-scoped socket
+/// must receive no application heartbeat and must not even read the sequence.
+@Test func applicationHeartbeatIsAbsentWithoutAServerId() async throws {
+    let probe = MaxSeqProbe(seq: 9)
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]],
+        maxSeq: probe
+    )
+    let heartbeat = RealtimeHeartbeatConfiguration(
+        pingIntervalMilliseconds: 60_000,
+        pingTimeoutMilliseconds: 60_000,
+        applicationIntervalMilliseconds: 80
+    )
+    let server = try await RealtimeServer.start(auth: auth, heartbeat: heartbeat)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"clientKind\":\"cli\"}")
+    #expect(await client.waitForText { $0.hasPrefix("40") } != nil)
+
+    try? await Task.sleep(for: .milliseconds(400))
+    #expect(client.textFrames.contains { $0.hasPrefix("42[\"heartbeat\",") } == false)
+    #expect(probe.readCount == 0)
+}
+
+/// `disconnect` clears the heartbeat interval. The Engine.IO ping-timeout close
+/// is the same session close, so both paths must stop the application timer.
+@Test func applicationHeartbeatStopsOnDisconnectAndOnEngineIOTimeout() async throws {
+    let disconnectProbe = MaxSeqProbe(seq: 4)
+    let disconnectAuth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]],
+        maxSeq: disconnectProbe
+    )
+    let disconnectHeartbeat = RealtimeHeartbeatConfiguration(
+        pingIntervalMilliseconds: 60_000,
+        pingTimeoutMilliseconds: 60_000,
+        applicationIntervalMilliseconds: 40
+    )
+    let disconnectServer = try await RealtimeServer.start(auth: disconnectAuth, heartbeat: disconnectHeartbeat)
+    do {
+        let client = try await RawSocketIOClient(port: disconnectServer.port)
+        defer { client.close() }
+        _ = await client.waitForText { $0.hasPrefix("0") }
+        client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+        #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+        #expect(await client.waitForText({ $0.hasPrefix("42[\"heartbeat\",") }, timeout: 2) != nil)
+
+        client.send("41")
+        #expect(await client.waitForClose(timeout: 2))
+        let readsAtClose = disconnectProbe.readCount
+        try? await Task.sleep(for: .milliseconds(250))
+        #expect(disconnectProbe.readCount == readsAtClose)
+    } catch {
+        try? await disconnectServer.close()
+        throw error
+    }
+    try await disconnectServer.close()
+
+    let timeoutProbe = MaxSeqProbe(seq: 5)
+    let timeoutAuth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]],
+        maxSeq: timeoutProbe
+    )
+    let timeoutHeartbeat = RealtimeHeartbeatConfiguration(
+        pingIntervalMilliseconds: 50,
+        pingTimeoutMilliseconds: 50,
+        applicationIntervalMilliseconds: 40
+    )
+    let timeoutServer = try await RealtimeServer.start(auth: timeoutAuth, heartbeat: timeoutHeartbeat)
+    do {
+        let client = try await RawSocketIOClient(port: timeoutServer.port)
+        defer { client.close() }
+        _ = await client.waitForText { $0.hasPrefix("0") }
+        client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+        #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+        #expect(await client.waitForPingCount(1, timeout: 2) >= 1)
+        #expect(await client.waitForText({ $0.hasPrefix("42[\"heartbeat\",") }, timeout: 2) != nil)
+
+        #expect(await client.waitForClose(timeout: 2))
+        let readsAtClose = timeoutProbe.readCount
+        try? await Task.sleep(for: .milliseconds(250))
+        #expect(timeoutProbe.readCount == readsAtClose)
+    } catch {
+        try? await timeoutServer.close()
+        throw error
+    }
+    try await timeoutServer.close()
+}
+
+/// Engine.IO v4 server-driven heartbeat: `2` every pingInterval, client answers
+/// `3`. The pinned upstream is engine.io 6.6.11 (socket.io 4.8.3), which keeps
+/// the defaults 25000/20000 that the open packet advertises.
+@Test func engineIOV4ServerPingsAtTheConfiguredIntervalAndAdvertisesThoseValues() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let heartbeat = RealtimeHeartbeatConfiguration(pingIntervalMilliseconds: 200, pingTimeoutMilliseconds: 1_000)
+    let server = try await RealtimeServer.start(auth: auth, heartbeat: heartbeat)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    let open = try #require(await client.waitForText { $0.hasPrefix("0") })
+    #expect(open.contains("\"upgrades\":[]"))
+    #expect(open.contains("\"pingInterval\":200,"))
+    #expect(open.contains("\"pingTimeout\":1000,"))
+    #expect(open.contains("\"maxPayload\":1000000"))
+    #expect(open.contains("\"pingInterval\":25000") == false)
+
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+    #expect(await client.waitForPingCount(1, timeout: 1.5) >= 1, "protocol v4 server must send the first ping")
+    #expect(await client.waitForClose(timeout: 0.2) == false)
+}
+
+@Test func engineIOV4ClientPongKeepsTheSocketAliveAcrossIntervals() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let heartbeat = RealtimeHeartbeatConfiguration(pingIntervalMilliseconds: 150, pingTimeoutMilliseconds: 750)
+    let server = try await RealtimeServer.start(auth: auth, heartbeat: heartbeat)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+
+    for expected in 1...3 {
+        #expect(await client.waitForPingCount(expected, timeout: 1.5) >= expected)
+        client.send("3")
+    }
+    server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"id\":\"alive\"}")
+    #expect(await client.waitForText { $0 == "42[\"message:new\",{\"id\":\"alive\"}]" } != nil)
+    #expect(client.isClosed == false)
+}
+
+@Test func engineIOV4ServerClosesAClientThatNeverPongsAndCleansUpTheSession() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let heartbeat = RealtimeHeartbeatConfiguration(pingIntervalMilliseconds: 100, pingTimeoutMilliseconds: 100)
+    let server = try await RealtimeServer.start(auth: auth, heartbeat: heartbeat)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+    #expect(await client.waitForPingCount(1, timeout: 1.5) >= 1)
+
+    #expect(await client.waitForClose(timeout: 2))
+    #expect(client.textFrames.contains("3") == false)
+
+    let deadline = Date().addingTimeInterval(2)
+    while server.hub.connectionCount > 0 && Date() < deadline {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(server.hub.connectionCount == 0)
+    server.hub.emit(room: "user:user-1", event: "message:new", payloadJSON: "{\"id\":\"after-close\"}")
+    try? await Task.sleep(for: .milliseconds(100))
+    #expect(client.textFrames.contains { $0.contains("after-close") } == false)
+}
+
+/// engine.io 6.6.11 `onPacket` rejects a client `2` in protocol v4 with
+/// "invalid heartbeat direction" and closes the transport ("transport error").
+@Test func engineIOV4ClientPingIsAnInvalidHeartbeatDirectionAndClosesTheSocket() async throws {
+    let auth = StubAuth(
+        tokens: ["good": "user-1"],
+        roles: ["s1\nuser-1": "member"],
+        channels: ["s1\nuser-1": ["c1"]]
+    )
+    let heartbeat = RealtimeHeartbeatConfiguration(pingIntervalMilliseconds: 5_000, pingTimeoutMilliseconds: 5_000)
+    let server = try await RealtimeServer.start(auth: auth, heartbeat: heartbeat)
+    defer { Task { try? await server.close() } }
+    let client = try await RawSocketIOClient(port: server.port)
+    defer { client.close() }
+
+    _ = await client.waitForText { $0.hasPrefix("0") }
+    client.send("40{\"token\":\"good\",\"serverId\":\"s1\"}")
+    #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
+    client.send("2")
+
+    #expect(await client.waitForClose(timeout: 1))
+    #expect(client.textFrames.contains("3") == false)
+
+    let deadline = Date().addingTimeInterval(2)
+    while server.hub.connectionCount > 0 && Date() < deadline {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(server.hub.connectionCount == 0)
 }
 
 @Test func authAndRoomsAndEventsRoundTrip() async throws {
@@ -54,9 +316,6 @@ struct RealtimeTransportTests {
     let connected = try #require(await client.waitForText { $0.hasPrefix("40") })
     #expect(connected.hasPrefix("40{\"sid\":"))
     #expect(await client.waitForText { $0 == "42[\"rooms:joined\"]" } != nil)
-
-    client.send("2")
-    #expect(await client.waitForText { $0 == "3" } != nil)
 
     server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"id\":\"m1\"}")
     #expect(await client.waitForText { $0 == "42[\"message:new\",{\"id\":\"m1\"}]" } != nil)
@@ -414,6 +673,34 @@ struct RealtimeTransportTests {
     #expect(event.room == "channel:\(channel)")
     #expect(event.payload?.contains("\"content\":\"hello over the wire\"") == true)
     #expect(event.payload?.contains("\"channelId\":\"\(channel)\"") == true)
+    // The frame is the canonical message manifest body, not the reduced
+    // id/channelId/content/attachments projection:
+    // seq/createdAt/sender facts must be present for the Web to order and
+    // reconcile the row without a reload.
+    let payload = try #require(event.payload)
+    let decoded = try #require(try JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
+    #expect(decoded["seq"] is Int)
+    #expect((decoded["seq"] as? Int ?? 0) > 0)
+    #expect(decoded["senderType"] as? String == "user")
+    #expect(decoded["senderId"] as? String == ownerId)
+    #expect(decoded["senderName"] as? String == "realtime-send")
+    #expect(decoded["messageType"] as? String == "chat")
+    #expect(decoded["senderMembershipStatus"] as? String == "active")
+    #expect(decoded["threadId"] is NSNull)
+    #expect(decoded["randomId"] is NSNull)
+    #expect(decoded["actionMetadata"] is NSNull)
+    #expect((decoded["reactions"] as? [Any])?.isEmpty == true)
+    #expect(decoded["commentRef"] is NSNull)
+    #expect(decoded["externalAuthor"] is NSNull)
+    #expect((decoded["attachments"] as? [Any])?.isEmpty == true)
+    #expect((decoded["mentions"] as? [Any])?.isEmpty == true)
+    let createdAt = try #require(decoded["createdAt"] as? String)
+    #expect(createdAt.hasSuffix("Z"))
+    #expect(createdAt.contains("."))
+    #expect(decoded["updatedAt"] as? String == createdAt)
+    #expect((decoded["conversationContext"] as? [String: Any])?["channelType"] as? String == "channel")
+    #expect(decoded["senderTimezone"] == nil)
+    #expect(decoded["searchText"] == nil)
 }
 
 @Test func reactionMutationEmitsMessageUpdatedOnTheChannelRoom() async throws {
@@ -552,7 +839,7 @@ struct RealtimeTransportTests {
                 if index == 128 || index == 129 {
                     server.hub.removeServerMembership(serverId: "s1", userId: "user-1")
                 } else if index.isMultiple(of: 3) {
-                    client.send("2")
+                    client.send("3")
                 } else {
                     server.hub.emit(room: "channel:c1", event: "message:new", payloadJSON: "{\"id\":\"race-\(index)\"}")
                 }
@@ -609,8 +896,9 @@ struct RealtimeTransportTests {
     let open = await cold.waitForText({ $0.hasPrefix("0") }, timeout: 0.5)
     cold.send("40{\"token\":\"cold\"}")
     let connected = await cold.waitForText({ $0.hasPrefix("40") }, timeout: 0.5)
-    cold.send("2")
-    let pong = await cold.waitForText({ $0 == "3" }, timeout: 0.5)
+    // Engine.IO v4 heartbeat reply direction (client pong). The close below
+    // proves the busy loop still processes this socket's protocol traffic.
+    cold.send("3")
     cold.send("41")
     let closed = await cold.waitForClose(timeout: 0.5)
     let finishedBeforeClose = finished.withLock { $0 }
@@ -620,7 +908,6 @@ struct RealtimeTransportTests {
 
     #expect(open != nil, "a busy session must yield to another socket's upgrade")
     #expect(connected != nil, "another socket must authenticate while producers run")
-    #expect(pong == "3", "another socket's protocol reply must make progress")
     #expect(closed, "another socket must close while producers run")
     #expect(finishedBeforeClose < producers.count, "producer traffic must still be active through the close")
     #expect(emitted > 0)
@@ -651,16 +938,123 @@ struct RealtimeTransportTests {
 }
 
 }
+private struct LedgerBackedSocketAuth: RealtimeAuthorizing {
+    let core: AuthCoreService
+    let membership: SocketMembershipService
+
+    func userId(forAccessToken token: String) -> String? { core.sessionIdentity(accessToken: token)?.userId }
+    func sessionFamilyId(forAccessToken token: String) -> String? { core.sessionIdentity(accessToken: token)?.familyId }
+    func serverRole(serverId: String, userId: String) -> String? { membership.serverRole(serverId: serverId, userId: userId) }
+    func visibleChannelIds(serverId: String, userId: String) -> [String] {
+        membership.visibleChannelIds(serverId: serverId, userId: userId).channelIds
+    }
+    func maxMessageSeq(serverId: String) -> Int? { membership.maxMessageSeq(serverId: serverId) }
+}
+
+/// Real in-memory message rows over the production `SocketMembershipService`,
+/// so the published heartbeat sequence is the same retained fact that
+/// `sync:resume` would replay instead of a transport fixture answer.
+private struct ApplicationHeartbeatLedger: Sendable {
+    let accounts: EmailLoginDirectory
+    let ownerId: String
+    let serverId: String
+    let otherServerId: String
+    let channelId: String
+    let otherChannelId: String
+    let token: String
+
+    init() {
+        let accounts = EmailLoginDirectory()
+        let ownerId = UUID().uuidString.lowercased()
+        let serverId = UUID().uuidString.lowercased()
+        let otherServerId = UUID().uuidString.lowercased()
+        accounts.addAccount(id: ownerId, email: "heartbeat-\(ownerId)@slock.test", password: "heartbeat-password123")
+        accounts.markEmailVerified(userId: ownerId)
+        accounts.oauth.addOwnedServer(id: serverId, slug: "heartbeat-\(serverId.prefix(8))", name: "Heartbeat", ownerId: ownerId)
+        accounts.oauth.addOwnedServer(id: otherServerId, slug: "heartbeat-other-\(otherServerId.prefix(8))", name: "Other", ownerId: ownerId)
+        let channelId = accounts.oauth.createChannel(serverId: serverId, name: "general", creatorUserId: ownerId)
+        accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "general")
+        accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
+        let otherChannelId = accounts.oauth.createChannel(serverId: otherServerId, name: "general", creatorUserId: ownerId)
+        accounts.addPostableChannel(serverId: otherServerId, channelId: otherChannelId, memberId: ownerId, name: "general")
+        accounts.oauth.addChannelHuman(channelId: otherChannelId, userId: ownerId)
+        self.accounts = accounts
+        self.ownerId = ownerId
+        self.serverId = serverId
+        self.otherServerId = otherServerId
+        self.channelId = channelId
+        self.otherChannelId = otherChannelId
+        self.token = accounts.mintAccessTokenForTesting(userId: ownerId)
+    }
+
+    var auth: LedgerBackedSocketAuth {
+        LedgerBackedSocketAuth(core: accounts.authCore, membership: accounts.socketMembership)
+    }
+
+    func addChannel(serverId: String, name: String) -> String {
+        let channelId = accounts.oauth.createChannel(serverId: serverId, name: name, creatorUserId: ownerId)
+        accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: name)
+        accounts.oauth.addChannelHuman(channelId: channelId, userId: ownerId)
+        return channelId
+    }
+
+    func appendMessage(channelId: String, content: String) {
+        accounts.insertHumanMessage(
+            id: UUID().uuidString.lowercased(),
+            channelId: channelId,
+            senderId: ownerId,
+            content: content
+        )
+    }
+}
+
+private func applicationHeartbeatPayload(_ frame: String) -> [String: Any]? {
+    guard frame.hasPrefix("42[\"heartbeat\","),
+          let data = String(frame.dropFirst(2)).data(using: .utf8),
+          let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any],
+          array.count == 2,
+          let payload = array[1] as? [String: Any]
+    else { return nil }
+    return payload
+}
+
+private func applicationHeartbeatSeq(_ frame: String) -> Int? {
+    (applicationHeartbeatPayload(frame)?["seq"] as? NSNumber)?.intValue
+}
+
+private func applicationHeartbeatTimestamp(_ frame: String) -> Int? {
+    (applicationHeartbeatPayload(frame)?["ts"] as? NSNumber)?.intValue
+}
+
+private final class MaxSeqProbe: Sendable {
+    private let state: Mutex<(seq: Int, reads: Int)>
+
+    init(seq: Int) {
+        self.state = Mutex((seq, 0))
+    }
+
+    var readCount: Int { state.withLock { $0.reads } }
+
+    func next() -> Int {
+        state.withLock { current in
+            current.reads += 1
+            return current.seq
+        }
+    }
+}
+
 private struct StubAuth: RealtimeAuthorizing {
     var tokens: [String: String]
     var roles: [String: String]
     var channels: [String: [String]]
     var families: [String: String] = [:]
+    var maxSeq: MaxSeqProbe? = nil
 
     func userId(forAccessToken token: String) -> String? { tokens[token] }
     func sessionFamilyId(forAccessToken token: String) -> String? { families[token] }
     func serverRole(serverId: String, userId: String) -> String? { roles["\(serverId)\n\(userId)"] }
     func visibleChannelIds(serverId: String, userId: String) -> [String] { channels["\(serverId)\n\(userId)"] ?? [] }
+    func maxMessageSeq(serverId: String) -> Int? { maxSeq?.next() }
 }
 
 private final class RawSocketIOClient: @unchecked Sendable {
@@ -694,6 +1088,19 @@ private final class RawSocketIOClient: @unchecked Sendable {
     }
 
     var textFrames: [String] { collector.textFrames }
+    var isClosed: Bool { collector.closed }
+
+    func pingCount() -> Int { collector.textFrames.filter { $0 == "2" }.count }
+
+    func waitForPingCount(_ count: Int, timeout: TimeInterval = 3) async -> Int {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let seen = pingCount()
+            if seen >= count { return seen }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return pingCount()
+    }
 
     func send(_ text: String) {
         var buffer = channel.allocator.buffer(capacity: text.utf8.count + 8)

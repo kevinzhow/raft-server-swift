@@ -49,6 +49,8 @@ import VaporTesting
             scopedHeaders[HTTPField.Name("X-Server-Id")!] = serverA
             var scopedMemberHeaders = memberHeaders
             scopedMemberHeaders[HTTPField.Name("X-Server-Id")!] = serverA
+            var scopedBHeaders = headers
+            scopedBHeaders[HTTPField.Name("X-Server-Id")!] = serverB
 
             func assertStandard(_ response: ClientResponse, body expected: String, extra: [String: String] = [:]) {
                 #expect(response.headers[.contentType] == "application/json; charset=utf-8")
@@ -114,44 +116,44 @@ import VaporTesting
             )
 
             // Apps: enabled only where composer references are on.
-            let apps = try await client.send(.get, headers: headers, to: "/api/servers/\(serverA)/apps")
+            let apps = try await client.send(.get, headers: scopedHeaders, to: "/api/servers/\(serverA)/apps")
             assertStandard(
                 apps,
                 body: "{\"apps\":[{\"appId\":\"system.cleaner\",\"displayName\":\"Memory Cleaner\"},{\"appId\":\"system.reminder\",\"displayName\":\"Reminder\"}]}"
             )
-            let appsOff = try await client.send(.get, headers: headers, to: "/api/servers/\(serverB)/apps")
+            let appsOff = try await client.send(.get, headers: scopedBHeaders, to: "/api/servers/\(serverB)/apps")
             #expect(appsOff.status == .notFound)
             assertStandard(appsOff, body: "{\"error\":\"Not found\"}")
 
             // Translation settings: published order, and the legacy `0`/`1`
             // boolean reading of the raw parser.
-            let settings = try await client.send(.get, headers: memberHeaders, to: "/api/servers/\(serverA)/translation-settings")
+            let settings = try await client.send(.get, headers: scopedMemberHeaders, to: "/api/servers/\(serverA)/translation-settings")
             assertStandard(
                 settings,
                 body: "{\"translationEnabled\":false,\"translationAvailable\":true,\"canManageTranslation\":false}"
             )
-            let enable = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverA)/translation-settings") { request in
+            let enable = try await client.send(.patch, headers: scopedHeaders, to: "/api/servers/\(serverA)/translation-settings") { request in
                 request.body = .init(string: "{\"translationEnabled\":1}")
             }
             assertStandard(
                 enable,
                 body: "{\"translationEnabled\":true,\"translationAvailable\":true,\"canManageTranslation\":true}"
             )
-            let notBool = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverA)/translation-settings") { request in
+            let notBool = try await client.send(.patch, headers: scopedHeaders, to: "/api/servers/\(serverA)/translation-settings") { request in
                 request.body = .init(string: "{\"translationEnabled\":2}")
             }
             #expect(notBool.status == .badRequest)
             assertStandard(notBool, body: "{\"error\":\"translationEnabled must be a boolean\"}")
-            let memberPatch = try await client.send(.patch, headers: memberHeaders, to: "/api/servers/\(serverA)/translation-settings") { request in
+            let memberPatch = try await client.send(.patch, headers: scopedMemberHeaders, to: "/api/servers/\(serverA)/translation-settings") { request in
                 request.body = .init(string: "{\"translationEnabled\":true}")
             }
             #expect(memberPatch.status == .forbidden)
             assertStandard(memberPatch, body: "{\"error\":\"Only server owners and admins can update translation settings\"}")
 
             // Agreement: `null` until written, then the published member order.
-            let emptyAgreement = try await client.send(.get, headers: headers, to: "/api/servers/\(serverA)/agreement")
+            let emptyAgreement = try await client.send(.get, headers: scopedHeaders, to: "/api/servers/\(serverA)/agreement")
             assertStandard(emptyAgreement, body: "{\"agreement\":null}")
-            let put = try await client.send(.put, headers: headers, to: "/api/servers/\(serverA)/agreement") { request in
+            let put = try await client.send(.put, headers: scopedHeaders, to: "/api/servers/\(serverA)/agreement") { request in
                 request.body = .init(string: "{\"enabled\":true,\"title\":\"Terms/1\",\"bodyMarkdown\":\"be nice\"}")
             }
             #expect(put.status == .ok)
@@ -163,35 +165,35 @@ import VaporTesting
                 body: "{\"agreement\":{\"id\":\"\(agreementId)\",\"version\":\(accounts.oauth.activeServerAgreement(serverId: serverA)?.version ?? -1),\"title\":\"Terms/1\",\"bodyMarkdown\":\"be nice\",\"enabled\":true}}"
             )
             #expect(putBody.contains("Terms/1"))
-            let badAgreement = try await client.send(.put, headers: headers, to: "/api/servers/\(serverA)/agreement") { request in
+            let badAgreement = try await client.send(.put, headers: scopedHeaders, to: "/api/servers/\(serverA)/agreement") { request in
                 request.body = .init(string: "{\"enabled\":true,\"title\":\"x\"}")
             }
             #expect(badAgreement.status == .badRequest)
             assertStandard(badAgreement, body: "{\"error\":\"Invalid agreement request\"}")
-            let disabled = try await client.send(.put, headers: headers, to: "/api/servers/\(serverA)/agreement") { request in
+            let disabled = try await client.send(.put, headers: scopedHeaders, to: "/api/servers/\(serverA)/agreement") { request in
                 request.body = .init(string: "{\"enabled\":false,\"title\":\"x\",\"bodyMarkdown\":\"y\"}")
             }
             assertStandard(disabled, body: "{\"agreement\":null}")
 
             // Profile patch: the name keeps its slash unescaped, `avatarUrl` is
             // a published `null`, and a wrong type is its own 400.
-            let patch = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverA)") { request in
+            let patch = try await client.send(.patch, headers: scopedHeaders, to: "/api/servers/\(serverA)") { request in
                 request.body = .init(string: "{\"name\":\"  Team/Alpha  \",\"hideHumansFromMembers\":true}")
             }
             assertStandard(
                 patch,
                 body: "{\"id\":\"\(serverA)\",\"name\":\"Team/Alpha\",\"slug\":\"bytes-a\",\"avatarUrl\":null,\"hideHumansFromMembers\":true}"
             )
-            let blank = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverA)") { request in
+            let blank = try await client.send(.patch, headers: scopedHeaders, to: "/api/servers/\(serverA)") { request in
                 request.body = .init(string: "{\"name\":\"   \"}")
             }
             #expect(blank.status == .badRequest)
             assertStandard(blank, body: "{\"error\":\"Server name is required\"}")
-            let nullName = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverA)") { request in
+            let nullName = try await client.send(.patch, headers: scopedHeaders, to: "/api/servers/\(serverA)") { request in
                 request.body = .init(string: "{\"name\":null}")
             }
             assertStandard(nullName, body: "{\"error\":\"Server name is required\"}")
-            let badHidden = try await client.send(.patch, headers: headers, to: "/api/servers/\(serverA)") { request in
+            let badHidden = try await client.send(.patch, headers: scopedHeaders, to: "/api/servers/\(serverA)") { request in
                 request.body = .init(string: "{\"hideHumansFromMembers\":\"yes\"}")
             }
             assertStandard(badHidden, body: "{\"error\":\"hideHumansFromMembers must be a boolean\"}")
@@ -207,10 +209,20 @@ import VaporTesting
             #expect(memberList.body.string?.contains(ownerId) == false)
 
             // Avatar upload: member refusal and the published key.
-            let denied = try await client.send(.post, headers: memberHeaders, to: "/api/servers/\(serverA)/avatar")
+            let denied = try await client.send(.post, headers: scopedMemberHeaders, to: "/api/servers/\(serverA)/avatar")
             #expect(denied.status == .forbidden)
             assertStandard(denied, body: "{\"error\":\"Forbidden\"}")
-            let avatar = try await client.send(.post, headers: headers, to: "/api/servers/\(serverA)/avatar")
+            var avatarHeaders = scopedHeaders
+            avatarHeaders[.contentType] = "multipart/form-data; boundary=server-avatar"
+            var avatarBytes = Data()
+            avatarBytes.append(Data("--server-avatar\r\n".utf8))
+            avatarBytes.append(Data("Content-Disposition: form-data; name=\"avatar\"; filename=\"server.gif\"\r\n".utf8))
+            avatarBytes.append(Data("Content-Type: image/gif\r\n\r\n".utf8))
+            avatarBytes.append(Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")!)
+            avatarBytes.append(Data("\r\n--server-avatar--\r\n".utf8))
+            let avatar = try await client.send(.post, headers: avatarHeaders, to: "/api/servers/\(serverA)/avatar") { request in
+                request.body = .init(data: avatarBytes)
+            }
             #expect(avatar.status == .ok)
             let avatarBody = avatar.body.string ?? ""
             #expect(avatarBody.hasPrefix("{\"avatarUrl\":\"/api/avatars/server-\(serverA)/"))

@@ -195,6 +195,17 @@ extension EmailLoginDirectory {
         machinesAndHostedRuntime.machineIdForCredential(authorization: authorization)
     }
 
+    /// The one machine-auth + agent-scope gate for the legacy
+    /// `/internal/agent/:id/*` surface.
+    public var legacyAgentMachineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            cards: managedMCPAndCardsStore
+        )
+    }
+
     func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
         machinesAndHostedRuntime.canMachineServeAgent(machineId: machineId, agent: agent)
     }
@@ -280,7 +291,20 @@ extension EmailLoginDirectory {
     /// commit as ordinary sends.
     var agentRoleNotices: AgentRoleNoticeService {
         AgentRoleNoticeService(profiles: authProfileStore, channels: serversAndChannelsStore,
-            messages: messagesAndThreadsStore, oauth: oauth)
+            oauth: oauth, notices: systemNoticeAppenderService)
+    }
+
+    /// The system-notice write and its frontend publication. The directory
+    /// supplies the message/channel/account owners and the realtime relay.
+    private var systemNoticeAppenderService: SystemNoticeAppender {
+        SystemNoticeAppender(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            ledger: MessageLedgerPort(oauth: oauth),
+            emit: { [realtimeRelay] room, event, payload in realtimeRelay.emit(room, event, payload) }
+        )
     }
 
     /// Human message create, the sender-side mention actions and the forward
@@ -300,6 +324,9 @@ extension EmailLoginDirectory {
                 writer: HumanMessageCommitService(
                     messages: messagesAndThreadsStore,
                     channels: serversAndChannelsStore,
+                    profiles: authProfileStore,
+                    catalog: taskCatalog,
+                    oauth: oauth,
                     ledger: MessageLedgerPort(oauth: oauth),
                     emit: { [relay = realtimeRelay] in relay.emit($0, $1, $2) }
                 ),
@@ -431,6 +458,7 @@ extension EmailLoginDirectory {
         SocketMembershipService(
             channels: serversAndChannelsStore,
             messages: messagesAndThreadsStore,
+            tasks: tasksAndRemindersStore,
             oauth: oauth,
             flags: agentsRuntimeStore,
             attachmentCommentsEnabled: { [self] serverId, userId in
@@ -501,8 +529,19 @@ extension EmailLoginDirectory {
             threadFollows: threadFollowStore,
             managedMCP: managedMCPAndCardsStore,
             oauth: oauth,
+            prepare: actionCardPrepare,
             search: searchMentions,
-            ledger: MessageLedgerPort(oauth: oauth)
+            ledger: MessageLedgerPort(oauth: oauth),
+            publishCommittedMessage: { [relay = realtimeRelay, messages = messagesAndThreadsStore,
+                                        channels = serversAndChannelsStore,
+                                        profiles = authProfileStore, oauth = oauth] message in
+                let realtimeFrames = MessageRealtimeService(
+                    messages: messages, channels: channels, profiles: profiles, oauth: oauth
+                )
+                for frame in realtimeFrames.frames(for: message) {
+                    relay.emit(frame.room, frame.event, frame.payload)
+                }
+            }
         )
     }
 
@@ -648,6 +687,38 @@ extension EmailLoginDirectory {
         ))
     }
 
+    /// The router-wide `requireServerMatchesParam` funnel plus the guest-hidden
+    /// surface rule. The Feature layer mounts it on the `/:id` route group; the
+    /// session lookup and the live server/membership rows stay in their owners.
+    public var serverRequestScope: ServerRequestScopeService {
+        ServerRequestScopeService(dependencies: ServerRequestScopeDependencies(
+            sessionUserId: { [auth = authCore] in try? auth.authenticate($0) },
+            oauth: oauth
+        ))
+    }
+
+    /// Producer-bound execution admission for synchronous server-authored
+    /// notices. This binding stages only; the production worker and materializer
+    /// remain the only path to the machine transport, and it cannot authorize an
+    /// ACK or read a committed view.
+    func agentExecutionForProducerRequests() -> AgentExecutionService {
+        AgentExecutionService(
+            producerTransactionAgents: agentsRuntimeStore, machines: machinesAndComputersStore,
+            oauth: oauth, channels: serversAndChannelsStore, messages: messagesAndThreadsStore
+        )
+    }
+
+    /// The owner onboarding briefing over this directory's actual owners. The
+    /// delivery admission is producer-bound: it needs the caller's durable
+    /// transaction, and a notice admitted here is sent by the production worker.
+    public var onboardingBriefing: OnboardingBriefingService {
+        OnboardingBriefingService(
+            channels: serversAndChannelsStore, profiles: authProfileStore,
+            agents: agentsRuntimeStore, messages: messagesAndThreadsStore, oauth: oauth,
+            execution: agentExecutionForProducerRequests()
+        )
+    }
+
     /// Execution and ingress share the same retained domain owners and writer.
     public func agentExecution(persistence: BusinessPersistenceRuntime) -> AgentExecutionService {
         AgentExecutionService(
@@ -683,6 +754,19 @@ extension EmailLoginDirectory {
         }
     }
 
+    /// The avatar and integration-logo port shared by every profile route.
+    public var avatars: AvatarService {
+        AvatarService(storage: oauth.assets, oauth: oauth)
+    }
+
+    public func configureAvatarStorage(_ storage: any PublicAssetObjectStoring) {
+        oauth.assets.configure(storage)
+    }
+
+    public func requireDurableAvatarStorage() {
+        oauth.assets.requireDurable()
+    }
+
     public func requireDurableAttachmentStorage() {
         messagesAndThreadsStore.withState { $0.requiresDurableAttachmentStorage = true }
     }
@@ -707,11 +791,22 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// The legacy machine-key agent surface (`/internal/agent/:id/*`): the
+    /// task, message and avatar operations the owning services already
+    /// implement, for the actor `LegacyAgentMachineGate` resolved.
+    public var legacyAgentSurface: LegacyAgentSurfaceService {
+        LegacyAgentSurfaceService(
+            tasksAndLabs: tasksAndLabs,
+            messageLookup: agentMessageLookup,
+            agentChannels: agentChannels
+        )
+    }
+
     /// The notice, mirror and acting agent's born-read cursor share one
     /// Messages transaction; external effects run after that transaction returns.
     var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {
-        { [messages = messagesAndThreadsStore, ledger = MessageLedgerPort(oauth: oauth)] message, bornReadAgentId in
-            messages.appendMessage(message, ledger: ledger, bornReadAgentId: bornReadAgentId)
+        { [appender = systemNoticeAppenderService] message, bornReadAgentId in
+            appender.append(message, bornReadAgentId)
         }
     }
 
@@ -938,5 +1033,18 @@ extension EmailLoginDirectory {
             profiles: authProfileStore,
             oauth: oauth
         )
+    }
+
+    /// The `/api/billing` summary and provider-disabled refusals. The server
+    /// plan, member roster and live agent rows are the authoritative facts;
+    /// no subscription store exists in this deployment.
+    public var billing: BillingService {
+        BillingService(profiles: authProfileStore, oauth: oauth)
+    }
+
+    /// `/api/raftbench` authority, request validation and the deployment gate.
+    /// The environment carries `DEPLOYMENT_ENV` and the optional canary id.
+    public func raftBench(environment: [String: String]) -> RaftBenchService {
+        RaftBenchService(profiles: authProfileStore, oauth: oauth, environment: environment)
     }
 }

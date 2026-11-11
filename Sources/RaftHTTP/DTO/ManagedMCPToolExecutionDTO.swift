@@ -253,59 +253,191 @@ public struct AllChannelVisibilityResponse: JSONBodyConvertible, Sendable, Equat
     }
 }
 
-/// `200` body of `POST /api/channels/dm`.
+/// The read-state union published on channel rows.
 ///
-/// Published order: `id`, `type`, `activityMuteSupported`, `peerId`,
-/// `peerType`.
-public struct DirectChannelResponse: JSONBodyConvertible, Sendable, Equatable {
-    public var id: String
-    public var peerId: String
-    public var peerType: String
+/// Upstream carries `InboxScopeReadFrontier`: `{"kind":"absent"}` when no
+/// cursor row exists, otherwise `{kind, readStateVersion, maxReadSeq,
+/// latestActivity}` with `maxReadSeq` as a canonical decimal string. The port
+/// retains cursor presence/value/version; `latestActivity` is always `null`
+/// because the cursor's same-source message/seq pair is not retained, and
+/// upstream itself publishes `null` for a missing/invalid pair.
+public enum ChannelReadStateFrontier: Sendable, Equatable {
+    case absent
+    case present(readStateVersion: Int, maxReadSeq: Int)
 
-    public init(id: String, peerId: String, peerType: String) {
-        self.id = id
-        self.peerId = peerId
-        self.peerType = peerType
+    /// The legacy scalar fields published next to the union. Upstream keeps
+    /// `0` / `0` for an absent cursor row.
+    var maxReadSeq: Int {
+        if case .present(_, let maxReadSeq) = self { return maxReadSeq }
+        return 0
     }
 
-    public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("id", id),
-            OrderedJSONField("type", "dm"),
-            OrderedJSONField("activityMuteSupported", false),
-            OrderedJSONField("peerId", peerId),
-            OrderedJSONField("peerType", peerType),
-        ])
+    var readStateVersion: Int {
+        if case .present(let version, _) = self { return version }
+        return 0
+    }
+
+    var json: OrderedJSON {
+        switch self {
+        case .absent:
+            return .object([OrderedJSONField("kind", "absent")])
+        case .present(let readStateVersion, let maxReadSeq):
+            return .object([
+                OrderedJSONField("kind", "present"),
+                OrderedJSONField("readStateVersion", readStateVersion),
+                OrderedJSONField("maxReadSeq", String(maxReadSeq)),
+                OrderedJSONField("latestActivity", .null),
+            ])
+        }
     }
 }
 
-/// One row of `GET /api/channels/dm`.
+/// The unified DM peer block: an agent peer or a human/self peer.
+public struct DirectChannelPeerFacts: Sendable, Equatable {
+    public var peerId: String
+    public var peerName: String
+    public var peerDisplayName: String?
+    public var peerDescription: String?
+    public var peerGravatarHash: String?
+    public var peerAvatarUrl: String?
+    /// `agent` or `user` (self DMs are `user` peers upstream).
+    public var peerType: String
+
+    public init(
+        peerId: String,
+        peerName: String,
+        peerDisplayName: String?,
+        peerDescription: String?,
+        peerGravatarHash: String?,
+        peerAvatarUrl: String?,
+        peerType: String
+    ) {
+        self.peerId = peerId
+        self.peerName = peerName
+        self.peerDisplayName = peerDisplayName
+        self.peerDescription = peerDescription
+        self.peerGravatarHash = peerGravatarHash
+        self.peerAvatarUrl = peerAvatarUrl
+        self.peerType = peerType
+    }
+}
+
+/// `200` body of `POST /api/channels/dm`: the created or existing DM channel
+/// row that upstream `findOrCreateDM`/`findOrCreateUserDM` return.
 ///
-/// Published order: `id`, `type`, `joined`, `activityMuteSupported`, `peerId`,
-/// `peerType`, `lastMessageAt`, `lastMessagePreview`, `lastMessageSenderName`
-/// (the last three `null` when absent).
+/// The agent-peer select orders the block `peerId, peerName, peerDisplayName,
+/// peerDescription, peerGravatarHash, peerAvatarUrl, peerType`; the user-peer
+/// select orders it `peerType, peerId, peerName, peerDisplayName,
+/// peerDescription, peerAvatarUrl, peerGravatarHash`. The two published orders
+/// are reproduced per peer kind.
+public struct DirectChannelResponse: JSONBodyConvertible, Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var description: String?
+    public var createdAt: String?
+    public var peer: DirectChannelPeerFacts
+
+    public init(
+        id: String,
+        name: String,
+        description: String?,
+        createdAt: String?,
+        peer: DirectChannelPeerFacts
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.createdAt = createdAt
+        self.peer = peer
+    }
+
+    public var jsonBody: OrderedJSON {
+        var fields: [OrderedJSONField] = [
+            OrderedJSONField("id", id),
+            OrderedJSONField("name", name),
+            OrderedJSONField("type", "dm"),
+            OrderedJSONField("description", optional: description),
+            OrderedJSONField("createdAt", optional: createdAt),
+        ]
+        if peer.peerType == "agent" {
+            fields.append(OrderedJSONField("peerId", peer.peerId))
+            fields.append(OrderedJSONField("peerName", peer.peerName))
+            fields.append(OrderedJSONField("peerDisplayName", optional: peer.peerDisplayName))
+            fields.append(OrderedJSONField("peerDescription", optional: peer.peerDescription))
+            fields.append(OrderedJSONField("peerGravatarHash", optional: peer.peerGravatarHash))
+            fields.append(OrderedJSONField("peerAvatarUrl", optional: peer.peerAvatarUrl))
+            fields.append(OrderedJSONField("peerType", peer.peerType))
+        } else {
+            fields.append(OrderedJSONField("peerType", peer.peerType))
+            fields.append(OrderedJSONField("peerId", peer.peerId))
+            fields.append(OrderedJSONField("peerName", peer.peerName))
+            fields.append(OrderedJSONField("peerDisplayName", optional: peer.peerDisplayName))
+            fields.append(OrderedJSONField("peerDescription", optional: peer.peerDescription))
+            fields.append(OrderedJSONField("peerAvatarUrl", optional: peer.peerAvatarUrl))
+            fields.append(OrderedJSONField("peerGravatarHash", optional: peer.peerGravatarHash))
+        }
+        return .object(fields)
+    }
+}
+
+/// One row of `GET /api/channels/dm`, mirroring upstream `listDMChannels`.
+///
+/// Published order: `id`, `name`, `type`, `description`, `createdAt`, peer
+/// fields (`peerId`, `peerName`, `peerDisplayName`, `peerDescription`,
+/// `peerAvatarUrl`, `peerGravatarHash`, `peerType`), `activityMuted`,
+/// `muteFromSeq`, `prefsVersion`, `activityMuteSupported`,
+/// `collapseLongMessages`, `displayPrefsVersion`, `maxReadSeq`,
+/// `readStateVersion`, `readState`, `lastMessageAt`, `lastMessagePreview`,
+/// `lastMessageSenderName`.
 public struct DirectChannelListRowDTO: Sendable, Equatable {
     public var id: String
-    public var joined: Bool
-    public var peerId: String
-    public var peerType: String
+    public var name: String
+    public var description: String?
+    public var createdAt: String?
+    public var peer: DirectChannelPeerFacts
+    public var activityMuted: Bool
+    public var muteFromSeq: Int?
+    public var prefsVersion: Int
+    public var collapseLongMessages: Bool
+    public var displayPrefsVersion: Int
+    public var maxReadSeq: Int
+    public var readStateVersion: Int
+    public var readState: ChannelReadStateFrontier
     public var lastMessageAt: String?
     public var lastMessagePreview: String?
     public var lastMessageSenderName: String?
 
     public init(
         id: String,
-        joined: Bool,
-        peerId: String,
-        peerType: String,
+        name: String,
+        description: String?,
+        createdAt: String?,
+        peer: DirectChannelPeerFacts,
+        activityMuted: Bool,
+        muteFromSeq: Int?,
+        prefsVersion: Int,
+        collapseLongMessages: Bool,
+        displayPrefsVersion: Int,
+        maxReadSeq: Int,
+        readStateVersion: Int,
+        readState: ChannelReadStateFrontier,
         lastMessageAt: String?,
         lastMessagePreview: String?,
         lastMessageSenderName: String?
     ) {
         self.id = id
-        self.joined = joined
-        self.peerId = peerId
-        self.peerType = peerType
+        self.name = name
+        self.description = description
+        self.createdAt = createdAt
+        self.peer = peer
+        self.activityMuted = activityMuted
+        self.muteFromSeq = muteFromSeq
+        self.prefsVersion = prefsVersion
+        self.collapseLongMessages = collapseLongMessages
+        self.displayPrefsVersion = displayPrefsVersion
+        self.maxReadSeq = maxReadSeq
+        self.readStateVersion = readStateVersion
+        self.readState = readState
         self.lastMessageAt = lastMessageAt
         self.lastMessagePreview = lastMessagePreview
         self.lastMessageSenderName = lastMessageSenderName
@@ -314,11 +446,26 @@ public struct DirectChannelListRowDTO: Sendable, Equatable {
     var json: OrderedJSON {
         .object([
             OrderedJSONField("id", id),
+            OrderedJSONField("name", name),
             OrderedJSONField("type", "dm"),
-            OrderedJSONField("joined", joined),
+            OrderedJSONField("description", optional: description),
+            OrderedJSONField("createdAt", optional: createdAt),
+            OrderedJSONField("peerId", peer.peerId),
+            OrderedJSONField("peerName", peer.peerName),
+            OrderedJSONField("peerDisplayName", optional: peer.peerDisplayName),
+            OrderedJSONField("peerDescription", optional: peer.peerDescription),
+            OrderedJSONField("peerAvatarUrl", optional: peer.peerAvatarUrl),
+            OrderedJSONField("peerGravatarHash", optional: peer.peerGravatarHash),
+            OrderedJSONField("peerType", peer.peerType),
+            OrderedJSONField("activityMuted", activityMuted),
+            OrderedJSONField("muteFromSeq", optional: muteFromSeq),
+            OrderedJSONField("prefsVersion", prefsVersion),
             OrderedJSONField("activityMuteSupported", false),
-            OrderedJSONField("peerId", peerId),
-            OrderedJSONField("peerType", peerType),
+            OrderedJSONField("collapseLongMessages", collapseLongMessages),
+            OrderedJSONField("displayPrefsVersion", displayPrefsVersion),
+            OrderedJSONField("maxReadSeq", maxReadSeq),
+            OrderedJSONField("readStateVersion", readStateVersion),
+            OrderedJSONField("readState", readState.json),
             OrderedJSONField("lastMessageAt", optional: lastMessageAt),
             OrderedJSONField("lastMessagePreview", optional: lastMessagePreview),
             OrderedJSONField("lastMessageSenderName", optional: lastMessageSenderName),
@@ -341,24 +488,15 @@ public struct DirectChannelListResponse: JSONBodyConvertible, Sendable, Equatabl
 
 /// `200` body of `GET /api/channels/:channelId`.
 ///
-/// Published order: `id`, `name`, `type`, `joined`, the DM peer fields when the
-/// channel is a DM, `maxReadSeq`, `readStateVersion`, `activityMuteSupported`,
-/// `collapseLongMessages`, `displayPrefsVersion`, `channelRole`,
-/// `channelAdminBasis`, `channelAuthorityRevision`, `channelCapabilities`, then
-/// the peer read state when read receipts are enabled.
+/// Published channel-row order: `id`, `serverId`, `name`, `description`,
+/// `type`, `createdAt`, then the DM peer block, `joined`, the display prefs,
+/// the read state, `activityMuteSupported`, the channel authorization block and
+/// finally the peer read state. The agent DM peer block is
+/// `peerId, peerName, peerDisplayName, peerDescription, peerGravatarHash,
+/// peerAvatarUrl, peerType`; the user/self block is `peerType, peerId,
+/// peerName, peerDisplayName, peerDescription, peerAvatarUrl,
+/// peerGravatarHash` — the two upstream selects' orders.
 public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
-    public struct DirectPeer: Sendable, Equatable {
-        public var peerType: String
-        public var peerId: String
-        public var peerName: String
-
-        public init(peerType: String, peerId: String, peerName: String) {
-            self.peerType = peerType
-            self.peerId = peerId
-            self.peerName = peerName
-        }
-    }
-
     public struct Capabilities: Sendable, Equatable {
         public var editChannelMetadata: Bool
         public var archiveChannels: Bool
@@ -429,76 +567,101 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
     }
 
     public var id: String
+    public var serverId: String
     public var name: String
+    public var description: String?
     public var type: String
+    public var createdAt: String?
+    public var directPeer: DirectChannelPeerFacts?
     public var joined: Bool
-    public var directPeer: DirectPeer?
-    public var maxReadSeq: Int
-    public var readStateVersion: Int
-    public var activityMuteSupported: Bool
     public var collapseLongMessages: Bool
     public var displayPrefsVersion: Int
+    public var maxReadSeq: Int
+    public var readStateVersion: Int
+    public var readState: ChannelReadStateFrontier
+    public var activityMuteSupported: Bool
     public var channelRole: String
     public var channelAdminBasis: String?
-    public var channelAuthorityRevision: Int
     public var capabilities: Capabilities
+    public var channelAuthorityRevision: Int
     public var peerReadState: PeerReadState?
 
     public init(
         id: String,
+        serverId: String,
         name: String,
+        description: String?,
         type: String,
+        createdAt: String?,
+        directPeer: DirectChannelPeerFacts?,
         joined: Bool,
-        directPeer: DirectPeer?,
-        maxReadSeq: Int,
-        readStateVersion: Int,
-        activityMuteSupported: Bool,
         collapseLongMessages: Bool,
         displayPrefsVersion: Int,
+        maxReadSeq: Int,
+        readStateVersion: Int,
+        readState: ChannelReadStateFrontier,
+        activityMuteSupported: Bool,
         channelRole: String,
         channelAdminBasis: String?,
-        channelAuthorityRevision: Int,
         capabilities: Capabilities,
+        channelAuthorityRevision: Int,
         peerReadState: PeerReadState?
     ) {
         self.id = id
+        self.serverId = serverId
         self.name = name
+        self.description = description
         self.type = type
-        self.joined = joined
+        self.createdAt = createdAt
         self.directPeer = directPeer
-        self.maxReadSeq = maxReadSeq
-        self.readStateVersion = readStateVersion
-        self.activityMuteSupported = activityMuteSupported
+        self.joined = joined
         self.collapseLongMessages = collapseLongMessages
         self.displayPrefsVersion = displayPrefsVersion
+        self.maxReadSeq = maxReadSeq
+        self.readStateVersion = readStateVersion
+        self.readState = readState
+        self.activityMuteSupported = activityMuteSupported
         self.channelRole = channelRole
         self.channelAdminBasis = channelAdminBasis
-        self.channelAuthorityRevision = channelAuthorityRevision
         self.capabilities = capabilities
+        self.channelAuthorityRevision = channelAuthorityRevision
         self.peerReadState = peerReadState
     }
 
     public var jsonBody: OrderedJSON {
         var fields = [
             OrderedJSONField("id", id),
+            OrderedJSONField("serverId", serverId),
             OrderedJSONField("name", name),
+            OrderedJSONField("description", optional: description),
             OrderedJSONField("type", type),
-            OrderedJSONField("joined", joined),
+            OrderedJSONField("createdAt", optional: createdAt),
         ]
         if let directPeer {
-            fields.append(OrderedJSONField("peerType", directPeer.peerType))
-            fields.append(OrderedJSONField("peerId", directPeer.peerId))
-            fields.append(OrderedJSONField("peerName", directPeer.peerName))
+            if directPeer.peerType == "agent" {
+                fields.append(OrderedJSONField("peerId", directPeer.peerId))
+                fields.append(OrderedJSONField("peerName", directPeer.peerName))
+                fields.append(OrderedJSONField("peerDisplayName", optional: directPeer.peerDisplayName))
+                fields.append(OrderedJSONField("peerDescription", optional: directPeer.peerDescription))
+                fields.append(OrderedJSONField("peerGravatarHash", optional: directPeer.peerGravatarHash))
+                fields.append(OrderedJSONField("peerAvatarUrl", optional: directPeer.peerAvatarUrl))
+                fields.append(OrderedJSONField("peerType", directPeer.peerType))
+            } else {
+                fields.append(OrderedJSONField("peerType", directPeer.peerType))
+                fields.append(OrderedJSONField("peerId", directPeer.peerId))
+                fields.append(OrderedJSONField("peerName", directPeer.peerName))
+                fields.append(OrderedJSONField("peerDisplayName", optional: directPeer.peerDisplayName))
+                fields.append(OrderedJSONField("peerDescription", optional: directPeer.peerDescription))
+                fields.append(OrderedJSONField("peerAvatarUrl", optional: directPeer.peerAvatarUrl))
+                fields.append(OrderedJSONField("peerGravatarHash", optional: directPeer.peerGravatarHash))
+            }
         }
-        fields.append(OrderedJSONField("maxReadSeq", maxReadSeq))
-        fields.append(OrderedJSONField("readStateVersion", readStateVersion))
-        fields.append(OrderedJSONField("activityMuteSupported", activityMuteSupported))
+        fields.append(OrderedJSONField("joined", joined))
         fields.append(OrderedJSONField("collapseLongMessages", collapseLongMessages))
         fields.append(OrderedJSONField("displayPrefsVersion", displayPrefsVersion))
-        fields.append(OrderedJSONField("channelRole", channelRole))
-        fields.append(OrderedJSONField("channelAdminBasis", optional: channelAdminBasis))
-        fields.append(OrderedJSONField("channelAuthorityRevision", channelAuthorityRevision))
-        fields.append(OrderedJSONField("channelCapabilities", capabilities.json))
+        fields.append(OrderedJSONField("maxReadSeq", maxReadSeq))
+        fields.append(OrderedJSONField("readStateVersion", readStateVersion))
+        fields.append(OrderedJSONField("readState", readState.json))
         switch peerReadState {
         case .summary(let peerCount, let buckets)?:
             fields.append(OrderedJSONField("peerReadSummary", .object([
@@ -518,6 +681,11 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
         case nil:
             break
         }
+        fields.append(OrderedJSONField("activityMuteSupported", activityMuteSupported))
+        fields.append(OrderedJSONField("channelRole", channelRole))
+        fields.append(OrderedJSONField("channelAdminBasis", optional: channelAdminBasis))
+        fields.append(OrderedJSONField("channelCapabilities", capabilities.json))
+        fields.append(OrderedJSONField("channelAuthorityRevision", channelAuthorityRevision))
         return .object(fields)
     }
 }
@@ -685,6 +853,51 @@ public struct AgentChannelMuteResponse: JSONBodyConvertible, Sendable, Equatable
             OrderedJSONField("activityMuted", muted),
             OrderedJSONField("muteFromSeq", optional: muteFromSeq),
             OrderedJSONField("attention", attention),
+        ])
+    }
+}
+
+/// `200` body of `POST /api/channels/:channelId/stop-all-agents`.
+///
+/// Published order: `ok` (always `true`), `stopped`, `total`, `results`.
+/// A failed stop carries `error` instead of `reason`; the resumed route uses
+/// the separate `ResumeAllAgentsResponse` shape.
+public struct StopAllAgentsResponse: JSONBodyConvertible, Sendable, Equatable {
+    public struct Result: Sendable, Equatable {
+        public var agentId: String
+        public var error: String?
+
+        public init(agentId: String, error: String?) {
+            self.agentId = agentId
+            self.error = error
+        }
+
+        var json: OrderedJSON {
+            var fields = [
+                OrderedJSONField("agentId", agentId),
+                OrderedJSONField("ok", error == nil),
+            ]
+            if let error { fields.append(OrderedJSONField("error", error)) }
+            return .object(fields)
+        }
+    }
+
+    public var stopped: Int
+    public var total: Int
+    public var results: [Result]
+
+    public init(stopped: Int, total: Int, results: [Result]) {
+        self.stopped = stopped
+        self.total = total
+        self.results = results
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", true),
+            OrderedJSONField("stopped", stopped),
+            OrderedJSONField("total", total),
+            OrderedJSONField("results", .array(results.map(\.json))),
         ])
     }
 }

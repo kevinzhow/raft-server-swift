@@ -26,6 +26,9 @@ final class AttachmentPreviewStorageFixture: Sendable {
     let storage: S3AttachmentStorage
     private let server: AWSTestServer
     private let serving: Task<Void, any Error>
+    /// One-shot stop. A deadline may abandon a wedged stop; a later duplicate
+    /// stop must not reach NIOHTTP1TestServer's double-stop precondition.
+    private let stopped = Mutex(false)
 
     init() throws {
         let server = AWSTestServer(serviceProtocol: .xml)
@@ -68,9 +71,23 @@ final class AttachmentPreviewStorageFixture: Sendable {
     }
 
     func stop() async {
-        try? await storage.shutdown()
-        try? server.stop()
-        _ = try? await serving.value
+        let alreadyStopped = stopped.withLock { stopped in
+            defer { stopped = true }
+            return stopped
+        }
+        guard !alreadyStopped else { return }
+        do {
+            // The SDK stop path blocks in NIO graceful-shutdown waits. Bound it
+            // so a stuck localhost fixture fails the test with a diagnostic
+            // instead of parking the whole suite forever.
+            try await withTestDeadline("attachment-preview fixture shutdown", seconds: 60) {
+                try? await self.storage.shutdown()
+                try? self.server.stop()
+                _ = try? await self.serving.value
+            }
+        } catch {
+            Issue.record("AttachmentPreviewStorageFixture.stop did not finish: \(error)")
+        }
     }
 }
 

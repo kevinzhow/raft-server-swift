@@ -24,9 +24,14 @@ public struct FirstOnboardingCompletion: Sendable, Equatable {
 public enum AuthProfileError: DomainError, Equatable {
     case emailRequired
     case missingResetCredentials
+    case resetPasswordTooShort
     case invalidOrExpiredResetToken
     case unauthenticated
-    case invalidTimezoneObservation
+    case invalidTimezoneObservationBody([AuthRequestIssue])
+    case timezoneEmpty
+    case timezoneTooLong
+    case timezoneNotIana
+    case timezoneNotCanonical
     case observationNotStored
 
     public var status: UInt {
@@ -35,8 +40,9 @@ public enum AuthProfileError: DomainError, Equatable {
             401
         case .observationNotStored:
             500
-        case .emailRequired, .missingResetCredentials, .invalidOrExpiredResetToken,
-             .invalidTimezoneObservation:
+        case .emailRequired, .missingResetCredentials, .resetPasswordTooShort,
+             .invalidOrExpiredResetToken, .invalidTimezoneObservationBody,
+             .timezoneEmpty, .timezoneTooLong, .timezoneNotIana, .timezoneNotCanonical:
             400
         }
     }
@@ -46,15 +52,47 @@ public enum AuthProfileError: DomainError, Equatable {
         case .emailRequired:
             "Email is required"
         case .missingResetCredentials:
-            "token and password are required"
+            "Token and password are required"
+        case .resetPasswordTooShort:
+            "Password must be at least 8 characters"
         case .invalidOrExpiredResetToken:
             "Invalid or expired reset token"
         case .unauthenticated:
             "Unauthorized"
-        case .invalidTimezoneObservation:
-            "Invalid timezone observation"
+        case .invalidTimezoneObservationBody:
+            "Invalid timezone observation body"
+        case .timezoneEmpty:
+            "timezone must be a non-empty IANA timezone"
+        case .timezoneTooLong:
+            "timezone must be at most 128 characters"
+        case .timezoneNotIana:
+            "timezone must be an IANA timezone"
+        case .timezoneNotCanonical:
+            "timezone must be a canonical IANA timezone"
         case .observationNotStored:
             "Timezone observation not stored"
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .invalidTimezoneObservationBody: "timezone_observation_body_invalid"
+        default: nil
+        }
+    }
+
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .invalidTimezoneObservationBody(let issues):
+            // Pinned `routes/auth.ts:1370-1376` publishes `error`, `code`,
+            // then `issues`.
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "timezone_observation_body_invalid"),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
+            ])
+        default:
+            return nil
         }
     }
 }
@@ -133,8 +171,36 @@ public struct AuthProfileService: Sendable {
         return ForgotPasswordResponse()
     }
 
-    /// `POST /api/auth/pending-link/cancel`. Always 204, including a second
-    /// cancel and an unknown or absent token.
+    /// `GET /api/auth/me/username-available`. Mirrors the `complete-profile`
+    /// checks (`validate → reserved → uniqueness`) but only reads; a name can
+    /// still be taken between this check and submit.
+    public func usernameAvailability(
+        authorization: String?,
+        name: String?
+    ) throws -> UsernameAvailabilityResponse {
+        guard userId(authorization: authorization) != nil else {
+            throw AuthProfileError.unauthenticated
+        }
+        let candidate = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let message = AccountNaming.validateName(candidate, "Username", minLength: 5) {
+            return UsernameAvailabilityResponse(available: false, reason: "invalid", message: message)
+        }
+        if candidate.lowercased().hasPrefix("pending_") || AccountNaming.isReservedAgentName(candidate) {
+            return UsernameAvailabilityResponse(
+                available: false, reason: "reserved",
+                message: "This username is reserved. Choose another name."
+            )
+        }
+        let available = store.isUsernameAvailable(candidate)
+        return UsernameAvailabilityResponse(
+            available: available,
+            reason: available ? nil : "taken",
+            message: available ? nil : "This username is already taken."
+        )
+    }
+
+    /// `POST /api/auth/pending-link/cancel` for a token the route already
+    /// checked. Always 204, including a second cancel and an unknown token.
     public func cancelPendingLink(_ request: CancelPendingLinkRequest) -> NoContentResponse {
         if let token = request.pendingLinkToken {
             store.markPendingSocialLinkCancelled(token: token)
@@ -165,6 +231,10 @@ public struct AuthProfileService: Sendable {
     private func resetInput(_ request: ResetPasswordRequest) throws -> (candidate: PasswordCredentialCandidate, tokenHash: String, password: String) {
         guard let token = request.token, !token.isEmpty,
               let password = request.password, !password.isEmpty else { throw AuthProfileError.missingResetCredentials }
+        // Pinned `routes/auth.ts:1776-1779`: the eight-character floor runs
+        // before the token is looked up, so an unknown token with a short
+        // password is the password refusal.
+        guard password.utf16.count >= 8 else { throw AuthProfileError.resetPasswordTooShort }
         let tokenHash = hashToken(token)
         guard let candidate = store.resetPasswordCandidate(tokenHash: tokenHash, now: now()) else {
             throw AuthProfileError.invalidOrExpiredResetToken
@@ -188,18 +258,34 @@ public struct AuthProfileService: Sendable {
         guard let userId = userId(authorization: authorization) else {
             throw AuthProfileError.unauthenticated
         }
+        // Pinned `routes/auth.ts:1406-1413`: the strict schema runs before the
+        // zone value is parsed, and its failures publish an issue list.
+        guard request.issues.isEmpty else {
+            throw AuthProfileError.invalidTimezoneObservationBody(request.issues)
+        }
         guard let raw = request.timezone else {
-            throw AuthProfileError.invalidTimezoneObservation
+            throw AuthProfileError.timezoneEmpty
         }
+        // Pinned `lib/ianaTimezone.ts` `parseCanonicalBrowserTimezone`: trim
+        // and non-empty, length, Intl validity, then the Area/Location shape
+        // and the resolved canonical shape. Each failure has its own sentence.
         let timezone = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !timezone.isEmpty,
-              timezone.count <= Self.maximumTimezoneLength,
-              timezone == "UTC" || timezone.contains("/"),
-              let zone = TimeZone(identifier: timezone)
-        else {
-            throw AuthProfileError.invalidTimezoneObservation
+        guard !timezone.isEmpty else {
+            throw AuthProfileError.timezoneEmpty
         }
-        let canonicalTimezone = AccountNaming.timezoneAliases[timezone] ?? zone.identifier
+        guard timezone.utf16.count <= Self.maximumTimezoneLength else {
+            throw AuthProfileError.timezoneTooLong
+        }
+        guard let resolved = Self.resolveBrowserTimezone(timezone) else {
+            throw AuthProfileError.timezoneNotIana
+        }
+        guard timezone == "UTC" || timezone.contains("/") else {
+            throw AuthProfileError.timezoneNotCanonical
+        }
+        guard resolved == "UTC" || resolved.contains("/") else {
+            throw AuthProfileError.timezoneNotCanonical
+        }
+        let canonicalTimezone = Self.canonicalBrowserTimezone(resolved)
         let observation = store.recordTimezoneObservation(
             userId: userId,
             timezone: canonicalTimezone,
@@ -211,6 +297,46 @@ public struct AuthProfileService: Sendable {
             lastObservedTimezone: observation.lastTimezone,
             lastObservedTimezoneAt: Self.timestamp(observation.lastAt)
         )
+    }
+
+    /// The ICU `resolvedOptions().timeZone` shape for an Intl-accepted id.
+    ///
+    /// Foundation's `TimeZone(identifier:)` also accepts strings Node's Intl
+    /// rejects (`UTC+0`), so no-slash values go through the abbreviation map
+    /// first and offset spellings are accepted explicitly. The caller applies
+    /// the raw canonical-shape check afterwards, which rejects every no-slash
+    /// value except `UTC`.
+    private static func resolveBrowserTimezone(_ timezone: String) -> String? {
+        if timezone == "UTC" { return "UTC" }
+        if timezone.contains("/") {
+            return TimeZone(identifier: timezone)?.identifier
+        }
+        if timezone.range(of: #"^[+-]\d{2}:?\d{2}$"#, options: .regularExpression) != nil {
+            return timezone
+        }
+        // Foundation accepts `UTC+0` as an identifier; Intl does not.
+        if timezone.hasPrefix("UTC") { return nil }
+        if let zone = TimeZone(abbreviation: timezone) {
+            return zone.identifier
+        }
+        return TimeZone(identifier: timezone)?.identifier
+    }
+
+    /// The zones ICU's canonical id differs from Foundation's alias.
+    ///
+    /// Foundation on this platform does not canonicalize `TimeZone(identifier:)`
+    /// (it returns the input id), so this stays a finite table; see
+    /// `docs/DEVIATIONS.md#d33` for the residual and the re-evaluate trigger.
+    private static func canonicalBrowserTimezone(_ resolved: String) -> String {
+        switch resolved {
+        case "Etc/UTC", "Etc/GMT", "Etc/UCT", "Etc/GMT+0", "Etc/GMT-0",
+             "Etc/GMT0", "Etc/Universal", "Etc/Zulu":
+            return "UTC"
+        case "Asia/Kolkata":
+            return "Asia/Calcutta"
+        default:
+            return AccountNaming.timezoneAliases[resolved] ?? resolved
+        }
     }
 
     /// The user behind a normal access token, matching the `requireAuth` check

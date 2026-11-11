@@ -19,6 +19,7 @@ import VaporTesting
     let agentB = accounts.oauth.createAgent(serverId: serverB, name: "ScopeAgentB")
     let machineA = accounts.registerMachine(serverId: serverA, userId: ownerId, name: "scope-machine-a")
     let apiKeyA = accounts.machineAPIKey(machineId: machineA) ?? ""
+    accounts.assignAgentMachineForTesting(agentId: agentA, machineId: machineA)
     let body = "{\"target\":\"#scope-room-a\",\"content\":\"probe\"}"
 
     try await withApp { app in
@@ -51,7 +52,7 @@ import VaporTesting
 
             let sameServer = try await send(agentA, apiKeyA)
             #expect(sameServer.status == .notFound)
-            #expect(try json(sameServer)["error"] as? String == "Channel not found")
+            #expect(try json(sameServer)["error"] as? String == "Channel not found: #scope-room-a")
             _ = agentA
         }
     }

@@ -246,6 +246,7 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 public func configure(_ app: Application, services: FallbackServices) {
     if services.nodeEnv == "production" {
         services.emailAccounts.requireDurableAttachmentStorage()
+        services.emailAccounts.requireDurableAvatarStorage()
     }
     let internalSurface = InternalSurfaceBox()
     InternalAgentApiFeature(services: services).register(routes: app)
@@ -254,6 +255,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         controlPlane: services.emailAccounts.managedMCPControlPlane,
         identities: services.emailAccounts.authIdentities,
         apps: services.emailAccounts.integrationsAndAppAccess,
+        appManagement: services.emailAccounts.integrationAppManagement,
         cardPrepare: services.emailAccounts.actionCardPrepare,
         agentsLifecycle: services.emailAccounts.agentsLifecycle,
         providerConnections: services.emailAccounts.managedMCPProviderConnections,
@@ -263,6 +265,9 @@ public func configure(_ app: Application, services: FallbackServices) {
     ComputersFeature(services: services).register(routes: app)
     RemindersFeature(services: services).register(routes: app)
     NotificationsFeature(services: services).register(routes: app)
+    // Upstream mounts the capability-addressed profile assets at the app level,
+    // beside (not inside) the authenticated route families.
+    AvatarObjectRoutes(services: services).register(routes: app)
     ServersFeature(services: services).register(routes: app)
     let hostMessaging = services.channelMessaging
     ChannelsFeature(
@@ -271,7 +276,13 @@ public func configure(_ app: Application, services: FallbackServices) {
         ),
         reactions: services.emailAccounts.reactionsRealtime,
         inbox: services.emailAccounts.inboxAndWake,
-        assignments: services.emailAccounts.channelAssignments().bindingTaskPublication(publishTaskUpdated: { _ in }),
+        assignments: services.emailAccounts.channelAssignments()
+            .bindingTaskPublication(publishTaskUpdated: { _ in })
+            .bindingFirstThreadReply { serverId, channelId, userId, content in
+                try services.humanMessageCreate.createThreadFirstReply(
+                    serverId: serverId, channelId: channelId, userId: userId, content: content
+                )
+            },
         readState: services.emailAccounts.managedMCPToolExecution,
         membership: services.emailAccounts.channelMembership,
         search: services.emailAccounts.searchMentions,
@@ -283,6 +294,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         socketMembership: services.emailAccounts.socketMembership,
         channelRoutes: services.emailAccounts.managedMCPChannelRoutes,
         channelMessaging: hostMessaging,
+        runtimeControl: services.agentMachineMigrationControl,
         realtime: services.realtime
     ).register(routes: app)
     MessagingFeature(services: services).register(routes: app)
@@ -296,6 +308,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     FeedbackFeature(services: services).register(routes: app)
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)
+    BillingFeature(services: services).register(routes: app)
+    RaftBenchFeature(services: services).register(routes: app)
     AuthFeature(
         core: services.emailAccounts.authCore.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
         identities: services.emailAccounts.authIdentities,
@@ -305,7 +319,8 @@ public func configure(_ app: Application, services: FallbackServices) {
         invites: services.emailAccounts.joinLinksAndInvites,
         managedLifecycle: services.emailAccounts.managedMCPLifecycle,
         publicServerDirectory: services.publicServerDirectory,
-        realtime: services.realtime
+        realtime: services.realtime,
+        onboardingBriefing: services.emailAccounts.onboardingBriefing
     ).register(routes: app)
     KnowledgeFeature(services: services).register(routes: app)
     let readReceipts = services.emailAccounts.managedMCPToolExecution

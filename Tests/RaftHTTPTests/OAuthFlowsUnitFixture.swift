@@ -113,7 +113,7 @@ struct OAuthFlowsUnitFixture: Sendable {
     func linkedProviderUserIds(userId: String, provider: String) -> [String] {
         profiles.state.withLock {
             $0.accountSurface.linkedIdentities
-                .filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
+                .filter { $0.userId == userId && $0.provider == provider }.compactMap(\.providerUserId)
         }
     }
 

@@ -17,6 +17,7 @@ extension OAuthLedger {
 public struct SocketMembershipService: Sendable {
     private let channels: ServersAndChannelsStore
     private let messages: MessagesAndThreadsStore
+    private let tasks: TasksAndRemindersStore
     private let oauth: OAuthLedger
     private let flags: AgentsRuntimeStore
     /// Feature-flag gate owned by the not-yet-migrated integrations domain.
@@ -25,12 +26,14 @@ public struct SocketMembershipService: Sendable {
     init(
         channels: ServersAndChannelsStore,
         messages: MessagesAndThreadsStore,
+        tasks: TasksAndRemindersStore,
         oauth: OAuthLedger,
         flags: AgentsRuntimeStore,
         attachmentCommentsEnabled: @escaping @Sendable (String, String) -> Bool
     ) {
         self.channels = channels
         self.messages = messages
+        self.tasks = tasks
         self.oauth = oauth
         self.flags = flags
         self.attachmentCommentsEnabled = attachmentCommentsEnabled
@@ -95,6 +98,25 @@ public struct SocketMembershipService: Sendable {
         SocketChannelRoomsDTO(rooms: channels.channelRoomIds(channelId: channelId))
     }
 
+    /// Upstream `messageService.getMaxSeq(serverId)`: the highest retained
+    /// message sequence for the server, published by the application
+    /// `heartbeat`. The sequence is the same `seq` assigned to message rows and
+    /// replayed by `sync:resume`; this reads those rows instead of keeping a
+    /// second in-memory counter. Canonical joint-channel rows count toward the
+    /// local server because upstream calls `updateMaxSeq(localServerId, ...)`
+    /// when it projects them.
+    public func maxMessageSeq(serverId: String) -> Int {
+        let snapshot = channels.channelReadSnapshot()
+        var channelIds = Set(snapshot.channels.compactMap { id, channel in
+            channel.serverId == serverId ? id : nil
+        })
+        for link in snapshot.jointProjections where link.serverId == serverId && link.status == "active" {
+            channelIds.insert(link.canonicalChannelId)
+        }
+        guard !channelIds.isEmpty else { return 0 }
+        return messages.maxMessageSeq(channelIds: channelIds)
+    }
+
     /// Viewer-filtered catch-up for the `sync:resume` socket outlet. Mirrors
     /// upstream `messageService.syncMessages(lastSeq, nil, limit, serverId, nil, userId)`:
     /// regular channels are server-readable (guests need `guestVisible`),
@@ -141,11 +163,26 @@ public struct SocketMembershipService: Sendable {
                     )
                 )
             }
+            // v1.4 canonical tasks are joined by their host message. A row
+            // with no canonical task republishes the frozen message columns,
+            // which are null for an ordinary message.
+            let isForwardDestination = messages.forwardRecord(messageId: message.id) != nil
+            let task = isForwardDestination ? nil : tasks.task(messageId: message.id).flatMap {
+                $0.channelId == message.channelId && $0.hasHostMessage ? $0 : nil
+            }
+            let overlay = task.map(TaskReadProjection.messageReadOverlay)
             rows.append((message.seq, SocketSyncMessageDTO(
                 id: message.id,
                 channelId: message.channelId,
                 seq: message.seq,
                 content: message.content,
+                taskStatus: overlay?.taskStatus ?? message.taskStatus,
+                taskNumber: overlay?.taskNumber ?? message.taskNumber,
+                taskAssigneeType: overlay?.taskAssigneeType ?? message.taskAssigneeType,
+                taskAssigneeId: overlay?.taskAssigneeId ?? message.taskAssigneeId,
+                taskClaimedAt: overlay?.taskClaimedAt ?? message.taskClaimedAt,
+                taskCompletedAt: overlay?.taskCompletedAt ?? message.taskCompletedAt,
+                includesTaskFacts: !isForwardDestination,
                 attachments: attachments,
                 commentRef: commentRef
             )))

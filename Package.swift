@@ -137,9 +137,11 @@ let package = Package(
                 "RaftPersistence",
                 "RaftRedis",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
             ],
             resources: [
+                .copy("Resources/owner-opener-team-mode.html"),
                 .copy("Resources/raft-markdown-parser.js"),
                 .copy("Resources/raft-markdown-parser.LICENSE.txt"),
                 .copy("Resources/raft-markdown-parser.provenance.json"),
@@ -183,7 +185,8 @@ let package = Package(
         .testTarget(
             name: "RaftHTTPTests",
             dependencies: [
-                "RaftHTTP", "RaftShared", "TestSupport",
+                "RaftHTTP", "RaftObjectStorage", "RaftShared", "TestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
@@ -237,6 +240,9 @@ let package = Package(
                 "RaftServer", "RaftHTTP", "RaftMachineSocket", "RaftConnectAuth", "RaftPersistence",
                 "RaftRealtime", "RaftHTTPServer", "RaftShared", "TestSupport",
                 .product(name: "Vapor", package: "vapor"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "PostgresNIO", package: "postgres-nio"),
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOWebSocket", package: "swift-nio"),
                 .product(name: "NIOCore", package: "swift-nio"),

@@ -21,6 +21,7 @@ import VaporTesting
     accounts.oauth.addChannelAgent(channelId: channel, agentId: agent)
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "headerless-machine")
     let key = accounts.machineAPIKey(machineId: machine) ?? ""
+    accounts.assignAgentMachineForTesting(agentId: agent, machineId: machine)
 
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -41,15 +42,21 @@ import VaporTesting
             }
             #expect(response.status == .ok)
             let raw = response.body.string ?? ""
-            // The route must publish the DTO's legacy byte order, not the
+            // The route must publish the pinned legacy byte order, not the
             // nondeterministic JSONEncoder key order.
-            let idIndex = try #require(raw.range(of: "\"id\""))
-            let channelIndex = try #require(raw.range(of: "\"channelId\""))
-            #expect(idIndex.lowerBound < channelIndex.lowerBound)
+            let okIndex = try #require(raw.range(of: "\"ok\""))
+            let stateIndex = try #require(raw.range(of: "\"state\""))
+            let messageIdIndex = try #require(raw.range(of: "\"messageId\""))
+            let messageSeqIndex = try #require(raw.range(of: "\"messageSeq\""))
+            #expect(okIndex.lowerBound < stateIndex.lowerBound)
+            #expect(stateIndex.lowerBound < messageIdIndex.lowerBound)
+            #expect(messageIdIndex.lowerBound < messageSeqIndex.lowerBound)
             #expect(raw.hasSuffix("}"))
             let body = (try JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
-            #expect(body["channelId"] as? String == channel)
-            #expect(body["id"] as? String != nil)
+            #expect(body["state"] as? String == "sent")
+            #expect(body["messageId"] as? String != nil)
+            #expect((body["messageSeq"] as? Int ?? 0) > 0)
+            #expect(accounts.humanMessageIds(channelId: channel).count == 1)
         }
     }
 }

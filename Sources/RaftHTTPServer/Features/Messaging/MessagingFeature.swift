@@ -8,7 +8,7 @@ import Vapor
 /// Every registration below is copied verbatim from the inline `configure`
 /// block: same method, path, request projection, helper call and
 /// `routeResponse` handling. The five owned families are `/api/messages/*`
-/// (14), `/api/attachments/*` (13), `/api/tasks/*` (12), `/api/actions/*` (3)
+/// (14), `/api/attachments/*` (13), `/api/tasks/*` (13), `/api/actions/*` (3)
 /// and `/api/read-mutations` (2) — 44 pairs in total. `/api/v2/messages` stays
 /// in `configure` because it is not one of the five extracted prefixes.
 ///
@@ -42,7 +42,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         )
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
-            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{ }")
             return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
                 try services.emailAccounts.managedMCPLifecycle.postReadMutation(
                     authorization: request.headers[.authorization],
@@ -246,7 +246,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         attachments.post(":id", "comments") { request async throws -> Response in
-            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
             return try await respond {
                 try services.emailAccounts.attachmentComments.createAttachmentComment(
                     authorization: request.headers[.authorization],
@@ -283,6 +283,26 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     messageId: request.parameters.get("messageId") ?? "",
                     body: body
+                )
+            }
+        }
+        actions.post(":messageId", "event") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond {
+                try services.emailAccounts.actionCards.emitActionCardEvent(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body
+                )
+            }
+        }
+        actions.post(":messageId", "reconfirm") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.actionCards.reconfirmActionCard(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? ""
                 )
             }
         }
@@ -453,6 +473,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     attachmentId: request.parameters.get("id") ?? "", admission: admission)
             }
         }
+        attachments.get(":id", "preview") { request async throws -> Response in
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                return try await services.emailAccounts.agentsLifecycle.attachmentPreview(
+                    attachmentId: request.parameters.get("id") ?? "", admission: admission)
+            }
+        }
         tasks.get("server", "snapshot-metrics") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.serverMembersAndSidebar.taskSnapshotMetrics(
@@ -499,6 +528,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     channelId: request.parameters.get("channelId") ?? "",
                     body: body
+                )
+            }
+        }
+        tasks.get(":taskId", "history") { request async throws -> Response in
+            try await respond {
+                try services.tasksAndLabs.taskHistory(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    taskId: request.parameters.get("taskId") ?? ""
                 )
             }
         }

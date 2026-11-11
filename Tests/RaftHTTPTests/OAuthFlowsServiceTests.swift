@@ -193,11 +193,11 @@ private func seedHandoff(_ store: OAuthFlowsStore, id: String, code: String, mod
         termsVersion: AuthLegalPolicy.termsVersion, privacyVersion: AuthLegalPolicy.privacyVersion
     ))
     let rendered = completed.jsonBody.render()
-    #expect(rendered.hasPrefix(#"{"user":{"id":""#))
-    #expect(rendered.contains(#","email":"person@flows.test","name":"pending_"#))
-    #expect(rendered.contains(#","profileSetupCompletedAt":null,"profileSetupProvider":"google""#))
-    #expect(rendered.contains(#","signupSurveyCompletedAt":null,"signupRole":null},"accessToken":""#))
-    #expect(rendered.hasSuffix(#","mode":"login","returnUri":"raft://oauth/callback"}"#))
+    let userJSON = completed.user.jsonBody.render()
+    let gravatar = AuthTokenCodec.sha256("person@flows.test")
+    #expect(userJSON.hasPrefix(#"{"id":"\#(completed.user.id)","email":"person@flows.test","gravatarHash":"\#(gravatar)","name":"pending_"#))
+    #expect(userJSON.contains(#","displayName":"Flow Person","description":null,"avatarUrl":null,"emailVerified":true,"preferredLanguage":null,"displayLanguage":null,"preferredTimezone":null,"firstObservedTimezone":null,"firstObservedTimezoneAt":null,"lastObservedTimezone":null,"lastObservedTimezoneAt":null,"preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"shareUsageData":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"profileSetupCompletedAt":null,"profileSetupSuggestedHandle":"flow-person","signupSurveyCompletedAt":null,"signupRole":null,"profileSetupProvider":"google"}"#))
+    #expect(rendered == #"{"user":\#(userJSON),"provider":"google","mode":"login","returnUri":"raft://oauth/callback","accessToken":"\#(completed.accessToken)","refreshToken":"\#(completed.refreshToken)"}"#)
     #expect(throws: OAuthFlowsError.handoffCodeConsumed) {
         try service.completeMobileOAuth(MobileOAuthCompleteRequest(code: fresh, codeVerifier: verifier))
     }

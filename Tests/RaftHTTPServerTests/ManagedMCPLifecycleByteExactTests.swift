@@ -264,7 +264,9 @@ private func headerPairs(_ response: ClientResponse) -> [String: String] {
         let settings = try await client.send(
             .get, headers: headers, to: "/api/channels/\(channelId)/notification-settings"
         )
-        #expect(settings.body.string == "{\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"activityMuteSupported\":false}")
+        // The PATCH above converted the channel to `private`, and upstream
+        // `channelTypeSupportsActivityMute` includes private channels.
+        #expect(settings.body.string == "{\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"activityMuteSupported\":true}")
         let unread = try await client.send(.get, headers: headers, to: "/api/channels/unread")
         #expect(unread.body.string == "{}")
         #expect(headerPairs(unread)["cache-control"] == "private, no-store")

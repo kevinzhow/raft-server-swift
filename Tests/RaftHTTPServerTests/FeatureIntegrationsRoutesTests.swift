@@ -13,7 +13,7 @@ import VaporTesting
 /// mounts the collection.
 @Suite
 struct FeatureIntegrationsRoutesTests {
-    /// Complete table of the 42 registrations extracted from
+    /// Complete table of the registrations extracted from
     /// `FallbackApplication.configure` at extraction time.
     private let expectedIntegrationsRoutes: [(HTTPRequest.Method, String)] = [
         (.get, "api/mcp/servers"),
@@ -23,10 +23,31 @@ struct FeatureIntegrationsRoutesTests {
         (.delete, "api/mcp/servers/:id"),
         (.get, "api/mcp/oauth/callback"),
         (.get, "api/mcp/oauth/client-metadata"),
+        (.post, "api/mcp/servers/:id/oauth/start"),
+        (.delete, "api/mcp/servers/:id/oauth"),
+        (.post, "api/mcp/servers/:id/test"),
         (.get, "api/mcp/agents/:agentId"),
         (.put, "api/mcp/agents/:agentId/assignments"),
         (.put, "api/mcp/agents/:agentId/assignments/:mcpServerId"),
         (.get, "api/integrations/clients"),
+        (.post, "api/integrations/clients"),
+        (.delete, "api/integrations/clients/:clientId"),
+        (.post, "api/integrations/clients/:clientId/regenerate-secret"),
+        (.post, "api/integrations/clients/:clientId/request-publish"),
+        (.post, "api/integrations/clients/:clientId/request-unpublish"),
+        (.post, "api/integrations/clients/:clientId/share-link"),
+        (.delete, "api/integrations/clients/:clientId/share-link"),
+        (.post, "api/integrations/clients/:clientId/logo"),
+        (.delete, "api/integrations/clients/:clientId/logo"),
+        (.put, "api/integrations/clients/:clientId/app-notifications/permissions"),
+        (.put, "api/integrations/clients/:clientId/app-notifications/webhook"),
+        (.post, "api/integrations/clients/:clientId/app-notifications/webhook/rotate-secret"),
+        (.delete, "api/integrations/clients/:clientId/app-notifications/webhook"),
+        (.put, "api/integrations/marketplace/:clientId/install/app-notifications/grant"),
+        (.post, "api/integrations/requests/:requestId/deny"),
+        (.get, "api/integrations/overview"),
+        (.get, "api/integration-invites/:token"),
+        (.post, "api/integration-invites/:token/install"),
         (.post, "api/integrations/requests/:requestId/approve"),
         (.post, "api/integrations/agents/:agentId/grants"),
         (.get, "api/integrations/agents/:agentId/grants"),
@@ -46,10 +67,13 @@ struct FeatureIntegrationsRoutesTests {
         (.get, "api/integrations/clients/:clientId/app-notifications"),
         (.get, "api/integrations/clients/:clientId/share-link"),
         (.get, "api/integrations/marketplace/:clientId/install/app-notifications"),
+        (.get, "api/agent-runtime-providers/:kind/models"),
         (.get, "api/agent-runtime-providers/:kind"),
         (.get, "api/provider-connections"),
         (.post, "api/provider-connections/:id/test"),
         (.get, "api/provider-connections/:id/models"),
+        (.get, "api/provider-connections/:id/probes"),
+        (.post, "api/provider-connections/:id/probes"),
         (.get, "api/provider-connections/:id/agents"),
         (.delete, "api/provider-connections/:id/agents/:agentId"),
         (.delete, "api/provider-connections/:id"),
@@ -72,6 +96,7 @@ struct FeatureIntegrationsRoutesTests {
                 controlPlane: services.emailAccounts.managedMCPControlPlane,
                 identities: services.emailAccounts.authIdentities,
                 apps: services.emailAccounts.integrationsAndAppAccess,
+                appManagement: services.emailAccounts.integrationAppManagement,
                 cardPrepare: services.emailAccounts.actionCardPrepare,
                 agentsLifecycle: services.emailAccounts.agentsLifecycle,
                 providerConnections: services.emailAccounts.managedMCPProviderConnections,
@@ -83,8 +108,8 @@ struct FeatureIntegrationsRoutesTests {
 
             // The table is authoritative: reject an accidental duplicate or gap
             // in the table itself before comparing it to the router.
-            #expect(expectedIntegrationsRoutes.count == 42)
-            #expect(expected.count == 42)
+            #expect(expectedIntegrationsRoutes.count == 66)
+            #expect(expected.count == 66)
 
             // One route per table entry, and no route outside the five
             // extracted families.
@@ -98,6 +123,7 @@ struct FeatureIntegrationsRoutesTests {
                     "provider-connections",
                     "agent-runtime-providers",
                     "app-installation",
+                    "integration-invites",
                 ]
                 return components.count >= 2
                     && components[0] == "api"
