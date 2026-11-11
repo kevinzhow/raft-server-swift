@@ -84,12 +84,18 @@ struct ProductionAgentExecutionDispatcher: Sendable {
                 let body = try await materializer.materialize(command: command)
                 let data: Data
                 switch (command.kind, body) {
-                case (.start, .start(let configuration)):
-                    data = try ProductionAgentExecutionWire.start(command, configuration: configuration)
+                case (.start, .start(let configuration, let wakeMessage, let resumeMessages, let unreadSummary)):
+                    data = try ProductionAgentExecutionWire.start(
+                        command, configuration: configuration, wakeMessage: wakeMessage,
+                        resumeMessages: resumeMessages, unreadSummary: unreadSummary)
                     sequence = nil
-                case (.delivery, .delivery(let message, let actualSequence)):
-                    data = try ProductionAgentExecutionWire.delivery(command, message: message, sequence: actualSequence)
+                case (.delivery, .delivery(let message, let actualSequence, let mentionDelivery)):
+                    data = try ProductionAgentExecutionWire.delivery(
+                        command, message: message, sequence: actualSequence, mentionDelivery: mentionDelivery)
                     sequence = actualSequence
+                case (.notice, .notice(let message)):
+                    data = try ProductionAgentExecutionWire.notice(command, message: message)
+                    sequence = 0
                 default: throw ProductionStartupError.agentExecutionNotConnected
                 }
                 prepared = try MachineCommand(json: String(decoding: data, as: UTF8.self),

@@ -130,7 +130,7 @@ private func makeSearchMentionsFixture(ownerMention: Bool = false) -> SearchMent
         after: "0"
     ))
     #expect(response.jsonBody.render() == """
-    {"channelId":"\(fixture.channelId)","targetMessageId":"\(fixture.contextMessageId)","hasOlder":true,"hasNewer":false,"messages":[{"id":"\(fixture.contextMessageId)","channelId":"\(fixture.channelId)","content":"context body","seq":\(seq),"attachments":[],"senderId":"\(fixture.ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(createdAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[],"senderName":"\(fixture.ownerName)","senderHandle":"\(fixture.ownerName)","senderDisplayName":"\(fixture.ownerName)","conversationContext":{"channelType":"channel"}}],"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
+    {"channelId":"\(fixture.channelId)","targetMessageId":"\(fixture.contextMessageId)","hasOlder":true,"hasNewer":false,"messages":[{"id":"\(fixture.contextMessageId)","channelId":"\(fixture.channelId)","content":"context body","seq":\(seq),"attachments":[],"senderId":"\(fixture.ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(createdAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[],"senderName":"\(fixture.ownerName)","senderHandle":"\(fixture.ownerName)","senderDisplayName":"\(fixture.ownerName)","conversationContext":{"channelType":"channel"},"taskStatus":null,"taskNumber":null,"taskAssigneeType":null,"taskAssigneeId":null,"taskClaimedAt":null,"taskCompletedAt":null}],"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
     """)
 }
 
@@ -169,18 +169,22 @@ private func makeSearchMentionsFixture(ownerMention: Bool = false) -> SearchMent
         serverId: fixture.serverId
     ))
     #expect(response.jsonBody.render() == """
-    {"channelId":"\(threadId)","targetMessageId":"\(replyId)","hasOlder":false,"hasNewer":false,"messages":[{"id":"\(replyId)","channelId":"\(threadId)","content":"thread reply","seq":\(replySeq),"attachments":[],"senderId":"\(fixture.ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(replyCreatedAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[],"senderName":"\(fixture.ownerName)","senderHandle":"\(fixture.ownerName)","senderDisplayName":"\(fixture.ownerName)","conversationContext":{"channelType":"thread","parentChannelId":"\(fixture.channelId)","parentMessageId":"\(parentId)","parentChannelType":"channel"}}],"canonicalTarget":{"kind":"thread","channelId":"\(fixture.channelId)","messageId":"\(replyId)","threadParentMessageId":"\(parentId)","threadChannelId":"\(threadId)"},"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
+    {"channelId":"\(threadId)","targetMessageId":"\(replyId)","hasOlder":false,"hasNewer":false,"messages":[{"id":"\(replyId)","channelId":"\(threadId)","content":"thread reply","seq":\(replySeq),"attachments":[],"senderId":"\(fixture.ownerId)","senderType":"user","senderAvatarUrl":null,"senderMembershipStatus":"active","messageType":"chat","createdAt":"\(replyCreatedAt)","randomId":null,"threadId":null,"reactions":[],"mentions":[],"senderName":"\(fixture.ownerName)","senderHandle":"\(fixture.ownerName)","senderDisplayName":"\(fixture.ownerName)","conversationContext":{"channelType":"thread","parentChannelId":"\(fixture.channelId)","parentMessageId":"\(parentId)","parentChannelType":"channel"},"taskStatus":null,"taskNumber":null,"taskAssigneeType":null,"taskAssigneeId":null,"taskClaimedAt":null,"taskCompletedAt":null}],"canonicalTarget":{"kind":"thread","channelId":"\(fixture.channelId)","messageId":"\(replyId)","threadParentMessageId":"\(parentId)","threadChannelId":"\(threadId)"},"threadSummariesByParentMessageId":{},"historyLimited":false,"channelArchived":false}
     """)
 }
 
 // MARK: - Special-order error bodies
 
 @Test func searchRefusalsKeepTheirPublishedErrorBodies() {
-    #expect(SearchMentionsError.memberNotFound.publishedErrorBody.render() == """
-    {"error":"Member not found","errorCode":"member_not_found"}
+    // Pinned `searchSenderFilterService.ts` echoes the canonical handle.
+    #expect(SearchMentionsError.memberNotFound(handle: "bob").publishedErrorBody.render() == """
+    {"error":"Member not found: @bob","errorCode":"member_not_found"}
     """)
-    #expect(SearchMentionsError.ambiguousMemberReference.publishedErrorBody.render() == """
-    {"error":"Member reference is ambiguous","errorCode":"ambiguous_member_ref"}
+    #expect(SearchMentionsError.ambiguousMemberReference(handle: "bob").publishedErrorBody.render() == """
+    {"error":"Member @bob is ambiguous","errorCode":"ambiguous_member_ref"}
+    """)
+    #expect(SearchMentionsError.invalidMemberRef("member ref must not be empty").publishedErrorBody.render() == """
+    {"error":"member ref must not be empty","errorCode":"invalid_member_ref"}
     """)
     #expect(SearchMentionsError.agentSearchMissingOffset(label: "after").publishedErrorBody.render() == """
     {"error":"after filter is missing a timezone offset; add an explicit offset such as +08:00 (raft CLI adds it automatically)","errorCode":"INVALID_DATE_FILTER"}

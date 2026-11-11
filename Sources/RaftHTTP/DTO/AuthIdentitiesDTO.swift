@@ -1,112 +1,98 @@
 import Foundation
+import RaftShared
 
 // MARK: - Request bodies
 //
-// The retired handlers read these bodies with the Foundation JSON object parser and per-field
-// `as? String` / `as? Bool` casts. The decoders below keep that tolerance: a
-// value of the wrong JSON type reads as absent (or as the field-specific
-// "invalid" state the old validation order reported), so a request the old
-// routes accepted cannot become a different status. A body that is not a JSON
-// object fails to decode; the feature maps that to the same published reply the
-// old non-object cast produced.
-
-/// The JSON shape of one value whose type the old parser reported by name.
-///
-/// `LoginRequest` and `RegisterRequest` need it: their issue lists print the received type
-/// (`Expected string, received number`). the Foundation object parser bridged a JSON
-/// `0` or `1` to `Bool`, so those two numbers read as `boolean`; the decoder
-/// keeps that quirk because the published bytes carry it.
-enum JSONShape: Decodable {
-    case null
-    case string
-    case boolean
-    case number
-    case array
-    case object
-
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if container.decodeNil() {
-            self = .null
-        } else if (try? container.decode(String.self)) != nil {
-            self = .string
-        } else if (try? container.decode(Bool.self)) != nil {
-            self = .boolean
-        } else if let number = try? container.decode(Double.self) {
-            self = (number == 0 || number == 1) ? .boolean : .number
-        } else if (try? container.decode([JSONShape].self)) != nil {
-            self = .array
-        } else if (try? container.decode([String: JSONShape].self)) != nil {
-            self = .object
-        } else {
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
-        }
-    }
-
-    var name: String {
-        switch self {
-        case .null: "null"
-        case .string: "string"
-        case .boolean: "boolean"
-        case .number: "number"
-        case .array: "array"
-        case .object: "object"
-        }
-    }
-}
-
-/// One required string of the login body, in the three states the issue list
-/// distinguishes: absent, a string (possibly empty) and any other JSON type.
-public enum LoginBodyField: Sendable, Equatable {
-    case absent
-    case string(String)
-    case wrongType(String)
-}
-
-/// One entry of the published `issues` list of the login 400.
-public struct AuthRequestIssue: Sendable, Equatable {
-    public let path: String
-    public let message: String
-
-    public init(path: String, message: String) {
-        self.path = path
-        self.message = message
-    }
-}
+// The pinned login and register bodies are zod 4.3.6 schemas
+// (`routes/auth.ts:102-126`). The decoders keep the raw JSON value and hand it
+// to `AuthRequestSchema`, so a wrong member type becomes one published `issues`
+// entry (with zod's exact wording) instead of a decode failure, and an unknown
+// member still passes through the passthrough schemas. A body that is not a
+// JSON object at all is one `expected object` issue; a missing or malformed
+// body reads as `{}` (`req.body ?? {}`).
 
 /// `POST /api/auth/login` request body.
 public struct LoginRequest: Decodable, Sendable, Equatable {
-    public var email: LoginBodyField
-    public var password: LoginBodyField
+    /// The valid string values; `nil` when the member was absent or invalid
+    /// (the reason is one of `issues`).
+    public var email: String?
+    public var password: String?
     public var pendingLinkToken: String?
+    /// Whether `pendingLinkToken` was present but is not a string or is over
+    /// 256 UTF-16 units. Pinned `routes/auth.ts:169-178` answers that shape
+    /// with `pending_link_token_invalid` after the body schema succeeds; an
+    /// absent, null or empty token is the same "no link requested" state.
+    public var pendingLinkTokenInvalid: Bool
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object.
+    public var issues: [AuthRequestIssue]
 
-    public init(email: String, password: String, pendingLinkToken: String? = nil) {
-        self.email = .string(email)
-        self.password = .string(password)
+    public init(
+        email: String,
+        password: String,
+        pendingLinkToken: String? = nil,
+        pendingLinkTokenInvalid: Bool = false
+    ) {
+        self.email = email
+        self.password = password
         self.pendingLinkToken = pendingLinkToken
+        self.pendingLinkTokenInvalid = pendingLinkTokenInvalid
+        self.issues = []
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case email
-        case password
-        case pendingLinkToken
+    init(
+        email: String?,
+        password: String?,
+        pendingLinkToken: String?,
+        pendingLinkTokenInvalid: Bool = false,
+        issues: [AuthRequestIssue]
+    ) {
+        self.email = email
+        self.password = password
+        self.pendingLinkToken = pendingLinkToken
+        self.pendingLinkTokenInvalid = pendingLinkTokenInvalid
+        self.issues = issues
     }
 
     public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        email = Self.field(.email, in: container)
-        password = Self.field(.password, in: container)
-        pendingLinkToken = (try? container.decodeIfPresent(String.self, forKey: .pendingLinkToken)) ?? nil
+        let container = try decoder.singleValueContainer()
+        self = Self.parse(try container.decode(JSONValue.self))
     }
 
-    private static func field(
-        _ key: CodingKeys,
-        in container: KeyedDecodingContainer<CodingKeys>
-    ) -> LoginBodyField {
-        guard container.contains(key) else { return .absent }
-        if let string = try? container.decode(String.self, forKey: key) { return .string(string) }
-        let shape = (try? container.decode(JSONShape.self, forKey: key)) ?? .object
-        return .wrongType(shape.name)
+    /// Pinned `emailLoginRequestSchema`: a passthrough object with two required
+    /// non-empty strings.
+    static func parse(_ raw: JSONValue?) -> LoginRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return LoginRequest(email: nil, password: nil, pendingLinkToken: nil, issues: [rootIssue])
+        }
+        var issues: [AuthRequestIssue] = []
+        let email = AuthRequestSchema.string(fields["email"], path: "email", min: 1)
+        issues += email.issues
+        let password = AuthRequestSchema.string(fields["password"], path: "password", min: 1)
+        issues += password.issues
+        var pendingLinkToken: String?
+        var pendingLinkTokenInvalid = false
+        if let rawToken = fields["pendingLinkToken"] {
+            if case .string(let token) = rawToken {
+                if token.utf16.count > 256 {
+                    pendingLinkTokenInvalid = true
+                } else {
+                    pendingLinkToken = token.isEmpty ? nil : token
+                }
+            } else if case .null = rawToken {
+                // `null` is the same "not sent" state as `undefined`.
+            } else {
+                pendingLinkTokenInvalid = true
+            }
+        }
+        return LoginRequest(
+            email: email.value,
+            password: password.value,
+            pendingLinkToken: pendingLinkToken,
+            pendingLinkTokenInvalid: pendingLinkTokenInvalid,
+            issues: issues
+        )
     }
 }
 
@@ -195,6 +181,14 @@ private extension KeyedDecodingContainer {
 public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     public var currentPassword: ProfileField<String> = .absent
     public var newPassword: ProfileField<String> = .absent
+    /// The upstream `displayName` profile field: absent leaves it alone, JSON
+    /// null clears it, and a string is written exactly as sent (the pinned
+    /// handler copies it into the update without trimming or deriving it from
+    /// the handle).
+    public var displayName: ProfileField<String> = .absent
+    /// The upstream `description` profile field: absent leaves it alone, JSON
+    /// null clears it, and a string is trimmed (empty becomes null).
+    public var description: ProfileField<String> = .absent
     public var displayLanguage: ProfileField<String> = .absent
     public var shareUsageData: ProfileField<Bool> = .absent
     public var preferredLanguage: ProfileField<String> = .absent
@@ -210,12 +204,19 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
     /// Present null is legal and clears the stored role; absent leaves the role
     /// and its completion time untouched.
     public var signupRole: ProfileField<String> = .absent
+    /// Trigger-only back-compat field (`routes/auth.ts:1499,1628-1644`): it is
+    /// never persisted. It names the server whose onboarding agent should be
+    /// briefed after this profile update, and only the server's owner may cause
+    /// that.
+    public var signupSurveyServerId: ProfileField<String> = .absent
 
     public init() {}
 
     private enum CodingKeys: String, CodingKey {
         case currentPassword
         case newPassword
+        case displayName
+        case description
         case displayLanguage
         case shareUsageData
         case preferredLanguage
@@ -229,12 +230,15 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         case referralSourceOther
         case referralSourceSkipped
         case signupRole
+        case signupSurveyServerId
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         currentPassword = container.profileString(.currentPassword)
         newPassword = container.profileString(.newPassword)
+        displayName = container.profileString(.displayName)
+        description = container.profileString(.description)
         displayLanguage = container.profileString(.displayLanguage)
         shareUsageData = container.profileBool(.shareUsageData)
         preferredLanguage = container.profileString(.preferredLanguage)
@@ -248,6 +252,7 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
         referralSourceOther = container.profileString(.referralSourceOther)
         referralSourceSkipped = container.profileBool(.referralSourceSkipped)
         signupRole = container.profileString(.signupRole)
+        signupSurveyServerId = container.profileString(.signupSurveyServerId)
     }
 }
 
@@ -257,12 +262,14 @@ public struct UpdateProfileRequest: Decodable, Sendable, Equatable {
 // part of the contract and `OrderedJSON` keeps the legacy `jsonString`
 // escaping (the sorted `JSONEncoder` would escape `/`).
 
-/// One linked sign-in identity as the identity list publishes it.
+/// One linked sign-in identity as the identity list publishes it. The pinned
+/// `user_auth_identities.provider_email` column is nullable; a retained row
+/// without one publishes JSON null.
 public struct AuthIdentityRow: Sendable, Equatable {
     public let provider: String
-    public let providerEmail: String
+    public let providerEmail: String?
 
-    public init(provider: String, providerEmail: String) {
+    public init(provider: String, providerEmail: String?) {
         self.provider = provider
         self.providerEmail = providerEmail
     }
@@ -270,7 +277,7 @@ public struct AuthIdentityRow: Sendable, Equatable {
     var json: OrderedJSON {
         .object([
             OrderedJSONField("provider", provider),
-            OrderedJSONField("providerEmail", providerEmail),
+            OrderedJSONField("providerEmail", optional: providerEmail),
         ])
     }
 }
@@ -405,94 +412,121 @@ public struct AppLoginRedirectResponse: JSONBodyConvertible, Equatable {
     }
 }
 
-/// The full `user` object `GET /api/auth/me`, the avatar upload and the app
-/// login completion publish. `AuthUserDTO(account:)` is the one place the
-/// member order is written down; `EmailLoginDirectory.userJSON` renders it for
-/// the domains that still embed the object in their own bodies.
+/// The full `user` object `toPublicUser` publishes: register, login,
+/// `GET`/`PATCH /api/auth/me`, complete-profile, the avatar upload, app-login
+/// completion and both mobile OAuth completion paths embed this one value.
+///
+/// Member order, presence and nullability follow `services/userService.ts`
+/// `toPublicUser` exactly: every member is always present, nullable members
+/// print JSON null, `displayName` is not derived from `name`, and the four
+/// observed-timezone members sit between `preferredTimezone` and
+/// `preferredTranslationMode`. `autoTranslationEnabled` is derived from the
+/// stored mode, as upstream does, rather than read independently.
 public struct AuthUserDTO: JSONBodyConvertible, Equatable {
     public let id: String
     public let email: String
-    public let name: String
-    public let emailVerified: Bool
-    public let displayName: String
     public let gravatarHash: String
-    public let displayLanguage: String?
-    public let profileSetupCompletedAt: String?
-    public let profileSetupSuggestedHandle: String?
-    public let profileSetupProvider: String?
+    public let name: String
+    public let displayName: String?
+    public let description: String?
     public let avatarUrl: String?
-    public let shareUsageData: Bool?
+    public let emailVerified: Bool
     public let preferredLanguage: String?
+    public let displayLanguage: String?
     public let preferredTimezone: String?
+    public let firstObservedTimezone: String?
+    public let firstObservedTimezoneAt: String?
+    public let lastObservedTimezone: String?
+    public let lastObservedTimezoneAt: String?
     public let preferredTranslationMode: String
     public let autoTranslationEnabled: Bool
     public let preferredTranslationDisplay: String
     public let preferredTimeFormat: String?
     public let preferredMessageBodyFontSize: String?
+    public let shareUsageData: Bool?
     public let referralSource: String?
     public let referralSourceOther: String?
     public let referralSourceSkippedAt: String?
+    public let profileSetupCompletedAt: String?
+    public let profileSetupSuggestedHandle: String?
     /// Signup survey state. Both members are always present, matching
     /// `toPublicUser`'s `?? null`; `signupSurveyCompletedAt` is the gate the
     /// client reads. The account-global first-onboarding pair is not published.
     public let signupSurveyCompletedAt: String?
     public let signupRole: String?
+    public let profileSetupProvider: String?
 
-    init(account: Account) {
+    init(
+        account: Account,
+        observation: TimezoneObservation? = nil,
+        profileSetupProvider: String? = nil
+    ) {
         id = account.id
         email = account.email
-        name = account.name
-        emailVerified = account.emailVerified
-        displayName = account.displayName ?? account.name
         gravatarHash = AuthTokenCodec.sha256(
             account.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         )
-        displayLanguage = account.displayLanguage
-        profileSetupCompletedAt = account.profileSetupCompletedAt.map(DateText.iso8601)
-        profileSetupSuggestedHandle = account.profileSetupSuggestedHandle
-        profileSetupProvider = account.profileSetupProvider
+        name = account.name
+        displayName = account.displayName
+        description = account.description
         avatarUrl = account.avatarUrl
-        shareUsageData = account.shareUsageData
+        emailVerified = account.emailVerified
         preferredLanguage = account.preferredLanguage
+        displayLanguage = account.displayLanguage
         preferredTimezone = account.preferredTimezone
+        firstObservedTimezone = observation?.firstTimezone
+        firstObservedTimezoneAt = observation.map { DateText.iso8601($0.firstAt) }
+        // During a rolling deploy, a pre-0187 row can populate only the first
+        // pair; upstream treats that accepted state as the latest observation.
+        lastObservedTimezone = observation?.lastTimezone ?? observation?.firstTimezone
+        lastObservedTimezoneAt = observation.map { DateText.iso8601($0.lastAt) }
         preferredTranslationMode = account.preferredTranslationMode
-        autoTranslationEnabled = account.autoTranslationEnabled
+        autoTranslationEnabled = account.preferredTranslationMode == "auto"
         preferredTranslationDisplay = account.preferredTranslationDisplay
         preferredTimeFormat = account.preferredTimeFormat
         preferredMessageBodyFontSize = account.preferredMessageBodyFontSize
+        shareUsageData = account.shareUsageData
         referralSource = account.referralSource
         referralSourceOther = account.referralSourceOther
         referralSourceSkippedAt = account.referralSourceSkippedAt.map(DateText.iso8601)
+        profileSetupCompletedAt = account.profileSetupCompletedAt.map(DateText.iso8601)
+        profileSetupSuggestedHandle = account.profileSetupSuggestedHandle
         signupSurveyCompletedAt = account.signupSurveyCompletedAt.map(DateText.iso8601)
         signupRole = account.signupRole
+        self.profileSetupProvider = profileSetupProvider
     }
 
     var fields: [OrderedJSONField] {
         [
             OrderedJSONField("id", id),
             OrderedJSONField("email", email),
-            OrderedJSONField("name", name),
-            OrderedJSONField("emailVerified", emailVerified),
-            OrderedJSONField("displayName", displayName),
             OrderedJSONField("gravatarHash", gravatarHash),
-            OrderedJSONField("displayLanguage", optional: displayLanguage),
-            OrderedJSONField("profileSetupCompletedAt", optional: profileSetupCompletedAt),
-            OrderedJSONField("profileSetupSuggestedHandle", optional: profileSetupSuggestedHandle),
-            OrderedJSONField("profileSetupProvider", optional: profileSetupProvider),
+            OrderedJSONField("name", name),
+            OrderedJSONField("displayName", optional: displayName),
+            OrderedJSONField("description", optional: description),
             OrderedJSONField("avatarUrl", optional: avatarUrl),
-            OrderedJSONField("shareUsageData", optional: shareUsageData),
+            OrderedJSONField("emailVerified", emailVerified),
             OrderedJSONField("preferredLanguage", optional: preferredLanguage),
+            OrderedJSONField("displayLanguage", optional: displayLanguage),
             OrderedJSONField("preferredTimezone", optional: preferredTimezone),
+            OrderedJSONField("firstObservedTimezone", optional: firstObservedTimezone),
+            OrderedJSONField("firstObservedTimezoneAt", optional: firstObservedTimezoneAt),
+            OrderedJSONField("lastObservedTimezone", optional: lastObservedTimezone),
+            OrderedJSONField("lastObservedTimezoneAt", optional: lastObservedTimezoneAt),
             OrderedJSONField("preferredTranslationMode", preferredTranslationMode),
             OrderedJSONField("autoTranslationEnabled", autoTranslationEnabled),
             OrderedJSONField("preferredTranslationDisplay", preferredTranslationDisplay),
             OrderedJSONField("preferredTimeFormat", optional: preferredTimeFormat),
             OrderedJSONField("preferredMessageBodyFontSize", optional: preferredMessageBodyFontSize),
+            OrderedJSONField("shareUsageData", optional: shareUsageData),
             OrderedJSONField("referralSource", optional: referralSource),
             OrderedJSONField("referralSourceOther", optional: referralSourceOther),
             OrderedJSONField("referralSourceSkippedAt", optional: referralSourceSkippedAt),
+            OrderedJSONField("profileSetupCompletedAt", optional: profileSetupCompletedAt),
+            OrderedJSONField("profileSetupSuggestedHandle", optional: profileSetupSuggestedHandle),
             OrderedJSONField("signupSurveyCompletedAt", optional: signupSurveyCompletedAt),
             OrderedJSONField("signupRole", optional: signupRole),
+            OrderedJSONField("profileSetupProvider", optional: profileSetupProvider),
         ]
     }
 
@@ -501,22 +535,15 @@ public struct AuthUserDTO: JSONBodyConvertible, Equatable {
     }
 }
 
-/// `GET /api/auth/me`: the user object, with the four observed-timezone
-/// members appended to the same object once the user has reported one.
+/// `GET /api/auth/me`: the bare user object, unchanged from `toPublicUser`.
 public struct AuthMeResponse: JSONBodyConvertible, Equatable {
     public let user: AuthUserDTO
-    public let observedTimezone: TimezoneObservationResponse?
 
-    public var jsonBody: OrderedJSON {
-        var fields = user.fields
-        if let observed = observedTimezone {
-            fields.append(OrderedJSONField("firstObservedTimezone", observed.firstObservedTimezone))
-            fields.append(OrderedJSONField("firstObservedTimezoneAt", observed.firstObservedTimezoneAt))
-            fields.append(OrderedJSONField("lastObservedTimezone", observed.lastObservedTimezone))
-            fields.append(OrderedJSONField("lastObservedTimezoneAt", observed.lastObservedTimezoneAt))
-        }
-        return .object(fields)
+    public init(user: AuthUserDTO) {
+        self.user = user
     }
+
+    public var jsonBody: OrderedJSON { user.jsonBody }
 }
 
 /// `PATCH /api/auth/me` and `POST /api/auth/me/avatar`: the bare user object.
@@ -542,7 +569,7 @@ public struct AppLoginCompleteResponse: JSONBodyConvertible, Equatable {
 }
 
 /// One App row of `GET /api/integrations/clients`.
-public struct IntegrationSettingsClient: Sendable, Equatable {
+public struct IntegrationSettingsClient: Sendable, Equatable, JSONBodyConvertible {
     public let id: String
     public let clientId: String
     public let name: String
@@ -550,6 +577,7 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
     public let description: String?
     public let homepageUrl: String?
     public let publishStatus: String
+    public let logoUrl: String?
 
     public init(
         id: String,
@@ -558,7 +586,8 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
         appType: String,
         description: String?,
         homepageUrl: String?,
-        publishStatus: String
+        publishStatus: String,
+        logoUrl: String? = nil
     ) {
         self.id = id
         self.clientId = clientId
@@ -567,7 +596,10 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
         self.description = description
         self.homepageUrl = homepageUrl
         self.publishStatus = publishStatus
+        self.logoUrl = logoUrl
     }
+
+    public var jsonBody: OrderedJSON { json }
 
     var json: OrderedJSON {
         .object([
@@ -578,6 +610,7 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
             OrderedJSONField("description", optional: description),
             OrderedJSONField("homepageUrl", optional: homepageUrl),
             OrderedJSONField("publishStatus", publishStatus),
+            OrderedJSONField("logoUrl", optional: logoUrl),
         ])
     }
 }

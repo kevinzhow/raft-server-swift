@@ -33,6 +33,17 @@ public enum ActionCardIntegrationRegisterError: DomainError, Equatable {
     case initialHumanInvalid(index: Int)
     case invalidChannelName
     case targetNotAccessible
+    // `dm:@peer` / `dm:@peer:shortId` target refusals. The four DM-target
+    // codes publish `DmTargetResolutionError`'s exact body; the plain refusals
+    // match `resolveWritableAgentTarget`'s route-level replies.
+    case dmTargetAmbiguous(name: String)
+    case dmTargetInvalidPeerKind(rawPeer: String, suffix: String?)
+    case dmTargetNotSendable
+    case migrationReceiptReadOnly(target: String)
+    case targetNotWritable
+    case dmPeerNotFound(peer: String)
+    case selfDM
+    case couldNotResolveTarget(target: String)
     // Execute refusals.
     case unauthorized
     case forbidden
@@ -58,21 +69,24 @@ public enum ActionCardIntegrationRegisterError: DomainError, Equatable {
              .invalidAgentCredential, .unauthorized:
             401
         case .capabilityNotAuthorized, .forbidden, .notAMember, .onlyAdminsCanInstall,
-             .onlyAdminsCanRegister, .targetNotAccessible:
+             .onlyAdminsCanRegister, .targetNotAccessible, .targetNotWritable,
+             .dmTargetNotSendable:
             403
         case .targetChannelNotFound, .requesterAgentNotFound, .agentNotFound,
-             .integrationAppNotFound, .actionCardNotFound:
+             .integrationAppNotFound, .actionCardNotFound, .dmPeerNotFound:
             404
         case .invalidActionCardRequest, .invalidAppRegistrationRequest, .scopeNotAllowed,
              .categoryNotAllowed, .unsafeDemoUrlRequiresOverride, .invalidAppMetadata,
              .integrationApprovalNotPreparable, .channelTargetInvalid,
              .initialAgentInvalid, .initialHumanInvalid, .invalidChannelName,
-             .invalidAppRegistration:
+             .invalidAppRegistration, .dmTargetInvalidPeerKind, .selfDM,
+             .couldNotResolveTarget:
             400
         case .stateChanged, .notExecuted, .marketplaceAppChanged,
              .marketplaceAppIdentityChanged, .appSetupChanged, .agentBindingChanged,
              .registerAgentBindingChanged, .agentRegistrationRejected,
-             .duplicateChannel, .idempotencyKeyReused:
+             .duplicateChannel, .idempotencyKeyReused, .dmTargetAmbiguous,
+             .migrationReceiptReadOnly:
             409
         }
     }
@@ -121,6 +135,22 @@ public enum ActionCardIntegrationRegisterError: DomainError, Equatable {
             "Invalid channel name"
         case .targetNotAccessible:
             "Target channel is not accessible"
+        case .dmTargetAmbiguous(let name):
+            DMTargetResolutionWire.ambiguous(name).message
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
+        case .dmTargetNotSendable:
+            DMTargetResolutionWire.privateReminderSurface().message
+        case .migrationReceiptReadOnly(let target):
+            DMTargetResolutionWire.migrationReceiptReadOnly(target: target).message
+        case .targetNotWritable:
+            "Agent cannot post in this channel - not a member. If you were @mentioned and need to respond, DM the person who mentioned you and let them know you're not in the channel."
+        case .dmPeerNotFound(let peer):
+            "User or agent not found: @\(peer)"
+        case .selfDM:
+            "Cannot create a DM with yourself"
+        case .couldNotResolveTarget(let target):
+            "Could not resolve target: \(target)"
         case .unauthorized:
             "Unauthorized"
         case .forbidden:
@@ -206,6 +236,16 @@ public enum ActionCardIntegrationRegisterError: DomainError, Equatable {
             Self.body("error", errorMessage, "code", "INVALID_PAYLOAD")
         case .targetNotAccessible:
             Self.body("error", errorMessage, "code", "TARGET_NOT_ACCESSIBLE")
+        case .dmTargetAmbiguous(let name):
+            DMTargetResolutionWire.ambiguous(name).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
+        case .dmTargetNotSendable:
+            DMTargetResolutionWire.privateReminderSurface().body
+        case .migrationReceiptReadOnly(let target):
+            DMTargetResolutionWire.migrationReceiptReadOnly(target: target).body
+        case .targetNotWritable, .dmPeerNotFound, .selfDM, .couldNotResolveTarget:
+            .object([OrderedJSONField("error", errorMessage)])
         case .unauthorized, .forbidden, .notAMember:
             .object([OrderedJSONField("error", errorMessage)])
         case .actionCardNotFound:

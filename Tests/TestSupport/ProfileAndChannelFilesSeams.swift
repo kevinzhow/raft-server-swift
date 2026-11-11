@@ -34,6 +34,8 @@ extension EmailLoginDirectory {
             state.attestedSendEventRecords.map { record in
                 var row: [String: Any] = ["eventType": record.eventType, "agentId": record.agentId]
                 if let messageId = record.messageId { row["messageId"] = messageId }
+                if let newMessageCount = record.newMessageCount { row["newMessageCount"] = newMessageCount }
+                if let result = record.result { row["result"] = result }
                 row["metadata"] = (try? JSONSerialization.jsonObject(with: Data(record.metadataJSON.utf8))) ?? [:]
                 return row
             }

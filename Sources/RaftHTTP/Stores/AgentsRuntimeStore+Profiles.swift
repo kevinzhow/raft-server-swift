@@ -64,12 +64,18 @@ extension AgentsRuntimeStore {
         }
     }
 
-    /// The machine binding and the retained live-activity observation, when one
+    /// The machine binding, the retained live-activity observation (with its
+    /// canonical detail kind) and the retained execution recovery gate, when one
     /// exists. Distinguishes a real daemon/HTTP report from the projection's
     /// offline default in one critical section.
-    func presenceFacts(agentId: String) -> (machineId: String?, activity: (activity: String, detail: String)?) {
+    func presenceFacts(agentId: String) -> (machineId: String?, activity: (activity: String, detail: String)?,
+                                            detailKind: String?, needsManual: String?, blockedUntil: Date?) {
         return withState { state in
-            (machineId: state.agentMachineIds[agentId], activity: state.agentActivities[agentId])
+            return (machineId: state.agentMachineIds[agentId],
+                    activity: state.agentActivities[agentId],
+                    detailKind: state.agentActivityDetailKind[agentId],
+                    needsManual: state.execution.agents[agentId]?.needsManual,
+                    blockedUntil: state.execution.agents[agentId]?.blockedUntil)
         }
     }
 }

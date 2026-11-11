@@ -73,21 +73,31 @@ public struct ThreadFollowerRosterResponse: Codable, Sendable, Equatable, JSONBo
 
 /// `200` body of `POST /api/channels/threads/follow|unfollow`.
 ///
-/// Published order: `ok`, `following`; `ok` is always `true` on success, so the
-/// legacy literal is part of the wire shape.
+/// Upstream follow answers `{ok:true, threadChannelId}` for the thread
+/// `getOrCreateThreadForChannel` resolved or created; unfollow answers
+/// `{ok:true}`. `ok` is always `true` on success.
 public struct ThreadFollowResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
     public var ok: Bool
-    public var following: Bool
+    public var threadChannelId: String?
 
-    public init(following: Bool) {
+    public init(threadChannelId: String) {
         self.ok = true
-        self.following = following
+        self.threadChannelId = threadChannelId
+    }
+
+    public static var unfollowed: Self { Self(ok: true, threadChannelId: nil) }
+
+    private init(ok: Bool, threadChannelId: String?) {
+        self.ok = ok
+        self.threadChannelId = threadChannelId
     }
 
     public var jsonBody: OrderedJSON {
         var body = OrderedJSONObject()
         body.append("ok", ok)
-        body.append("following", following)
+        if let threadChannelId {
+            body.append("threadChannelId", threadChannelId)
+        }
         return body.json
     }
 }

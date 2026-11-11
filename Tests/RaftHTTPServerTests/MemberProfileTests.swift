@@ -39,12 +39,19 @@ private let serverId = "33333333-3333-4333-8333-333333333333"
 
 @Test func malformedMemberProfileIdIsAClean404() async throws {
     let swallowed = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" + "这条你是不是没收到"
+    // The pinned `/:id` lockdown runs before the handler, so the reader needs a
+    // live membership to reach the profile's own member-id guard.
+    let accounts = publicServerAuthAccounts([("member-profile-reader", "token")])
+    accounts.oauth.addOwnedServer(
+        id: serverId, slug: "member-profile", name: "Member Profile",
+        ownerId: "member-profile-reader"
+    )
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
-            emailAccounts: publicServerAuthAccounts([("member-profile-reader", "token")])
+            emailAccounts: accounts
         ))
         try await app.testing { client in
             let headers: HTTPFields = [

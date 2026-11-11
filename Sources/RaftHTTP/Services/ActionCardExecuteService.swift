@@ -25,6 +25,8 @@ public struct ActionCardExecuteService: Sendable {
     private let feedbackLocators: FeedbackLocatorService
     private let cards: ManagedMCPAndCardsStore
     private let prepare: ActionCardPrepareService
+    private let catalog: TaskCatalogService
+    private let freshness: AgentSendFreshnessGate
     private let dependencies: AgentSendDependencies
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
@@ -39,6 +41,7 @@ public struct ActionCardExecuteService: Sendable {
         feedbackLocators: FeedbackLocatorService,
         cards: ManagedMCPAndCardsStore,
         prepare: ActionCardPrepareService,
+        catalog: TaskCatalogService,
         ownership: AssistantOwnershipQuery,
         suppression: MessageSuppressionService,
         mentions: MessageMentionsService,
@@ -54,6 +57,7 @@ public struct ActionCardExecuteService: Sendable {
             feedbackLocators: feedbackLocators,
             cards: cards,
             prepare: prepare,
+            catalog: catalog,
             dependencies: AgentSendDependencies(
                 ownership: ownership,
                 channels: channels,
@@ -75,6 +79,7 @@ public struct ActionCardExecuteService: Sendable {
         feedbackLocators: FeedbackLocatorService,
         cards: ManagedMCPAndCardsStore,
         prepare: ActionCardPrepareService,
+        catalog: TaskCatalogService,
         dependencies: AgentSendDependencies,
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
@@ -88,6 +93,13 @@ public struct ActionCardExecuteService: Sendable {
         self.feedbackLocators = feedbackLocators
         self.cards = cards
         self.prepare = prepare
+        self.catalog = catalog
+        self.freshness = AgentSendFreshnessGate(
+            messages: messages,
+            channels: channels,
+            prepare: prepare,
+            oauth: oauth
+        )
         self.dependencies = dependencies
         self.now = now
         self.makeMessageId = makeMessageId
@@ -102,17 +114,17 @@ public struct ActionCardExecuteService: Sendable {
         legacyAgentId: String?,
         channelRef: String?
     ) throws -> AgentTasksListResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
         let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
         try requireGrant(agentId: identity.agentId, scope: "task:read")
-        guard let channelRef,
-              let channelId = taskChannel(
-                  serverId: identity.serverId,
-                  agentId: identity.agentId,
-                  reference: channelRef
-              )
-        else {
-            throw ActionCardExecuteError.channelNotFound
-        }
+        guard let channelRef else { throw ActionCardExecuteError.channelNotFound }
+        let channelId = try resolvedTaskChannel(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            reference: channelRef
+        )
         return AgentTasksListResponse(
             tasks: tasks.taskRows(channelId: channelId).map { task in
                 AgentTasksListResponse.Task(
@@ -146,13 +158,30 @@ public struct ActionCardExecuteService: Sendable {
         try requireGrant(agentId: writer.agentId, scope: "task:write")
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              )
+              !(body.taskNumbers.isEmpty && body.messageIds.isEmpty)
         else {
             throw ActionCardExecuteError.invalidTaskClaim
+        }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId,
+            agentId: writer.agentId,
+            reference: channelRef
+        )
+        // Upstream `assertAgentApiTaskWritableChannel` runs before the freshness
+        // gate and before any task lookup or conversion: a thread target is the
+        // pinned 409, `canAgentPostToChannel` is the 403, and an archived
+        // channel is the 409 `channel_archived`. Membership alone is not
+        // writability, so an archived or private surface must not be converted
+        // just because the agent is a member. The decision is shared with every
+        // other task write in `AgentTaskCredentials`.
+        switch credentials.taskWriteBoundary(
+            serverId: writer.serverId, agentId: writer.agentId,
+            channelId: channelId, refusesThread: true
+        ) {
+        case .allowed: break
+        case .thread: throw ActionCardExecuteError.threadTaskClaim
+        case .notWritable: throw AgentTaskApiError.agentCannotModifyTasks
+        case .archived: throw AgentTaskApiError.channelArchived
         }
         if let hold = taskWriteHold(
             agentId: writer.agentId,
@@ -162,14 +191,112 @@ public struct ActionCardExecuteService: Sendable {
         ) {
             return .held(hold)
         }
+        // Upstream `taskClaim` resolves each `message_ids` entry in the
+        // channel, converts a plain top-level message into a task, then claims
+        // it in the same request. The store's claim pass only knows existing
+        // task records, so the conversion has to happen here. The conversion
+        // uses the canonical message-task link (host text as title, one task
+        // number across the frozen message-task and canonical rows) so a repeat
+        // claim converges on the same row instead of appending a second one.
+        var claimMessageIds = body.messageIds
+        var convertedMessageIds: Set<String> = []
+        if !body.messageIds.isEmpty {
+            let legacyMessageMax = messages.humanMessageRows
+                .filter { $0.channelId == channelId }
+                .compactMap(\.taskNumber)
+                .max() ?? 0
+            claimMessageIds = body.messageIds.map { reference in
+                guard let message = messages.messageForConvert(prefix: reference, channelId: channelId) else {
+                    return reference
+                }
+                switch tasks.ensureMessageTask(
+                    channelId: channelId,
+                    messageId: message.id,
+                    title: message.content,
+                    convertedByType: "agent",
+                    creatorId: writer.agentId,
+                    legacyMessageMaxNumber: legacyMessageMax,
+                    now: now()
+                ) {
+                case .created:
+                    convertedMessageIds.insert(message.id)
+                case .existing:
+                    break
+                }
+                return message.id
+            }
+        }
         let results = tasks.claimTasks(
             channelId: channelId,
             agentId: writer.agentId,
             taskNumbers: body.taskNumbers,
-            messageIds: body.messageIds,
+            messageIds: claimMessageIds,
             now: now()
         )
-        return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
+        for outcome in results {
+            switch outcome {
+            case .claimed(let taskNumber, _):
+                guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else { continue }
+                try publishClaimTask(task, created: false)
+            case .claimedMessage(_, let taskNumber):
+                guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else { continue }
+                try publishClaimTask(task, created: convertedMessageIds.contains(task.messageId))
+            case .taskNotFound, .taskUnavailable, .alreadyClaimedByYou,
+                 .messageNotFound, .messageAlreadyClaimedByYou, .rejected:
+                continue
+            }
+        }
+        return .claimed(AgentTaskClaimResponse(results: results.map(claimResult)))
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/unclaim
+
+    /// The unclaim write. The route's request validator guarantees `channel` and
+    /// a positive `task_number`; the service keeps the credential, the grant, the
+    /// channel policy and the task row checks in the pinned order:
+    /// capability/grant 401/403 → channel 404 → not-joinable 403 → archived 409
+    /// → task 404 → store decision 409.
+    public func agentTaskUnclaim(
+        authorization: String?,
+        legacyAgentId: String?,
+        channel: String,
+        taskNumber: Int
+    ) throws -> AgentTaskUnclaimResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
+        guard let writer = taskWriter(authorization: authorization, legacyAgentId: legacyAgentId) else {
+            throw FeedbackLocatorError.invalidAccessToken
+        }
+        try requireGrant(agentId: writer.agentId, scope: "task:write")
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channel
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
+        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+            throw AgentTaskApiError.taskNotFound
+        }
+        switch tasks.unclaimForAgent(taskId: task.id, agentId: writer.agentId, now: now()) {
+        case .notFound: throw AgentTaskApiError.taskNotFound
+        case .done: throw AgentTaskApiError.taskDone
+        case .unassigned: throw AgentTaskApiError.taskNotAssigned
+        case .changedConcurrently: throw AgentTaskApiError.taskChangedConcurrently
+        case .unclaimed: return AgentTaskUnclaimResponse()
+        }
+    }
+
+    /// The shared write boundary for every task route: `canAgentPostToChannel`
+    /// then the archived row, with no thread special case (the routes that
+    /// refuse threads call `taskWriteBoundary(refusesThread: true)` instead).
+    func requireTaskWritable(serverId: String, agentId: String, channelId: String) throws {
+        switch credentials.taskWriteBoundary(
+            serverId: serverId, agentId: agentId, channelId: channelId, refusesThread: false
+        ) {
+        case .allowed: break
+        case .thread: throw AgentTaskApiError.agentCannotModifyTasks
+        case .notWritable: throw AgentTaskApiError.agentCannotModifyTasks
+        case .archived: throw AgentTaskApiError.channelArchived
+        }
     }
 
     // MARK: - POST /internal/agent-api/tasks/update-status
@@ -190,17 +317,18 @@ public struct ActionCardExecuteService: Sendable {
         try requireGrant(agentId: writer.agentId, scope: "task:write")
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              ),
               let taskNumber = body.taskNumber,
               let status = body.status,
               TaskCatalogPolicy.validTaskStatuses.contains(status)
         else {
             throw ActionCardExecuteError.invalidTaskStatus
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId,
+            agentId: writer.agentId,
+            reference: channelRef
+        )
+        try requireTaskWritable(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId)
         if let hold = taskWriteHold(
             agentId: writer.agentId,
             channelId: channelId,
@@ -264,7 +392,9 @@ public struct ActionCardExecuteService: Sendable {
         }
         let content = body.content ?? ""
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased().hasPrefix("dm:@reminders") {
+        let parsedTarget = Self.parseSendTarget(trimmed)
+        if let parsedTarget, parsedTarget.isDM,
+           Self.isReservedReminderPeer(parsedTarget.peerPart) {
             throw AgentSendError.reminderTargetNotSendable
         }
         let isSendDraft = body.sendDraft
@@ -275,20 +405,36 @@ public struct ActionCardExecuteService: Sendable {
         if isContinueAnyway && !isSendDraft {
             throw AgentSendError.continueAnywayRequiresDraft
         }
-        if let assistantOwner = dependencies.assistantOwner(identity.agentId, identity.serverId) {
-            guard trimmed.hasPrefix("dm:@") else {
+        if let assistantOwner = dependencies.postingOwner(identity.agentId, identity.serverId) {
+            // Upstream checks the assistant's raw owner binding after resolving
+            // the DM target's explicit kind. Do not strip `~kind` or a
+            // non-8-hex colon suffix first: either would turn a different
+            // conversation into the owner's DM (or the reverse) and answer the
+            // wrong 403.
+            guard let parsedTarget, parsedTarget.isDM else {
                 throw AgentSendError.assistantChannelForbidden
             }
-            var raw = String(trimmed.dropFirst("dm:@".count))
-            if let suffixStart = raw.lastIndex(of: ":") { raw = String(raw[..<suffixStart]) }
-            if let tilde = raw.firstIndex(of: "~") { raw = String(raw[..<tilde]) }
+            let peer = parsedTarget.peer
+            guard !peer.name.isEmpty else {
+                throw Self.dmTargetMiss(parsedTarget)
+            }
             let resolution = prepare.resolveDMPeer(
                 serverId: identity.serverId,
                 agentId: identity.agentId,
-                name: raw,
-                kind: nil
+                name: peer.name,
+                kind: peer.kind
             )
-            guard case .resolved(let peerId, _, _) = resolution, peerId == assistantOwner else {
+            switch resolution {
+            case .resolved(let peerId, _, _):
+                guard peerId == assistantOwner else {
+                    throw AgentSendError.assistantChannelForbidden
+                }
+            case .ambiguous(let name):
+                throw AgentSendError.dmTargetAmbiguous(name: name)
+            case .invalidKind(let kind, let rawName):
+                let rawPeer = peer.kind.map { "\(peer.name)~\($0)" } ?? rawName
+                throw AgentSendError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: kind)
+            case .notFound:
                 throw AgentSendError.assistantChannelForbidden
             }
         }
@@ -364,7 +510,9 @@ public struct ActionCardExecuteService: Sendable {
             }
             if let channel = channels.postableChannels[channelId],
                channel.name.hasPrefix("migration-receipt-") {
-                throw AgentSendError.migrationReceiptReadOnly
+                // The published refusal names the target the caller actually
+                // asked for, exactly like `agentWritableTarget.ts:199`.
+                throw AgentSendError.migrationReceiptReadOnly(target: trimmed)
             }
 
             // Freshness gate (SMR-006).
@@ -429,139 +577,35 @@ public struct ActionCardExecuteService: Sendable {
             let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
 
             if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
-                let snapshot = messages.sendFreshnessSnapshot(
+                switch freshness.evaluate(AgentSendFreshnessRequest(
+                    agentId: identity.agentId,
+                    serverId: identity.serverId,
                     channelId: channelId,
-                    agentId: identity.agentId
-                )
-                let conversation = channels.postableChannels[channelId]
-                let storageChannelId = channels.jointProjections.first {
-                    $0.localChannelId == channelId
-                }?.canonicalChannelId ?? channelId
-                let rows = snapshot.rows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
-                    guard message.channelId == storageChannelId else { return nil }
-                    return (message.seq, message)
-                }
-                let latestFromOthers = rows.last {
-                    $0.message.senderType != "agent" || $0.message.senderId != identity.agentId
-                }?.seq ?? 0
-                let threadParentSeq = conversation?.kind == "thread"
-                    ? (conversation?.parentMessageId.flatMap { parentId in
-                        snapshot.rows.first { $0.id == parentId }?.seq
-                    } ?? 0)
-                    : 0
-                let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
-                let boundarySeq = min(
-                    hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq,
-                    latestFromOthers
-                )
-                let effectiveExactSeqs = Set(
-                    requestedSeenExactSeqs.filter { $0 > boundarySeq && $0 <= latestFromOthers }
-                )
-                let boundarySource: String
-                if hasClientSeenBoundary {
-                    boundarySource = "client_seen"
-                } else if !effectiveExactSeqs.isEmpty {
-                    boundarySource = "client_seen_exact"
-                } else if fallbackBoundarySeq > 0 {
-                    boundarySource = "thread_parent"
-                } else {
-                    boundarySource = "none"
-                }
-                let hasModelSeenProof = boundarySource == "client_seen"
-                    || boundarySource == "client_seen_exact"
-                let newer = rows.filter {
-                    $0.seq > boundarySeq
-                        && ($0.message.senderType != "agent" || $0.message.senderId != identity.agentId)
-                        && !effectiveExactSeqs.contains($0.seq)
-                        && !dependencies.messageSuppressed($0.message, identity.agentId)
-                        && !dependencies.selfCausedExempt($0.message, identity.agentId)
-                }
-                let formalMentionCount = newer.reduce(0) { partial, entry in
-                    partial + (snapshot.mentions.contains {
-                        $0.messageId == entry.message.id
-                            && $0.targetType == "agent"
-                            && $0.targetId == identity.agentId
-                            && ($0.notifiableAtSend || $0.notifiedAt != nil)
-                    } ? 1 : 0)
-                }
-                let boundaryMessageId: String? = boundarySeq > 0
-                    ? (conversation?.kind == "thread" && threadParentSeq == boundarySeq
-                        ? conversation?.parentMessageId
-                        : rows.first { $0.seq == boundarySeq }?.message.id)
-                    : nil
-                if let latestSeq = newer.last?.seq {
-                    let attentionCount = newer.count
-                    let shownRows = Array(newer.suffix(3))
-                    let shownCount = shownRows.count
-                    let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
-                    let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
-                    let showedEveryHeldMessage = shownCount >= attentionCount
-                    let conversationIdentity = prepare.heldConversationIdentity(
-                        channelId: channelId,
-                        agentId: identity.agentId
-                    )
-                    let heldMessageJSON = shownRows.map { entry in
-                        prepare.heldFreshnessMessageJSON(
-                            seq: entry.seq,
-                            message: entry.message,
-                            conversationIdentity: conversationIdentity
-                        )
+                    targetRef: trimmed,
+                    policy: .credential,
+                    seenUpToSeq: hasClientSeenBoundary ? clientSeenUpToSeq : nil,
+                    seenExactSeqs: requestedSeenExactSeqs,
+                    withheld: withheldMode,
+                    draftReholdCount: draftReholdCount,
+                    draftReplacedExisting: draftReplacedExisting
+                )) {
+                case .proceed:
+                    break
+                case .held(let facts):
+                    if facts.withheld {
+                        return AgentSendWithheldResponse(withheldMessageCount: facts.holdCount)
                     }
-                    if !withheldMode, showedEveryHeldMessage, latestSeq > snapshot.readCursor.seq {
-                        messages.advanceAgentReadCursors(
-                            agentId: identity.agentId,
-                            maxSeqByChannel: [channelId: latestSeq]
-                        )
-                    }
-                    if withheldMode {
-                        return AgentSendWithheldResponse(withheldMessageCount: holdCount)
-                    }
-                    let reason = boundarySource == "none" || boundarySource == "thread_parent"
-                        ? "server_first_touch_context"
-                        : "server_stale_model_boundary"
-                    let producerFactId = AgentFreshnessIdentity.freshnessDecisionProducerFactId(
-                        agentId: identity.agentId,
-                        target: trimmed,
-                        reason: reason,
-                        pendingMaxSeq: latestSeq,
-                        modelSeenSeq: boundarySource == "client_seen" ? boundarySeq : 0,
-                        heldMessageCount: shownCount,
-                        omittedMessageCount: omittedCount
-                    )
-                    dependencies.recordAttestedSendEvent(
-                        "gate_triggered",
-                        identity.agentId,
-                        newer.last?.message.id,
-                        .gateTriggered(
-                            lastSeenMessageId: boundaryMessageId,
-                            latestMessageId: newer.last?.message.id,
-                            draftReplacedExisting: draftReplacedExisting,
-                            newMessageCount: holdCount,
-                            boundarySource: boundarySource,
-                            boundarySeq: boundarySeq,
-                            latestSeq: latestSeq
-                        )
-                    )
-                    dependencies.recordAgentSendActivity(
-                        identity.agentId,
-                        "Send held by freshness check",
-                        "target: \(trimmed)\n"
-                            + "unreviewed synced context for this target: \(shownCount) messages\n"
-                            + "reason: this target's latest synced context was not yet in your reviewed context\n"
-                            + "action: review the synced context before sending",
-                        producerFactId
-                    )
                     return AgentSendHeldResponse(
-                        producerFactId: producerFactId,
-                        heldMessages: heldMessageJSON,
-                        newMessageCount: holdCount,
-                        shownMessageCount: shownCount,
-                        omittedMessageCount: omittedCount,
-                        seenUpToSeq: latestSeq,
-                        seenUpToMessageId: newer.last?.message.id,
-                        firstShownSeq: shownRows.first?.seq,
-                        formalMentionCount: formalMentionCount,
-                        continueAnywaySuggested: draftReholdCount >= 3,
+                        producerFactId: facts.producerFactId,
+                        heldMessages: facts.heldMessages,
+                        newMessageCount: facts.holdCount,
+                        shownMessageCount: facts.shownCount,
+                        omittedMessageCount: facts.omittedCount,
+                        seenUpToSeq: facts.latestSeq,
+                        seenUpToMessageId: facts.latestMessageId,
+                        firstShownSeq: facts.firstShownSeq,
+                        formalMentionCount: facts.formalMentionCount,
+                        continueAnywaySuggested: facts.continueAnywaySuggested,
                         holdReasons: holdForCards ? (["unread_messages"] + cardHoldReasons) : nil,
                         cards: cardFields
                     )
@@ -661,18 +705,82 @@ public struct ActionCardExecuteService: Sendable {
         }
     }
 
-    /// `#channel[:shortId]` and `dm:@name[~kind][:shortId]` target resolution.
+    /// A parsed send target. The suffix rule is the pinned `parseChannelRef`:
+    /// exactly eight hex characters after a non-leading colon. A colon that is
+    /// not an eight-hex suffix is part of the channel or peer name, never a
+    /// thread marker. `DM:@` is accepted exactly like `dm:@`.
+    private struct ParsedSendTarget {
+        enum Prefix { case channel, dm }
+        let prefix: Prefix
+        let base: String
+        let shortId: String?
+
+        var isDM: Bool { prefix == .dm }
+        var peerPart: String { base }
+
+        var peer: (name: String, kind: String?) {
+            guard let tilde = base.firstIndex(of: "~") else { return (base, nil) }
+            return (String(base[..<tilde]), String(base[base.index(after: tilde)...]))
+        }
+    }
+
+    private static func parseSendTarget(_ trimmed: String) -> ParsedSendTarget? {
+        if trimmed.hasPrefix("dm:@") || trimmed.hasPrefix("DM:@") {
+            let split = splitShortId(String(trimmed.dropFirst(4)))
+            return ParsedSendTarget(prefix: .dm, base: split.base, shortId: split.shortId)
+        }
+        if trimmed.hasPrefix("#") {
+            let split = splitShortId(String(trimmed.dropFirst()))
+            return ParsedSendTarget(prefix: .channel, base: split.base, shortId: split.shortId)
+        }
+        return nil
+    }
+
+    private static func splitShortId(_ rest: String) -> (base: String, shortId: String?) {
+        guard let colon = rest.lastIndex(of: ":"),
+              rest.distance(from: rest.startIndex, to: colon) > 0 else {
+            return (rest, nil)
+        }
+        let shortId = String(rest[rest.index(after: colon)...])
+        guard shortId.count == 8, shortId.allSatisfy({ $0.isHexDigit }) else {
+            return (rest, nil)
+        }
+        return (String(rest[..<colon]), shortId.lowercased())
+    }
+
+    /// The pinned reserved-handle check strips only a final `~agent`/`~human`
+    /// (case-insensitive) before the exact `reminders` comparison. A longer
+    /// handle that merely starts with the reserved word stays an ordinary peer.
+    private static func dmTargetMiss(_ parsed: ParsedSendTarget) -> AgentSendError {
+        parsed.shortId == nil
+            ? .dmTargetNotFound(peer: parsed.base)
+            : .threadTargetNotFound(detail: "the parent message must exist in this DM")
+    }
+
+    private static func isReservedReminderPeer(_ peerPart: String) -> Bool {
+        var name = peerPart
+        if let tilde = name.firstIndex(of: "~") {
+            let suffix = String(name[name.index(after: tilde)...]).lowercased()
+            if suffix == "agent" || suffix == "human" {
+                name = String(name[..<tilde])
+            }
+        }
+        return name.lowercased() == "reminders"
+    }
+
+    /// `#channel[:shortId]` and `dm:@name[~kind][:shortId]` target resolution
+    /// with the pinned grammar: an 8-hex suffix only, explicit `~kind` retained
+    /// through peer resolution, and the uppercase `DM:@` prefix accepted.
     private func resolveSendChannel(
         trimmed: String,
         identity: (agentId: String, serverId: String)
     ) throws -> String {
-        if trimmed.hasPrefix("#") {
-            var raw = String(trimmed.dropFirst())
-            var suffix: String?
-            if let colon = raw.lastIndex(of: ":") {
-                suffix = String(raw[raw.index(after: colon)...])
-                raw = String(raw[..<colon])
-            }
+        guard let parsed = Self.parseSendTarget(trimmed) else {
+            throw AgentSendError.channelNotFound
+        }
+        if parsed.prefix == .channel {
+            let raw = parsed.base
+            let suffix = parsed.shortId
             var parentId: String?
             for (id, channel) in channels.postableChannels {
                 guard channel.serverId == identity.serverId, channel.name == raw,
@@ -689,7 +797,7 @@ public struct ActionCardExecuteService: Sendable {
             var resolved: String?
             var pendingAnchorId: String?
             if let parentId {
-                if let suffix, !suffix.isEmpty {
+                if let suffix {
                     let isMember = channels.postableChannels[parentId]?.memberIds.contains(identity.agentId) == true
                         || oauth.channelAgentIds(channelId: parentId).contains(identity.agentId)
                     guard isMember else {
@@ -742,98 +850,98 @@ public struct ActionCardExecuteService: Sendable {
             }
             return resolved
         }
-        if trimmed.hasPrefix("dm:@") {
-            var raw = String(trimmed.dropFirst("dm:@".count))
-            var suffix: String?
-            if let colon = raw.lastIndex(of: ":") {
-                suffix = String(raw[raw.index(after: colon)...])
-                raw = String(raw[..<colon])
-            }
-            var kind: String?
-            if let tilde = raw.firstIndex(of: "~") {
-                kind = String(raw[raw.index(after: tilde)...])
-                raw = String(raw[..<tilde])
-            }
-            let resolution = prepare.resolveDMPeer(
-                serverId: identity.serverId,
-                agentId: identity.agentId,
-                name: raw,
-                kind: kind
-            )
-            switch resolution {
-            case .resolved:
-                break
-            case .ambiguous(let name):
-                throw AgentSendError.dmTargetAmbiguous(name: name)
-            case .invalidKind(let kind, _):
-                throw AgentSendError.dmTargetInvalidKind(kind: kind)
-            case .notFound:
-                throw AgentSendError.dmTargetNotFound
-            }
-            guard case .resolved(let peerId, let peerKind, let peerName) = resolution else {
-                throw AgentSendError.channelNotFound
-            }
-            let existing = prepare.dmChannelId(
-                serverId: identity.serverId,
-                agentId: identity.agentId,
-                peerId: peerId,
-                peerKind: peerKind,
-                peerName: peerName
-            )
-            let dmChannelId: String
-            if let existing {
-                dmChannelId = existing
-            } else {
-                dmChannelId = oauth.createDirectChannel(
-                    serverId: identity.serverId,
-                    firstUserId: identity.agentId,
-                    secondUserId: peerId,
-                    firstKind: .agent,
-                    secondKind: peerKind == "agent" ? .agent : .human
-                )
-                dependencies.addPostableChannel(
-                    identity.serverId, dmChannelId, identity.agentId, "dm", nil, nil, "dm"
-                )
-                dependencies.addPostableChannel(
-                    identity.serverId, dmChannelId, peerId, "dm", nil, nil, "dm"
-                )
-                if peerKind == "human" { oauth.addChannelHuman(channelId: dmChannelId, userId: peerId) }
-            }
-            if let suffix, !suffix.isEmpty {
-                let anchorId = oauth.historyMessages(channelId: dmChannelId).first {
-                    $0.id.hasPrefix(suffix)
-                }?.id
-                    ?? messages.humanMessageRows.first {
-                        $0.channelId == dmChannelId && $0.id.hasPrefix(suffix)
-                    }?.id
-                var resolved = dependencies.threadByAnchor(dmChannelId, anchorId ?? "")
-                    ?? dependencies.threadById(dmChannelId, suffix)
-                    ?? dependencies.threadByAnchorPrefix(dmChannelId, suffix)
-                if resolved == nil, let anchorId {
-                    let threadId = oauth.createThreadChannel(
-                        parentChannelId: dmChannelId,
-                        parentMessageId: anchorId
-                    )
-                    dependencies.addPostableChannel(
-                        identity.serverId, threadId, identity.agentId, "thread",
-                        dmChannelId, anchorId, "thread"
-                    )
-                    dependencies.addPostableChannel(
-                        identity.serverId, threadId, peerId, "thread",
-                        dmChannelId, anchorId, "thread"
-                    )
-                    resolved = threadId
-                }
-                guard let resolved else {
-                    throw AgentSendError.threadTargetNotFound(
-                        detail: "the parent message must exist in this DM"
-                    )
-                }
-                return resolved
-            }
-            return dmChannelId
+
+        let rawPeer = parsed.base
+        let peer = parsed.peer
+        guard !peer.name.isEmpty else {
+            throw Self.dmTargetMiss(parsed)
         }
-        throw AgentSendError.channelNotFound
+        let resolution = prepare.resolveDMPeer(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            name: peer.name,
+            kind: peer.kind
+        )
+        switch resolution {
+        case .resolved:
+            break
+        case .ambiguous(let name):
+            throw AgentSendError.dmTargetAmbiguous(name: name)
+        case .invalidKind(let kind, let rawName):
+            let rawSpelling = peer.kind.map { "\(peer.name)~\($0)" } ?? rawName
+            throw AgentSendError.dmTargetInvalidPeerKind(rawPeer: rawSpelling, suffix: kind)
+        case .notFound:
+            // A DM thread target is a thread miss, not a peer miss: upstream
+            // resolves the thread independently of the named peer.
+            if parsed.shortId != nil {
+                throw AgentSendError.threadTargetNotFound(
+                    detail: "the parent message must exist in this DM"
+                )
+            }
+            throw AgentSendError.dmTargetNotFound(peer: rawPeer)
+        }
+        guard case .resolved(let peerId, let peerKind, let peerName) = resolution else {
+            throw AgentSendError.channelNotFound
+        }
+        let existing = prepare.dmChannelId(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            peerId: peerId,
+            peerKind: peerKind,
+            peerName: peerName
+        )
+        let dmChannelId: String
+        if let existing {
+            dmChannelId = existing
+        } else {
+            dmChannelId = oauth.createDirectChannel(
+                serverId: identity.serverId,
+                firstUserId: identity.agentId,
+                secondUserId: peerId,
+                firstKind: .agent,
+                secondKind: peerKind == "agent" ? .agent : .human
+            )
+            dependencies.addPostableChannel(
+                identity.serverId, dmChannelId, identity.agentId, "dm", nil, nil, "dm"
+            )
+            dependencies.addPostableChannel(
+                identity.serverId, dmChannelId, peerId, "dm", nil, nil, "dm"
+            )
+            if peerKind == "human" { oauth.addChannelHuman(channelId: dmChannelId, userId: peerId) }
+        }
+        if let suffix = parsed.shortId {
+            let anchorId = oauth.historyMessages(channelId: dmChannelId).first {
+                $0.id.hasPrefix(suffix)
+            }?.id
+                ?? messages.humanMessageRows.first {
+                    $0.channelId == dmChannelId && $0.id.hasPrefix(suffix)
+                }?.id
+            var resolved = dependencies.threadByAnchor(dmChannelId, anchorId ?? "")
+                ?? dependencies.threadById(dmChannelId, suffix)
+                ?? dependencies.threadByAnchorPrefix(dmChannelId, suffix)
+            if resolved == nil, let anchorId {
+                let threadId = oauth.createThreadChannel(
+                    parentChannelId: dmChannelId,
+                    parentMessageId: anchorId
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId, threadId, identity.agentId, "thread",
+                    dmChannelId, anchorId, "thread"
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId, threadId, peerId, "thread",
+                    dmChannelId, anchorId, "thread"
+                )
+                resolved = threadId
+            }
+            guard let resolved else {
+                throw AgentSendError.threadTargetNotFound(
+                    detail: "the parent message must exist in this DM"
+                )
+            }
+            return resolved
+        }
+        return dmChannelId
     }
 
     private func isString(_ value: JSONValue) -> Bool {
@@ -861,7 +969,11 @@ public struct ActionCardExecuteService: Sendable {
     // that have not migrated yet still call, so the policy has one copy.
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(
+            agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth,
+            accounts: prepare.accountStore,
+            reminderSurface: { agentId in feedbackLocators.agentReminderSurfaceChannelId(agentId: agentId) }
+        )
     }
 
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).
@@ -890,6 +1002,36 @@ public struct ActionCardExecuteService: Sendable {
     /// The legacy `agentTaskChannel` reference resolution (`#name` or a raw id).
     func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
         credentials.channel(serverId: serverId, agentId: agentId, reference: reference)
+    }
+
+    /// The claim/convert resolution: keeps the caller-fixable DM failures so
+    /// the published `DM_TARGET_AMBIGUOUS` / `DM_TARGET_INVALID_PEER_KIND`
+    /// bodies survive instead of collapsing into a generic 400/404.
+    func resolvedTaskChannel(
+        serverId: String,
+        agentId: String,
+        reference: String
+    ) throws -> String {
+        try credentials.resolvedChannel(
+            serverId: serverId, agentId: agentId, reference: reference, allowThread: true
+        )
+    }
+
+    /// Publishes the board row for a committed claim. A converted plain host
+    /// message only teaches the task board (`task:created`) because the host
+    /// row is unchanged; an existing task is `task:updated`. Neither publishes
+    /// `message:updated`.
+    private func publishClaimTask(_ task: TaskRecord, created: Bool) throws {
+        do {
+            if created {
+                try catalog.publishClaimCreatedTask(task)
+            } else {
+                try catalog.publishClaimUpdatedTask(task)
+            }
+        } catch {
+            DeferredEffects.markRollbackOnly()
+            throw error
+        }
     }
 
     /// The task-write freshness gate. `nil` means the write proceeds; a value
@@ -954,7 +1096,11 @@ public struct ActionCardExecuteService: Sendable {
         }
     }
 
-    private static func claimResult(_ outcome: TasksAndRemindersStore.TaskClaimOutcome) -> AgentTaskClaimResult {
+    /// Project one store observation into the published result. A conflict is
+    /// built only from the same facts the writer used: the canonical assignee
+    /// handle, the observed status and claim instant, and this request's
+    /// observation time. Closed/done/self rejections carry no effect boundary.
+    private func claimResult(_ outcome: TasksAndRemindersStore.TaskClaimOutcome) -> AgentTaskClaimResult {
         switch outcome {
         case .taskNotFound(let taskNumber):
             return .taskNotFound(taskNumber: taskNumber)
@@ -962,16 +1108,32 @@ public struct ActionCardExecuteService: Sendable {
             return .taskUnavailable(taskNumber: taskNumber)
         case .alreadyClaimedByYou(let taskNumber):
             return .alreadyClaimedByYou(taskNumber: taskNumber)
-        case .alreadyClaimed(let taskNumber):
-            return .alreadyClaimed(taskNumber: taskNumber)
+        case .rejected(let taskNumber, let messageId, let facts):
+            guard facts.reason == "already assigned",
+                  let assigneeType = facts.assigneeType,
+                  let assigneeId = facts.assigneeId
+            else {
+                return .rejected(
+                    taskNumber: taskNumber, messageId: messageId,
+                    reason: facts.reason, conflict: nil
+                )
+            }
+            let name = credentials.taskActorName(type: assigneeType, id: assigneeId)
+            let reason = name.map { "already assigned to @\($0)" } ?? "already assigned to <unresolved>"
+            let conflict = AgentTaskClaimConflict(
+                currentAssigneeType: assigneeType,
+                currentAssigneeName: name,
+                taskStatus: facts.status,
+                claimedAt: facts.claimedAt.map(DateText.isoString),
+                observedAt: DateText.isoString(now())
+            )
+            return .rejected(taskNumber: taskNumber, messageId: messageId, reason: reason, conflict: conflict)
         case .claimed(let taskNumber, let messageId):
             return .claimed(taskNumber: taskNumber, messageId: messageId)
         case .messageNotFound(let prefix):
             return .messageNotFound(prefix: prefix)
         case .messageAlreadyClaimedByYou(let messageId, let taskNumber):
             return .messageAlreadyClaimedByYou(messageId: messageId, taskNumber: taskNumber)
-        case .messageAlreadyClaimed(let messageId, let taskNumber):
-            return .messageAlreadyClaimed(messageId: messageId, taskNumber: taskNumber)
         case .claimedMessage(let messageId, let taskNumber):
             return .claimedMessage(messageId: messageId, taskNumber: taskNumber)
         }

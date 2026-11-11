@@ -28,8 +28,10 @@ private let wireServer = "33333333-3333-4333-8333-333333333821"
             var json = HTTPFields()
             json[.authorization] = "Bearer \(token)"
             json[.contentType] = "application/json"
+            json[HTTPField.Name("X-Server-Id")!] = wireServer
             var bare = HTTPFields()
             bare[.authorization] = "Bearer \(token)"
+            bare[HTTPField.Name("X-Server-Id")!] = wireServer
 
             let list = try await client.send(.get, headers: json, to: "/api/servers/\(wireServer)/machines")
             #expect(list.status == .ok)

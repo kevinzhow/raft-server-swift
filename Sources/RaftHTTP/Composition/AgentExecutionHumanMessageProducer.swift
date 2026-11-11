@@ -28,17 +28,20 @@ struct AgentExecutionHumanMessageProducer: Sendable {
         }
     }
 
-    func deliverCreated(messageId: String, channelId: String) throws {
+    /// Returns the agents whose wake upstream would report as suppressed. The
+    /// canonical message stays committed; the sender-visible v2 warning is the
+    /// only place a non-deliverable recipient is surfaced, never a fake receipt.
+    func deliverCreated(messageId: String, channelId: String) throws -> [String] {
         try requireSupportedSurface(channelId: channelId)
         let snapshot = channels.deliveryAckChannelSnapshot()
         guard let channel = snapshot.channels[channelId], channel.deletedAt == nil,
               ["channel", "private", "dm", "thread"].contains(channel.kind),
               !snapshot.jointProjections.contains(where: { $0.localChannelId == channelId }),
               let message = messages.humanMessageRows.first(where: { $0.id == messageId && $0.channelId == channelId }),
-              ["user", "human"].contains(message.senderType), message.externalMessageId == nil else { return }
+              ["user", "human"].contains(message.senderType), message.externalMessageId == nil else { return [] }
         let candidates: Set<String>
         if channel.kind == "thread" {
-            guard let parentId = channel.parentChannelId, let parent = snapshot.channels[parentId], parent.kind != "joint" else { return }
+            guard let parentId = channel.parentChannelId, let parent = snapshot.channels[parentId], parent.kind != "joint" else { return [] }
             let parentAgents = Set(oauth.channelAgentIds(channelId: parentId))
             let follows = messages.deliveryAckMessageSnapshot().threadFollows.values
             let active = messages.threadFollowSnapshot()
@@ -62,7 +65,8 @@ struct AgentExecutionHumanMessageProducer: Sendable {
                   agent.serverId == channel.serverId, agent.runtime == "codex" else { return false }
             return !suppression.isSuppressed(message, agentId: id)
         }.sorted()
-        guard !recipients.isEmpty else { return }
+        guard !recipients.isEmpty else { return [] }
+        var wakeSuppressed: [String] = []
         do {
             try DeferredEffects.requireDurableTransaction(in: .shared)
             for agentId in recipients {
@@ -70,16 +74,19 @@ struct AgentExecutionHumanMessageProducer: Sendable {
                     serverId: channel.serverId, agentId: agentId, channelId: channelId, messageId: messageId))
                 switch disposition {
                 case .staged, .held: break
-                case .readableOnly:
+                case .readableOnly(let refusal):
                     // Canonical message/unread history remain committed. There is
                     // no claim of an offline queue, future retry or daemon receipt.
-                    break
+                    // Upstream reports a suppressed wake for a DM; carry the real
+                    // refusal out so the v2 sender sees it instead of a silent 200.
+                    if refusal == .recoveryRequired || refusal == .breakerPaused { wakeSuppressed.append(agentId) }
                 }
             }
         } catch {
             DeferredEffects.markRollbackOnly()
             throw error
         }
+        return wakeSuppressed.sorted()
     }
 }
 

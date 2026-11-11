@@ -383,4 +383,4 @@ the block cannot drift.
 - `swift build --product RaftServer` with
   `/mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift` (6.4.1).
 - No modifications to `Sources/**`, `Tests/**`, `Makefile`, `Package.swift`,
-  `docs/PARITY.tsv`, `docs/BEHAVIOR.md`, `docs/PLAN.md`.
+  `docs/PARITY.tsv`, `docs/DEVIATIONS.md`, `docs/PLAN.md`.

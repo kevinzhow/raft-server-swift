@@ -67,6 +67,7 @@ import VaporTesting
             func request(_ method: HTTPRequest.Method, _ path: String, _ bearer: String) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(method, headers: headers, to: URI(string: path))
             }
             func feed(_ bearer: String) async throws -> [String: Any] {

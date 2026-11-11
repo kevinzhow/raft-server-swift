@@ -124,6 +124,33 @@ public struct HumanMessageCreateService: Sendable {
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
             throw HumanMessageCreateError.notServerMember
         }
+        return try createHumanMessage(userId: userId, request: request, serverId: serverId, contract: contract)
+    }
+
+    /// `POST /api/channels/:channelId/threads` first reply: upstream runs the
+    /// same `broadcastAndDeliver` pipeline as `POST /api/messages`, but the
+    /// thread route has already authenticated and gated the caller, so this
+    /// entry takes the resolved user instead of repeating the session checks.
+    public func createThreadFirstReply(
+        serverId: String,
+        channelId: String,
+        userId: String,
+        content: String
+    ) throws {
+        _ = try createHumanMessage(
+            userId: userId,
+            request: HumanMessageCreateRequest(channelId: channelId, content: content),
+            serverId: serverId,
+            contract: .v1
+        )
+    }
+
+    private func createHumanMessage(
+        userId: String,
+        request: HumanMessageCreateRequest?,
+        serverId: String?,
+        contract: HumanMessageContract
+    ) throws -> HumanMessageCreatedResponse {
         guard let request, Self.isValidCreateBody(request),
               case .string(let channelId)? = request.channelId,
               case .string(let content)? = request.content
@@ -182,19 +209,21 @@ public struct HumanMessageCreateService: Sendable {
             }
             randomId = value
         }
-        let written = dependencies.storeHumanMessage(
-            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions
+        let written = try dependencies.storeHumanMessage(
+            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions,
+            Self.asTaskValue(request.asTask)
         )
         guard written.status == 200 else {
             throw HumanMessageCreateError.messageWriteRejected(status: UInt(written.status), body: written.body)
         }
         let messageId = Self.messageId(in: written.body)
+        var wakeSuppressedAgentIds: [String] = []
         if written.created, let messageId {
             dependencies.recordMemberMentionRows(messageId, channelId, resolution)
             if channel.kind == "thread", channel.parentMessageId != nil {
                 dependencies.recordThreadReplyFollows(messageId, channelId, serverId ?? "", userId, resolution)
             }
-            try producer?.deliverCreated(messageId: messageId, channelId: channelId)
+            wakeSuppressedAgentIds = try producer?.deliverCreated(messageId: messageId, channelId: channelId) ?? []
         }
         guard let messageId else {
             return HumanMessageCreatedResponse(
@@ -211,7 +240,8 @@ public struct HumanMessageCreateService: Sendable {
                 messageJSON: written.body,
                 nested: true,
                 pendingMentionActions: pending,
-                deliveryWarnings: stoppedAgentDeliveryWarnings(channelId: channelId, messageId: messageId),
+                deliveryWarnings: stoppedAgentDeliveryWarnings(channelId: channelId, messageId: messageId,
+                                                               wakeSuppressedAgentIds: wakeSuppressedAgentIds),
                 unresolvedMentionHandles: resolution.unresolved
             )
         }
@@ -241,14 +271,20 @@ public struct HumanMessageCreateService: Sendable {
         }
     }
 
-    /// A DM delivery to a stopped agent is dropped as `wake_suppressed` and
-    /// reported to the v2 sender as `agent_stopped`.
-    private func stoppedAgentDeliveryWarnings(channelId: String, messageId: String) -> [MessageDeliveryWarning] {
+    /// A DM delivery whose wake the server suppressed is reported to the v2
+    /// sender as upstream `agent_stopped`. The manual-stop status and the
+    /// execution owner's real recovery refusal both produce that warning; the
+    /// message itself stays committed in either case.
+    private func stoppedAgentDeliveryWarnings(channelId: String, messageId: String,
+                                              wakeSuppressedAgentIds: [String]) -> [MessageDeliveryWarning] {
         guard let channel = channels.state.postableChannels[channelId],
               channel.kind == "dm",
-              let agentId = channel.agentId,
-              agents.recordStoppedAgentDelivery(agentId: agentId, messageId: messageId, channelType: channel.kind)
-        else { return [] }
+              let agentId = channel.agentId else { return [] }
+        if agents.recordStoppedAgentDelivery(agentId: agentId, messageId: messageId, channelType: channel.kind) {
+            return [MessageDeliveryWarning(agentId: agentId)]
+        }
+        guard wakeSuppressedAgentIds.contains(agentId) else { return [] }
+        agents.recordSuppressedAgentDelivery(agentId: agentId, messageId: messageId, channelType: channel.kind)
         return [MessageDeliveryWarning(agentId: agentId)]
     }
 
@@ -575,6 +611,13 @@ public struct HumanMessageCreateService: Sendable {
             if !ids.contains(id) { ids.append(id) }
         }
         return ids
+    }
+
+    /// The optional `asTask` flag: the body check already refused a present
+    /// non-boolean value, and an absent flag is the ordinary send.
+    static func asTaskValue(_ value: JSONValue?) -> Bool {
+        if case .bool(let flag)? = value { return flag }
+        return false
     }
 
     /// The legacy body check: a UUID `channelId`, an `attachmentIds` that is an

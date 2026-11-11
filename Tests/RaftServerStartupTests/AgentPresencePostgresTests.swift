@@ -67,11 +67,32 @@ func postgresDaemonPresenceFramesProjectToAgentListAndRealtime() async throws {
             throw ProtocolPGFailure.missingField
         }
 
-        // Baseline: the agent is inactive and no daemon fact has been retained.
+        // Baseline: the complete ready reports no running process for the
+        // inactive agent. The reconcile keeps it inactive/offline with the
+        // upstream runtime-interrupted detail.
         let baseline = try await listedAgent()
         #expect(baseline.string("status") == "inactive")
         #expect(baseline.string("activity") == "offline")
-        #expect(baseline.string("activityDetail") == "")
+        #expect(baseline.string("activityDetail") == "Runtime interrupted")
+
+        // The official Computer reconnects with its idle Codex process alive:
+        // ready.runningAgents reconciles status active and live activity online
+        // in the same durable transaction (planReadyReconcileAction
+        // mark-active-online).
+        try await peer.socket.send(.init([
+            "type": .string("ready"), "daemonInstanceId": .string(peer.daemonId),
+            "capabilities": .array(["agent:start", "agent:deliver", "agent:stop", "agent:status-sequenced",
+                                    "agent:runtime-outcome-v1"].map(JSONValue.string)),
+            "runtimes": .array([.string("codex")]), "runningAgents": .array([.string(agentId)]),
+            "runtimeDetection": .object(["status": .string("complete")]),
+        ]))
+        try await peer.socket.applicationFence()
+        let reconciledAudit = try await fixture.audit()
+        #expect(reconciledAudit.status(agent: agentId) == "active")
+        let reconciled = try await listedAgent()
+        #expect(reconciled.string("status") == "active")
+        #expect(reconciled.string("activity") == "online")
+        #expect(reconciled.string("activityDetail") == "")
 
         // `agent:status active` is the daemon's process-state channel. It
         // persists through the real transaction and the list serves it.
@@ -94,7 +115,9 @@ func postgresDaemonPresenceFramesProjectToAgentListAndRealtime() async throws {
         #expect(active.string("activity") == "online")
 
         // Activity is derived from the canonical detailKind and pushed live.
-        let thinkingBoundary = peer.socket.count
+        // The subscriber socket is a different transport from the machine peer:
+        // its own frame count is the boundary for the next server-room event.
+        let thinkingBoundary = updates.count
         try await peer.socket.send(.init([
             "type": .string("agent:activity"), "agentId": .string(agentId),
             "detail": .string("Preparing the answer"), "detailKind": .string("thinking_started"),

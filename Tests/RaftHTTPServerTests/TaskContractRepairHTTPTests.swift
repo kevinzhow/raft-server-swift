@@ -668,7 +668,17 @@ func taskContractJointReviewUsesEachRoomProjectionAndActualPeerMembership(_ mode
                 #expect(threadResponse.status == .ok)
                 let thread = try contractTaskObject(threadResponse)
                 let threadId = try #require(thread["threadChannelId"] as? String)
-                let reply = try #require(thread["messageId"] as? String)
+                let threadHistory = try await client.send(
+                    .get, headers: owner, to: URI(string: "/api/messages/channel/\(threadId)?limit=50")
+                )
+                #expect(threadHistory.status == .ok)
+                let threadRows = try #require(
+                    try contractTaskObject(threadHistory)["messages"] as? [[String: Any]]
+                )
+                let replyRow = try #require(threadRows.first {
+                    ($0["content"] as? String) == "actual-all-thread-reply"
+                })
+                let reply = try #require(replyRow["id"] as? String)
                 let followed = try await client.send(.post, headers: owner, to: "/api/channels/threads/follow") { $0.body = .init(string: "{\"threadChannelId\":\"\(threadId)\"}") }
                 #expect(followed.status == .ok)
                 let cursor = try #require(accounts.messageSeqForTesting(messageId: sentinel))
@@ -847,7 +857,7 @@ private func contractTaskWaitFrameOrClose(_ socket: SocketIOTestClient, prefix: 
                     let action = follow ? "follow" : "unfollow"
                     let response = try await client.send(.post, headers: owner, to: URI(string: "/api/channels/threads/\(action)")) { $0.body = .init(string: "{\"threadChannelId\":\"\(thread)\"}") }
                     #expect(response.status == .ok)
-                    #expect(try contractTaskObject(response)["following"] as? Bool == follow)
+                    #expect(try contractTaskObject(response)["ok"] as? Bool == true)
                 }
                 try await setFollow(true)
                 let initial = try await contractTaskResume(socket, lastSeq: cursor)

@@ -101,6 +101,14 @@ extension AuthProfileStore {
                 return nil
             }
             var changed = false
+            if let displayName = update.displayName {
+                account.displayName = displayName
+                changed = true
+            }
+            if let description = update.description {
+                account.description = description
+                changed = true
+            }
             // The survey role and its completion time are one fact: a present
             // role (JSON null included) always stamps this request's time.
             if let role = update.signupRole {
@@ -167,6 +175,14 @@ extension AuthProfileStore {
     func timezoneObservation(userId: String) -> TimezoneObservation? {
         return state.withLock { state in
             return state.profile.timezoneObservations[userId]
+        }
+    }
+
+    /// Upstream `getProfileSetupProvider`: the first linked identity row for
+    /// the account, in insertion order.
+    func profileSetupProvider(userId: String) -> String? {
+        state.withLock { state in
+            state.accountSurface.linkedIdentities.first { $0.userId == userId }?.provider
         }
     }
 }

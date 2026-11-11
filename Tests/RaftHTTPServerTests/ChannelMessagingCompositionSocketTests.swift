@@ -134,9 +134,7 @@ private func channelCompositionCreationFrames(_ client: any Client, channelId: S
             payload["reactions"] = [Any]()
             payload["commentRef"] = NSNull()
             payload["externalAuthor"] = NSNull()
-            payload["causalActorType"] = "user"
-            payload["causalActorId"] = try #require(tasks.first?["createdById"] as? String)
-            payload["systemSubtype"] = "task.created_summary"
+            // Storage-only causal actor/subtype never reach a socket frame.
             payload["conversationContext"] = ["channelType": try #require(tasks.first?["channelType"] as? String)]
         }
         return try frame("message:new", payload)

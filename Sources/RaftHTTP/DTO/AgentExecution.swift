@@ -50,13 +50,51 @@ public struct AgentExecutionStartRequest: Codable, Sendable, Equatable {
     public let agentId: String
     public let control: AgentExecutionStartControl
     public let resumePrompt: String?
+    /// Upstream `attempt-wake`: the message that caused this start is embedded
+    /// in `agent:start` as its first input. The daemon runs that message as the
+    /// spawn turn, so the server never sends it as a separate `agent:deliver`
+    /// and never depends on a delivery ACK for it.
+    public var wakeMessage: AgentExecutionWakeMessage?
     public init(commandId: UUID = UUID(), serverId: String, agentId: String,
-                control: AgentExecutionStartControl = .automatic, resumePrompt: String? = nil) {
+                control: AgentExecutionStartControl = .automatic, resumePrompt: String? = nil,
+                wakeMessage: AgentExecutionWakeMessage? = nil) {
         self.commandId = commandId
         self.serverId = serverId
         self.agentId = agentId
         self.control = control
         self.resumePrompt = resumePrompt
+        self.wakeMessage = wakeMessage
+    }
+}
+
+/// The canonical message a start carries as its wake input. The wire payload is
+/// materialized from the same retained row as an `agent:deliver`, so the daemon
+/// receives the exact upstream `AgentMessage` body.
+public struct AgentExecutionWakeMessage: Codable, Sendable, Equatable {
+    public let channelId: String
+    public let messageId: String
+    public init(channelId: String, messageId: String) {
+        self.channelId = channelId
+        self.messageId = messageId
+    }
+}
+
+/// The frozen daemon identity a tracked mention delivery is checked against.
+/// Upstream `MentionDeliveryIdentitySnapshot`: the daemon rejects a frame whose
+/// occurrence/message/machine/launch/session do not match its own process.
+public struct MentionDeliveryIdentitySnapshot: Codable, Sendable, Equatable {
+    public let occurrenceId: String
+    public let messageId: String
+    public let machineId: String
+    public let launchId: String
+    public let sessionId: String
+    public init(occurrenceId: String, messageId: String, machineId: String,
+                launchId: String, sessionId: String) {
+        self.occurrenceId = occurrenceId
+        self.messageId = messageId
+        self.machineId = machineId
+        self.launchId = launchId
+        self.sessionId = sessionId
     }
 }
 
@@ -73,6 +111,83 @@ public struct AgentExecutionDeliveryRequest: Codable, Sendable, Equatable {
         self.channelId = channelId
         self.messageId = messageId
     }
+}
+
+/// A transient, agent-only notice: the system sender's onboarding context.
+///
+/// It is never a `messages` row, never a channel event and never an unread fact.
+/// Upstream delivers the same body through `agentOrchestrator.deliverMessage`
+/// with `seq: 0` and a synthetic `message_id`
+/// (`deliverSystemNoticeToAgent`, the opener-v2 ledger and the owner-facts
+/// context). The body carries no `seq` member: `0` belongs to the frame
+/// envelope, exactly as the pinned server sends it.
+public struct AgentExecutionNotice: Codable, Sendable, Equatable {
+    public let channelName: String
+    public let channelType: String
+    public let content: String
+    /// ISO-8601 text captured when the notice was admitted. It survives an
+    /// outbox retry so the frame carries the original wake time.
+    public let timestamp: String
+    public init(channelName: String, channelType: String, content: String, timestamp: String) {
+        self.channelName = channelName
+        self.channelType = channelType
+        self.content = content
+        self.timestamp = timestamp
+    }
+}
+
+public struct AgentExecutionNoticeRequest: Sendable, Equatable {
+    public let commandId: UUID
+    public let serverId: String
+    public let agentId: String
+    /// A real channel id for the onboarding opener, or an upstream synthetic
+    /// label such as `onboarding-context`. Admission never reads a channel row.
+    public let channelId: String
+    public let channelName: String
+    public let channelType: String
+    public let content: String
+    public let messageId: String
+    /// ISO-8601 text from the caller's clock. The body carries this exact
+    /// wake time; a retried outbox entry never invents a newer one.
+    public let timestamp: String
+    public init(commandId: UUID = UUID(), serverId: String, agentId: String, channelId: String,
+                channelName: String, channelType: String, content: String, messageId: String,
+                timestamp: String) {
+        self.commandId = commandId
+        self.serverId = serverId
+        self.agentId = agentId
+        self.channelId = channelId
+        self.channelName = channelName
+        self.channelType = channelType
+        self.content = content
+        self.messageId = messageId
+        self.timestamp = timestamp
+    }
+}
+
+/// Why a transient notice was not admitted. A dropped notice is the honest
+/// "the briefing did not happen" receipt: the caller must not stamp the
+/// one-shot sent fact, so the next activation retries. It is never a queued
+/// delivery and never starts or wakes a dead agent.
+public enum AgentExecutionNoticeDropReason: String, Codable, Sendable, Equatable {
+    case transactionRequired
+    case agentUnavailable
+    case machineNotReady
+    case agentNotRunning
+    case manuallyStopped
+    case manualRecovery
+    case resetInProgress
+    case targetUnavailable
+    case conflictingCommand
+}
+
+/// The delivery receipt a briefing trigger consumes. `accepted` means the
+/// notice and its outbox reference were staged in the caller's durable
+/// transaction for an agent with a live launch; it does not prove the daemon
+/// consumed it (upstream's `queued` receipt makes the same distinction).
+public enum AgentExecutionNoticeReceipt: Sendable, Equatable {
+    case accepted(commandId: UUID)
+    case dropped(AgentExecutionNoticeDropReason)
 }
 
 public struct AgentExecutionStopRequest: Codable, Sendable, Equatable {
@@ -118,7 +233,7 @@ public struct AgentExecutionIntentReference: Codable, Sendable, Equatable {
 }
 
 public struct AgentExecutionCommand: Codable, Sendable, Equatable {
-    public enum Kind: String, Codable, Sendable { case start, delivery, stop }
+    public enum Kind: String, Codable, Sendable { case start, delivery, notice, stop }
     public enum Status: String, Codable, Sendable { case pending, dispatched, accepted, superseded }
     public let commandId: UUID
     public let kind: Kind
@@ -136,8 +251,21 @@ public struct AgentExecutionCommand: Codable, Sendable, Equatable {
     public let resumePrompt: String?
     public let channelId: String?
     public let messageId: String?
+    /// Transient notice body. Absent for start/delivery/stop commands and for
+    /// every snapshot written before notices existed.
+    public let notice: AgentExecutionNotice?
+    /// The formal agent mention this delivery is tracked against. Absent for
+    /// every non-mention delivery, for an untracked fallback (the occurrence was
+    /// abandoned because its daemon identity was unknown) and for every snapshot
+    /// written before the occurrence spine. The decision itself is recorded from
+    /// the materializer immediately before the wire send.
+    public var mentionDeliveryOccurrenceId: String? = nil
     public var status: Status
     public let createdAt: Date
+    /// The message this start carries as its first input (upstream
+    /// `agent:start.wakeMessage`). Absent for every other command and every
+    /// snapshot written before wake carry.
+    public var wakeMessage: AgentExecutionWakeMessage? = nil
 
     public var admission: AgentExecutionAdmission {
         AgentExecutionAdmission(commandId: commandId, launchId: launchId,

@@ -7,6 +7,11 @@ locks the module's asserted behaviors (``locked``). Only ``locked`` rows with a
 real commit count toward the weighted case coverage, so a slice cannot inflate
 the number without landing.
 
+The optional ``tests`` column names the Swift test file(s) that lock the module.
+It is derived from the test files added by the locking commit and is best-effort,
+not a proof of coverage: a large module locked over several commits names the
+final locking file(s). Blank means unknown.
+
 Module names are derived from the upstream checkout, case counts are counted
 from the Node test files, and the ledger is the only place status lives.
 """
@@ -104,12 +109,12 @@ def looks_started(module: str, corpus: list[str]) -> bool:
 
 def seed_manifest(areas: dict[str, list[tuple[str, int, Path]]]) -> str:
     corpus = swift_test_corpus()
-    lines = ["module\tarea\tstatus\tcommit\tnotes"]
+    lines = ["module\tarea\tstatus\tcommit\tnotes\ttests"]
     for area in ("route", "socket", "daemon"):
         for module, _cases, _path in areas[area]:
             started = area != "daemon" and looks_started(module, corpus)
             status = "partial" if started else "pending"
-            lines.append(f"{module}\t{area}\t{status}\t-\tauto-seed")
+            lines.append(f"{module}\t{area}\t{status}\t-\tauto-seed\t")
     return "\n".join(lines) + "\n"
 
 
@@ -130,6 +135,7 @@ def read_manifest(path: Path) -> list[dict[str, str]]:
             "status": fields[2].strip(),
             "commit": fields[3].strip(),
             "notes": fields[4].strip() if len(fields) > 4 else "",
+            "tests": [part.strip() for part in fields[5].split(",") if part.strip()] if len(fields) > 5 else [],
         }
         if row["module"] in seen:
             raise SystemExit(f"{path}:{number}: duplicate module {row['module']!r}")
@@ -168,6 +174,12 @@ def report(
         if row["status"] == "partial" and row["commit"] not in ("-", ""):
             if not commit_exists(row["commit"]):
                 problems.append(f"{row['module']}: partial references missing commit {row['commit']!r}")
+        for test_path in row["tests"]:
+            candidate = REPO_ROOT / test_path
+            if not test_path.startswith("Tests/") or not test_path.endswith(".swift"):
+                problems.append(f"{row['module']}: test path must be Tests/**.swift, got {test_path!r}")
+            elif not candidate.is_file():
+                problems.append(f"{row['module']}: test file not found: {test_path!r}")
 
     listed = {row["module"] for row in rows}
     unlisted = sorted(known - listed)
@@ -198,7 +210,9 @@ def report(
     locked_route_cases = sum(
         by_module[row["module"]][1] for row in rows if row["area"] == "route" and row["status"] == "locked"
     )
+    mapped = sum(1 for row in rows if row["tests"])
     print(f"route coverage    : {locked_route_cases}/{route_cases} cases locked (partial modules are not credited)")
+    print(f"test mapping      : {mapped}/{len(rows)} modules name at least one locking Swift test file")
 
     if unlisted:
         print()

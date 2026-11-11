@@ -54,6 +54,7 @@ import VaporTesting
             accounts.oauth.addChannelAgent(channelId: channelId, agentId: agent)
             let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "archived-machine")
             let apiKey = accounts.machineAPIKey(machineId: machine) ?? ""
+            accounts.assignAgentMachineForTesting(agentId: agent, machineId: machine)
             var agentHeaders = HTTPFields()
             agentHeaders[.authorization] = "Bearer \(apiKey)"
             agentHeaders[.contentType] = "application/json"

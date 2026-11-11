@@ -5,9 +5,10 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// Complete `method path` table owned by `InternalAgentApiFeature`: the 75
-/// static `app.<verb>("internal", "agent-api", ...)` registrations that used to
-/// be inline in `FallbackApplication.configure`. The five-method
+/// Complete `method path` table owned by `InternalAgentApiFeature`: the 90
+/// static `app.<verb>("internal", "agent-api", ...)` registrations, including
+/// the credential-surface upload-session, task history/unclaim, avatar and
+/// integration-app management routes. The five-method
 /// `app.on(method, "internal", "agent-api", "**")` policy catch-all is
 /// intentionally absent: it is registered in a shared loop with the
 /// `internal/agent/**` prefix and stays in `configure`.
@@ -19,6 +20,10 @@ private let expectedInternalAgentApiRoutes: [String] = [
     "GET /internal/agent-api/assistant/owner-inbox",
     "GET /internal/agent-api/assistant/owner-messages",
     "GET /internal/agent-api/attachment-upload-capabilities",
+    "POST /internal/agent-api/attachment-upload-sessions",
+    "GET /internal/agent-api/attachment-upload-sessions/:uploadId",
+    "DELETE /internal/agent-api/attachment-upload-sessions/:uploadId",
+    "POST /internal/agent-api/attachment-upload-sessions/:uploadId/complete",
     "GET /internal/agent-api/attachments/:attachmentId",
     "GET /internal/agent-api/attachments/:attachmentId/comments",
     "POST /internal/agent-api/attachments/:attachmentId/comments",
@@ -42,7 +47,11 @@ private let expectedInternalAgentApiRoutes: [String] = [
     "GET /internal/agent-api/inbox/conversations",
     "GET /internal/agent-api/integrations",
     "GET /internal/agent-api/integrations/app",
+    "POST /internal/agent-api/integrations/app/logo",
+    "POST /internal/agent-api/integrations/app/manage",
     "POST /internal/agent-api/integrations/app/prepare",
+    "POST /internal/agent-api/integrations/app/rotate-secret",
+    "POST /internal/agent-api/integrations/app/transfer-owner",
     "GET /internal/agent-api/integrations/app/status",
     "POST /internal/agent-api/integrations/app/update",
     "POST /internal/agent-api/integrations/login",
@@ -60,6 +69,7 @@ private let expectedInternalAgentApiRoutes: [String] = [
     "POST /internal/agent-api/prepare-action",
     "GET /internal/agent-api/profile",
     "POST /internal/agent-api/profile",
+    "POST /internal/agent-api/profile/avatar",
     "PUT /internal/agent-api/push-webhook",
     "GET /internal/agent-api/reminders",
     "POST /internal/agent-api/reminders",
@@ -72,6 +82,7 @@ private let expectedInternalAgentApiRoutes: [String] = [
     "POST /internal/agent-api/send",
     "GET /internal/agent-api/server",
     "PATCH /internal/agent-api/server",
+    "POST /internal/agent-api/server/avatar",
     "GET /internal/agent-api/tasks",
     "POST /internal/agent-api/tasks",
     "POST /internal/agent-api/tasks/amend",
@@ -81,6 +92,8 @@ private let expectedInternalAgentApiRoutes: [String] = [
     "POST /internal/agent-api/tasks/convert",
     "POST /internal/agent-api/tasks/delete",
     "POST /internal/agent-api/tasks/update-status",
+    "GET /internal/agent-api/tasks/history",
+    "POST /internal/agent-api/tasks/unclaim",
     "POST /internal/agent-api/third-party-events/delivered",
     "GET /internal/agent-api/threads",
     "POST /internal/agent-api/threads/unfollow",
@@ -113,8 +126,8 @@ private func internalAgentApiRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedInternalAgentApiRoutes.count == 78)
-        #expect(Set(expectedInternalAgentApiRoutes).count == 78)
+        #expect(expectedInternalAgentApiRoutes.count == 90)
+        #expect(Set(expectedInternalAgentApiRoutes).count == 90)
 
         // One route per table entry, no route outside `/internal/agent-api`, and
         // no wildcard policy catch-all leaked into the collection.

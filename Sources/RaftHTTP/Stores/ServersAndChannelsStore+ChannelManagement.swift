@@ -114,6 +114,9 @@ struct JointInviteSnapshot: Sendable, Equatable {
     let targetServerId: String
     let targetChannelId: String
     let targetOwnerId: String
+    let invitedByUserId: String
+    let createdAt: Date
+    let expiresAt: Date
     let status: String
 }
 
@@ -167,9 +170,141 @@ extension ServersAndChannelsStore {
                 JointInviteSnapshot(
                     id: $0.id, hostServerId: $0.hostServerId, hostChannelId: $0.hostChannelId,
                     targetServerId: $0.targetServerId, targetChannelId: $0.targetChannelId,
-                    targetOwnerId: $0.targetOwnerId, status: $0.status
+                    targetOwnerId: $0.targetOwnerId, invitedByUserId: $0.invitedByUserId,
+                    createdAt: $0.createdAt, expiresAt: $0.expiresAt, status: $0.status
                 )
             }
+        }
+    }
+
+    /// Pending, unexpired invites addressed to one person on one server.
+    func pendingJointInvites(serverId: String, userId: String, now: Date) -> [JointInviteSnapshot] {
+        mutex.withLock { storage in
+            return storage.jointInvites
+                .filter {
+                    $0.targetServerId == serverId && $0.targetOwnerId == userId
+                        && $0.status == "pending" && $0.expiresAt > now
+                }
+                .sorted { $0.createdAt > $1.createdAt }
+                .map {
+                    JointInviteSnapshot(
+                        id: $0.id, hostServerId: $0.hostServerId, hostChannelId: $0.hostChannelId,
+                        targetServerId: $0.targetServerId, targetChannelId: $0.targetChannelId,
+                        targetOwnerId: $0.targetOwnerId, invitedByUserId: $0.invitedByUserId,
+                        createdAt: $0.createdAt, expiresAt: $0.expiresAt, status: $0.status
+                    )
+                }
+        }
+    }
+
+    /// Refreshes every pending invite hosted by one projection and answers how
+    /// many rows moved. A joint with no pending invite is distinguished from a
+    /// missing projection by the caller's earlier read.
+    func resendJointInvites(
+        hostChannelId: String,
+        hostServerId: String,
+        requestedByUserId: String,
+        now: Date,
+        ttl: TimeInterval
+    ) -> Int {
+        mutex.withLock { storage in
+            var count = 0
+            for index in storage.jointInvites.indices {
+                guard storage.jointInvites[index].hostChannelId == hostChannelId,
+                      storage.jointInvites[index].hostServerId == hostServerId,
+                      storage.jointInvites[index].status == "pending"
+                else { continue }
+                storage.jointInvites[index].invitedByUserId = requestedByUserId
+                storage.jointInvites[index].createdAt = now
+                storage.jointInvites[index].expiresAt = now.addingTimeInterval(ttl)
+                count += 1
+            }
+            return count
+        }
+    }
+
+    /// Adds one target-server projection and its pending invites to an existing
+    /// joint channel in one critical section.
+    func addJointServerProjection(
+        hostChannelId: String,
+        hostServerId: String,
+        targetServerId: String,
+        targetChannelId: String,
+        invitedByUserId: String,
+        name: String,
+        invites: [(inviteId: String, userId: String)],
+        now: Date,
+        ttl: TimeInterval
+    ) {
+        mutex.withLock { storage in
+            let canonical = storage.jointProjections
+                .first { $0.localChannelId == hostChannelId }?.canonicalChannelId ?? hostChannelId
+            storage.jointProjections.append(JointChannelLink(
+                localChannelId: targetChannelId,
+                canonicalChannelId: canonical,
+                serverId: targetServerId
+            ))
+            storage.postableChannels[targetChannelId] = PostableChannel(
+                serverId: targetServerId, memberIds: [], kind: "joint", name: name
+            )
+            for invite in invites {
+                storage.jointInvites.append((
+                    invite.inviteId, hostServerId, hostChannelId, targetServerId, targetChannelId,
+                    invite.userId, invitedByUserId, now, now.addingTimeInterval(ttl), "pending"
+                ))
+            }
+        }
+    }
+
+    /// Adds pending invite rows for an already-projected target server.
+    func addJointInvites(
+        hostChannelId: String,
+        hostServerId: String,
+        targetServerId: String,
+        targetChannelId: String,
+        invitedByUserId: String,
+        invites: [(inviteId: String, userId: String)],
+        now: Date,
+        ttl: TimeInterval
+    ) {
+        mutex.withLock { storage in
+            for invite in invites {
+                storage.jointInvites.append((
+                    invite.inviteId, hostServerId, hostChannelId, targetServerId, targetChannelId,
+                    invite.userId, invitedByUserId, now, now.addingTimeInterval(ttl), "pending"
+                ))
+            }
+        }
+    }
+
+    /// Drops one server's projection and marks its local channel deleted.
+    /// Answers false when the channel is not a joint projection.
+    func disconnectJointProjection(channelId: String, now: Date) -> Bool {
+        mutex.withLock { storage in
+            guard let index = storage.jointProjections.firstIndex(where: { $0.localChannelId == channelId })
+            else { return false }
+            storage.jointProjections.remove(at: index)
+            storage.postableChannels[channelId]?.deletedAt = now
+            return true
+        }
+    }
+
+    /// The local channel a server already projects for `channelId`'s joint.
+    func jointLocalChannel(channelId: String, serverId: String) -> String? {
+        mutex.withLock { storage in
+            guard let canonical = storage.jointProjections
+                .first(where: { $0.localChannelId == channelId })?.canonicalChannelId
+            else { return nil }
+            return storage.jointProjections.first {
+                $0.canonicalChannelId == canonical && $0.serverId == serverId
+            }?.localChannelId
+        }
+    }
+
+    /// The canonical row of `channelId`'s joint projection, if any.
+    func jointCanonicalChannelId(channelId: String) -> String? {
+        mutex.withLock { storage in
+            storage.jointProjections.first { $0.localChannelId == channelId }?.canonicalChannelId
         }
     }
 
@@ -196,7 +331,9 @@ extension ServersAndChannelsStore {
         targetChannelId: String,
         targetOwnerId: String,
         name: String,
-        inviteId: String
+        inviteId: String,
+        now: Date = Date(),
+        ttl: TimeInterval = 14 * 24 * 60 * 60
     ) {
         mutex.withLock { storage in
             storage.jointProjections.append(JointChannelLink(
@@ -212,7 +349,8 @@ extension ServersAndChannelsStore {
                 serverId: targetServerId, memberIds: [], kind: "joint", name: name
             )
             storage.jointInvites.append((
-                inviteId, hostServerId, hostChannelId, targetServerId, targetChannelId, targetOwnerId, "pending"
+                inviteId, hostServerId, hostChannelId, targetServerId, targetChannelId,
+                targetOwnerId, hostUserId, now, now.addingTimeInterval(ttl), "pending"
             ))
         }
     }

@@ -12,12 +12,45 @@ final class ProductEventStore: Sendable {
         var productEvents: [RecordedProductEvent] = []
         var clientEvents: [ClientEventRecord] = []
         var seenClientEventIDs: Set<String> = []
+        var actionCardEventKeys: Set<String> = []
     }
 
     let state = TransactionalState(State())
 
     func append(_ event: RecordedProductEvent) {
         state.withLock { $0.productEvents.append(event) }
+    }
+
+    /// Appends one action-card event. A non-nil idempotency key that was
+    /// already recorded for the same card and event type is dropped, matching
+    /// the upstream partial unique index.
+    func appendActionCardEvent(
+        cardId: String,
+        eventType: String,
+        actorType: String,
+        actorId: String,
+        source: String,
+        idempotencyKey: String?,
+        metadataJSON: String
+    ) {
+        state.withLock { state in
+            if let idempotencyKey, state.actionCardEventKeys.contains("\(cardId)\n\(eventType)\n\(idempotencyKey)") {
+                return
+            }
+            if let idempotencyKey {
+                state.actionCardEventKeys.insert("\(cardId)\n\(eventType)\n\(idempotencyKey)")
+            }
+            state.productEvents.append(RecordedProductEvent(
+                subjectType: "action_card",
+                subjectId: cardId,
+                eventType: eventType,
+                actorType: actorType,
+                actorId: actorId,
+                source: source,
+                idempotencyKey: idempotencyKey,
+                metadataJSON: metadataJSON
+            ))
+        }
     }
 
     func productEvents(subjectId: String) -> [RecordedProductEvent] {

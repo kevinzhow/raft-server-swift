@@ -11,6 +11,16 @@ private func bodyText(_ response: ClientResponse) -> String {
     response.body.string ?? ""
 }
 
+/// The `/api/servers/<uuid>/…` segment, so the helper can send the matching
+/// `X-Server-Id` the router-wide lockdown requires.
+private func scopedServerId(in path: String) -> String? {
+    let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count >= 4, parts[1] == "api", parts[2] == "servers", !parts[3].isEmpty else {
+        return nil
+    }
+    return String(parts[3]).removingPercentEncoding
+}
+
 private func send(
     _ client: any Client,
     _ method: HTTPRequest.Method,
@@ -21,6 +31,9 @@ private func send(
     var headers = HTTPFields()
     headers[.contentType] = "application/json"
     if let token { headers[.authorization] = "Bearer \(token)" }
+    if let serverId = scopedServerId(in: path) {
+        headers[HTTPField.Name("X-Server-Id")!] = serverId
+    }
     return try await client.send(method, headers: headers, to: URI(string: path)) { request in
         request.body = .init(string: body)
     }
@@ -33,9 +46,13 @@ private func isoTime(_ value: String) -> Date {
 }
 
 @Test func ownerSearchSwitchBackfillsPublicIdsAndRejectsAdmins() async throws {
+    let serverId = "33333333-3333-4333-8333-000001300001"
     let directory = PublicServerDirectory()
+    let accounts = publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
+    accounts.oauth.addOwnedServer(id: serverId, slug: "seo-settings", name: "Settings", ownerId: "owner")
+    accounts.oauth.addMember(serverId: serverId, userId: "admin", role: "admin")
     _ = directory.addServer(
-        id: "settings",
+        id: serverId,
         name: "Settings",
         slug: "seo-settings",
         ownerId: "owner",
@@ -54,40 +71,47 @@ private func isoTime(_ value: String) -> Date {
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
             publicServerDirectory: directory,
-            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
+            emailAccounts: accounts
         ))
         try await app.testing { client in
-            let goPublic = try await send(client, .patch, "/api/servers/settings/public-visibility", token: "owner-token", body: "{\"publiclyVisible\":true}")
+            let goPublic = try await send(client, .patch, "/api/servers/\(serverId)/public-visibility", token: "owner-token", body: "{\"publiclyVisible\":true}")
             #expect(goPublic.status == .ok)
             let published = try JSONSerialization.jsonObject(with: Data(bodyText(goPublic).utf8)) as? [String: Any]
             #expect((published?["publicSearchEnabled"] as? NSNumber)?.boolValue == true)
-            let ids = directory.publicIds(serverId: "settings")
+            let ids = directory.publicIds(serverId: serverId)
             #expect(ids.count == 2)
             #expect(ids.allSatisfy { $0.wholeMatch(of: /^[0-9a-f]{32}$/) != nil })
 
-            let adminWrite = try await send(client, .patch, "/api/servers/settings/public-search", token: "admin-token", body: "{\"publicSearchEnabled\":false}")
+            let adminWrite = try await send(client, .patch, "/api/servers/\(serverId)/public-search", token: "admin-token", body: "{\"publicSearchEnabled\":false}")
             #expect(adminWrite.status == .forbidden)
 
-            let badBody = try await send(client, .patch, "/api/servers/settings/public-search", token: "owner-token", body: "{\"publicSearchEnabled\":\"no\"}")
+            let badBody = try await send(client, .patch, "/api/servers/\(serverId)/public-search", token: "owner-token", body: "{\"publicSearchEnabled\":\"no\"}")
             #expect(badBody.status == .badRequest)
 
-            let ownerWrite = try await send(client, .patch, "/api/servers/settings/public-search", token: "owner-token", body: "{\"publicSearchEnabled\":false}")
+            let ownerWrite = try await send(client, .patch, "/api/servers/\(serverId)/public-search", token: "owner-token", body: "{\"publicSearchEnabled\":false}")
             #expect(ownerWrite.status == .ok)
-            let read = try await client.get("/api/servers/settings/public-visibility", headers: [.authorization: "Bearer owner-token"])
+            let read = try await client.get("/api/servers/\(serverId)/public-visibility", headers: [
+                .authorization: "Bearer owner-token",
+                HTTPField.Name("X-Server-Id")!: serverId,
+            ])
             let visibility = try JSONSerialization.jsonObject(with: Data(bodyText(read).utf8)) as? [String: Any]
             #expect((visibility?["publicSearchEnabled"] as? NSNumber)?.boolValue == false)
 
             directory.rolloutEnabled = false
-            let gated = try await send(client, .patch, "/api/servers/settings/public-search", token: "owner-token", body: "{\"publicSearchEnabled\":true}")
+            let gated = try await send(client, .patch, "/api/servers/\(serverId)/public-search", token: "owner-token", body: "{\"publicSearchEnabled\":true}")
             #expect(gated.status == .notFound)
         }
     }
 }
 
 @Test func onlyTheOwnerCanFlipPublicVisibility() async throws {
+    let serverId = "33333333-3333-4333-8333-000001300002"
     let directory = PublicServerDirectory()
+    let accounts = publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
+    accounts.oauth.addOwnedServer(id: serverId, slug: "public-toggle-70", name: "Toggle", ownerId: "owner")
+    accounts.oauth.addMember(serverId: serverId, userId: "admin", role: "admin")
     _ = directory.addServer(
-        id: "toggle",
+        id: serverId,
         name: "Toggle",
         slug: "public-toggle-70",
         ownerId: "owner",
@@ -104,24 +128,26 @@ private func isoTime(_ value: String) -> Date {
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
             publicServerDirectory: directory,
-            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
+            emailAccounts: accounts
         ))
         try await app.testing { client in
-            let adminRead = try await client.get("/api/servers/toggle/public-visibility", headers: [
+            let adminRead = try await client.get("/api/servers/\(serverId)/public-visibility", headers: [
                 .authorization: "Bearer admin-token",
+                HTTPField.Name("X-Server-Id")!: serverId,
             ])
             #expect(adminRead.status == .forbidden)
             #expect(bodyText(adminRead) == "{\"error\":\"Only the server owner can manage public visibility\"}")
 
             let adminWrite = try await send(
-                client, .patch, "/api/servers/toggle/public-visibility",
+                client, .patch, "/api/servers/\(serverId)/public-visibility",
                 token: "admin-token", body: "{\"publiclyVisible\":true}"
             )
             #expect(adminWrite.status == .forbidden)
             #expect(bodyText(adminWrite) == "{\"error\":\"Only the server owner can manage public visibility\"}")
 
-            let ownerRead = try await client.get("/api/servers/toggle/public-visibility", headers: [
+            let ownerRead = try await client.get("/api/servers/\(serverId)/public-visibility", headers: [
                 .authorization: "Bearer owner-token",
+                HTTPField.Name("X-Server-Id")!: serverId,
             ])
             #expect(ownerRead.status == .ok)
             let state = try JSONSerialization.jsonObject(with: Data(bodyText(ownerRead).utf8)) as? [String: Any]
@@ -130,7 +156,7 @@ private func isoTime(_ value: String) -> Date {
             #expect(exposed?.compactMap { $0["id"] as? String } == ["open"])
 
             let ownerWrite = try await send(
-                client, .patch, "/api/servers/toggle/public-visibility",
+                client, .patch, "/api/servers/\(serverId)/public-visibility",
                 token: "owner-token", body: "{\"publiclyVisible\":true}"
             )
             #expect(ownerWrite.status == .ok)
@@ -143,9 +169,13 @@ private func isoTime(_ value: String) -> Date {
 }
 
 @Test func publicGuestAdmissionIsOwnerOnlyAndClearsWhenPublicTurnsOff() async throws {
+    let serverId = "33333333-3333-4333-8333-000001300003"
     let directory = PublicServerDirectory()
+    let accounts = publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
+    accounts.oauth.addOwnedServer(id: serverId, slug: "public-join-controls-74", name: "Join Controls", ownerId: "owner")
+    accounts.oauth.addMember(serverId: serverId, userId: "admin", role: "admin")
     _ = directory.addServer(
-        id: "join",
+        id: serverId,
         name: "Join Controls",
         slug: "public-join-controls-74",
         ownerId: "owner",
@@ -153,38 +183,38 @@ private func isoTime(_ value: String) -> Date {
         adminId: "admin",
         adminToken: "admin-token"
     )
-    directory.setTranslationEnabled(serverId: "join", enabled: true)
+    directory.setTranslationEnabled(serverId: serverId, enabled: true)
     try await withApp { app in
         configure(app, services: FallbackServices(
             nodeEnv: "test",
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
             publicServerDirectory: directory,
-            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), ("admin", "admin-token")])
+            emailAccounts: accounts
         ))
         try await app.testing { client in
             let beforePublic = try await send(
-                client, .patch, "/api/servers/join/public-guest-join",
+                client, .patch, "/api/servers/\(serverId)/public-guest-join",
                 token: "owner-token", body: "{\"publicGuestJoinEnabled\":true}"
             )
             #expect(beforePublic.status == .conflict)
             #expect(bodyText(beforePublic) == "{\"error\":\"Public access must be enabled before visitors can join as Guest\"}")
 
             let adminAttempt = try await send(
-                client, .patch, "/api/servers/join/public-guest-join",
+                client, .patch, "/api/servers/\(serverId)/public-guest-join",
                 token: "admin-token", body: "{\"publicGuestJoinEnabled\":true}"
             )
             #expect(adminAttempt.status == .forbidden)
             #expect(bodyText(adminAttempt) == "{\"error\":\"Only the server owner can manage public Guest admission\"}")
 
             let openedVisibility = try await send(
-                client, .patch, "/api/servers/join/public-visibility",
+                client, .patch, "/api/servers/\(serverId)/public-visibility",
                 token: "owner-token", body: "{\"publiclyVisible\":true}"
             )
             #expect(openedVisibility.status == .ok)
 
             let opened = try await send(
-                client, .patch, "/api/servers/join/public-guest-join",
+                client, .patch, "/api/servers/\(serverId)/public-guest-join",
                 token: "owner-token", body: "{\"publicGuestJoinEnabled\":true}"
             )
             #expect(opened.status == .ok)
@@ -198,7 +228,7 @@ private func isoTime(_ value: String) -> Date {
             #expect(card?["translationAvailable"] is NSNumber || card?["translationAvailable"] is Bool)
 
             let closed = try await send(
-                client, .patch, "/api/servers/join/public-visibility",
+                client, .patch, "/api/servers/\(serverId)/public-visibility",
                 token: "owner-token", body: "{\"publiclyVisible\":false}"
             )
             #expect(closed.status == .ok)
@@ -210,11 +240,17 @@ private func isoTime(_ value: String) -> Date {
 }
 
 @Test func aGuestEmailInviteStaysIndependentOfPublicAdmission() async throws {
+    let serverId = "33333333-3333-4333-8333-000001300004"
     let directory = PublicServerDirectory()
     let inviteeId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
     let rawToken = "public-task-74-source-specific-guest-invite"
+    let accounts = publicServerAuthAccounts(
+        [("owner", "owner-token"), (inviteeId, "invitee-token")],
+        emails: [inviteeId: "source-invite-guest@slock.test"]
+    )
+    accounts.oauth.addOwnedServer(id: serverId, slug: "invite-source-74", name: "Invite Source", ownerId: "owner")
     _ = directory.addServer(
-        id: "invite",
+        id: serverId,
         name: "Invite Source",
         slug: "invite-source-74",
         ownerId: "owner",
@@ -222,7 +258,7 @@ private func isoTime(_ value: String) -> Date {
     )
     directory.addAccount(id: inviteeId, email: "source-invite-guest@slock.test", token: "invitee-token")
     directory.addEmailInvite(
-        serverId: "invite",
+        serverId: serverId,
         email: "source-invite-guest@slock.test",
         role: "guest",
         rawToken: rawToken,
@@ -234,11 +270,12 @@ private func isoTime(_ value: String) -> Date {
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
             publicServerDirectory: directory,
-            emailAccounts: publicServerAuthAccounts([("owner", "owner-token"), (inviteeId, "invitee-token")], emails: [inviteeId: "source-invite-guest@slock.test"])
+            emailAccounts: accounts
         ))
         try await app.testing { client in
-            let before = try await client.get("/api/servers/invite/public-visibility", headers: [
+            let before = try await client.get("/api/servers/\(serverId)/public-visibility", headers: [
                 .authorization: "Bearer owner-token",
+                HTTPField.Name("X-Server-Id")!: serverId,
             ])
             #expect(before.status == .ok)
             let state = try JSONSerialization.jsonObject(with: Data(bodyText(before).utf8)) as? [String: Any]
@@ -252,19 +289,22 @@ private func isoTime(_ value: String) -> Date {
             )
             #expect(accepted.status == .ok)
             let body = try JSONSerialization.jsonObject(with: Data(bodyText(accepted).utf8)) as? [String: Any]
-            #expect(body?["serverId"] as? String == "invite")
+            #expect(body?["serverId"] as? String == serverId)
             #expect(body?["serverName"] as? String == "Invite Source")
-            #expect(directory.memberRole(serverId: "invite", userId: inviteeId) == "guest")
+            #expect(directory.memberRole(serverId: serverId, userId: inviteeId) == "guest")
             #expect((state?["publiclyVisible"] as? Bool) != true)
         }
     }
 }
 
 @Test func rolloutFlagDefaultsClosedAtOwnerAndAnonymousBoundaries() async throws {
+    let serverId = "33333333-3333-4333-8333-000001300005"
     let directory = PublicServerDirectory(rolloutEnabled: false)
     let channelId = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    let accounts = publicServerAuthAccounts([("owner", "owner-token")])
+    accounts.oauth.addOwnedServer(id: serverId, slug: "public-gated-70", name: "Gated", ownerId: "owner")
     _ = directory.addServer(
-        id: "gated",
+        id: serverId,
         name: "Gated",
         slug: "public-gated-70",
         ownerId: "owner",
@@ -280,16 +320,17 @@ private func isoTime(_ value: String) -> Date {
             tracker: DbLivenessTracker(ping: {}),
             pingDatabase: {},
             publicServerDirectory: directory,
-            emailAccounts: publicServerAuthAccounts([("owner", "owner-token")])
+            emailAccounts: accounts
         ))
         try await app.testing { client in
-            let ownerRead = try await client.get("/api/servers/gated/public-visibility", headers: [
+            let ownerRead = try await client.get("/api/servers/\(serverId)/public-visibility", headers: [
                 .authorization: "Bearer owner-token",
+                HTTPField.Name("X-Server-Id")!: serverId,
             ])
             #expect(ownerRead.status == .notFound)
 
             let ownerWrite = try await send(
-                client, .patch, "/api/servers/gated/public-visibility",
+                client, .patch, "/api/servers/\(serverId)/public-visibility",
                 token: "owner-token", body: "{\"publiclyVisible\":false}"
             )
             #expect(ownerWrite.status == .notFound)
@@ -302,8 +343,9 @@ private func isoTime(_ value: String) -> Date {
             #expect(bodyText(publicList) == bodyText(missing))
 
             directory.rolloutEnabled = true
-            let after = try await client.get("/api/servers/gated/public-visibility", headers: [
+            let after = try await client.get("/api/servers/\(serverId)/public-visibility", headers: [
                 .authorization: "Bearer owner-token",
+                HTTPField.Name("X-Server-Id")!: serverId,
             ])
             #expect(after.status == .ok)
             let state = try JSONSerialization.jsonObject(with: Data(bodyText(after).utf8)) as? [String: Any]

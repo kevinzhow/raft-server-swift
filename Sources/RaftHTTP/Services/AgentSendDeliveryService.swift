@@ -29,20 +29,49 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
     case invalidThreadUnfollow
     case targetMustBeThread
     case receiveAckEmpty
+    // The legacy machine-on-behalf send surface.
+    case machineAuthenticationRequired
+    case invalidMachineAPIKey
+    case agentNotAssignedToMachine
+    case targetRequired
+    case legacyBodyInvalid([AgentSendRequest.Issue])
+    case missingAgentScope(scope: String)
+    case channelTargetNotFound(target: String)
+    case threadTargetNotFound(target: String)
+    case forbiddenChannelTarget
+    case forbiddenThreadTarget
+    case peerNotFound(peer: String)
+    case selfDM
+    // `dmTargetResolutionError.ts` refusals; the legacy machine send answers
+    // the exact `{error, code, suggestedNextAction}` bodies.
+    case dmTargetAmbiguous(name: String)
+    case dmTargetInvalidPeerKind(rawPeer: String, suffix: String?)
+    case dmTargetNotSendable
+    case migrationReceiptReadOnly(target: String)
 
     public var status: UInt {
         switch self {
-        case .missingAuthorization, .invalidToken:
+        case .missingAuthorization, .invalidToken, .machineAuthenticationRequired,
+             .invalidMachineAPIKey:
             401
-        case .agentNotParentMember, .agentNotChannelMember, .capabilityNotAuthorized:
+        case .dmTargetNotSendable:
             403
-        case .agentNotFound, .threadNotFound, .channelNotFound:
+        case .agentNotParentMember, .agentNotChannelMember, .capabilityNotAuthorized,
+             .agentNotAssignedToMachine, .missingAgentScope, .forbiddenChannelTarget,
+             .forbiddenThreadTarget:
+            403
+        case .agentNotFound, .threadNotFound, .channelNotFound, .channelTargetNotFound,
+             .threadTargetNotFound, .peerNotFound:
             404
+        case .dmTargetAmbiguous, .migrationReceiptReadOnly:
+            409
+        case .dmTargetInvalidPeerKind:
+            400
         case .channelArchived:
             409
         case .invalidTarget, .activityInvalid, .transcriptPathForbidden, .statusInvalid,
              .detailInvalid, .detailTooLong, .invalidThreadUnfollow, .targetMustBeThread,
-             .receiveAckEmpty:
+             .receiveAckEmpty, .targetRequired, .legacyBodyInvalid, .selfDM:
             400
         }
     }
@@ -85,6 +114,38 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
             "Target must be a thread"
         case .receiveAckEmpty:
             "seqs or messageIds must be a non-empty array"
+        case .machineAuthenticationRequired:
+            "Missing machine API key"
+        case .invalidMachineAPIKey:
+            "Invalid machine API key"
+        case .agentNotAssignedToMachine:
+            "This agent is not assigned to your machine"
+        case .targetRequired:
+            "target is required"
+        case .legacyBodyInvalid:
+            "Invalid legacy agent send body"
+        case .missingAgentScope:
+            "missing required scope"
+        case .channelTargetNotFound(let target):
+            "Channel not found: \(target)"
+        case .threadTargetNotFound(let target):
+            "Thread target not found or not replyable: \(target). Use #channel:<id> or dm:@peer:<id> where <id> is the parent message's short id (the msg= field, as in replyTarget); when a message id is given the parent message must exist and belong to that parent target."
+        case .forbiddenChannelTarget:
+            "Agent cannot post in this channel - not a member. If you were @mentioned and need to respond, DM the person who mentioned you and let them know you're not in the channel."
+        case .forbiddenThreadTarget:
+            "Agent cannot post in this thread - not a member of the parent channel. Following a thread grants listen access only; joining the parent channel is required to send. If you were @mentioned and need to respond, DM the person who mentioned you and let them know you're not in the channel."
+        case .peerNotFound(let peer):
+            "User or agent not found: @\(peer)"
+        case .selfDM:
+            "Cannot create a DM with yourself"
+        case .dmTargetAmbiguous(let name):
+            DMTargetResolutionWire.ambiguous(name).message
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
+        case .dmTargetNotSendable:
+            DMTargetResolutionWire.privateReminderSurface().message
+        case .migrationReceiptReadOnly(let target):
+            DMTargetResolutionWire.migrationReceiptReadOnly(target: target).message
         }
     }
 
@@ -106,13 +167,53 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
             "detail_invalid"
         case .detailTooLong:
             "detail_too_long"
+        case .legacyBodyInvalid:
+            "legacy_agent_send_contract_invalid"
         case .agentNotFound, .invalidTarget, .agentNotParentMember, .threadNotFound,
              .channelNotFound, .agentNotChannelMember, .invalidThreadUnfollow,
-             .targetMustBeThread, .receiveAckEmpty:
+             .targetMustBeThread, .receiveAckEmpty, .machineAuthenticationRequired,
+             .invalidMachineAPIKey, .agentNotAssignedToMachine, .targetRequired,
+             .missingAgentScope, .channelTargetNotFound, .threadTargetNotFound,
+             .forbiddenChannelTarget, .forbiddenThreadTarget, .peerNotFound, .selfDM,
+             .dmTargetAmbiguous, .dmTargetInvalidPeerKind, .dmTargetNotSendable,
+             .migrationReceiptReadOnly:
             nil
         }
     }
 
+    /// The two legacy error shapes whose bodies are not the plain
+    /// `{"error": …[, "code": …]}` object.
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .legacyBodyInvalid(let issues):
+            var body = OrderedJSONObject()
+            body.append("error", errorMessage)
+            body.append("code", "legacy_agent_send_contract_invalid")
+            body.append("issues", .array(issues.map { issue in
+                .object([
+                    OrderedJSONField("path", issue.path),
+                    OrderedJSONField("message", issue.message),
+                ])
+            }))
+            return body.json
+        case .missingAgentScope(let scope):
+            var body = OrderedJSONObject()
+            body.append("error", errorMessage)
+            body.append("requiredScope", scope)
+            body.append("reason", "missing_scope")
+            return body.json
+        case .dmTargetAmbiguous(let name):
+            return DMTargetResolutionWire.ambiguous(name).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
+        case .dmTargetNotSendable:
+            return DMTargetResolutionWire.privateReminderSurface().body
+        case .migrationReceiptReadOnly(let target):
+            return DMTargetResolutionWire.migrationReceiptReadOnly(target: target).body
+        default:
+            return nil
+        }
+    }
 }
 
 /// Agent send, delivery ack, activity ingest, thread-follow and integration
@@ -128,8 +229,7 @@ public enum AgentSendDeliveryError: DomainError, Equatable {
 ///
 /// Three bridges stay injected because those domains are not migrated yet:
 /// `searchVisible` is the message-visibility policy in `SearchMentionsService`,
-/// `appendHumanMessage` is the one append path that must stay serialized with
-/// every other message writer under the directory lock, and
+/// `commitSend` is the one attachment-validating agent append path, and
 /// `integrationServices` is a typed projection of the OAuth ledger's client
 /// rows, so this file never names an untyped JSON dictionary.
 public struct AgentSendDeliveryService: Sendable {
@@ -140,9 +240,17 @@ public struct AgentSendDeliveryService: Sendable {
     private let threadFollows: ThreadFollowStore
     private let managedMCP: ManagedMCPAndCardsStore
     private let oauth: OAuthLedger
+    private let prepare: ActionCardPrepareService
+    private let freshness: AgentSendFreshnessGate
+    private let assistantOwner: @Sendable (_ agentId: String, _ serverId: String) -> String?
     private let searchVisible: @Sendable (_ messageChannelId: String, _ serverId: String?, _ viewer: SearchViewer) -> Bool
-    private let appendHumanMessage: @Sendable (StoredHumanMessage) -> Int
+    private let commitSend: @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome
     private let integrationServices: @Sendable (_ serverId: String) -> [AgentIntegrationServiceSnapshot]
+    /// The persisted-chat frontend publisher (`emitPersistedMessageToFrontend`):
+    /// joins the DM/thread audience, then emits the canonical `message:new`,
+    /// `dm:new` or `thread:updated`. The default keeps focused service tests
+    /// silent; the HTTP composition installs the real socket relay.
+    private let publishCommittedMessage: @Sendable (StoredHumanMessage) -> Void
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
 
@@ -156,8 +264,10 @@ public struct AgentSendDeliveryService: Sendable {
         threadFollows: ThreadFollowStore,
         managedMCP: ManagedMCPAndCardsStore,
         oauth: OAuthLedger,
+        prepare: ActionCardPrepareService,
         search: SearchMentionsService,
         ledger: MessageLedgerPort,
+        publishCommittedMessage: @escaping @Sendable (StoredHumanMessage) -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
@@ -169,13 +279,29 @@ public struct AgentSendDeliveryService: Sendable {
             threadFollows: threadFollows,
             managedMCP: managedMCP,
             oauth: oauth,
+            prepare: prepare,
+            assistantOwner: { agentId, _ in
+                // POST authority uses the RAW retained assistant binding: the
+                // pinned `assistantMayPostTo` reads `assistant_owner_user_id`
+                // regardless of the `identity_borrowing` display flag or the
+                // owner's current server membership. `liveOwner` stays the
+                // display/context query elsewhere.
+                AssistantOwnershipQuery(agents: agents, oauth: oauth).rawOwner(agentId: agentId)
+            },
             searchVisible: search.messageVisible,
-            appendHumanMessage: { message in
-                messages.appendMessage(message, ledger: ledger)
+            commitSend: { message, attachmentIds, channelId, uploaderId in
+                messages.commitAgentSend(
+                    message,
+                    attachmentIds: attachmentIds,
+                    channelId: channelId,
+                    uploaderId: uploaderId,
+                    ledger: ledger
+                )
             },
             integrationServices: { serverId in
                 oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
             },
+            publishCommittedMessage: publishCommittedMessage,
             now: now,
             makeMessageId: makeMessageId
         )
@@ -189,9 +315,12 @@ public struct AgentSendDeliveryService: Sendable {
         threadFollows: ThreadFollowStore,
         managedMCP: ManagedMCPAndCardsStore,
         oauth: OAuthLedger,
+        prepare: ActionCardPrepareService,
+        assistantOwner: @escaping @Sendable (String, String) -> String?,
         searchVisible: @escaping @Sendable (String, String?, SearchViewer) -> Bool,
-        appendHumanMessage: @escaping @Sendable (StoredHumanMessage) -> Int,
+        commitSend: @escaping @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome,
         integrationServices: @escaping @Sendable (String) -> [AgentIntegrationServiceSnapshot],
+        publishCommittedMessage: @escaping @Sendable (StoredHumanMessage) -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
@@ -202,82 +331,489 @@ public struct AgentSendDeliveryService: Sendable {
         self.threadFollows = threadFollows
         self.managedMCP = managedMCP
         self.oauth = oauth
+        self.prepare = prepare
+        self.freshness = AgentSendFreshnessGate(
+            messages: messages,
+            channels: channels,
+            prepare: prepare,
+            oauth: oauth
+        )
+        self.assistantOwner = assistantOwner
         self.searchVisible = searchVisible
-        self.appendHumanMessage = appendHumanMessage
+        self.commitSend = commitSend
         self.integrationServices = integrationServices
+        self.publishCommittedMessage = publishCommittedMessage
         self.now = now
         self.makeMessageId = makeMessageId
     }
 
     // MARK: - POST /internal/agent/:agentId/send
 
-    /// Posts an agent message to a `#channel` or `#channel:shortId` thread.
+    /// Posts an agent message on behalf of the machine that owns the agent.
     ///
-    /// The upstream order is machine credential (401), agent scope (404), body
-    /// shape (400), parent membership (403), thread lookup (404), channel
-    /// membership (403) and archived (409) before the append.
+    /// The pinned order is machine authentication (401), the legacy body
+    /// schema (400 with `issues`), agent existence/server (404), machine
+    /// ownership (403), the `message:send` grant (403), the body semantics
+    /// (`--continue`, content, `--send-draft --anyway`, target), target
+    /// resolution, the freshness mode refusal (403) and only then the
+    /// freshness gate plus the attachment-validating append. Every branch
+    /// returns the pin's published text; no refusal writes a message row.
     public func agentSend(
         authorization: String?,
         agentId: String,
         body: AgentSendRequest?
-    ) throws -> AgentSendResponse {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            throw AgentSendDeliveryError.missingAuthorization
+    ) throws -> any JSONBodyConvertible {
+        // Upstream mounts `validateLegacyAgentSendBody` before
+        // `requireAgentScope`, so the shared gate is entered in two phases:
+        // machine authentication first, body validation second, then the
+        // agent/server/ownership/grant half.
+        let principal = try legacyMachineGate.machinePrincipal(authorization: authorization)
+        let request = body ?? AgentSendRequest()
+        guard request.issues.isEmpty else {
+            throw AgentSendDeliveryError.legacyBodyInvalid(request.issues)
         }
-        let apiKey = String(authorization.dropFirst("Bearer ".count))
-        let credential = machines.machineCredential(apiKey: apiKey, agentId: nil)
-        guard let serverId = credential.machine?.serverId ?? credential.legacy?.serverId else {
-            throw AgentSendDeliveryError.invalidToken
-        }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
-            throw AgentSendDeliveryError.agentNotFound
-        }
-        guard let body,
-              let target = body.target,
-              let content = body.content,
-              target.hasPrefix("#")
-        else {
-            throw AgentSendDeliveryError.invalidTarget
-        }
-        let rawName = String(target.dropFirst())
-        let segments = rawName.split(separator: ":", maxSplits: 1).map(String.init)
-        let name = segments.first ?? rawName
-        let shortId = segments.count > 1 ? segments[1] : nil
+        let actor = try legacyMachineGate.actor(
+            principal: principal,
+            agentId: agentId,
+            requiredScope: "message:send"
+        )
+        let agent = actor.agent
+        let serverId = actor.serverId
 
-        let candidate = channels.postableChannel(serverId: agent.serverId, name: name)
-        var resolved: (id: String, channel: PostableChannel)? = candidate
-        if let shortId, let parent = candidate {
-            guard oauth.channelAgentIds(channelId: parent.id).contains(agent.id) else {
-                throw AgentSendDeliveryError.agentNotParentMember
-            }
-            resolved = channels.threadChannel(
-                serverId: agent.serverId,
-                parentChannelId: parent.id,
-                shortId: shortId
-            )
-            if resolved == nil {
-                throw AgentSendDeliveryError.threadNotFound
-            }
+        if request.continueFlag {
+            throw AgentSendError.continueUnsupported
         }
-        guard let (channelId, channel) = resolved else {
-            throw AgentSendDeliveryError.channelNotFound
+        guard let content = request.content, !content.isEmpty else {
+            throw AgentSendError.contentRequired
         }
-        if shortId == nil, !oauth.channelAgentIds(channelId: channelId).contains(agent.id) {
-            throw AgentSendDeliveryError.agentNotChannelMember
+        let isSendDraft = request.sendDraft
+        let isContinueAnyway = request.continueAnyway
+        if isContinueAnyway && !isSendDraft {
+            throw AgentSendError.continueAnywayRequiresDraft
         }
-        if channel.archived {
+        guard let target = request.effectiveTarget else {
+            throw AgentSendDeliveryError.targetRequired
+        }
+
+        let mode = prepare.sendFreshnessMode()
+        let freshnessEnabled = prepare.sendFreshnessInterfaceEnabled(
+            serverId: serverId,
+            agentId: agent.id
+        )
+        let requestedFreshness = isSendDraft || isContinueAnyway
+            || request.seenUpToSeq != nil
+            || request.draftReholdCount != nil
+            || request.draftReplacedExisting
+        if !freshnessEnabled && requestedFreshness {
+            throw AgentSendError.freshnessInterfaceDisabled
+        }
+        let shouldRunFreshness = freshnessEnabled && (requestedFreshness || mode == "force")
+
+        let resolved = try resolveLegacyTarget(agent: agent, target: target)
+        if resolved.archived {
             throw AgentSendDeliveryError.channelArchived
         }
-        let messageId = makeMessageId()
-        _ = appendHumanMessage(StoredHumanMessage(
-            id: messageId,
-            channelId: channelId,
-            senderId: agent.id,
-            content: content,
-            randomId: nil,
-            senderType: "agent"
-        ))
-        return AgentSendResponse(id: messageId, channelId: channelId)
+
+        let seenUpToSeq = request.seenUpToSeq.map { max(0, Int($0.rounded(.down))) }
+        let draftReholdCount = request.draftReholdCount.map { max(0, Int($0.rounded(.down))) } ?? 0
+        let idempotencyKey = (request.idempotencyKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let receiptKey = idempotencyKey.isEmpty
+            ? nil
+            : "\(serverId)\n\(agent.id)\n\(idempotencyKey)"
+
+        func replay() throws -> AgentSendResponse? {
+            guard let receiptKey, let receipt = managedMCP.sendReceipt(key: receiptKey) else { return nil }
+            if receipt.target != target { throw AgentSendError.idempotencyKeyReused(mismatch: "target") }
+            if receipt.content != content { throw AgentSendError.idempotencyKeyReused(mismatch: "content") }
+            if receipt.attachmentIds != request.attachmentIds {
+                throw AgentSendError.idempotencyKeyReused(mismatch: "attachments")
+            }
+            return AgentSendResponse(messageId: receipt.messageId, messageSeq: receipt.messageSeq)
+        }
+
+        func commit() throws -> AgentSendResponse {
+            let messageId = makeMessageId()
+            var committed = StoredHumanMessage(
+                id: messageId,
+                channelId: resolved.channelId,
+                senderId: agent.id,
+                content: content,
+                randomId: nil,
+                attachmentIds: request.attachmentIds,
+                messageType: "chat",
+                senderType: "agent"
+            )
+            let seq: Int
+            switch try commitSend(
+                committed,
+                request.attachmentIds,
+                resolved.channelId,
+                agent.id
+            ) {
+            case .duplicate(let id):
+                throw AgentSendError.attachmentDuplicate(id)
+            case .unavailable(let id):
+                throw AgentSendError.attachmentNotFound(id)
+            case .alreadyLinked(let id):
+                throw AgentSendError.attachmentAlreadyLinked(id)
+            case .committed(let committedSeq):
+                seq = committedSeq
+            }
+            if let receiptKey {
+                managedMCP.setSendReceipt(
+                    AgentApiSendReceipt(
+                        messageId: messageId,
+                        messageSeq: seq,
+                        target: target,
+                        content: content,
+                        attachmentIds: request.attachmentIds
+                    ),
+                    key: receiptKey
+                )
+            }
+            committed.seq = seq
+            publishCommittedMessage(committed)
+            return AgentSendResponse(messageId: messageId, messageSeq: seq)
+        }
+
+        func recordContinueEvent(_ sent: AgentSendResponse, newMessageCount: Int) {
+            let result = isContinueAnyway ? "committed_anyway" : "committed"
+            messages.recordAttestedSendEvent(AttestedSendEventRecord(
+                eventType: "continue",
+                agentId: agent.id,
+                messageId: sent.messageId,
+                metadataJSON: AttestedSendEventMetadata.continueEvent(
+                    continueAnyway: isContinueAnyway
+                ).jsonBody.render(),
+                newMessageCount: newMessageCount,
+                result: result
+            ))
+            let title = isContinueAnyway ? "Send draft sent anyway" : "Send draft sent"
+            messages.recordAgentSendActivity(
+                agentId: agent.id,
+                title: title,
+                text: [
+                    "target: \(target)",
+                    "freshness updates: \(AgentSendFreshnessGate.messageCountText(newMessageCount))",
+                    isContinueAnyway
+                        ? "decision: sent anyway after reviewing freshness context"
+                        : "decision: saved draft freshness check passed when sent",
+                ].joined(separator: "\n"),
+                producerFactId: nil
+            )
+        }
+
+        if let replayed = try replay() { return replayed }
+
+        guard shouldRunFreshness else {
+            return try commit()
+        }
+        // The upstream target freshness gate: the gate read, its retained
+        // rows and the append it protects are one critical section, so two
+        // concurrent first replies cannot both pass before either lands.
+        return try managedMCP.withSendCommit { () throws -> any JSONBodyConvertible in
+            if let replayed = try replay() { return replayed }
+            let holdTitle = draftReholdCount > 0 || isSendDraft
+                ? "Send draft held"
+                : "Send held by freshness check"
+            let outcome = freshness.evaluate(AgentSendFreshnessRequest(
+                agentId: agent.id,
+                serverId: serverId,
+                channelId: resolved.channelId,
+                targetRef: target,
+                policy: .legacy,
+                seenUpToSeq: seenUpToSeq,
+                draftReholdCount: draftReholdCount,
+                draftReplacedExisting: request.draftReplacedExisting,
+                isSendDraft: isSendDraft,
+                continueAnyway: isContinueAnyway,
+                holdActivityTitle: holdTitle
+            ))
+            let proceed: AgentSendProceedFacts
+            switch outcome {
+            case .proceed(let facts):
+                proceed = facts
+            case .held(let facts):
+                return LegacyAgentSendHeldResponse(
+                    producerFactId: facts.producerFactId,
+                    heldMessages: facts.heldMessages,
+                    newMessageCount: facts.holdCount,
+                    shownMessageCount: facts.shownCount,
+                    omittedMessageCount: facts.omittedCount,
+                    seenUpToSeq: facts.latestSeq,
+                    seenUpToMessageId: facts.latestMessageId,
+                    formalMentionCount: facts.formalMentionCount,
+                    continueAnywaySuggested: facts.continueAnywaySuggested
+                )
+            }
+            let sent = try commit()
+            if isSendDraft {
+                recordContinueEvent(sent, newMessageCount: proceed.newMessageCount)
+            }
+            return sent
+        }
+    }
+
+    // MARK: - Legacy target resolution
+
+    /// Upstream `resolveWritableAgentTarget` for the legacy route.
+    private func resolveLegacyTarget(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        target: String
+    ) throws -> (channelId: String, kind: String, archived: Bool) {
+        // `parseChannelRef` is the one suffix rule: only a full 8-hex suffix
+        // is a thread id. Any other `:...` stays in the base target, so a
+        // `dm:@peer:1` / `#room:1` can never create or join a phantom thread.
+        let parsedRef = AgentChannelRef.parse(target)
+        if target.hasPrefix("dm:@") || target.hasPrefix("DM:@") {
+            let peerPart = String(parsedRef.baseRef.dropFirst(4))
+            let suffix = parsedRef.threadShortId
+            let channelId = try resolveLegacyDM(
+                agent: agent,
+                rawPeer: peerPart,
+                suffix: suffix,
+                target: target
+            )
+            let channel = channels.postableChannel(id: channelId)
+            return (channelId, channel?.kind ?? "dm", channel?.archived ?? false)
+        }
+        if target.hasPrefix("#") {
+            let raw = String(parsedRef.baseRef.dropFirst())
+            let suffix = parsedRef.threadShortId
+            guard let parent = channels.postableChannel(serverId: agent.serverId, name: raw),
+                  parent.channel.kind == "channel"
+                    || parent.channel.kind == "private"
+                    || parent.channel.kind == "joint"
+            else {
+                throw AgentSendDeliveryError.channelTargetNotFound(target: target)
+            }
+            // A private/joint parent the agent cannot see is the neutral
+            // not-found cloak, exactly like `resolveChannelByName`; only a
+            // visible parent that refuses posting is the 403.
+            let member = channels.postableChannel(id: parent.id)?.memberIds.contains(agent.id) == true
+                || oauth.channelAgentIds(channelId: parent.id).contains(agent.id)
+            guard parent.channel.kind == "channel" || member else {
+                throw suffix == nil
+                    ? AgentSendDeliveryError.channelTargetNotFound(target: target)
+                    : AgentSendDeliveryError.threadTargetNotFound(target: target)
+            }
+            if let suffix {
+                guard agentCanPost(agentId: agent.id, serverId: agent.serverId, channelId: parent.id) else {
+                    throw AgentSendDeliveryError.forbiddenThreadTarget
+                }
+                let threadId = try resolveOrCreateLegacyThread(
+                    agent: agent,
+                    parentChannelId: parent.id,
+                    suffix: suffix,
+                    target: target
+                )
+                let thread = channels.postableChannel(id: threadId)
+                return (threadId, "thread", thread?.archived ?? false)
+            }
+            guard agentCanPost(agentId: agent.id, serverId: agent.serverId, channelId: parent.id) else {
+                throw AgentSendDeliveryError.forbiddenChannelTarget
+            }
+            return (parent.id, parent.channel.kind, parent.channel.archived)
+        }
+        // Upstream classifies a bare `@peer` as a legacy DM, but
+        // `resolveWritableAgentTarget` only resolves `dm:@peer` and `#channel`
+        // references, so this is the plain not-found reply.
+        throw AgentSendDeliveryError.channelTargetNotFound(target: target)
+    }
+
+    private func resolveLegacyDM(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        rawPeer: String,
+        suffix: String?,
+        target: String
+    ) throws -> String {
+        var peerName = rawPeer
+        var kind: String?
+        if let tilde = peerName.firstIndex(of: "~") {
+            kind = String(peerName[peerName.index(after: tilde)...])
+            peerName = String(peerName[..<tilde])
+        }
+        // Upstream strips only a trailing `~agent` / `~human` before comparing
+        // the reserved reminders handle, so `dm:@reminders~bot` stays the
+        // unknown-peer-kind refusal instead of becoming sendable-reminder.
+        let reminderRef = rawPeer.replacingOccurrences(
+            of: #"~(agent|human)$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        if reminderRef.lowercased() == "reminders" {
+            throw AgentSendDeliveryError.dmTargetNotSendable
+        }
+        // `resolveWritableAgentTarget` takes the thread-shaped arm for any
+        // last `:` plus any-length hex run. That arm never creates a DM: a
+        // fallback lookup only reuses an existing one, otherwise the route's
+        // plain not-found applies (`agentWritableTarget.ts:228-233, 245-249`).
+        let threadShaped = suffix == nil && AgentChannelRef.isThreadShapedPeer(rawPeer)
+        let resolution = prepare.resolveDMPeer(
+            serverId: agent.serverId,
+            agentId: agent.id,
+            name: peerName,
+            kind: kind
+        )
+        let peerId: String
+        let peerKind: String
+        let resolvedName: String
+        switch resolution {
+        case .resolved(let id, let peerType, let name):
+            peerId = id
+            peerKind = peerType
+            resolvedName = name
+        case .ambiguous(let name):
+            throw AgentSendDeliveryError.dmTargetAmbiguous(name: name)
+        case .invalidKind(let invalidKind, _):
+            throw AgentSendDeliveryError.dmTargetInvalidPeerKind(
+                rawPeer: rawPeer, suffix: invalidKind
+            )
+        case .notFound:
+            if threadShaped {
+                throw AgentSendDeliveryError.channelTargetNotFound(target: target)
+            }
+            // `resolveDMPeer` excludes the caller from the agent roster; the
+            // pinned resolver includes it so `dm:@<self>` is the self-DM 400.
+            // The name comparison is exact: a case variant is an unknown peer.
+            if kind != "human", agent.name == peerName {
+                throw AgentSendDeliveryError.selfDM
+            }
+            throw AgentSendDeliveryError.peerNotFound(peer: rawPeer)
+        }
+        if threadShaped {
+            guard let existing = prepare.dmChannelId(
+                serverId: agent.serverId,
+                agentId: agent.id,
+                peerId: peerId,
+                peerKind: peerKind,
+                peerName: resolvedName
+            ) else {
+                throw AgentSendDeliveryError.channelTargetNotFound(target: target)
+            }
+            guard agentCanPost(agentId: agent.id, serverId: agent.serverId, channelId: existing) else {
+                throw AgentSendDeliveryError.forbiddenChannelTarget
+            }
+            return existing
+        }
+        // A migration receipt is a one-way notice: the pinned writable-target
+        // resolver answers the read-only conflict before any sendability or
+        // self-DM classification.
+        if peerKind == "agent", peerId == agent.id, resolvedName.hasPrefix("migration-receipt-") {
+            throw AgentSendDeliveryError.migrationReceiptReadOnly(target: target)
+        }
+        if let owner = assistantOwner(agent.id, agent.serverId), peerId != owner {
+            // RFC 074 §2: an assistant may open a DM only with its owner.
+            throw AgentSendDeliveryError.forbiddenChannelTarget
+        }
+        if peerKind == "agent", peerId == agent.id {
+            throw AgentSendDeliveryError.selfDM
+        }
+        let dmChannelId: String
+        if let existing = prepare.dmChannelId(
+            serverId: agent.serverId,
+            agentId: agent.id,
+            peerId: peerId,
+            peerKind: peerKind,
+            peerName: resolvedName
+        ) {
+            guard agentCanPost(agentId: agent.id, serverId: agent.serverId, channelId: existing) else {
+                throw AgentSendDeliveryError.forbiddenChannelTarget
+            }
+            dmChannelId = existing
+        } else {
+            dmChannelId = oauth.createDirectChannel(
+                serverId: agent.serverId,
+                firstUserId: agent.id,
+                secondUserId: peerId,
+                firstKind: .agent,
+                secondKind: peerKind == "agent" ? .agent : .human
+            )
+            channels.addPostableChannel(
+                serverId: agent.serverId,
+                channelId: dmChannelId,
+                memberId: agent.id,
+                kind: "dm",
+                parentChannelId: nil,
+                parentMessageId: nil,
+                name: nil
+            )
+            channels.addPostableChannel(
+                serverId: agent.serverId,
+                channelId: dmChannelId,
+                memberId: peerId,
+                kind: "dm",
+                parentChannelId: nil,
+                parentMessageId: nil,
+                name: nil
+            )
+            if peerKind == "human" {
+                oauth.addChannelHuman(channelId: dmChannelId, userId: peerId)
+            }
+        }
+        guard let suffix else { return dmChannelId }
+        return try resolveOrCreateLegacyThread(
+            agent: agent,
+            parentChannelId: dmChannelId,
+            suffix: suffix,
+            target: target,
+            peerId: peerKind == "agent" ? peerId : nil
+        )
+    }
+
+    private func resolveOrCreateLegacyThread(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        parentChannelId: String,
+        suffix: String,
+        target: String,
+        peerId: String? = nil
+    ) throws -> String {
+        // `MESSAGE_SHORT_ID_RE` is case-insensitive; UUIDs are stored lowercase,
+        // so the 8-hex suffix is compared in its canonical lowercase form.
+        let shortId = suffix.lowercased()
+        if let existing = channels.historyThread(parentId: parentChannelId, idPrefix: shortId)
+            ?? channels.historyThread(parentId: parentChannelId, anchorPrefix: shortId) {
+            return existing
+        }
+        let anchorId = oauth.historyMessages(channelId: parentChannelId).first {
+            $0.id.lowercased().hasPrefix(shortId)
+        }?.id
+            ?? messages.humanMessageRows.first {
+                $0.channelId == parentChannelId && $0.id.lowercased().hasPrefix(shortId)
+            }?.id
+        guard let anchorId else {
+            throw AgentSendDeliveryError.threadTargetNotFound(target: target)
+        }
+        if let existing = channels.historyThread(parentId: parentChannelId, anchorMessageId: anchorId) {
+            return existing
+        }
+        let threadId = oauth.createThreadChannel(
+            parentChannelId: parentChannelId,
+            parentMessageId: anchorId
+        )
+        var members = [agent.id]
+        if let peerId, !members.contains(peerId) { members.append(peerId) }
+        for member in members {
+            channels.addPostableChannel(
+                serverId: agent.serverId,
+                channelId: threadId,
+                memberId: member,
+                kind: "thread",
+                parentChannelId: parentChannelId,
+                parentMessageId: anchorId,
+                name: "thread"
+            )
+        }
+        return threadId
+    }
+
+    /// Upstream `canAgentPostToChannel`: the assistant owner-DM confinement
+    /// comes first (raw retained binding), then the enabled `#all` surface is
+    /// open to every agent in the server; every other channel needs an actual
+    /// agent membership, including public ones.
+    private func agentCanPost(agentId: String, serverId: String, channelId: String) -> Bool {
+        AgentPostAuthority(oauth: oauth, channels: channels, agents: agents)
+            .canPost(serverId: serverId, agentId: agentId, channelId: channelId)
     }
 
     // MARK: - POST /internal/agent/:agentId/receive-ack
@@ -453,6 +989,11 @@ public struct AgentSendDeliveryService: Sendable {
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        // One directory snapshot per reply: the twin rule is a directory fact,
+        // so every row labels a peer the same way even before the second DM of
+        // a cross-kind twin pair exists.
+        let dmLabels = prepare.dmPeerResolver.directory(serverId: agent.serverId)
+        let reminderSurfaceId = prepare.reminderSurfaceId(agentId: agent.id)
         let rows = threadFollows.all()
             .filter { $0.serverId == agent.serverId && $0.agentId == agent.id && $0.unfollowedAt == nil }
             .filter {
@@ -464,11 +1005,33 @@ public struct AgentSendDeliveryService: Sendable {
                       let parentChannelId = thread.parentChannelId,
                       let parent = channels.postableChannel(id: parentChannelId)
                 else { return nil }
-                let short = String(follow.parentMessageId.prefix(8))
+                // `listAgentFollowedThreads` publishes the parent through
+                // `resolveAgentFacingChannelRef`: a DM parent reads as its
+                // canonical `dm:@peer[~kind]` ref, never as a `#dm` channel.
+                let parentChannelRef: String
+                switch parent.kind {
+                case "dm":
+                    guard let dmRef = prepare.dmPeerResolver.canonicalRef(
+                        serverId: agent.serverId,
+                        agentId: agent.id,
+                        channelId: parentChannelId,
+                        channel: parent,
+                        reminderSurfaceId: reminderSurfaceId,
+                        labels: dmLabels
+                    ) else { return nil }
+                    parentChannelRef = dmRef
+                case "thread":
+                    // `resolveAgentFacingChannelRef` refuses to manufacture a
+                    // target for a thread parent; skip the invalid row.
+                    return nil
+                default:
+                    parentChannelRef = "#\(parent.name)"
+                }
+                let short = String(follow.parentMessageId.prefix(8)).lowercased()
                 return AgentThreadListEntry(
-                    target: "#\(parent.name):\(short)",
+                    target: "\(parentChannelRef):\(short)",
                     threadChannelId: follow.threadChannelId,
-                    parentChannelRef: "#\(parent.name)",
+                    parentChannelRef: parentChannelRef,
                     parentMessageId: follow.parentMessageId,
                     parentMessageShortId: short,
                     followedAt: formatter.string(from: follow.followedAt),
@@ -568,6 +1131,17 @@ public struct AgentSendDeliveryService: Sendable {
     }
 
     // MARK: - Credentials
+
+    /// The shared legacy machine/agent-ownership gate. The send route uses the
+    /// two-phase form to keep body validation between machine auth and scope.
+    private var legacyMachineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(
+            agents: agents,
+            machines: machines,
+            oauth: oauth,
+            cards: managedMCP
+        )
+    }
 
     /// The shared `sk_agent_*` credential check: revoked or absent credentials
     /// are `nil`, a live one is marked used by the store in one critical section.

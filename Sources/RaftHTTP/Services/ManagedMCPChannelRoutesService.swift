@@ -183,4 +183,156 @@ public struct ManagedMCPChannelRoutesService: Sendable {
         channels.insertOwnedChannel(channelId: channelId, serverId: serverId, userId: userId, name: name)
         return .created(id: channelId, name: name)
     }
+
+    // MARK: - POST /api/channels/:id/joint-invites
+
+    /// Invites one target server's admins to an existing joint channel. The
+    /// route-level checks (slug/people, channel, joint type, visibility, admin)
+    /// run in upstream order; validation refusals keep their extra keys.
+    ///
+    /// Deviation: the pinned implementation also emails each invitee, supports
+    /// the multi-target `jointInvites` body, per-target entitlement/limit
+    /// admission and the `sameAdmin` auto-accept. This port records the pending
+    /// rows only; the target server projection is created here (the accept
+    /// route admits the target admin into it).
+    public func inviteServerToJointChannel(
+        authorization: String?,
+        serverId: String,
+        channelId: String,
+        body: JointChannelInviteRequest?
+    ) throws -> JointChannelInviteResponse {
+        guard let userId = sessionUserId(authorization) else { throw ManagedMCPOAuthError.unauthorized }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ManagedMCPOAuthError.notAMember
+        }
+        let slug = (body?.targetServerSlug ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !slug.isEmpty else { throw JointChannelRouteError.slugRequired }
+
+        var people: [String] = []
+        var seenPeople = Set<String>()
+        for raw in body?.invitedPeople ?? [] {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            let key: String
+            if value.hasPrefix("@"), !value.dropFirst().contains("@") {
+                key = String(value.dropFirst()).lowercased()
+            } else {
+                key = value.lowercased()
+            }
+            if seenPeople.insert(key).inserted { people.append(value) }
+        }
+        guard people.count <= 20 else { throw JointChannelRouteError.invitedPeopleLimit(20) }
+        guard !people.isEmpty else { throw JointChannelRouteError.invitedPeopleRequired }
+
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw JointChannelRouteError.channelNotFound
+        }
+        guard oauth.channelType(id: channelId) == "joint" else {
+            throw JointChannelRouteError.onlyJointInvite
+        }
+        guard channelActorCanSee(channelId, userId) else {
+            throw JointChannelRouteError.channelNotFound
+        }
+        guard role == "owner" || role == "admin" else {
+            throw JointChannelRouteError.adminInvite
+        }
+
+        guard let targetServerId = oauth.serverIdForSlug(slug),
+              let targetServer = oauth.serverDetailsValue(id: targetServerId)
+        else {
+            throw JointChannelRouteError.targetServerInvalid(message: "Target server not found", slug: slug)
+        }
+        guard targetServerId != serverId else {
+            throw JointChannelRouteError.targetServerInvalid(message: "Cannot invite the current server", slug: slug)
+        }
+
+        var invitees: [String] = []
+        var seenInvitees = Set<String>()
+        for (index, person) in people.enumerated() {
+            let account: Account?
+            if person.contains("@"), !person.hasPrefix("@") {
+                account = profiles.accounts.values.first {
+                    $0.email.caseInsensitiveCompare(person) == .orderedSame
+                }
+            } else {
+                let lookup = person.hasPrefix("@") ? String(person.dropFirst()) : person
+                account = profiles.firstAccount(caseInsensitiveName: lookup)
+            }
+            guard let account else {
+                throw JointChannelRouteError.inviteeNotFound(person, slug, index)
+            }
+            guard let targetRole = oauth.memberRole(serverId: targetServerId, userId: account.id),
+                  targetRole == "owner" || targetRole == "admin"
+            else {
+                throw JointChannelRouteError.inviteeNotAdmin(person, slug, index)
+            }
+            if seenInvitees.insert(account.id).inserted {
+                invitees.append(account.id)
+            }
+        }
+        guard !invitees.isEmpty else { throw JointChannelRouteError.invitedPeopleRequired }
+
+        let now = Date()
+        let ttl: TimeInterval = 14 * 24 * 60 * 60
+        let invites = invitees.map { (inviteId: UUID().uuidString.lowercased(), userId: $0) }
+        if let targetChannelId = channels.jointLocalChannel(channelId: channelId, serverId: targetServerId) {
+            channels.addJointInvites(
+                hostChannelId: channelId,
+                hostServerId: serverId,
+                targetServerId: targetServerId,
+                targetChannelId: targetChannelId,
+                invitedByUserId: userId,
+                invites: invites,
+                now: now,
+                ttl: ttl
+            )
+        } else {
+            let targetChannelId = oauth.createChannel(
+                serverId: targetServerId,
+                name: channel.name,
+                creatorUserId: invitees[0],
+                description: channel.description
+            )
+            _ = oauth.setChannelType(id: targetChannelId, type: "joint")
+            channels.addJointServerProjection(
+                hostChannelId: channelId,
+                hostServerId: serverId,
+                targetServerId: targetServerId,
+                targetChannelId: targetChannelId,
+                invitedByUserId: userId,
+                name: channel.name,
+                invites: invites,
+                now: now,
+                ttl: ttl
+            )
+        }
+
+        let origin = oauth.serverDetailsValue(id: serverId)
+        let canonical = channels.jointCanonicalChannelId(channelId: channelId) ?? channelId
+        let rows = invites.map { invite in
+            JointInviteRow(
+                id: invite.inviteId,
+                jointChannelId: canonical,
+                fromServerId: serverId,
+                fromServerName: origin?.name ?? "",
+                fromServerSlug: origin?.slug ?? "",
+                channelName: channel.name,
+                channelDescription: channel.description,
+                invitedByUserId: userId,
+                invitedUserId: invite.userId,
+                expiresAt: now.addingTimeInterval(ttl),
+                createdAt: now
+            )
+        }
+        return JointChannelInviteResponse(
+            id: channelId,
+            serverId: serverId,
+            name: channel.name,
+            description: channel.description,
+            type: "joint",
+            createdAt: oauth.channelCreatedAt(id: channelId),
+            joined: true,
+            invites: rows
+        )
+    }
 }

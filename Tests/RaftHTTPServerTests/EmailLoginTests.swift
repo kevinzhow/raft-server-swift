@@ -1,3 +1,4 @@
+import Crypto
 import TestSupport
 import Foundation
 import HTTPTypes
@@ -1084,6 +1085,86 @@ private func refreshBound(
             let replayBody = try JSONSerialization.jsonObject(with: Data(bodyText(replay).utf8)) as? [String: Any]
             #expect(replayBody?["code"] as? String == "handoff_code_consumed")
             #expect(scene.mobile.oauthRequestStatus(id: requestId) == "completed")
+        }
+    }
+}
+
+@Test func mobileOAuthExistingAccountSignInPublishesTheFullPublicUser() async throws {
+    let scene = AuthScene()
+    let userId = "11111111-1111-4111-8111-000001120001"
+    let email = "mobile-existing@slock.test"
+    let returnUri = "raft://oauth/callback"
+    let verifier = "mobile-existing-verifier-0123456789"
+    let challenge = EmailLoginDirectory.pkceChallengeForTesting(verifier)
+    let surveyAt = Date(timeIntervalSince1970: 1_700_000_000)
+    scene.auth.addAccount(id: userId, email: email, password: "password123")
+    scene.auth.markEmailVerified(userId: userId)
+    scene.auth.setAccountProfileForTesting(
+        id: userId, name: "mobile-existing", displayName: "Mobile Existing", description: "Retained bio"
+    )
+    scene.auth.linkSocialIdentityForTesting(
+        userId: userId, provider: "google", providerUserId: "google-existing", providerEmail: email
+    )
+    scene.auth.setSignupSurveyForTesting(userId: userId, role: "founder", completedAt: surveyAt)
+    scene.auth.setTimezoneObservationForTesting(
+        userId: userId, firstTimezone: "Asia/Tokyo", firstAt: surveyAt, lastTimezone: "UTC", lastAt: surveyAt
+    )
+    scene.mobile.setMobileProviderProfile(MobileProviderProfile(
+        providerUserId: "google-existing", email: email, displayName: "Mobile Existing"
+    ))
+    try await withApp { app in
+        registerAuthScene(app, scene: scene)
+        try await app.testing { client in
+            let start = try await postJSON(
+                client,
+                "/api/auth/mobile/oauth/start",
+                body: "{\"provider\":\"google\",\"mode\":\"login\",\"returnUri\":\"\(returnUri)\",\"codeChallenge\":\"\(challenge)\"}"
+            )
+            #expect(start.status == .created)
+            let startBody = try JSONSerialization.jsonObject(with: Data(bodyText(start).utf8)) as? [String: Any]
+            let authorizationUrl = startBody?["authorizationUrl"] as? String ?? ""
+            let state = URLComponents(string: authorizationUrl)?.queryItems?.first { $0.name == "state" }?.value ?? ""
+            let encoded = state.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? state
+            let callback = try await client.get(URI(string: "/api/auth/google/callback?code=provider-code&state=\(encoded)"))
+            #expect(callback.status == .found)
+            let handoff = URLComponents(string: callback.headers[.location] ?? "")?
+                .queryItems?.first { $0.name == "code" }?.value ?? ""
+            #expect(handoff.isEmpty == false)
+
+            let complete = try await postJSON(
+                client,
+                "/api/auth/mobile/oauth/complete",
+                body: "{\"code\":\"\(handoff)\",\"codeVerifier\":\"\(verifier)\",\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\"}"
+            )
+            #expect(complete.status == .ok)
+            let text = bodyText(complete)
+            let body = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+            let user = body?["user"] as? [String: Any]
+            #expect(user?["id"] as? String == userId)
+            #expect(user?["email"] as? String == email)
+            #expect(user?["name"] as? String == "mobile-existing")
+            #expect(user?["displayName"] as? String == "Mobile Existing")
+            #expect(user?["description"] as? String == "Retained bio")
+            #expect(user?["emailVerified"] as? Bool == true)
+            #expect(user?["signupRole"] as? String == "founder")
+            #expect(user?["signupSurveyCompletedAt"] as? String == "2023-11-14T22:13:20.000Z")
+            #expect(user?["profileSetupProvider"] as? String == "google")
+            #expect(user?["preferredTranslationMode"] as? String == "off")
+            #expect(user?["autoTranslationEnabled"] as? Bool == false)
+            #expect(user?["firstObservedTimezone"] as? String == "Asia/Tokyo")
+            #expect(user?["lastObservedTimezone"] as? String == "UTC")
+            #expect(user?["lastObservedTimezoneAt"] as? String == "2023-11-14T22:13:20.000Z")
+            #expect(body?["provider"] as? String == "google")
+            #expect(body?["mode"] as? String == "login")
+            #expect(body?["returnUri"] as? String == returnUri)
+            #expect(body?["linkedProvider"] == nil)
+            // The sign-in path reuses the existing row instead of minting a
+            // pending account, and the response is the complete public user.
+            #expect(scene.auth.userCount == 1)
+            let gravatar = SHA256.hash(data: Data(email.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            #expect(text.hasPrefix(#"{"user":{"id":"\#(userId)","email":"\#(email)","gravatarHash":"\#(gravatar)","name":"mobile-existing","displayName":"Mobile Existing","description":"Retained bio","avatarUrl":null,"emailVerified":true,"preferredLanguage":null,"displayLanguage":null,"preferredTimezone":null,"firstObservedTimezone":"Asia/Tokyo","firstObservedTimezoneAt":"2023-11-14T22:13:20.000Z","lastObservedTimezone":"UTC","lastObservedTimezoneAt":"2023-11-14T22:13:20.000Z","preferredTranslationMode":"off","autoTranslationEnabled":false,"preferredTranslationDisplay":"translated","preferredTimeFormat":null,"preferredMessageBodyFontSize":null,"shareUsageData":null,"referralSource":null,"referralSourceOther":null,"referralSourceSkippedAt":null,"profileSetupCompletedAt":""#))
+            #expect(text.contains(#"","profileSetupSuggestedHandle":null,"signupSurveyCompletedAt":"2023-11-14T22:13:20.000Z","signupRole":"founder","profileSetupProvider":"google"},"provider":"google","mode":"login","returnUri":"raft://oauth/callback","accessToken":""#))
         }
     }
 }

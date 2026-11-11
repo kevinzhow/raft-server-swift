@@ -28,6 +28,9 @@ struct ProtocolPGAudit: Sendable, CustomStringConvertible {
     let execution: AgentExecutionState
     let canonicalAgents: ProtocolPGObject
     let messages: [ProtocolPGObject]
+    /// Formal mention rows, including the optional occurrence group. The
+    /// acceptance asserts the durable occurrence without opening the database.
+    let mentions: [ProtocolPGObject]
     let tasks: [ProtocolPGObject]
     var description: String { "ProtocolPGAudit(redacted)" }
     func status(agent: String) -> String? { canonicalAgents.object(agent)?.string("status") }
@@ -76,6 +79,7 @@ final class AgentExecutionPostgresFixture: Sendable {
     let session: URLSession
     let serverId: String
     let slug: String
+    let ownerId: String
     let ownerEmail: String
     let memberEmail: String
     let outsiderEmail: String
@@ -86,12 +90,13 @@ final class AgentExecutionPostgresFixture: Sendable {
                  executionConnection: ProductionAgentExecutionConnection, machineServer: MachineConnectServer,
                  realtimeServer: RealtimeServer, publications: ProductionRealtimePublicationWorker,
                  app: Application, httpTask: Task<Void, any Error>, baseURL: URL, keys: [DurableKey],
-                 serverId: String, slug: String, ownerEmail: String, memberEmail: String, outsiderEmail: String) {
+                 serverId: String, slug: String, ownerId: String, ownerEmail: String, memberEmail: String,
+                 outsiderEmail: String) {
         self.accounts = accounts; self.runtime = runtime; self.observer = observer
         self.executionConnection = executionConnection; self.machineServer = machineServer
         self.realtimeServer = realtimeServer; self.publications = publications
         self.app = app; self.httpTask = httpTask; self.baseURL = baseURL; self.keys = keys
-        self.serverId = serverId; self.slug = slug
+        self.serverId = serverId; self.slug = slug; self.ownerId = ownerId
         self.ownerEmail = ownerEmail; self.memberEmail = memberEmail; self.outsiderEmail = outsiderEmail
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 12
@@ -151,7 +156,8 @@ final class AgentExecutionPostgresFixture: Sendable {
             try await writer.activate()
             let execution = try ProductionDaemonIntegration.connect(execution: accounts.agentExecution(persistence: writer),
                 runtime: writer, materializer: accounts.agentExecutionMaterialization(persistence: writer,
-                    serverURL: "https://protocol-pg.invalid"))
+                    serverURL: "https://protocol-pg.invalid"),
+                onboardingBriefing: accounts.onboardingBriefing)
             connection = execution
             try await writer.execute {
                 accounts.configureMachineQueries(ProductionMachineQueries(registry: execution.registry))
@@ -183,7 +189,7 @@ final class AgentExecutionPostgresFixture: Sendable {
             return .init(accounts: accounts, runtime: writer, observer: observer, executionConnection: execution,
                 machineServer: listener, realtimeServer: socketServer, publications: publisher,
                 app: app, httpTask: task, baseURL: baseURL, keys: keys, serverId: serverId, slug: slug,
-                ownerEmail: ownerEmail, memberEmail: memberEmail, outsiderEmail: outsiderEmail)
+                ownerId: ownerId, ownerEmail: ownerEmail, memberEmail: memberEmail, outsiderEmail: outsiderEmail)
         } catch {
             await publication?.stop()
             await connection?.worker.stop()
@@ -232,9 +238,12 @@ final class AgentExecutionPostgresFixture: Sendable {
     }
 
     /// One repeatable-read snapshot spanning the fourteen actual PG documents.
+    /// The writer now commits only the rows a request actually changed (the
+    /// fail-closed incident fix), so revisions legitimately differ per document;
+    /// the repeatable-read transaction is what makes the snapshot coherent.
     func audit() async throws -> ProtocolPGAudit {
         let documents = try await observer.readSnapshot(keys)
-        guard documents.count == keys.count, Set(documents.map(\.revision)).count == 1 else {
+        guard documents.count == keys.count else {
             throw ProtocolPGFailure.invalidSnapshot
         }
         func bytes(_ domain: DurableDomain) throws -> Data {
@@ -254,15 +263,28 @@ final class AgentExecutionPostgresFixture: Sendable {
                   let canonical = oauth.object("businessState")?.object("agents"),
                   messaging.string("owner") == "messages-and-threads", messaging.integer("version") == 1,
                   let messages = messaging.object("payload")?.array("humanMessageRows"),
+                  let mentions = messaging.object("payload")?.array("storedMentions"),
                   collaboration.string("format") == "raft.tasks-and-reminders", collaboration.integer("version") == 1,
                   let tasks = collaboration.object("business")?.array("taskRecords") else { throw ProtocolPGFailure.invalidSnapshot }
             func rows(_ values: [JSONValue]) throws -> [ProtocolPGObject] {
                 try values.map { value in guard case .object(let row) = value else { throw ProtocolPGFailure.invalidSnapshot }; return .init(row) }
             }
-            return try .init(execution: execution, canonicalAgents: canonical, messages: rows(messages), tasks: rows(tasks))
+            return try .init(execution: execution, canonicalAgents: canonical, messages: rows(messages),
+                             mentions: rows(mentions), tasks: rows(tasks))
         } catch { throw ProtocolPGFailure.invalidSnapshot }
     }
     func outbox(_ commandId: UUID) async throws -> DurableOutboxEntry? { try await observer.outboxEffect(effectID: commandId) }
+    /// The retained collaboration document. The onboarding opener ledger is the
+    /// one-shot sent fact the briefing trigger stamps after a typed notice
+    /// acceptance; reading it through the second PG client proves the durable
+    /// write rather than a store projection.
+    func serversAndChannels() async throws -> ProtocolPGObject {
+        let documents = try await observer.readSnapshot(keys)
+        guard let document = documents.first(where: {
+            $0.key.domain == .serversAndChannels && $0.key.aggregateID == "root"
+        }), document.codecVersion == 1 else { throw ProtocolPGFailure.invalidSnapshot }
+        return try ProtocolPGObject(data: document.decode(Data.self, codecVersion: 1))
+    }
     /// Pause the real consumer to expose an independently committed pending row;
     /// restarting creates the same production worker, never an injected sink.
     func pausePublications() async { await publications.stop() }

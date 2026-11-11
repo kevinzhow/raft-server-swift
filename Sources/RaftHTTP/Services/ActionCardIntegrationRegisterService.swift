@@ -11,34 +11,6 @@ enum ActionCardWriteDecision: Sendable, Equatable {
     case notFound
 }
 
-/// The closure dependencies of the action-card integration-register domain
-/// that still live in not-yet-migrated domains.
-///
-/// Everything else is a store or the OAuth ledger: the marketplace target
-/// resolver, the integration-card preparer and the card projections are owned
-/// by this service (`ActionCardMetadataProjection`). `appendHumanMessage` is the directory-lock message append (sequence stamp +
-/// OAuth mirror); `emitRealtime` is the realtime relay; `sessionUserId` is the
-/// human session ledger; `agentCredential` is the agent credential lookup that
-/// records `lastUsedAt`.
-struct ActionCardIntegrationRegisterDependencies: Sendable {
-    var sessionUserId: @Sendable (String?) -> String?
-    var agentCredential: @Sendable (String?) -> (agentId: String, scopes: [String])?
-    var identityResolution: @Sendable (String?, String) -> FeedbackLocatorService.IdentityResolution
-    var appendHumanMessage: @Sendable (StoredHumanMessage) -> Int
-    var addPostableChannel: @Sendable (
-        _ serverId: String,
-        _ channelId: String,
-        _ memberId: String,
-        _ kind: String,
-        _ parentChannelId: String?,
-        _ parentMessageId: String?,
-        _ name: String?
-    ) -> Void
-    var emitRealtime: @Sendable (String, String, String?) -> Void
-    var marketplaceInstallableClient: @Sendable (String) -> MarketplaceClientIdentity?
-    var publicIntegrationClient: @Sendable (String) -> MarketplaceClientIdentity?
-}
-
 /// Integration-marketplace registration, generic action-card prepare
 /// (`channel:create`, `agent:create`, the integration card types) and
 /// action-card execute.
@@ -352,20 +324,30 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             throw ActionCardIntegrationRegisterError.forbidden
         }
         if let installCard = cards.marketplaceInstallCard(messageId: messageId) {
-            return try executeMarketplaceInstallCard(
+            let wasExecuted = installCard.state == "executed"
+            let response = try executeMarketplaceInstallCard(
                 installCard,
                 userId: userId,
                 serverId: serverId,
                 expectedState: body?.expectedState
             )
+            if !wasExecuted {
+                dependencies.publishMessageUpdated(messageId, response.metadataJSON)
+            }
+            return response
         }
         if let registerCard = cards.integrationRegisterCard(messageId: messageId) {
-            return try executeIntegrationRegisterCard(
+            let wasExecuted = registerCard.state == "executed"
+            let response = try executeIntegrationRegisterCard(
                 registerCard,
                 userId: userId,
                 serverId: serverId,
                 expectedState: body?.expectedState
             )
+            if !wasExecuted {
+                dependencies.publishMessageUpdated(messageId, response.metadataJSON)
+            }
+            return response
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             throw ActionCardIntegrationRegisterError.notAMember
@@ -424,13 +406,6 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         oauth.addChannelHuman(channelId: channelId, userId: userId)
         oauth.addChannelAgent(channelId: channelId, agentId: card.requesterAgentId)
         _ = cards.markActionCardExecuted(messageId: messageId, userId: userId)
-        postActionCardReply(
-            card: card,
-            confirmerUserId: userId,
-            success: true,
-            resultName: name,
-            failureReason: nil
-        )
         let metadata = OrderedJSON.object([
             OrderedJSONField("kind", "action-card"),
             OrderedJSONField("state", "executed"),
@@ -444,6 +419,15 @@ public struct ActionCardIntegrationRegisterService: Sendable {
                 OrderedJSONField("name", name),
             ])),
         ]).render()
+        // Upstream emits the carrier update before the deferred result reply.
+        dependencies.publishMessageUpdated(messageId, metadata)
+        postActionCardReply(
+            card: card,
+            confirmerUserId: userId,
+            success: true,
+            resultName: name,
+            failureReason: nil
+        )
         return ActionCardExecuteResponse(messageId: messageId, metadataJSON: metadata)
     }
 
@@ -560,9 +544,10 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         return ActionCardPrepareResponse(messageId: messageId, metadataJSON: metadata)
     }
 
-    /// `agent:create` over a `dm:@peer:shortId` target. `nil` means the target
-    /// is not a DM thread target, so the caller falls through to the channel
-    /// validation path.
+    /// `agent:create` over a `dm:@peer` or `dm:@peer:shortId` target. `nil`
+    /// means the ref is not a DM target, so the caller falls through to the
+    /// channel validation path. DM resolution, its thread suffix and the
+    /// published refusals live in `ActionCardDMTargetResolver`.
     private func prepareAgentCreateCard(
         identity: (agentId: String, serverId: String),
         target: String,
@@ -573,86 +558,23 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         guard !name.isEmpty, name.count <= 64 else {
             throw ActionCardIntegrationRegisterError.invalidActionCardRequest
         }
-        guard target.hasPrefix("dm:@") else { return nil }
-        var raw = String(target.dropFirst("dm:@".count))
-        guard let colon = raw.lastIndex(of: ":") else {
-            throw ActionCardIntegrationRegisterError.invalidActionCardRequest
-        }
-        let suffix = String(raw[raw.index(after: colon)...])
-        raw = String(raw[..<colon])
-        guard !raw.isEmpty, !suffix.isEmpty else {
-            throw ActionCardIntegrationRegisterError.invalidActionCardRequest
-        }
-        let peer = accounts.firstAccount(exactName: raw)
-        var dmId = peer.flatMap { account -> String? in
-            guard let id = oauth.directChannelId(serverId: identity.serverId, firstUserId: identity.agentId,
-                secondUserId: account.id, firstKind: .agent),
-                  let channel = channels.postableChannel(id: id), channel.serverId == identity.serverId,
-                  channel.kind == "dm", channel.deletedAt == nil,
-                  channel.memberIds.contains(identity.agentId), channel.memberIds.contains(account.id) else { return nil }
-            return id
-        }
-        let anchorId = dmId.flatMap { dm -> String? in
-            if let fromLedger = oauth.historyMessages(channelId: dm)
-                .first(where: { $0.id.hasPrefix(suffix) })?.id {
-                return fromLedger
-            }
-            return messages.humanMessageId(channelId: dm, idPrefix: suffix)
-        }
-        var threadId = dmId.flatMap { dm -> String? in
-            anchorId.flatMap { anchor in
-                channels.actionCardThreadChannel(
-                    parentChannelId: dm,
-                    parentMessageId: anchor
-                )
-            }
-        }
-        guard let peerId = peer?.id else {
-            throw ActionCardIntegrationRegisterError.targetChannelNotFound
-        }
-        if dmId == nil {
-            let created = oauth.createDirectChannel(
-                serverId: identity.serverId,
-                firstUserId: identity.agentId,
-                secondUserId: peerId,
-                firstKind: .agent
-            )
-            dependencies.addPostableChannel(
-                identity.serverId, created, identity.agentId, "dm", nil, nil, "dm"
-            )
-            dependencies.addPostableChannel(
-                identity.serverId, created, peerId, "dm", nil, nil, "dm"
-            )
-            oauth.addChannelHuman(channelId: created, userId: peerId)
-            dmId = created
-        }
-        guard let dmId else {
-            throw ActionCardIntegrationRegisterError.targetChannelNotFound
-        }
-        guard let anchorId else {
-            throw ActionCardIntegrationRegisterError.targetChannelNotFound
-        }
-        if threadId == nil {
-            let created = oauth.createThreadChannel(
-                parentChannelId: dmId,
-                parentMessageId: anchorId
-            )
-            dependencies.addPostableChannel(
-                identity.serverId, created, identity.agentId, "thread", dmId, anchorId, "thread"
-            )
-            dependencies.addPostableChannel(
-                identity.serverId, created, peerId, "thread", dmId, anchorId, "thread"
-            )
-            threadId = created
-        }
-        guard let threadId, let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
+        let carrierChannelId = try ActionCardDMTargetResolver(
+            oauth: oauth,
+            channels: channels,
+            messages: messages,
+            accounts: accounts,
+            agents: agents,
+            addPostableChannel: dependencies.addPostableChannel
+        ).resolve(serverId: identity.serverId, agentId: identity.agentId, rawTarget: target)
+        guard let carrierChannelId else { return nil }
+        guard let agent = oauth.agentRuntimeInfo(id: identity.agentId) else {
             throw ActionCardIntegrationRegisterError.targetChannelNotFound
         }
         let messageId = makeId()
         let content = "@\(agent.name) proposed creating agent @\(name)"
         _ = dependencies.appendHumanMessage(StoredHumanMessage(
             id: messageId,
-            channelId: threadId,
+            channelId: carrierChannelId,
             senderId: identity.agentId,
             content: content,
             randomId: nil,
@@ -664,8 +586,8 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             messageId: messageId,
             serverId: identity.serverId,
             requesterAgentId: identity.agentId,
-            storageChannelId: threadId,
-            localCarrierChannelId: threadId,
+            storageChannelId: carrierChannelId,
+            localCarrierChannelId: carrierChannelId,
             actionType: "agent:create",
             channelName: name,
             visibility: "channel",
@@ -679,7 +601,7 @@ public struct ActionCardIntegrationRegisterService: Sendable {
                 OrderedJSONField("type", "agent:create"),
                 OrderedJSONField("name", name),
             ])),
-            OrderedJSONField("carrierChannelId", threadId),
+            OrderedJSONField("carrierChannelId", carrierChannelId),
         ]).render()
         return ActionCardPrepareResponse(messageId: messageId, metadataJSON: metadata)
     }
@@ -1082,6 +1004,10 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             OrderedJSONField("channelId", threadId),
             OrderedJSONField("content", content),
         ]).render()
+        // `emitActionCardCarrierMessage` grants the thread room to every human
+        // follower before emitting `message:new` for a thread carrier.
+        ThreadFollowerRealtimeService(messages: messages, channels: channels, oauth: oauth)
+            .joinHumanFollowers(threadChannelId: threadId, serverId: card.serverId)
         dependencies.emitRealtime("channel:\(threadId)", "message:new", payload)
     }
 

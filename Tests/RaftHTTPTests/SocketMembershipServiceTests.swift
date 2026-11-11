@@ -35,7 +35,7 @@ import Testing
         limit: 50
     )?.jsonBody())
 
-    #expect(body == #"{"messages":[{"id":"\#(messageId)","channelId":"\#(channelId)","seq":2,"content":"a/b \"q\"","attachments":[]}],"currentSeq":2,"hasMore":false}"#)
+    #expect(body == #"{"messages":[{"id":"\#(messageId)","channelId":"\#(channelId)","seq":2,"content":"a/b \"q\"","taskStatus":null,"taskNumber":null,"taskAssigneeType":null,"taskAssigneeId":null,"taskClaimedAt":null,"taskCompletedAt":null,"attachments":[]}],"currentSeq":2,"hasMore":false}"#)
 }
 
 @Test func revokeServerMembershipDropsChannelMembershipAndPrivateParentFollows() throws {

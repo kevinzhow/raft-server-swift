@@ -25,7 +25,7 @@ Sources/RaftHTTP/RuntimeFormCatalog.swift	19
 Sources/RaftHTTP/ServerScope.swift	1
 Sources/RaftHTTP/Services/ActionCardIntegrationRegisterService.swift	3
 Sources/RaftHTTP/Services/ActionCardPrepareService.swift	4
-Sources/RaftHTTP/Services/AgentHistoryError.swift	3
+Sources/RaftHTTP/Services/AgentHistoryError.swift	1
 Sources/RaftHTTP/Services/AgentHistoryService.swift	1
 Sources/RaftHTTP/Services/AgentMachineMigrationControlService.swift	5
 Sources/RaftHTTP/Services/AgentMessageLookupService.swift	2
@@ -45,10 +45,9 @@ Sources/RaftHTTP/Support/AgentRuntimeConfigDocument.swift	2
 Sources/RaftHTTP/Support/OrderedJSON.swift	1
 Sources/RaftHTTP/Version.swift	2
 Sources/RaftHTTPServer/Features/Channels/ChannelsFeature.swift	12
-Sources/RaftHTTPServer/Features/Integrations/IntegrationsFeature.swift	3
 Sources/RaftHTTPServer/Features/InternalAdmin/InternalAdminFeature.swift	11
 Sources/RaftHTTPServer/Features/InternalAgentApi/InternalAgentApiFeature.swift	14
-Sources/RaftHTTPServer/Features/Messaging/MessagingFeature.swift	2
+Sources/RaftHTTPServer/Features/Messaging/MessagingFeature.swift	1
 Sources/RaftHTTPServer/Features/OAuth/OAuthFeature.swift	1
 Sources/RaftHTTPServer/JSONErrorBoundaryMiddleware.swift	1
 Sources/RaftHTTPServer/RequestBodyLimitMiddleware.swift	5

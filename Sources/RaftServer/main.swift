@@ -12,6 +12,8 @@ import Vapor
 
 #if canImport(Glibc)
 import Glibc
+#elseif canImport(Darwin)
+import Darwin
 #endif
 
 private struct DatabaseNotConnected: Error {}
@@ -131,7 +133,12 @@ enum Entrypoint {
         let runtime: BusinessPersistenceRuntime?
         if let production {
             runtime = try await BusinessPersistenceRuntime.start(
-                configuration: production.postgres, bindings: emailAccounts.makeDurableBindings()
+                configuration: production.postgres, bindings: emailAccounts.makeDurableBindings(),
+                // Admission is closed permanently; the process must not stay
+                // alive as a 503-only zombie. systemd Restart=on-failure starts
+                // a fresh process that claims a new writer epoch and reloads
+                // every durable owner from PostgreSQL.
+                fatalFailureHandler: { _ in exit(70) }
             )
         } else { runtime = nil }
         let database = DatabaseHealth(environment: processEnvironment)
@@ -164,6 +171,12 @@ enum Entrypoint {
                 emailAccounts.realtimeRelay.install { room, event, payload in
                     hub.emit(room: room, event: event, payloadJSON: payload)
                 }
+                emailAccounts.realtimeRelay.installRoomJoiner { userId, room in
+                    hub.joinUserSessions(userId: userId, room: room)
+                }
+                emailAccounts.realtimeRelay.installServerRoomJoiner { userId, serverId, room in
+                    hub.joinUserSessions(userId: userId, serverId: serverId, room: room)
+                }
                 emailAccounts.managedMCPToolExecution.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
                     guard emailAccounts.managedMCPToolExecution.shouldEmitStartupScopeRead(
                         serverId: serverId, channelId: channelId, agentId: agentId
@@ -191,6 +204,7 @@ enum Entrypoint {
                 guard let production else { throw ProductionStartupError.unavailable }
                 let storage = try S3AttachmentStorage(configuration: .fromEnvironment(processEnvironment))
                 emailAccounts.configureAttachmentStorage(storage)
+                emailAccounts.configureAvatarStorage(storage)
                 app.addLifecycleHandler(AttachmentStorageLifecycle(storage: storage))
                 try await runtime.activate()
                 try await ProductionBootstrap.ping(runtime: runtime, redis: production.redis)
@@ -198,7 +212,11 @@ enum Entrypoint {
                     execution: emailAccounts.agentExecution(persistence: runtime), runtime: runtime,
                     materializer: emailAccounts.agentExecutionMaterialization(
                         persistence: runtime, serverURL: production.serverURL
-                    )
+                    ),
+                    // A computer coming back is the only real "Cindy woke up"
+                    // moment the server sees; the same idempotent owner trigger
+                    // runs there (upstream onboardingBriefingOnActivation.ts).
+                    onboardingBriefing: emailAccounts.onboardingBriefing
                 )
                 executionConnection = connection
                 registry = connection.registry

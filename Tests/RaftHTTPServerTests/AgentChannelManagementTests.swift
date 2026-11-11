@@ -54,6 +54,7 @@ private func makeChannelManagementFixture(_ suffix: String) -> ChannelManagement
     accounts.oauth.addChannelAgent(channelId: archivedChannel, agentId: agentId)
     accounts.oauth.setChannelArchived(id: archivedChannel, archivedAt: Date())
     let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "channel-mgmt-machine-\(suffix)")
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
     return ChannelManagementFixture(
         accounts: accounts,
         serverId: serverId,
@@ -139,7 +140,8 @@ private func channelMgmtServerInfo(
             let agents = try #require(body["agents"] as? [[String: Any]])
             let own = try #require(agents.first { $0["id"] as? String == f.agentId })
             #expect(own["role"] as? String == "member")
-            #expect(own["status"] as? String == "active")
+            // The stored agent status, not a hard-coded "active".
+            #expect(own["status"] as? String == "inactive")
             #expect(own["activity"] as? String == "offline")
             #expect(own["activityDetail"] as? String == "")
         }

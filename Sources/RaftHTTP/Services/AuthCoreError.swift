@@ -10,6 +10,7 @@ import Foundation
 public enum AuthCoreError: DomainError, Equatable {
     case notFound
     case socialCompletionCodeRequired
+    case socialCompletionServerError(correlationId: String)
     case socialCompletionInvalid
     case linkAuthRequired
     case linkUserMismatch
@@ -21,7 +22,9 @@ public enum AuthCoreError: DomainError, Equatable {
     case socialEmailExists(provider: String)
     case registerBodyInvalid([AuthRequestIssue])
     case stagingRegistrationUnavailable
+    case nameInvalid(String)
     case reservedName
+    case passwordTooShort
     case emailAlreadyRegistered
     case missingAuthorization
     case invalidToken
@@ -44,16 +47,16 @@ public enum AuthCoreError: DomainError, Equatable {
     public var status: UInt {
         switch self {
         case .notFound, .userNotFound, .deviceLoginDisabled: 404
-        case .socialCompletionCodeRequired, .socialCompletionInvalid, .registerBodyInvalid, .reservedName,
-             .clientNameInvalid, .userCodeRequired, .deviceCodeRequired, .refreshTokenRequired,
-             .invalidRefreshBinding: 400
+        case .socialCompletionCodeRequired, .socialCompletionInvalid, .registerBodyInvalid, .nameInvalid,
+             .reservedName, .passwordTooShort, .clientNameInvalid, .userCodeRequired, .deviceCodeRequired,
+             .refreshTokenRequired, .invalidRefreshBinding: 400
         case .linkAuthRequired, .missingAuthorization, .invalidToken, .invalidRefreshToken: 401
         case .linkUserMismatch, .pendingLinkAccountMismatch, .stagingRegistrationUnavailable,
              .retirementOwnershipMismatch, .invalidRetirementCapability, .unsupportedAccount: 403
         case .pendingLinkExpired: 410
         case .accountLinkRequired, .termsChanged, .socialEmailExists, .emailAlreadyRegistered: 409
         case .legalAcceptanceRequired: 422
-        case .retirementReceiptUnavailable: 500
+        case .retirementReceiptUnavailable, .socialCompletionServerError: 500
         case .deviceLoginURLUnavailable: 503
         case .deviceUpdateFailed(_, let status), .deviceNotReady(_, let status): status
         }
@@ -63,6 +66,7 @@ public enum AuthCoreError: DomainError, Equatable {
         switch self {
         case .notFound: "Not found"
         case .socialCompletionCodeRequired: "Sign-in completion code is required"
+        case .socialCompletionServerError: "Failed to complete sign-in"
         case .socialCompletionInvalid: "Invalid or expired social auth completion"
         case .linkAuthRequired: "Authentication is required to link an account"
         case .linkUserMismatch: "Social auth link does not match the authenticated user"
@@ -75,7 +79,9 @@ public enum AuthCoreError: DomainError, Equatable {
             "An account with this email already exists. Sign in with email and password first, then connect \(provider) in Settings."
         case .registerBodyInvalid: "Invalid email registration body"
         case .stagingRegistrationUnavailable: "Staging self-account registration is unavailable"
+        case .nameInvalid(let message): message
         case .reservedName: "This username is reserved. Choose another name."
+        case .passwordTooShort: "Password must be at least 8 characters"
         case .emailAlreadyRegistered: "Email already registered"
         case .missingAuthorization: "Missing or invalid Authorization header"
         case .invalidToken: "Invalid or expired token"
@@ -112,8 +118,24 @@ public enum AuthCoreError: DomainError, Equatable {
         }
     }
 
+    public var responseHeaders: [String: String] {
+        switch self {
+        case .socialCompletionServerError(let correlationId):
+            return ["X-Slock-Error-Id": correlationId]
+        default:
+            return [:]
+        }
+    }
+
     public var errorBody: OrderedJSON? {
         switch self {
+        case .socialCompletionServerError(let correlationId):
+            // `sendJsonServerError` (`errorResponse.ts:138-197`) adds only the
+            // correlation id for a route that passes no `code`.
+            return .object([
+                OrderedJSONField("error", "Failed to complete sign-in"),
+                OrderedJSONField("correlationId", correlationId),
+            ])
         case .linkAuthRequired:
             // `code` precedes `error` in this published body.
             return .object([
@@ -136,12 +158,7 @@ public enum AuthCoreError: DomainError, Equatable {
             return .object([
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("code", "email_register_body_invalid"),
-                OrderedJSONField("issues", .array(issues.map {
-                    .object([
-                        OrderedJSONField("path", $0.path),
-                        OrderedJSONField("message", $0.message),
-                    ])
-                })),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
             ])
         default:
             return nil

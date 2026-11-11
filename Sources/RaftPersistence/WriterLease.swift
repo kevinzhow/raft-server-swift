@@ -148,11 +148,18 @@ public actor WriterLease {
         defer { busy = false }
         let connection = connection
         let logger = logger
+        let timeout = timeout
         do {
-            let value = try await withPersistenceDeadline(timeout) {
-                try await withTaskCancellationHandler {
-                    try await operation(connection, logger)
-                } onCancel: { connection.close().whenComplete { _ in } }
+            // A caller's cancellation (HTTP client disconnect, worker stop) must
+            // not abort a fenced command already admitted on the writer session:
+            // closing the session mid-transaction loses the commit outcome. The
+            // command's own deadline still aborts it and closes the connection.
+            let value = try await Self.runOutsideCallerCancellation {
+                try await withPersistenceDeadline(timeout) {
+                    try await withTaskCancellationHandler {
+                        try await operation(connection, logger)
+                    } onCancel: { connection.close().whenComplete { _ in } }
+                }
             }
             // A completed COMMIT is not changed to an error merely because close
             // races its response. The next admission observes terminal lease loss.
@@ -181,6 +188,15 @@ public actor WriterLease {
             } else { await losePermission() }
             throw failure
         }
+    }
+
+    /// The child task does not inherit the caller's cancellation; awaiting its
+    /// value parks the caller until the command resolves. Never cancel a write.
+    private static func runOutsideCallerCancellation<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        let task = Task { try await operation() }
+        return try await task.value
     }
 
     private func startMonitoring() {
