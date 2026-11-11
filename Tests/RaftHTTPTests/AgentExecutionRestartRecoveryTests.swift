@@ -415,6 +415,116 @@ import Testing
                 "an accepted delivery without turn_completed stays ambiguous after ready")
     }
 
+    /// The deployed Main-restart regression: the server stops while an
+    /// acknowledged delivery's turn is still in flight, so the restore fence
+    /// blocks the agent. The turn then completes on the same daemon instance.
+    /// That completion is the retained fact that proves the turn settled: the
+    /// acknowledged delivery was consumed and the post-restart DM queued behind
+    /// the fence must be released through the ordinary strict path.
+    @Test func turnCompletionSettlesTheServerRestartFenceAndReleasesTheQueuedDm() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        let first = try await startAndCompleteTurn(domain, context: context, f)
+        let inFlight = try await startInFlightTurn(domain, context: context, f)
+        #expect(f.agents.state.execution.agents[f.agent]?.launches[first.launchId]?
+            .inFlightDeliveryCommandIds?.contains(inFlight.commandId) == true)
+
+        // Main stops mid-turn. The retained owner fences the current launch as
+        // an unsettled server restart; the same daemon reconnects and reports
+        // the resident process, which cannot clear an acknowledged turn that
+        // has no completion yet.
+        let restoredAgents = AgentsRuntimeStore()
+        try restoredAgents.restorePersistenceData(f.agents.exportPersistenceData())
+        #expect(restoredAgents.state.execution.agents[f.agent]?.needsManual == "server_restarted_with_unsettled_execution")
+        let restored = makeDomain(f, agents: restoredAgents)
+        let restoredContext = try await open(restored, f, epoch: "connection-2", running: [f.agent])
+        #expect(restoredAgents.state.execution.agents[f.agent]?.needsManual == "connection_lost_with_unsettled_execution",
+                "ready cannot settle an accepted delivery whose turn is still in flight")
+
+        // The post-restart human DM arrives while the agent is fenced. It stays
+        // readable and durably queued: no fake delivery, no lost message.
+        let (channel, message) = conversation(restored, f, content: "Acceptance-restart DM")
+        let disposition = try await commit {
+            try restored.requestHumanMessageDelivery(.init(serverId: f.server, agentId: f.agent,
+                                                           channelId: channel, messageId: message))
+        }
+        if case .readableOnly(.recoveryRequired) = disposition {} else {
+            Issue.record("the restart fence must keep the post-restart DM readable only, got \(disposition)")
+        }
+        #expect(restoredAgents.state.execution.pendingHumanDeliveries?.values.contains {
+            $0.agentId == f.agent && $0.messageId == message
+        } == true)
+
+        // The in-flight turn completes. The acknowledged delivery was consumed,
+        // so no unsettled execution fact remains and the restart fence clears.
+        let completed = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:runtime:outcome", "v": 1, "agentId": f.agent, "daemonInstanceId": "daemon-1",
+            "clientSeq": 2, "launchId": first.launchId, "sessionId": "codex-session",
+            "outcome": ["kind": "turn_completed"],
+        ])
+        _ = try await commit {
+            try restored.stageIngress(context: restoredContext, type: "agent:runtime:outcome", payload: completed)
+        }
+        #expect(restoredAgents.state.execution.agents[f.agent]?.needsManual == nil,
+                "turn_completed is the retained fact that settles the server-restart fence")
+        #expect(restoredAgents.state.execution.agents[f.agent]?.launches[first.launchId]?.completed == true)
+
+        // The same release the service runs after a settled turn completion
+        // stages exactly one ordinary delivery for the queued DM.
+        try await commit { try restored.releasePendingHumanDeliveries(serverId: f.server, agentId: f.agent) }
+        let pending = try #require(restoredAgents.state.execution.pendingHumanDeliveries?.values.first {
+            $0.agentId == f.agent && $0.messageId == message
+        })
+        #expect(pending.releasedCommandId != nil)
+        let delivery = try #require(restoredAgents.state.execution.commands.values.first {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        })
+        #expect(delivery.status != .superseded)
+    }
+
+    /// The true ambiguity the restart fence exists for: a delivery write
+    /// reached the wire but the daemon never acknowledged it, so the server
+    /// cannot know whether the message arrived. A turn completion then proves
+    /// a different fact and must not clear manual recovery.
+    @Test func turnCompletionKeepsServerRestartRecoveryForAnUnacknowledgedDeliveryWrite() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        let first = try await startAndCompleteTurn(domain, context: context, f)
+        _ = try await startInFlightTurn(domain, context: context, f)
+        // A second delivery is written without any daemon acknowledgement.
+        let (channel, message) = conversation(domain, f, content: "Ambiguous delivery write")
+        let admitted = try #require(try await commit {
+            try domain.requestDelivery(.init(serverId: f.server, agentId: f.agent,
+                                             channelId: channel, messageId: message))
+        })
+        try await commit {
+            let grant = try domain.beginDispatch(reference: .init(commandId: admitted.commandId),
+                                                 context: context, deliverySequence: 42)
+            #expect(grant == .granted)
+        }
+
+        let restoredAgents = AgentsRuntimeStore()
+        try restoredAgents.restorePersistenceData(f.agents.exportPersistenceData())
+        let restored = makeDomain(f, agents: restoredAgents)
+        let restoredContext = try await open(restored, f, epoch: "connection-2", running: [f.agent])
+        restoredAgents.withState {
+            $0.execution.agents[f.agent]?.needsManual = "server_restarted_with_unsettled_execution"
+        }
+        let completed = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:runtime:outcome", "v": 1, "agentId": f.agent, "daemonInstanceId": "daemon-1",
+            "clientSeq": 2, "launchId": first.launchId, "sessionId": "codex-session",
+            "outcome": ["kind": "turn_completed"],
+        ])
+        _ = try await commit {
+            try restored.stageIngress(context: restoredContext, type: "agent:runtime:outcome", payload: completed)
+        }
+        #expect(restoredAgents.state.execution.agents[f.agent]?.needsManual == "server_restarted_with_unsettled_execution",
+                "an unacknowledged delivery write keeps true ambiguity manual")
+        #expect(restoredAgents.state.execution.hasUnsettledDeliveryWrite(agentId: f.agent) == true)
+    }
+
     /// Three completed turns on one long-lived resident process, then the old
     /// bug's refused start left current: the daemon never acknowledged it and
     /// never reported a process for it. This is the deployed production shape.

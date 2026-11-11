@@ -609,7 +609,15 @@ public struct AgentSendDeliveryService: Sendable {
             kind = String(peerName[peerName.index(after: tilde)...])
             peerName = String(peerName[..<tilde])
         }
-        if peerName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "reminders" {
+        // Upstream strips only a trailing `~agent` / `~human` before comparing
+        // the reserved reminders handle, so `dm:@reminders~bot` stays the
+        // unknown-peer-kind refusal instead of becoming sendable-reminder.
+        let reminderRef = rawPeer.replacingOccurrences(
+            of: #"~(agent|human)$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        if reminderRef.lowercased() == "reminders" {
             throw AgentSendError.reminderTargetNotSendable
         }
         let resolution = prepare.resolveDMPeer(
@@ -633,10 +641,17 @@ public struct AgentSendDeliveryService: Sendable {
         case .notFound:
             // `resolveDMPeer` excludes the caller from the agent roster; the
             // pinned resolver includes it so `dm:@<self>` is the self-DM 400.
-            if kind != "human", agent.name.caseInsensitiveCompare(peerName) == .orderedSame {
+            // The name comparison is exact: a case variant is an unknown peer.
+            if kind != "human", agent.name == peerName {
                 throw AgentSendDeliveryError.selfDM
             }
             throw AgentSendDeliveryError.peerNotFound(peer: rawPeer)
+        }
+        // A migration receipt is a one-way notice: the pinned writable-target
+        // resolver answers the read-only conflict before any sendability or
+        // self-DM classification.
+        if peerKind == "agent", peerId == agent.id, resolvedName.hasPrefix("migration-receipt-") {
+            throw AgentSendError.migrationReceiptReadOnly
         }
         if let owner = assistantOwner(agent.id, agent.serverId), peerId != owner {
             // RFC 074 §2: an assistant may open a DM only with its owner.
