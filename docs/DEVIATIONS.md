@@ -311,6 +311,51 @@ and `express.json()`'s error path; zod 4 `unrecognized_keys` ordering.
 **Re-evaluate.** If the request layer exposes whether a body was parsed, or an
 ordered JSON object is adopted for request bodies.
 
+### D24. Timezone alias canonicalization is a finite map
+
+**What.** `parseCanonicalBrowserTimezone` keeps its explicit alias table for the
+`US/*` legacy names and the `Etc/*`/`Asia/Kolkata` cases. Every other
+`Area/Location` id is stored exactly as the client sent it. Upstream asks ICU
+(`Intl.DateTimeFormat().resolvedOptions().timeZone`) for the canonical id, which
+also rewrites, for example, `Europe/Kyiv` -> `Europe/Kiev`,
+`Asia/Kathmandu` -> `Asia/Katmandu`, `Australia/Canberra` -> `Australia/Sydney`
+and `Asia/Ho_Chi_Minh` -> `Asia/Saigon` (Node 22 / ICU 78.2).
+**Why.** Foundation on this Linux toolchain exposes no canonical-id API:
+`TimeZone(identifier: "US/Pacific")!.identifier` returns `"US/Pacific"`, not
+`"America/Los_Angeles"`, and neither the `TimeZone` Swift API nor its
+`CFTimeZoneCreateWithName` bridge has a canonicalization option. ICU's
+`ucal_getCanonicalTimeZoneID` exists only as the private
+`swift_ucal_getCanonicalTimeZoneID` symbol of `lib_FoundationICU.so`, which is
+not a package dependency and is not linkable portably. The alternative, a
+complete ICU alias table derived from CLDR/tzdata, cannot be generated from the
+shipped runtime without that symbol.
+**Upstream.** `packages/server/src/lib/ianaTimezone.ts`
+`parseCanonicalBrowserTimezone`, `routes/auth.ts:1406-1413`, and the ICU-backed
+`Intl` canonicalization (Node `process.versions.icu` = 78.2 on this host).
+**Re-evaluate.** When Foundation exposes a canonical time-zone id API (or this
+project takes an explicit ICU/tzdata dependency); then replace
+`AccountNaming.timezoneAliases` and the special cases with that lookup and add
+the alias cases above to `TimezoneObservationTests`.
+
+### D25. Contract schema validation precedes per-agent grant checks
+
+**What.** The shared `/internal/agent-api` request validator runs after the
+credential and route capability are accepted, but before the operation's
+per-agent grant (`requireAgentGrant`) check. When a credential carries the
+route capability but the bound agent lacks the operation grant, an invalid
+params/query/body answers the schema 400 here; upstream's middleware order
+(`requireAgentCapability` -> `requireAgentGrant` -> request validators) answers
+the 403 `missing required scope` first.
+**Why.** Grants are enforced inside each Swift service operation, which also
+needs the resource (channel/task/reminder); the transport gate has no generic
+grant lookup without duplicating the service authorization path. The successful
+and capability-denied paths are unchanged, and every invalid-input case with a
+granted agent publishes the exact upstream bytes.
+**Upstream.** `packages/server/src/routes/internalAgentApi.ts` `registerAgentApiRoute`
+(handler order) and `agentApiRequestValidators`; `app.ts:809`.
+**Re-evaluate.** When a generic agent-scope accessor is available to the
+transport layer, or a parity case requires the grant-before-schema order.
+
 ## Maintaining this list
 
 1. Add an entry only after the excluded assertion is understood and the

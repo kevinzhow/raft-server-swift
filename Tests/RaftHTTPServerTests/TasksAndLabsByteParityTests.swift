@@ -257,7 +257,9 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             }
             assertJSONHeaders(invalidName, body: "{\"error\":\"Invalid channel\"}")
             let noBody = try await client.send(.post, headers: admin, to: "/internal/agent-api/channels")
-            assertJSONHeaders(noBody, body: "{\"error\":\"Invalid channel\"}")
+            // Pinned `routes/internalAgentApi.ts:402-431` validates the body
+            // with `agentApiChannelCreateBodySchema` before the handler.
+            assertJSONHeaders(noBody, body: #"{"error":"Invalid agent-api channelCreate body","code":"agent_api_contract_invalid","issues":[{"path":"name","message":"Invalid input: expected string, received undefined"}]}"#)
 
             // `PATCH /channels/:id`: no body is `{}`, so the channel round-trips unchanged;
             // a body without a JSON Content-Type is accepted.
@@ -276,11 +278,11 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             let notObject = try await client.send(.patch, headers: admin, to: "/internal/agent-api/channels/\(beta)") { request in
                 request.body = .init(string: "[1]")
             }
-            assertJSONHeaders(notObject, body: "{\"error\":\"Invalid channel update\"}")
+            assertJSONHeaders(notObject, body: #"{"error":"Invalid agent-api channelUpdate body","code":"agent_api_contract_invalid","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#)
             let badVisibility = try await client.send(.patch, headers: admin, to: "/internal/agent-api/channels/\(beta)") { request in
                 request.body = .init(string: "{\"visibility\":\"secret\"}")
             }
-            assertJSONHeaders(badVisibility, body: "{\"error\":\"Invalid channel visibility\"}")
+            assertJSONHeaders(badVisibility, body: #"{"error":"Invalid agent-api channelUpdate body","code":"agent_api_contract_invalid","issues":[{"path":"visibility","message":"Invalid option: expected one of \"public\"|\"private\""}]}"#)
 
             // A member role cannot update: the ordered capability refusal.
             let denied = try await client.send(.patch, headers: headers(plainKey), to: "/internal/agent-api/channels/\(alpha)") { request in
@@ -330,7 +332,7 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
                 body: "{\"channel\":{\"ref\":\"#alpha\",\"type\":\"channel\"},\"humans\":[{\"id\":\"\(ownerId)\",\"name\":\"tl-agent-owner\",\"role\":\"owner\"}],\"agents\":[\(memberRows)]}"
             )
             let noRef = try await client.send(.get, headers: admin, to: "/internal/agent-api/channel-members")
-            assertJSONHeaders(noRef, body: "{\"error\":\"channel is required\"}")
+            assertJSONHeaders(noRef, body: #"{"error":"Invalid agent-api channelMembers query","code":"agent_api_contract_invalid","issues":[{"path":"channel","message":"Invalid input: expected string, received undefined"}]}"#)
 
             // `POST /resolve-channel`.
             let resolved = try await client.send(.post, headers: admin, to: "/internal/agent-api/resolve-channel") { request in
@@ -365,7 +367,7 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             let badAmend = try await client.send(.post, headers: admin, to: "/internal/agent-api/tasks/amend") { request in
                 request.body = .init(string: "{\"channel\":\"#alpha\",\"task_number\":1,\"title\":\"   \"}")
             }
-            assertJSONHeaders(badAmend, body: "{\"error\":\"Invalid task request\"}")
+            assertJSONHeaders(badAmend, body: #"{"error":"Invalid agent-api taskAmend body","code":"agent_api_contract_invalid","issues":[{"path":"title","message":"Too small: expected string to have >=1 characters"}]}"#)
             let missingTask = try await client.send(.post, headers: admin, to: "/internal/agent-api/tasks/amend") { request in
                 request.body = .init(string: "{\"channel\":\"#alpha\",\"task_number\":9,\"title\":\"Ghost\"}")
             }

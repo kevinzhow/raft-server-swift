@@ -66,7 +66,9 @@ enum AuthRequestSchema {
         path: String,
         min: Int? = nil,
         max: Int? = nil,
-        trim: Bool = false
+        trim: Bool = false,
+        pattern: String? = nil,
+        patternMessage: String? = nil
     ) -> (value: String?, issues: [AuthRequestIssue]) {
         guard let value else {
             return (nil, [AuthRequestIssue(
@@ -107,6 +109,12 @@ enum AuthRequestSchema {
             return (nil, [AuthRequestIssue(
                 path: path,
                 message: "Too big: expected string to have <=\(max) characters"
+            )])
+        }
+        if let pattern, text.range(of: pattern, options: .regularExpression) == nil {
+            return (nil, [AuthRequestIssue(
+                path: path,
+                message: patternMessage ?? "Invalid string: must match pattern /\(pattern)/"
             )])
         }
         return (text, [])

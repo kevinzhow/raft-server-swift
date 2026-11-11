@@ -128,7 +128,9 @@ private let defaultsJSON = #"{"enabled":true,"threshold_bytes":65536,"interval_s
             ) { request in
                 request.body = .init(string: "not json")
             }
-            let malformedBody = #"{"error":"Invalid config request","errorCode":"RAP_APP_CONFIG_INVALID"}"#
+            // The pinned `agentApiAppConfigPatchBodySchema` runs before the
+            // legacy handler; an unparsable body reads as `req.body ?? {}`.
+            let malformedBody = #"{"error":"Invalid agent-api appConfigPatch body","code":"agent_api_contract_invalid","issues":[{"path":"expectedRevision","message":"Invalid input: expected number, received undefined"}]}"#
             #expect(malformed.status == .badRequest)
             #expect(malformed.body.string == malformedBody)
 

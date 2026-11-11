@@ -296,7 +296,7 @@ private func uuidIn(_ body: String, key: String) -> String {
             try await call("app-update-bare", .post, "\(apps)/app/update", token: agentKey, body: "{\"clientKey\":\"local-app\",\"whenToUse\":\"use @scope/pkg\"}")
             try await call("app-update-badurl", .post, "\(apps)/app/update", token: agentKey, body: "{\"clientKey\":\"local-app\",\"setupUrl\":\"http://evil.example.test\"}")
             try await call("app-update", .post, "\(apps)/app/update", token: agentKey, body: "{\"clientKey\":\"local-app\",\"whenToUse\":\"  use / me  \",\"setupUrl\":\"https://local.example.test/setup\",\"setupDescription\":\"Do \\\"it\\\"\"}")
-            try await call("app-update-clear", .post, "\(apps)/app/update", token: agentKey, body: "{\"clientKey\":\"local-app\",\"whenToUse\":null}", json: false)
+            try await call("app-update-clear", .post, "\(apps)/app/update", token: agentKey, body: "{\"clientKey\":\"local-app\",\"whenToUse\":\"\"}", json: false)
             try await call("app-list-after", .get, "\(apps)/app", token: agentKey)
             try await call("app-status-after", .get, "\(apps)/app/status?client=local-app", token: agentKey)
             try await call("market", .get, "\(apps)/marketplace", token: agentKey)

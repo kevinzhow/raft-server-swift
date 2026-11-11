@@ -171,8 +171,8 @@ public struct AuthProfileService: Sendable {
         return ForgotPasswordResponse()
     }
 
-    /// `POST /api/auth/pending-link/cancel`. Always 204, including a second
-    /// cancel and an unknown or absent token.
+    /// `POST /api/auth/pending-link/cancel` for a token the route already
+    /// checked. Always 204, including a second cancel and an unknown token.
     public func cancelPendingLink(_ request: CancelPendingLinkRequest) -> NoContentResponse {
         if let token = request.pendingLinkToken {
             store.markPendingSocialLinkCancelled(token: token)
@@ -295,6 +295,10 @@ public struct AuthProfileService: Sendable {
     }
 
     /// The zones ICU's canonical id differs from Foundation's alias.
+    ///
+    /// Foundation on this platform does not canonicalize `TimeZone(identifier:)`
+    /// (it returns the input id), so this stays a finite table; see
+    /// `docs/DEVIATIONS.md#d24` for the residual and the re-evaluate trigger.
     private static func canonicalBrowserTimezone(_ resolved: String) -> String {
         switch resolved {
         case "Etc/UTC", "Etc/GMT", "Etc/UCT", "Etc/GMT+0", "Etc/GMT-0",
