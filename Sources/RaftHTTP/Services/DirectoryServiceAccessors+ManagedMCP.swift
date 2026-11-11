@@ -178,7 +178,8 @@ extension EmailLoginDirectory {
             realtime: realtimeRelay,
             taskCredentials: AgentTaskCredentials(
                 agents: agentsRuntimeStore, machines: machinesAndComputersStore,
-                channels: serversAndChannelsStore, cards: managedMCPAndCardsStore, oauth: oauth
+                channels: serversAndChannelsStore, cards: managedMCPAndCardsStore, oauth: oauth,
+                accounts: authProfileStore
             ),
             credentialLookup: agentCredentialLookup,
             suppression: MessageSuppressionService(messages: messagesAndThreadsStore, oauth: oauth)

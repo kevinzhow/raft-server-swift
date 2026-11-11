@@ -176,6 +176,11 @@ public struct ActionCardPrepareService: Sendable {
     private let assistantOwner: @Sendable (String, String) -> String?
     private let environment: @Sendable (String) -> String?
 
+    /// The account ledger the shared task-channel resolver matches DM peer
+    /// names against. Exposed read-only so the execute service can construct
+    /// the same `AgentTaskCredentials` policy without a second account store.
+    var accountStore: AuthProfileStore { accounts }
+
     init(
         oauth: OAuthLedger,
         cards: ManagedMCPAndCardsStore,

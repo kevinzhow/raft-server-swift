@@ -172,11 +172,31 @@ public struct ActionCardExecuteService: Sendable {
         ) {
             return .held(hold)
         }
+        // Upstream `taskClaim` resolves each `message_ids` entry in the
+        // channel, converts a plain top-level message into a task, then claims
+        // it in the same request. The store's claim pass only knows existing
+        // task records, so the conversion has to happen here: without it a
+        // claim-by-message-id on a plain DM/channel message answers
+        // `success:false, reason:"not found"` and the prompt's claim-before-work
+        // rule stops the agent before it reads the message's attachment.
+        let messageIds = body.messageIds.map { reference -> String in
+            guard canAgentModifyTasks(
+                serverId: writer.serverId, agentId: writer.agentId, channelId: channelId
+            ), let message = messages.messageForConvert(prefix: reference, channelId: channelId)
+            else { return reference }
+            _ = tasks.convertMessage(
+                channelId: channelId,
+                messageId: message.id,
+                creatorId: writer.agentId,
+                now: now()
+            )
+            return message.id
+        }
         let results = tasks.claimTasks(
             channelId: channelId,
             agentId: writer.agentId,
             taskNumbers: body.taskNumbers,
-            messageIds: body.messageIds,
+            messageIds: messageIds,
             now: now()
         )
         return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
@@ -822,7 +842,7 @@ public struct ActionCardExecuteService: Sendable {
     // that have not migrated yet still call, so the policy has one copy.
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth, accounts: prepare.accountStore)
     }
 
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).
