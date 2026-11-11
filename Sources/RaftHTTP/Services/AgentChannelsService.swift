@@ -414,6 +414,56 @@ public struct AgentChannelsService: Sendable {
         return AgentServerUpdateResponse(id: writer.agent.serverId, name: name)
     }
 
+    // MARK: - POST /internal/agent-api/server/avatar and /internal/agent/:id/server/avatar
+
+    /// The credential-surface server avatar upload: capability `server`, the
+    /// `server:update` grant and the server-profile authority are all checked
+    /// before the file metadata is read.
+    public func uploadServerAvatar(
+        authorization: String?,
+        byteCount: Int
+    ) throws -> ServerProfilePatchResponse {
+        let writer = try authorizedWriter(
+            authorization: authorization, legacyAgentId: nil, scopes: ["server"]
+        )
+        return try uploadServerAvatar(agent: writer.agent, byteCount: byteCount)
+    }
+
+    /// The upload after an owner has established the acting agent. Both the
+    /// credential and the legacy machine route run the same grant, the same
+    /// `editServerSettings` authority and the same projection.
+    public func uploadServerAvatar(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        byteCount: Int
+    ) throws -> ServerProfilePatchResponse {
+        switch feedbackLocators.grantDecision(agentId: agent.id, scope: "server:update") {
+        case .allowed: break
+        case .missingScope(let scope): throw FeedbackLocatorError.missingScope(scope: scope)
+        }
+        guard Self.isOwnerOrAdmin(oauth.agentRole(serverId: agent.serverId, agentId: agent.id)) else {
+            throw AgentChannelsError.capabilityDenied(
+                "Agent requires editServerSettings capability to edit the server profile"
+            )
+        }
+        guard let profile = oauth.serverProfile(id: agent.serverId) else {
+            throw AgentChannelsError.serverNotFound
+        }
+        guard byteCount > 0 else { throw AgentAvatarUploadError.noAvatarFile }
+        guard byteCount <= AgentAvatarUploadError.maximumBytes else {
+            throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: AgentAvatarUploadError.maximumBytes)
+        }
+        let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let avatarUrl = "/api/avatars/server-\(profile.id)/\(key).webp"
+        oauth.setServerAvatar(id: profile.id, avatarUrl: avatarUrl)
+        return ServerProfilePatchResponse(
+            id: profile.id,
+            name: profile.name,
+            slug: profile.slug,
+            avatarUrl: avatarUrl,
+            hideHumansFromMembers: channels.hideHumans(serverId: profile.id)
+        )
+    }
+
     // MARK: - GET …/channel-members
 
     public func channelMembers(
@@ -485,7 +535,8 @@ public struct AgentChannelsService: Sendable {
             )
         }
         let agentRows = agentIds.map { id in
-            AgentChannelMembersResponse.Agent(id: id, name: oauth.agentRuntimeInfo(id: id)?.name ?? "")
+            let info = oauth.agentRuntimeInfo(id: id)
+            return AgentChannelMembersResponse.Agent(id: id, name: info?.name ?? "", status: info?.status ?? "")
         }
         return AgentChannelMembersResponse(ref: reference, type: type, humans: humans, agents: agentRows)
     }
@@ -531,10 +582,12 @@ public struct AgentChannelsService: Sendable {
             .sorted { $0.id < $1.id }
         let agentRows = oauth.activeAgentIds(serverId: agent.serverId).map { otherId in
             let otherFacts = agents.runtimeFacts(agentId: otherId)
+            let info = oauth.agentRuntimeInfo(id: otherId)
             return AgentServerInfoResponse.Agent(
                 id: otherId,
-                name: oauth.agentRuntimeInfo(id: otherId)?.name ?? "",
+                name: info?.name ?? "",
                 role: oauth.agentRole(serverId: agent.serverId, agentId: otherId),
+                status: info?.status ?? "",
                 activity: otherFacts.activity,
                 activityDetail: otherFacts.detail
             )

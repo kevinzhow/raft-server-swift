@@ -122,7 +122,7 @@ private func executePost(
             #expect(response.status == .ok)
             #expect(
                 response.body.string
-                    == "{\"results\":[{\"taskNumber\":9,\"success\":false,\"reason\":\"not found\"},{\"messageId\":\"deadbeef\",\"success\":false,\"reason\":\"not found\"}]}"
+                    == "{\"results\":[{\"taskNumber\":9,\"success\":false,\"reason\":\"not found\"},{\"messageId\":\"deadbeef\",\"success\":false,\"reason\":\"message not found\"}]}"
             )
         }
     }

@@ -34,6 +34,7 @@ extension ServersAndChannelsStore {
             current.setupHandoffs = restored.setupHandoffs
             current.setupCompletionReasons = restored.setupCompletionReasons
             current.setupHandoffReceipts = restored.setupHandoffReceipts
+            current.ownerOpenerLedgers = restored.ownerOpenerLedgers
             current.guestRoleServers = restored.guestRoleServers
             current.proSeats = restored.proSeats
             current.joinLinks = restored.joinLinks
@@ -81,6 +82,10 @@ private struct CPServersSnapshot: Codable {
     /// a wrong type or a malformed date rejects the whole snapshot instead of
     /// restoring a partial group.
     var setupCompletion: CPSetupCompletion?
+    /// Owner onboarding-briefing ledgers keyed `serverId\nownerId`. An absent
+    /// group is the clearly identified older snapshot shape and restores as
+    /// "never briefed, never claimed"; a present group is strict.
+    var ownerOpenerLedgers: [String: CPOwnerOpenerLedger]?
     var guestRoleServers: Set<String>
     var proSeats: [String: Int]
     var joinLinks: [String: CPJoinLink]
@@ -121,6 +126,7 @@ private struct CPServersSnapshot: Codable {
             completionReasons: value.setupCompletionReasons,
             handoffReceipts: value.setupHandoffReceipts.mapValues(CPHandoffReceipt.init)
         )
+        ownerOpenerLedgers = value.ownerOpenerLedgers.mapValues(CPOwnerOpenerLedger.init)
         guestRoleServers = value.guestRoleServers
         proSeats = value.proSeats
         joinLinks = value.joinLinks.mapValues(CPJoinLink.init)
@@ -171,6 +177,11 @@ private struct CPServersSnapshot: Codable {
         } else {
             setupCompletion = nil
         }
+        if container.contains(.ownerOpenerLedgers) {
+            ownerOpenerLedgers = try container.decode([String: CPOwnerOpenerLedger].self, forKey: .ownerOpenerLedgers)
+        } else {
+            ownerOpenerLedgers = nil
+        }
         guestRoleServers = try container.decode(Set<String>.self, forKey: .guestRoleServers)
         proSeats = try container.decode([String: Int].self, forKey: .proSeats)
         joinLinks = try container.decode([String: CPJoinLink].self, forKey: .joinLinks)
@@ -212,6 +223,7 @@ private struct CPServersSnapshot: Codable {
         let completion = setupCompletion ?? .empty
         value.setupCompletionReasons = completion.completionReasons
         value.setupHandoffReceipts = completion.handoffReceipts.mapValues { $0.restored() }
+        value.ownerOpenerLedgers = (ownerOpenerLedgers ?? [:]).mapValues { $0.restored() }
         value.guestRoleServers = guestRoleServers
         value.proSeats = proSeats
         value.joinLinks = joinLinks.mapValues { $0.restored() }
@@ -589,8 +601,14 @@ private struct CPJointInvite: Codable {
     var targetChannelId: String
     var targetOwnerId: String
     var status: String
+    /// Added with the joint-invite list/resend routes. Older snapshots have no
+    /// invite metadata; restore it as an already-expired invite rather than
+    /// inventing a fresh 14-day window.
+    var invitedByUserId: String?
+    var createdAt: Date?
+    var expiresAt: Date?
 
-    init(_ value: (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)) {
+    init(_ value: (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String)) {
         id = value.id
         hostServerId = value.hostServerId
         hostChannelId = value.hostChannelId
@@ -598,10 +616,57 @@ private struct CPJointInvite: Codable {
         targetChannelId = value.targetChannelId
         targetOwnerId = value.targetOwnerId
         status = value.status
+        invitedByUserId = value.invitedByUserId
+        createdAt = value.createdAt
+        expiresAt = value.expiresAt
     }
 
-    func restored() -> (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String) {
-        (id: id, hostServerId: hostServerId, hostChannelId: hostChannelId, targetServerId: targetServerId, targetChannelId: targetChannelId, targetOwnerId: targetOwnerId, status: status)
+    func restored() -> (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String) {
+        (
+            id: id, hostServerId: hostServerId, hostChannelId: hostChannelId,
+            targetServerId: targetServerId, targetChannelId: targetChannelId,
+            targetOwnerId: targetOwnerId, invitedByUserId: invitedByUserId ?? "",
+            createdAt: createdAt ?? Date(timeIntervalSince1970: 0),
+            expiresAt: expiresAt ?? Date(timeIntervalSince1970: 0), status: status
+        )
     }
 }
 
+
+/// Owner onboarding-briefing ledger snapshot row. Every field is optional
+/// because the opener is unsent before its first successful delivery; a present
+/// group keeps exact reference-date bits for both stamps.
+private struct CPOwnerOpenerLedger: Codable {
+    var dmSentAt: Date?
+    var dmSentByAgentId: String?
+    var openerV2SentAt: Date?
+    var openerV2SentByAgentId: String?
+    var openerV2MessageIds: [String]
+    var openerV2Version: String?
+    var openerV2Topics: [String]
+    var openerClaimedAt: Date?
+
+    init(_ value: OwnerOpenerLedger) {
+        dmSentAt = value.dmSentAt
+        dmSentByAgentId = value.dmSentByAgentId
+        openerV2SentAt = value.openerV2SentAt
+        openerV2SentByAgentId = value.openerV2SentByAgentId
+        openerV2MessageIds = value.openerV2MessageIds
+        openerV2Version = value.openerV2Version
+        openerV2Topics = value.openerV2Topics
+        openerClaimedAt = value.openerClaimedAt
+    }
+
+    func restored() -> OwnerOpenerLedger {
+        var value = OwnerOpenerLedger()
+        value.dmSentAt = dmSentAt
+        value.dmSentByAgentId = dmSentByAgentId
+        value.openerV2SentAt = openerV2SentAt
+        value.openerV2SentByAgentId = openerV2SentByAgentId
+        value.openerV2MessageIds = openerV2MessageIds
+        value.openerV2Version = openerV2Version
+        value.openerV2Topics = openerV2Topics
+        value.openerClaimedAt = openerClaimedAt
+        return value
+    }
+}

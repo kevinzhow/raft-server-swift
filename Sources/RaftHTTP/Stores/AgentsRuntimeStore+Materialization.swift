@@ -52,7 +52,14 @@ extension AgentsRuntimeStore {
               agent.needsManual == nil, agent.takeoverEpoch == command.takeoverEpoch,
               agent.generation == command.breakerGeneration,
               let launch = agent.launches[command.launchId], !launch.stopRequested, !launch.notSpawned,
-              launch.generation == command.breakerGeneration, launch.takeoverEpoch == command.takeoverEpoch,
+              // A runtime configuration lift raises the agent's generation and
+              // clears the current launch without asserting process exit. A live
+              // resident process still carries the launch it was bound to, so a
+              // delivery/notice staged after the lift may name that older launch.
+              // A start never may: it must be minted under the current generation.
+              (launch.generation == command.breakerGeneration
+                || (command.kind == .delivery || command.kind == .notice) && launch.generation < command.breakerGeneration),
+              launch.takeoverEpoch == command.takeoverEpoch,
               let connection = state.execution.connections[command.machineId], connection.serverId == command.serverId,
               connection.online, connection.ready, connection.runtimes.contains("codex"),
               connection.daemonInstanceId == launch.daemonInstanceId,

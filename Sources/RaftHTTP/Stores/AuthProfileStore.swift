@@ -46,7 +46,6 @@ final class AuthProfileStore: Sendable {
     /// All mutable rows share one Mutex so cross-ledger decisions remain atomic.
     struct State: Sendable {
         var profile = ProfileState()
-        var identityRows: [String: [(provider: String, providerEmail: String)]] = [:]
         var passwordResetTokens: [String: (userId: String, expiresAt: Date)] = [:]
         var legalAcceptances: [String: EmailLegalAcceptance] = [:]
         /// Replacing a live token does not erase the hourly issue history.
@@ -60,15 +59,19 @@ final class AuthProfileStore: Sendable {
     /// Shared by the store's file extensions; every access borrows state via withLock.
     let state = TransactionalState(State())
 
+    /// Fixture seed for one linked identity. The row is the same unified owner
+    /// the social link flows append to; it has no provider subject.
     func appendIdentity(userId: String, provider: String, providerEmail: String) {
         state.withLock { state in
-            state.identityRows[userId, default: []].append((provider, providerEmail))
+            state.accountSurface.linkedIdentities.append(LinkedIdentity(
+                userId: userId, provider: provider, providerEmail: providerEmail
+            ))
         }
     }
 
     func identityCount(userId: String) -> Int {
         return state.withLock { state in
-            return state.identityRows[userId]?.count ?? 0
+            return state.accountSurface.linkedIdentities.filter { $0.userId == userId }.count
         }
     }
 
@@ -94,19 +97,38 @@ final class AuthProfileStore: Sendable {
     /// account lookup and the insert are one critical section, so the token
     /// always names a row that existed when it was written. An unknown
     /// address stays a silent no-op and returns `false`.
+    ///
+    /// Mirrors `requestPasswordReset` (`services/userService.ts:1168-1199`):
+    /// at most `limit` tokens still live in the trailing hour, older rows are
+    /// replaced, and a call at the limit is a silent no-op.
     @discardableResult
     func insertResetTokenIfAccountExists(
         email: String,
         tokenHash: String,
         now: Date,
-        ttl: TimeInterval
+        ttl: TimeInterval,
+        limit: Int = 5
     ) -> Bool {
         return state.withLock { state in
             guard let account = state.accountSurface.accounts[AccountNaming.normalize(email)] else {
                 return false
             }
+            let recent = state.passwordResetTokens.filter { $0.value.userId == account.id && $0.value.expiresAt > now }
+            guard recent.count < limit else { return false }
+            state.passwordResetTokens = state.passwordResetTokens.filter { $0.value.userId != account.id }
             state.passwordResetTokens[tokenHash] = (account.id, now.addingTimeInterval(ttl))
             return true
+        }
+    }
+
+    /// Exact, case-sensitive handle uniqueness (`userService.ts:179-190`). The
+    /// authoritative check remains `completeProfile`; this is the advisory
+    /// precheck behind `GET /api/auth/me/username-available`.
+    func isUsernameAvailable(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return state.withLock { state in
+            !state.accountSurface.accounts.values.contains { $0.name == trimmed }
         }
     }
 

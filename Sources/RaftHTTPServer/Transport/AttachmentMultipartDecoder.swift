@@ -7,6 +7,9 @@ import Vapor
 struct AttachmentMultipartBody: Sendable {
     let channelId: String
     let files: [AttachmentUploadContent]
+    /// Every non-file part, by disposition name. `channelId` is the attachment
+    /// routes' conventional field; the avatar/logo routes read `clientKey`.
+    let fields: [String: String]
 }
 
 /// MultipartKit handles MIME boundaries and disposition quoting. Both metadata
@@ -23,11 +26,14 @@ enum AttachmentMultipartDecoder {
         do { parts = try MultipartParser<Data>(boundary: boundary).parse(body) }
         catch { throw AttachmentContentError.invalidMultipart }
         var channelId = ""
+        var fields: [String: String] = [:]
         var files: [AttachmentUploadContent] = []
         for part in parts {
             let disposition = part.headerFields.contentDisposition
-            if disposition?.name == "channelId", disposition?.filename == nil {
-                channelId = String(decoding: part.body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let name = disposition?.name, disposition?.filename == nil {
+                let value = String(decoding: part.body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                fields[name] = value
+                if name == "channelId" { channelId = value }
             } else if let filename = disposition?.filename, !filename.isEmpty {
                 let normalized = filename.replacingOccurrences(of: "\\", with: "/").components(separatedBy: "/").last ?? filename
                 guard !normalized.isEmpty else { continue }
@@ -35,6 +41,6 @@ enum AttachmentMultipartDecoder {
                 files.append(AttachmentUploadContent(filename: normalized, mimeType: mediaType, bytes: Data(part.body)))
             }
         }
-        return AttachmentMultipartBody(channelId: channelId, files: files)
+        return AttachmentMultipartBody(channelId: channelId, files: files, fields: fields)
     }
 }

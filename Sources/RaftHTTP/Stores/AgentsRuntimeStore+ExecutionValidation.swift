@@ -21,6 +21,32 @@ extension AgentExecutionState {
                       command.serverId == intent.serverId, command.agentId == intent.agentId else { throw RuntimePersistenceError.invalidSnapshot }
             }
         }
+        for (key, pending) in pendingHumanDeliveries ?? [:] {
+            guard key == Self.key(pending.serverId, pending.agentId, pending.channelId, pending.messageId),
+                  !pending.serverId.isEmpty, !pending.agentId.isEmpty,
+                  !pending.channelId.isEmpty, !pending.messageId.isEmpty else {
+                throw RuntimePersistenceError.invalidSnapshot
+            }
+            if let released = pending.releasedCommandId {
+                guard let command = commands[released.uuidString], command.serverId == pending.serverId,
+                      command.agentId == pending.agentId,
+                      command.kind == .delivery || command.kind == .start else {
+                    throw RuntimePersistenceError.invalidSnapshot
+                }
+                if command.kind == .delivery {
+                    guard command.channelId == pending.channelId, command.messageId == pending.messageId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                } else {
+                    // Upstream `attempt-wake`: the queued message rides the
+                    // start itself instead of a separate agent:deliver.
+                    guard command.wakeMessage?.channelId == pending.channelId,
+                          command.wakeMessage?.messageId == pending.messageId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                }
+            }
+        }
         for (key, held) in heldDeliveries ?? [:] {
             guard key == held.commandId.uuidString, !held.serverId.isEmpty, !held.agentId.isEmpty,
                   !held.channelId.isEmpty, !held.messageId.isEmpty, stopIntents?[key] == nil,
@@ -30,9 +56,19 @@ extension AgentExecutionState {
                       original.channelId == held.channelId, original.messageId == held.messageId else { throw RuntimePersistenceError.invalidSnapshot }
             }
             if let released = held.releasedCommandId {
-                guard released != held.commandId, let command = commands[released.uuidString], command.kind == .delivery,
+                guard released != held.commandId, let command = commands[released.uuidString],
                       command.serverId == held.serverId, command.agentId == held.agentId,
-                      command.channelId == held.channelId, command.messageId == held.messageId else { throw RuntimePersistenceError.invalidSnapshot }
+                      command.kind == .delivery || command.kind == .start else { throw RuntimePersistenceError.invalidSnapshot }
+                if command.kind == .delivery {
+                    guard command.channelId == held.channelId, command.messageId == held.messageId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                } else {
+                    guard command.wakeMessage?.channelId == held.channelId,
+                          command.wakeMessage?.messageId == held.messageId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                }
             } else if !held.cancelled && dispatches?[key] != nil {
                 // An ambiguous or accepted write can never become unsent work.
                 throw RuntimePersistenceError.invalidSnapshot
@@ -139,6 +175,12 @@ extension AgentExecutionState {
                       validCount(launch.takeoverEpoch), launch.takeoverEpoch <= agent.takeoverEpoch,
                       launch.runnerCredentialId.map({ !$0.isEmpty }) ?? true,
                       !(launch.completed && launch.notSpawned) else { throw RuntimePersistenceError.invalidSnapshot }
+                for commandId in launch.inFlightDeliveryCommandIds ?? [] {
+                    guard let command = commands[commandId.uuidString], command.kind == .delivery,
+                          command.agentId == agentId, command.launchId == launchId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                }
             }
             for (processId, process) in agent.processes {
                 guard processId == process.processInstanceId, !processId.isEmpty, !process.daemonInstanceId.isEmpty,
@@ -154,7 +196,12 @@ extension AgentExecutionState {
                   command.kind == .stop || command.connectionEpochId == dispatch.connectionEpochId else { throw RuntimePersistenceError.invalidSnapshot }
             if command.kind == .delivery {
                 guard let sequence = dispatch.deliverySequence, validCount(sequence) else { throw RuntimePersistenceError.invalidSnapshot }
-            } else if dispatch.deliverySequence != nil { throw RuntimePersistenceError.invalidSnapshot }
+            } else if command.kind == .notice {
+                // The synthetic notice envelope always acknowledges at seq 0.
+                guard dispatch.deliverySequence == 0 else { throw RuntimePersistenceError.invalidSnapshot }
+            } else if dispatch.deliverySequence != nil {
+                throw RuntimePersistenceError.invalidSnapshot
+            }
         }
         for (key, command) in commands {
             guard key == command.commandId.uuidString, !command.serverId.isEmpty, !command.agentId.isEmpty,
@@ -172,9 +219,32 @@ extension AgentExecutionState {
                 guard owner.launches[command.launchId] != nil, !command.connectionEpochId.isEmpty else { throw RuntimePersistenceError.invalidSnapshot }
             }
             if command.kind == .start, command.startDispatchId?.isEmpty != false { throw RuntimePersistenceError.invalidSnapshot }
+            if let wake = command.wakeMessage {
+                // Upstream attempt-wake input: only a start may carry it, and it
+                // names exactly one canonical message.
+                guard command.kind == .start, !wake.channelId.isEmpty, !wake.messageId.isEmpty,
+                      command.channelId == nil, command.messageId == nil else {
+                    throw RuntimePersistenceError.invalidSnapshot
+                }
+            }
             if command.kind == .delivery {
                 guard command.deliveryId?.isEmpty == false, command.channelId?.isEmpty == false,
                       command.messageId?.isEmpty == false else { throw RuntimePersistenceError.invalidSnapshot }
+                // A tracked mention delivery is fenced to exactly one frozen
+                // occurrence, and that occurrence id IS the delivery id upstream.
+                if let occurrenceId = command.mentionDeliveryOccurrenceId {
+                    guard !occurrenceId.isEmpty, command.deliveryId == occurrenceId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                }
+            } else if command.mentionDeliveryOccurrenceId != nil {
+                throw RuntimePersistenceError.invalidSnapshot
+            }
+            if command.kind == .notice {
+                guard command.deliveryId?.isEmpty == false, command.channelId?.isEmpty == false,
+                      command.messageId?.isEmpty == false, command.notice != nil else {
+                    throw RuntimePersistenceError.invalidSnapshot
+                }
             }
         }
     }

@@ -109,10 +109,20 @@ extension AgentSendDependencies {
                 if case .committed(let seq) = outcome {
                     var committed = message
                     committed.seq = seq
+                    // The same persisted frontend pipeline as a human send:
+                    // DM/thread room grants and reply follows first, then the
+                    // canonical `message:new`, `dm:new` or `thread:updated`.
+                    let realtime = MessageRealtimeService(
+                        messages: messages, channels: channels, profiles: mentionService.profiles,
+                        oauth: mentionService.oauth
+                    )
                     let relay = RealtimeRelayService(messages: messages)
-                    try AgentExecutionPublication.publish(room: "channel:\(channelId)", event: "message:new", identity: message.id,
-                        payloadJSON: AgentExecutionPublication.messagePayload(committed, senderName: mentionService.oauth.agentRuntimeInfo(id: message.senderId).map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? "Unknown", includeAttachments: true),
-                        emit: { relay.emit($0, $1, $2) })
+                    for frame in realtime.frames(for: committed) {
+                        try AgentExecutionPublication.publish(
+                            room: frame.room, event: frame.event, identity: frame.identity,
+                            payloadJSON: frame.payload, emit: { relay.emit($0, $1, $2) }
+                        )
+                    }
                 }
                 return outcome
             }

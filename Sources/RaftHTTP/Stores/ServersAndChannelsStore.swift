@@ -45,6 +45,10 @@ final class ServersAndChannelsStore: Sendable {
         /// Real owner handoff receipts keyed `serverId\noriginalOwnerId`. Written
         /// once by `POST .../setup-handoff` and retained on retry.
         var setupHandoffReceipts: [String: SetupHandoffReceipt] = [:]
+        /// Owner onboarding-briefing ledger keyed `serverId\nownerId` (upstream
+        /// `serverMembers.onboarding_*` plus the five-minute opener claim). The
+        /// briefing sent stamps are written only from a typed delivery receipt.
+        var ownerOpenerLedgers: [String: OwnerOpenerLedger] = [:]
         var guestRoleServers: Set<String> = []
         var proSeats: [String: Int] = [:]
         var joinLinks: [String: JoinLinkRecord] = [:]
@@ -58,7 +62,7 @@ final class ServersAndChannelsStore: Sendable {
         var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
         var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
         var sidebarReadAllEnabled: Bool = false
-        var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] = []
+        var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String)] = []
         var composerResourceServers: Set<String> = []
         var installedServerApps: [String: Set<String>] = [:]
     }
@@ -221,7 +225,7 @@ final class ServersAndChannelsStore: Sendable {
         set { mutex.withLock { $0.sidebarReadAllEnabled = newValue } }
     }
 
-    var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] {
+    var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String)] {
         get { mutex.withLock { $0.jointInvites } }
         set { mutex.withLock { $0.jointInvites = newValue } }
     }

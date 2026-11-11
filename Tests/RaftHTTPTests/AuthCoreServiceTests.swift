@@ -177,17 +177,25 @@ private func successes<T: Sendable>(
 @Test func authCoreRegisterRendersTheLegacyBytes() throws {
     let (scene, service) = fixture()
     #expect(thrown { try service.register(nil, userAgent: nil, acceptLanguage: nil) }
-        == .registerBodyInvalid([AuthRequestIssue(path: "", message: "Expected object, received string")]))
+        == .registerBodyInvalid([
+            AuthRequestIssue(path: "email", message: "Invalid input: expected string, received undefined"),
+            AuthRequestIssue(path: "password", message: "Invalid input: expected string, received undefined"),
+        ]))
     #expect(body(AuthCoreError.registerBodyInvalid([
-        AuthRequestIssue(path: "email", message: "Required"),
-        AuthRequestIssue(path: "password", message: "Expected string, received number"),
-    ])) == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"email","message":"Required"},{"path":"password","message":"Expected string, received number"}]}"#)
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received undefined"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received number"),
+    ])) == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received number"}]}"#)
 
-    func request(acceptTerms: Bool = true, terms: String? = AuthLegalPolicy.termsVersion) -> RegisterRequest {
+    func request(
+        acceptTerms: Bool = true,
+        terms: String? = AuthLegalPolicy.termsVersion,
+        password: String = "password123",
+        name: String? = "Newbie"
+    ) -> RegisterRequest {
         RegisterRequest(
-            email: .string("New@Slock.test"),
-            password: .string("password123"),
-            name: .string("Newbie"),
+            email: "New@Slock.test",
+            password: password,
+            name: name,
             acceptTerms: acceptTerms,
             termsVersion: terms,
             privacyVersion: AuthLegalPolicy.privacyVersion
@@ -197,6 +205,13 @@ private func successes<T: Sendable>(
         == .legalAcceptanceRequired)
     #expect(thrown { try service.register(request(terms: "old"), userAgent: nil, acceptLanguage: nil) }
         == .termsChanged)
+    // Pinned `routes/auth.ts:659-661`: the eight-character floor comes after the
+    // name checks and before account creation.
+    #expect(thrown { try service.register(request(password: "short"), userAgent: nil, acceptLanguage: nil) }
+        == .passwordTooShort)
+    #expect(body(AuthCoreError.passwordTooShort) == #"{"error":"Password must be at least 8 characters"}"#)
+    #expect(thrown { try service.register(request(password: "short", name: "1badname"), userAgent: nil, acceptLanguage: nil) }
+        == .nameInvalid("Name must start with a letter and can only contain letters, numbers, hyphens, and underscores"))
     #expect(!scene.hasAccount(email: "new@slock.test"))
     let legal = "{\"termsVersion\":\"\(AuthLegalPolicy.termsVersion)\",\"privacyVersion\":\"\(AuthLegalPolicy.privacyVersion)\",\"termsUrl\":\"\(AuthLegalPolicy.termsURL)\",\"privacyUrl\":\"\(AuthLegalPolicy.privacyURL)\"}"
     #expect(body(AuthCoreError.legalAcceptanceRequired) == "{\"error\":\"LEGAL_ACCEPTANCE_REQUIRED\",\"legal\":\(legal)}")
@@ -215,6 +230,56 @@ private func successes<T: Sendable>(
     #expect(thrown { try service.register(request(), userAgent: nil, acceptLanguage: nil) }
         == .emailAlreadyRegistered)
     #expect(body(AuthCoreError.emailAlreadyRegistered) == #"{"error":"Email already registered"}"#)
+}
+
+/// Pinned `routes/auth.ts:102` is a zod 4.3.6 passthrough object: the schema
+/// names the received JSON type, runs the string-length checks on arrays too,
+/// and ignores unknown members.
+@Test func authCoreRegisterSchemaIssuesUseThePinnedZodMessages() throws {
+    let (_, service) = fixture()
+    func decode(_ json: String) -> RegisterRequest? {
+        try? JSONDecoder().decode(RegisterRequest.self, from: Data(json.utf8))
+    }
+    func issues(_ json: String) -> [AuthRequestIssue]? {
+        guard let body = decode(json) else { return nil }
+        return thrown { try service.register(body, userAgent: nil, acceptLanguage: nil) }.flatMap {
+            if case .registerBodyInvalid(let issues) = $0 { return issues }
+            return nil
+        }
+    }
+
+    #expect(issues("[1]") == [
+        AuthRequestIssue(path: "", message: "Invalid input: expected object, received array"),
+    ])
+    #expect(issues(#"{"email":[]}"#) == [
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received array"),
+        AuthRequestIssue(path: "email", message: "Too small: expected array to have >=1 items"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received undefined"),
+    ])
+    #expect(issues(#"{"email":true,"password":2,"name":[],"stagingSelfAccountCapability":[]}"#) == [
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received boolean"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received number"),
+        AuthRequestIssue(path: "name", message: "Invalid input: expected string, received array"),
+        AuthRequestIssue(path: "name", message: "Too small: expected array to have >=1 items"),
+        AuthRequestIssue(path: "stagingSelfAccountCapability", message: "Invalid input: expected string, received array"),
+        AuthRequestIssue(path: "stagingSelfAccountCapability", message: "Too small: expected array to have >=32 items"),
+    ])
+    #expect(issues(#"{"email":"a@b.test","password":"password123","stagingSelfAccountCapability":"short"}"#) == [
+        AuthRequestIssue(
+            path: "stagingSelfAccountCapability",
+            message: "Too small: expected string to have >=32 characters"
+        ),
+    ])
+    #expect(issues(#"{"email":"a@b.test","password":"password123","stagingSelfAccountCapability":"\#(String(repeating: "x", count: 257))"}"#) == [
+        AuthRequestIssue(
+            path: "stagingSelfAccountCapability",
+            message: "Too big: expected string to have <=256 characters"
+        ),
+    ])
+    // `.passthrough()` ignores an unknown member, so the short password is the
+    // next refusal.
+    #expect(thrown { try service.register(decode(#"{"email":"x@y.test","password":"short","unknown":1}"#),
+                                         userAgent: nil, acceptLanguage: nil) } == .passwordTooShort)
 }
 
 @Test func authCoreSocialCompletionRendersTheLegacyBytes() throws {
@@ -315,8 +380,8 @@ private func successes<T: Sendable>(
 @Test func authCoreConcurrentRegistrationsCreateOneAccount() async throws {
     let (scene, service) = fixture()
     let request = RegisterRequest(
-        email: .string("race@slock.test"),
-        password: .string("password123"),
+        email: "race@slock.test",
+        password: "password123",
         acceptTerms: true,
         termsVersion: AuthLegalPolicy.termsVersion,
         privacyVersion: AuthLegalPolicy.privacyVersion

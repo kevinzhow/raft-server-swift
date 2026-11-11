@@ -5,10 +5,11 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// Complete `method path` table owned by `MessagingFeature`: the 15
-/// `/api/messages/*`, 15 `/api/attachments/*`, 12 `/api/tasks/*`,
-/// 3 `/api/actions/*` and 2 `/api/read-mutations*` registrations (47 pairs).
-/// This includes the batch URL and both HTML preview leaves. `/api/v2/messages`
+/// Complete `method path` table owned by `MessagingFeature`: the extracted
+/// `/api/messages/*`, `/api/attachments/*`, `/api/tasks/*`, `/api/actions/*`
+/// and `/api/read-mutations*` registrations. This includes the batch URL,
+/// the JSON preview leaf, both HTML preview leaves, the task reconfirm and
+/// event action routes. `/api/v2/messages`
 /// is intentionally absent: it is not one of the extracted prefixes.
 private let expectedMessagingRoutes: [String] = [
     "POST /api/actions/:messageId/execute",
@@ -19,6 +20,7 @@ private let expectedMessagingRoutes: [String] = [
     "POST /api/attachments/:id/comments",
     "GET /api/attachments/:id/html-preview",
     "GET /api/attachments/:id/html-preview-url",
+    "GET /api/attachments/:id/preview",
     "GET /api/attachments/:id/url",
     "GET /api/attachments/comments/counts",
     "POST /api/attachments/upload",
@@ -47,6 +49,7 @@ private let expectedMessagingRoutes: [String] = [
     "POST /api/read-mutations",
     "GET /api/read-mutations/frontier",
     "DELETE /api/tasks/:taskId",
+    "GET /api/tasks/:taskId/history",
     "PATCH /api/tasks/:taskId/assignee",
     "PATCH /api/tasks/:taskId/claim",
     "PATCH /api/tasks/:taskId/status",
@@ -58,6 +61,8 @@ private let expectedMessagingRoutes: [String] = [
     "GET /api/tasks/server",
     "GET /api/tasks/server/period-metrics",
     "GET /api/tasks/server/snapshot-metrics",
+    "POST /api/actions/:messageId/event",
+    "POST /api/actions/:messageId/reconfirm",
 ]
 
 private func messagingRouteKey(_ route: Route) -> String {
@@ -80,8 +85,8 @@ private func messagingRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedMessagingRoutes.count == 47)
-        #expect(Set(expectedMessagingRoutes).count == 47)
+        #expect(expectedMessagingRoutes.count == 51)
+        #expect(Set(expectedMessagingRoutes).count == 51)
 
         // One route per table entry, and no route outside the five families.
         #expect(routes.count == expected.count)

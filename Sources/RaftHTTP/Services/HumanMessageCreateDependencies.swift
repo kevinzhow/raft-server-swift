@@ -18,8 +18,23 @@ struct HumanMessageCreateDependencies: Sendable {
         _ randomId: String?,
         _ attachmentIds: [String],
         _ senderTimezone: String?,
+        _ mentions: [MentionInput],
+        _ asTask: Bool
+    ) throws -> HumanMessageWrite
+    /// Commits the row without publishing. The forward route calls this, then
+    /// attaches the forwarded bundle, then `publishForwardedMessage`; upstream
+    /// persists the bundle before `broadcastAndDeliver` for the same reason.
+    var storeHumanMessageDeferred: @Sendable (
+        _ channelId: String,
+        _ senderId: String,
+        _ content: String,
+        _ randomId: String?,
+        _ attachmentIds: [String],
+        _ senderTimezone: String?,
         _ mentions: [MentionInput]
-    ) -> HumanMessageWrite
+    ) throws -> HumanMessageWrite
+    /// Publishes the committed forward row with its retained bundle metadata.
+    var publishForwardedMessage: @Sendable (_ message: StoredHumanMessage) -> Void
     var resolveMentions: @Sendable (
         _ serverId: String,
         _ channelId: String,
@@ -63,10 +78,16 @@ extension HumanMessageCreateDependencies {
                 guard credential.scopes.contains("mentions") else { return .capabilityNotAuthorized }
                 return .success(agentId: credential.agentId)
             },
-            storeHumanMessage: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
-                writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
-                    attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions)
+            storeHumanMessage: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions, asTask in
+                try writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
+                    attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions, asTask: asTask)
             },
+            storeHumanMessageDeferred: { channelId, senderId, content, randomId, attachmentIds, timezone, mentions in
+                try writer.store(channelId: channelId, senderId: senderId, content: content, randomId: randomId,
+                    attachmentIds: attachmentIds, senderTimezone: timezone, mentions: mentions,
+                    asTask: false, publishes: false)
+            },
+            publishForwardedMessage: { writer.publishForwarded($0) },
             resolveMentions: { serverId, channelId, senderId, content, typed, warn in
                 try mentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId, content: content, typed: typed, warnUnresolved: warn)
             },

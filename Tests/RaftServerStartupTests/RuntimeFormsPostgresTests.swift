@@ -181,14 +181,14 @@ func postgresRuntimeFormSourcesUseActualMachineQueries() async throws {
             let v2 = try await wire.reply("builtin", outcome: outcome)
             try runtimeFormsStatus(v2, status: "unavailable", reason: reason, retryable: retryable)
             #expect(try v2.object().object("optionsByValue")?.fields.isEmpty == true)
-            // Node unavailableSource clears options only; provider metadata survives.
-            #expect(try v2.object().object("defaultValueByValue")?.fields == [
-                "deepseek": .string("deepseek/deepseek-v4-pro"),
-                "moonshotai": .string("moonshotai/kimi-k2.6"),
-            ])
-            #expect(try v2.object().object("customValueAllowedByValue")?.fields == [
-                "deepseek": .bool(false), "moonshotai": .bool(false),
-            ])
+            // Upstream `unavailableSource` clears options only. `metadata` and
+            // `custom` survive from the full builtin source, and that source is
+            // keyed by every generated preset provider (plus the two gateway
+            // ids), not by the two-provider bundled subset. Pinned:
+            // piBuiltinModels.generated.ts provider ids/defaults and
+            // runtimeFormDefinitionService.buildBuiltInPiFormOptionSource.
+            #expect(try v2.object().object("defaultValueByValue")?.fields == runtimeFormsBuiltinExpectedDefaults)
+            #expect(try v2.object().object("customValueAllowedByValue")?.fields == runtimeFormsBuiltinExpectedCustom)
         }
 
         // Real unanswered requests outlive the production registry's 20-second
@@ -316,3 +316,46 @@ private func runtimeFormsLive(_ models: [JSONValue], defaultModel: String? = nil
 private func runtimeFormsError(_ code: String) -> JSONValue {
     .object(["kind": .string("error"), "code": .string(code), "retryable": .bool(true)])
 }
+
+/// Pinned generated preset provider defaults (`piBuiltinModels.generated.ts`
+/// `PI_BUILTIN_PROVIDER_DEFAULT_MODELS_GENERATED`) and gateway custom-model
+/// flags. The full Built-in catalog carries every provider even when the live
+/// probe is unavailable; only `optionsByValue` is cleared.
+private let runtimeFormsBuiltinExpectedDefaults: [String: JSONValue] = [
+    "deepseek": .string("deepseek/deepseek-v4-pro"),
+    "minimax": .string("minimax/MiniMax-M2.7"),
+    "minimax-cn": .string("minimax-cn/MiniMax-M2.7"),
+    "zai": .string("zai/glm-5.3"),
+    "zai-coding-cn": .string("zai-coding-cn/glm-5.3"),
+    "moonshotai": .string("moonshotai/kimi-k2.6"),
+    "moonshotai-cn": .string("moonshotai-cn/kimi-k2.6"),
+    "kimi-coding": .string("kimi-coding/kimi-for-coding"),
+    "qwen-token-plan": .string("qwen-token-plan/qwen3.7-max"),
+    "qwen-token-plan-cn": .string("qwen-token-plan-cn/qwen3.7-max"),
+    "openrouter": .string("openrouter/moonshotai/kimi-k2.6"),
+    "openai": .string("openai/gpt-5.5"),
+    "anthropic": .string("anthropic/claude-opus-4-8"),
+    "google": .string("google/gemini-3.1-pro-preview"),
+    "xai": .string("xai/grok-4.7"),
+    "xiaomi": .string("xiaomi/mimo-v2.5-pro"),
+]
+private let runtimeFormsBuiltinExpectedCustom: [String: JSONValue] = [
+    "deepseek": .bool(false),
+    "minimax": .bool(false),
+    "minimax-cn": .bool(false),
+    "zai": .bool(false),
+    "zai-coding-cn": .bool(false),
+    "moonshotai": .bool(false),
+    "moonshotai-cn": .bool(false),
+    "kimi-coding": .bool(false),
+    "qwen-token-plan": .bool(false),
+    "qwen-token-plan-cn": .bool(false),
+    "openrouter": .bool(false),
+    "openai": .bool(false),
+    "anthropic": .bool(false),
+    "google": .bool(false),
+    "xai": .bool(false),
+    "xiaomi": .bool(false),
+    "openai-compatible": .bool(true),
+    "anthropic-compatible": .bool(true),
+]

@@ -25,6 +25,7 @@ public struct ActionCardExecuteService: Sendable {
     private let feedbackLocators: FeedbackLocatorService
     private let cards: ManagedMCPAndCardsStore
     private let prepare: ActionCardPrepareService
+    private let catalog: TaskCatalogService
     private let freshness: AgentSendFreshnessGate
     private let dependencies: AgentSendDependencies
     private let now: @Sendable () -> Date
@@ -40,6 +41,7 @@ public struct ActionCardExecuteService: Sendable {
         feedbackLocators: FeedbackLocatorService,
         cards: ManagedMCPAndCardsStore,
         prepare: ActionCardPrepareService,
+        catalog: TaskCatalogService,
         ownership: AssistantOwnershipQuery,
         suppression: MessageSuppressionService,
         mentions: MessageMentionsService,
@@ -55,6 +57,7 @@ public struct ActionCardExecuteService: Sendable {
             feedbackLocators: feedbackLocators,
             cards: cards,
             prepare: prepare,
+            catalog: catalog,
             dependencies: AgentSendDependencies(
                 ownership: ownership,
                 channels: channels,
@@ -76,6 +79,7 @@ public struct ActionCardExecuteService: Sendable {
         feedbackLocators: FeedbackLocatorService,
         cards: ManagedMCPAndCardsStore,
         prepare: ActionCardPrepareService,
+        catalog: TaskCatalogService,
         dependencies: AgentSendDependencies,
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
@@ -89,6 +93,7 @@ public struct ActionCardExecuteService: Sendable {
         self.feedbackLocators = feedbackLocators
         self.cards = cards
         self.prepare = prepare
+        self.catalog = catalog
         self.freshness = AgentSendFreshnessGate(
             messages: messages,
             channels: channels,
@@ -109,6 +114,9 @@ public struct ActionCardExecuteService: Sendable {
         legacyAgentId: String?,
         channelRef: String?
     ) throws -> AgentTasksListResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
         let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
         try requireGrant(agentId: identity.agentId, scope: "task:read")
         guard let channelRef,
@@ -153,14 +161,29 @@ public struct ActionCardExecuteService: Sendable {
         try requireGrant(agentId: writer.agentId, scope: "task:write")
         guard let body,
               let channelRef = body.channel,
-              let channelId = taskChannel(
-                  serverId: writer.serverId,
-                  agentId: writer.agentId,
-                  reference: channelRef
-              )
+              !(body.taskNumbers.isEmpty && body.messageIds.isEmpty)
         else {
             throw ActionCardExecuteError.invalidTaskClaim
         }
+        let channelId = try resolvedTaskChannel(
+            serverId: writer.serverId,
+            agentId: writer.agentId,
+            reference: channelRef
+        )
+        // Upstream `assertAgentApiTaskWritableChannel` runs before the freshness
+        // gate and before any task lookup or conversion: a thread target is the
+        // pinned 409, `canAgentPostToChannel` is the 403, and an archived
+        // channel is the 409 `channel_archived`. Membership alone is not
+        // writability, so an archived or private surface must not be converted
+        // just because the agent is a member.
+        if (oauth.channelType(id: channelId)
+            ?? channels.postableChannel(id: channelId)?.kind) == "thread" {
+            throw ActionCardExecuteError.threadTaskClaim
+        }
+        guard canAgentModifyTasks(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
+            throw AgentTaskApiError.agentCannotModifyTasks
+        }
+        guard !isChannelArchived(channelId) else { throw AgentTaskApiError.channelArchived }
         if let hold = taskWriteHold(
             agentId: writer.agentId,
             channelId: channelId,
@@ -169,14 +192,114 @@ public struct ActionCardExecuteService: Sendable {
         ) {
             return .held(hold)
         }
+        // Upstream `taskClaim` resolves each `message_ids` entry in the
+        // channel, converts a plain top-level message into a task, then claims
+        // it in the same request. The store's claim pass only knows existing
+        // task records, so the conversion has to happen here. The conversion
+        // uses the canonical message-task link (host text as title, one task
+        // number across the frozen message-task and canonical rows) so a repeat
+        // claim converges on the same row instead of appending a second one.
+        var claimMessageIds = body.messageIds
+        var convertedMessageIds: Set<String> = []
+        if !body.messageIds.isEmpty {
+            let legacyMessageMax = messages.humanMessageRows
+                .filter { $0.channelId == channelId }
+                .compactMap(\.taskNumber)
+                .max() ?? 0
+            claimMessageIds = body.messageIds.map { reference in
+                guard let message = messages.messageForConvert(prefix: reference, channelId: channelId) else {
+                    return reference
+                }
+                switch tasks.ensureMessageTask(
+                    channelId: channelId,
+                    messageId: message.id,
+                    title: message.content,
+                    convertedByType: "agent",
+                    creatorId: writer.agentId,
+                    legacyMessageMaxNumber: legacyMessageMax,
+                    now: now()
+                ) {
+                case .created:
+                    convertedMessageIds.insert(message.id)
+                case .existing:
+                    break
+                }
+                return message.id
+            }
+        }
         let results = tasks.claimTasks(
             channelId: channelId,
             agentId: writer.agentId,
             taskNumbers: body.taskNumbers,
-            messageIds: body.messageIds,
+            messageIds: claimMessageIds,
             now: now()
         )
+        for outcome in results {
+            switch outcome {
+            case .claimed(let taskNumber, _):
+                guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else { continue }
+                try publishClaimTask(task, created: false)
+            case .claimedMessage(_, let taskNumber):
+                guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else { continue }
+                try publishClaimTask(task, created: convertedMessageIds.contains(task.messageId))
+            case .taskNotFound, .taskUnavailable, .alreadyClaimedByYou, .alreadyClaimed,
+                 .messageNotFound, .messageAlreadyClaimedByYou, .messageAlreadyClaimed:
+                continue
+            }
+        }
         return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/unclaim
+
+    /// The unclaim write. The route's request validator guarantees `channel` and
+    /// a positive `task_number`; the service keeps the credential, the grant, the
+    /// channel policy and the task row checks in the pinned order:
+    /// capability/grant 401/403 → channel 404 → not-joinable 403 → archived 409
+    /// → task 404 → store decision 409.
+    public func agentTaskUnclaim(
+        authorization: String?,
+        legacyAgentId: String?,
+        channel: String,
+        taskNumber: Int
+    ) throws -> AgentTaskUnclaimResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
+        guard let writer = taskWriter(authorization: authorization, legacyAgentId: legacyAgentId) else {
+            throw FeedbackLocatorError.invalidAccessToken
+        }
+        try requireGrant(agentId: writer.agentId, scope: "task:write")
+        guard let channelId = taskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channel
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard canAgentModifyTasks(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
+            throw AgentTaskApiError.agentCannotModifyTasks
+        }
+        guard !isChannelArchived(channelId) else { throw AgentTaskApiError.channelArchived }
+        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+            throw AgentTaskApiError.taskNotFound
+        }
+        switch tasks.unclaimForAgent(taskId: task.id, agentId: writer.agentId, now: now()) {
+        case .notFound: throw AgentTaskApiError.taskNotFound
+        case .done: throw AgentTaskApiError.taskDone
+        case .unassigned: throw AgentTaskApiError.taskNotAssigned
+        case .changedConcurrently: throw AgentTaskApiError.taskChangedConcurrently
+        case .unclaimed: return AgentTaskUnclaimResponse()
+        }
+    }
+
+    /// Upstream `channelService.canAgentPostToChannel`: the enabled `#all`
+    /// surface is open to every agent in the server; every other channel needs
+    /// an actual agent membership.
+    private func canAgentModifyTasks(serverId: String, agentId: String, channelId: String) -> Bool {
+        credentials.canAgentPost(serverId: serverId, agentId: agentId, channelId: channelId)
+    }
+
+    private func isChannelArchived(_ channelId: String) -> Bool {
+        credentials.isChannelArchived(channelId)
     }
 
     // MARK: - POST /internal/agent-api/tasks/update-status
@@ -764,7 +887,11 @@ public struct ActionCardExecuteService: Sendable {
     // that have not migrated yet still call, so the policy has one copy.
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(
+            agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth,
+            accounts: prepare.accountStore,
+            reminderSurface: { agentId in feedbackLocators.agentReminderSurfaceChannelId(agentId: agentId) }
+        )
     }
 
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).
@@ -793,6 +920,45 @@ public struct ActionCardExecuteService: Sendable {
     /// The legacy `agentTaskChannel` reference resolution (`#name` or a raw id).
     func taskChannel(serverId: String, agentId: String, reference: String) -> String? {
         credentials.channel(serverId: serverId, agentId: agentId, reference: reference)
+    }
+
+    /// The claim/convert resolution: keeps the caller-fixable DM failures so
+    /// the published `DM_TARGET_AMBIGUOUS` / `DM_TARGET_INVALID_PEER_KIND`
+    /// bodies survive instead of collapsing into a generic 400/404.
+    private func resolvedTaskChannel(
+        serverId: String,
+        agentId: String,
+        reference: String
+    ) throws -> String {
+        switch credentials.resolution(
+            serverId: serverId, agentId: agentId, reference: reference, allowThread: true
+        ) {
+        case .resolved(let channelId):
+            return channelId
+        case .notFound:
+            throw AgentTaskApiError.agentOrChannelNotFound
+        case .ambiguous(let peerName):
+            throw ActionCardExecuteError.dmTargetAmbiguous(peerName: peerName)
+        case .invalidPeerKind(let rawPeer, let suffix):
+            throw ActionCardExecuteError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: suffix)
+        }
+    }
+
+    /// Publishes the board row for a committed claim. A converted plain host
+    /// message only teaches the task board (`task:created`) because the host
+    /// row is unchanged; an existing task is `task:updated`. Neither publishes
+    /// `message:updated`.
+    private func publishClaimTask(_ task: TaskRecord, created: Bool) throws {
+        do {
+            if created {
+                try catalog.publishClaimCreatedTask(task)
+            } else {
+                try catalog.publishClaimUpdatedTask(task)
+            }
+        } catch {
+            DeferredEffects.markRollbackOnly()
+            throw error
+        }
     }
 
     /// The task-write freshness gate. `nil` means the write proceeds; a value

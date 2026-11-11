@@ -73,6 +73,18 @@ public struct SocketSyncMessageDTO: Codable, Sendable, Equatable {
     public let channelId: String
     public let seq: Int
     public let content: String
+    /// Upstream `syncMessages` selects the six stored task columns for every
+    /// row, so the replay frame publishes them even when they are null.
+    public let taskStatus: String?
+    public let taskNumber: Int?
+    public let taskAssigneeType: String?
+    public let taskAssigneeId: String?
+    public let taskClaimedAt: String?
+    public let taskCompletedAt: String?
+    /// Upstream strips the task projection from a forwarded-bundle destination
+    /// row. `false` omits the six members entirely; an ordinary row keeps them
+    /// present as null.
+    public let includesTaskFacts: Bool
     public let attachments: [SocketSyncAttachmentDTO]
     public let commentRef: SocketSyncCommentRefDTO?
 
@@ -81,6 +93,13 @@ public struct SocketSyncMessageDTO: Codable, Sendable, Equatable {
         channelId: String,
         seq: Int,
         content: String,
+        taskStatus: String? = nil,
+        taskNumber: Int? = nil,
+        taskAssigneeType: String? = nil,
+        taskAssigneeId: String? = nil,
+        taskClaimedAt: String? = nil,
+        taskCompletedAt: String? = nil,
+        includesTaskFacts: Bool = true,
         attachments: [SocketSyncAttachmentDTO],
         commentRef: SocketSyncCommentRefDTO?
     ) {
@@ -88,13 +107,30 @@ public struct SocketSyncMessageDTO: Codable, Sendable, Equatable {
         self.channelId = channelId
         self.seq = seq
         self.content = content
+        self.taskStatus = taskStatus
+        self.taskNumber = taskNumber
+        self.taskAssigneeType = taskAssigneeType
+        self.taskAssigneeId = taskAssigneeId
+        self.taskClaimedAt = taskClaimedAt
+        self.taskCompletedAt = taskCompletedAt
+        self.includesTaskFacts = includesTaskFacts
         self.attachments = attachments
         self.commentRef = commentRef
     }
 
-    /// Exact upstream row bytes, including the optional trailing `commentRef`.
+    /// Exact upstream row bytes, including the six task columns and the
+    /// optional trailing `commentRef`.
     func jsonBody() -> String {
-        var body = "{\"id\":\(jsonString(id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(seq),\"content\":\(jsonString(content)),\"attachments\":[\(attachments.map { $0.jsonBody() }.joined(separator: ","))]"
+        let status = taskStatus.map(jsonString) ?? "null"
+        let number = taskNumber.map { String($0) } ?? "null"
+        let assigneeType = taskAssigneeType.map(jsonString) ?? "null"
+        let assigneeId = taskAssigneeId.map(jsonString) ?? "null"
+        let claimedAt = taskClaimedAt.map(jsonString) ?? "null"
+        let completedAt = taskCompletedAt.map(jsonString) ?? "null"
+        let taskFields = includesTaskFacts
+            ? "\"taskStatus\":\(status),\"taskNumber\":\(number),\"taskAssigneeType\":\(assigneeType),\"taskAssigneeId\":\(assigneeId),\"taskClaimedAt\":\(claimedAt),\"taskCompletedAt\":\(completedAt),"
+            : ""
+        var body = "{\"id\":\(jsonString(id)),\"channelId\":\(jsonString(channelId)),\"seq\":\(seq),\"content\":\(jsonString(content)),\(taskFields)\"attachments\":[\(attachments.map { $0.jsonBody() }.joined(separator: ","))]"
         if let commentRef {
             body += ",\"commentRef\":\(commentRef.jsonBody())"
         }

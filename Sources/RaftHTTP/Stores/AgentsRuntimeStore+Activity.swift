@@ -55,6 +55,8 @@ extension AgentsRuntimeStore {
                     if effective >= (state.agentStatusOccurredAt[agentId] ?? .distantPast) {
                         state.agentStatusOccurredAt[agentId] = effective
                         state.agentActivities[agentId] = (activity: status, detail: detailText)
+                        state.agentActivityDetailKind[agentId] = "other"
+                        state.agentActivityObservedAt[agentId] = effective
                     }
                 } else if let hookName = event.hookEventName, !state.agentStatusAdopted.contains(agentId) {
                     let hookStatus: String
@@ -67,6 +69,8 @@ extension AgentsRuntimeStore {
                     if effective >= (state.agentStatusOccurredAt[agentId] ?? .distantPast) {
                         state.agentStatusOccurredAt[agentId] = effective
                         state.agentActivities[agentId] = (activity: hookStatus, detail: "")
+                        state.agentActivityDetailKind[agentId] = "other"
+                        state.agentActivityObservedAt[agentId] = effective
                     }
                 }
             }

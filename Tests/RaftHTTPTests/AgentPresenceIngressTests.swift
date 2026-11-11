@@ -8,7 +8,12 @@ import Testing
 /// manual-stop guard, the canonical detailKind projection and the realtime
 /// push. The fixture uses the same owner stores as the production ingress.
 @Suite(.serialized) struct AgentPresenceIngressTests {
+    private final class Sequencer: Sendable {
+        let next = Mutex<Int64>(0)
+    }
+
     private struct Fixture: Sendable {
+        let sequencer: Sequencer
         let domain: AgentExecutionDomain
         let agents: AgentsRuntimeStore
         let machines: MachinesAndComputersStore
@@ -36,7 +41,7 @@ import Testing
         let messages = MessagesAndThreadsStore()
         let domain = AgentExecutionDomain(agents: agents, machines: machines, oauth: oauth,
                                           channels: ServersAndChannelsStore(), messages: messages)
-        return Fixture(domain: domain, agents: agents, machines: machines, oauth: oauth, messages: messages,
+        return Fixture(sequencer: Sequencer(), domain: domain, agents: agents, machines: machines, oauth: oauth, messages: messages,
                        server: server, machine: machine, agent: agent,
                        context: AgentExecutionMachineContext(machineId: machine, serverId: server,
                                                              connectionEpochId: "connection-1"))
@@ -61,8 +66,9 @@ import Testing
         }
     }
 
-    private func frame(_ type: String, agent: String, body: [String: Any] = [:]) throws -> Data {
-        var value: [String: Any] = ["type": type, "agentId": agent, "daemonInstanceId": "daemon-1", "clientSeq": 1]
+    private func frame(_ fixture: Fixture, _ type: String, agent: String, body: [String: Any] = [:]) throws -> Data {
+        let sequence = fixture.sequencer.next.withLock { $0 += 1; return $0 }
+        var value: [String: Any] = ["type": type, "agentId": agent, "daemonInstanceId": "daemon-1", "clientSeq": sequence]
         value.merge(body) { _, new in new }
         return try JSONSerialization.data(withJSONObject: value, options: .sortedKeys)
     }
@@ -70,7 +76,7 @@ import Testing
     private func status(_ fixture: Fixture, _ status: String, launch: String? = nil) async throws -> AgentExecutionIngressResult {
         var body: [String: Any] = ["status": status]
         if let launch { body["launchId"] = launch }
-        let payload = try frame("agent:status", agent: fixture.agent, body: body)
+        let payload = try frame(fixture, "agent:status", agent: fixture.agent, body: body)
         return try await commit {
             try fixture.domain.stageIngress(context: fixture.context, type: "agent:status", payload: payload)
         }
@@ -82,7 +88,7 @@ import Testing
         if let detailKind { body["detailKind"] = detailKind }
         if let activity { body["activity"] = activity }
         if let launch { body["launchId"] = launch }
-        let payload = try frame("agent:activity", agent: fixture.agent, body: body)
+        let payload = try frame(fixture, "agent:activity", agent: fixture.agent, body: body)
         return try await commit {
             try fixture.domain.stageIngress(context: fixture.context, type: "agent:activity", payload: payload)
         }
@@ -192,7 +198,10 @@ import Testing
         try await ready(fixture)
         fixture.oauth.setAgentStatus(id: fixture.agent, status: "stopped")
         #expect(try await activity(fixture, detailKind: "thinking_started", detail: "Planning") == .committed(ack: nil))
-        #expect(fixture.agents.state.agentActivities[fixture.agent] == nil)
+        // The ready reconcile already wrote the inactive runtime state; the
+        // suppressed daemon frame changes nothing.
+        #expect(fixture.agents.state.agentActivities[fixture.agent]?.activity == "offline")
+        #expect(fixture.agents.state.agentActivities[fixture.agent]?.detail == "Runtime interrupted")
     }
 
     @Test func foreignMachineAndStaleConnectionNeverWritePresence() async throws {
@@ -200,35 +209,35 @@ import Testing
         try await ready(fixture)
         let foreign = AgentExecutionMachineContext(machineId: fixture.machine, serverId: "foreign-server",
                                                    connectionEpochId: "connection-1")
-        let foreignStatusPayload = try frame("agent:status", agent: fixture.agent, body: ["status": "active"])
+        let foreignStatusPayload = try frame(fixture, "agent:status", agent: fixture.agent, body: ["status": "active"])
         let foreignStatus = try await commit {
             try fixture.domain.stageIngress(context: foreign, type: "agent:status", payload: foreignStatusPayload)
         }
         guard case .hold = foreignStatus else { Issue.record("foreign server must be held"); return }
         #expect(fixture.oauth.agentRuntimeInfo(id: fixture.agent)?.status == "inactive")
-        let foreignActivityPayload = try frame("agent:activity", agent: fixture.agent,
+        let foreignActivityPayload = try frame(fixture, "agent:activity", agent: fixture.agent,
                                                body: ["detail": "x", "detailKind": "idle"])
         let foreignActivity = try await commit {
             try fixture.domain.stageIngress(context: foreign, type: "agent:activity", payload: foreignActivityPayload)
         }
         guard case .hold = foreignActivity else { Issue.record("foreign activity must be held"); return }
-        #expect(fixture.agents.state.agentActivities[fixture.agent] == nil)
+        #expect(fixture.agents.state.agentActivities[fixture.agent]?.detail == "Runtime interrupted")
 
         let next = AgentExecutionMachineContext(machineId: fixture.machine, serverId: fixture.server,
                                                 connectionEpochId: "connection-2")
         try await commit { try fixture.domain.connectionOpened(next) }
-        let staleStatusPayload = try frame("agent:status", agent: fixture.agent, body: ["status": "active"])
+        let staleStatusPayload = try frame(fixture, "agent:status", agent: fixture.agent, body: ["status": "active"])
         let staleStatus = try await commit {
             try fixture.domain.stageIngress(context: fixture.context, type: "agent:status", payload: staleStatusPayload)
         }
         #expect(staleStatus == .hold(reason: "stale_connection"))
-        let staleActivityPayload = try frame("agent:activity", agent: fixture.agent,
+        let staleActivityPayload = try frame(fixture, "agent:activity", agent: fixture.agent,
                                              body: ["detail": "x", "detailKind": "idle"])
         let staleActivity = try await commit {
             try fixture.domain.stageIngress(context: fixture.context, type: "agent:activity", payload: staleActivityPayload)
         }
         #expect(staleActivity == .hold(reason: "stale_connection"))
         #expect(fixture.oauth.agentRuntimeInfo(id: fixture.agent)?.status == "inactive")
-        #expect(fixture.agents.state.agentActivities[fixture.agent] == nil)
+        #expect(fixture.agents.state.agentActivities[fixture.agent]?.detail == "Runtime interrupted")
     }
 }

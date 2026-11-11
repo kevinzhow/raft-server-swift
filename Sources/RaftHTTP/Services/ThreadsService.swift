@@ -21,6 +21,9 @@ public enum ThreadsError: DomainError, Equatable {
     case channelNotVisible
     case threadNotFound
     case threadNotFoundForMessage
+    case messageNotFound
+    case parentMessageIdRequired
+    case threadChannelIdRequired
     case limitOutOfRange
     case cursorRequiresLimit
     case invalidCursor
@@ -31,9 +34,11 @@ public enum ThreadsError: DomainError, Equatable {
             401
         case .notServerMember, .forbidden:
             403
-        case .channelNotFound, .channelNotVisible, .threadNotFound, .threadNotFoundForMessage:
+        case .channelNotFound, .channelNotVisible, .threadNotFound, .threadNotFoundForMessage,
+             .messageNotFound:
             404
-        case .limitOutOfRange, .cursorRequiresLimit, .invalidCursor:
+        case .limitOutOfRange, .cursorRequiresLimit, .invalidCursor,
+             .parentMessageIdRequired, .threadChannelIdRequired:
             400
         }
     }
@@ -58,6 +63,12 @@ public enum ThreadsError: DomainError, Equatable {
             "Thread not found"
         case .threadNotFoundForMessage:
             "No thread found for this message"
+        case .messageNotFound:
+            "Message not found"
+        case .parentMessageIdRequired:
+            "parentMessageId is required"
+        case .threadChannelIdRequired:
+            "threadChannelId is required"
         case .limitOutOfRange:
             "limit must be an integer between 1 and 200"
         case .cursorRequiresLimit:
@@ -76,6 +87,7 @@ public enum ThreadsError: DomainError, Equatable {
             "auth_required"
         case .unauthorized, .notServerMember, .forbidden, .channelNotFound,
              .channelNotVisible, .threadNotFound, .threadNotFoundForMessage,
+             .messageNotFound, .parentMessageIdRequired, .threadChannelIdRequired,
              .limitOutOfRange, .cursorRequiresLimit, .invalidCursor:
             nil
         }
@@ -90,6 +102,7 @@ public enum ThreadsError: DomainError, Equatable {
             ])
         case .unauthorized, .missingAuthorization, .invalidAccessToken, .notServerMember,
              .forbidden, .channelNotFound, .channelNotVisible, .threadNotFound,
+             .messageNotFound, .parentMessageIdRequired, .threadChannelIdRequired,
              .limitOutOfRange, .cursorRequiresLimit, .invalidCursor:
             return nil
         }
@@ -104,6 +117,7 @@ public enum ThreadsError: DomainError, Equatable {
             ["Cache-Control": "no-store"]
         case .unauthorized, .notServerMember, .forbidden, .channelNotFound,
              .channelNotVisible, .threadNotFound, .threadNotFoundForMessage,
+             .messageNotFound, .parentMessageIdRequired, .threadChannelIdRequired,
              .limitOutOfRange, .cursorRequiresLimit, .invalidCursor:
             [:]
         }
@@ -188,10 +202,15 @@ public struct ThreadsService: Sendable {
 
     // MARK: - POST /api/channels/threads/follow and /unfollow
 
-    /// The follow/unfollow mutation. The body is optional because a body that
-    /// is not a JSON object keeps the published `Thread not found` refusal; the
-    /// follower event is published only when the request named the thread
-    /// directly and the write succeeded, matching the legacy frame guard.
+    /// The follow/unfollow mutation.
+    ///
+    /// Upstream `POST /threads/follow` accepts only `parentMessageId` and runs
+    /// the parent access check before `getOrCreateThreadForChannel`: a parent
+    /// message without a thread materializes the empty thread, then the manual
+    /// follow row is written and `thread:followers-updated` is published.
+    /// `POST /threads/unfollow` accepts `threadChannelId`. The direct
+    /// `threadChannelId` form for follow is retained as a compatibility input
+    /// for existing direct callers; it resolves to the same write and frame.
     public func setThreadFollow(
         _ body: ThreadFollowMutationDTO?,
         authorization: String?,
@@ -206,41 +225,83 @@ public struct ThreadsService: Sendable {
         }
         guard let body else { throw ThreadsError.threadNotFound }
         let snapshot = dependencies.channels()
-        let threadId: String
-        if let named = body.threadChannelId {
-            threadId = named
-        } else if let parentMessageId = body.parentMessageId,
-                  let resolved = store.threadId(serverId: serverId, parentMessageId: parentMessageId)
-                    ?? snapshot.channels.first(where: {
-                        $0.value.serverId == serverId && $0.value.parentMessageId == parentMessageId
-                    })?.key {
-            threadId = resolved
-        } else {
-            throw ThreadsError.threadNotFound
+        if follow {
+            if let parentMessageId = body.parentMessageId, !parentMessageId.isEmpty {
+                // Upstream `canUserAccessChannel` on the parent message's
+                // channel; a missing message, channel or access is the same
+                // neutral 404 so the route is not an existence oracle.
+                guard let parentChannelId = dependencies.localParentChannelId(parentMessageId, serverId),
+                      let parent = snapshot.channels[parentChannelId],
+                      parent.serverId == serverId, parent.deletedAt == nil,
+                      dependencies.channelProbeAccess(parentChannelId, serverId, userId) == .allowed
+                else {
+                    throw ThreadsError.messageNotFound
+                }
+                let threadId = dependencies.findOrCreateThread(
+                    serverId, parentChannelId, parentMessageId, userId
+                )
+                store.applyThreadFollow(
+                    serverId: serverId,
+                    userId: userId,
+                    threadChannelId: threadId,
+                    parentMessageId: parentMessageId,
+                    follow: true,
+                    now: dependencies.now()
+                )
+                publishFollowersUpdated(ThreadFollowersUpdatedPayload(threadChannelId: threadId))
+                return ThreadFollowResponse(threadChannelId: threadId)
+            }
+            guard let named = body.threadChannelId, !named.isEmpty else {
+                throw ThreadsError.parentMessageIdRequired
+            }
+            let threadId = try resolvedThread(
+                named, serverId: serverId, userId: userId, channels: snapshot.channels
+            )
+            store.applyThreadFollow(
+                serverId: serverId,
+                userId: userId,
+                threadChannelId: threadId,
+                parentMessageId: snapshot.channels[threadId]?.parentMessageId ?? "",
+                follow: true,
+                now: dependencies.now()
+            )
+            publishFollowersUpdated(ThreadFollowersUpdatedPayload(threadChannelId: threadId))
+            return ThreadFollowResponse(threadChannelId: threadId)
         }
-        guard dependencies.channelServerId(threadId) == serverId else {
-            throw ThreadsError.threadNotFound
+        guard let named = body.threadChannelId, !named.isEmpty else {
+            throw ThreadsError.threadChannelIdRequired
         }
-        guard Self.threadParentVisible(
-            threadId: threadId,
-            userId: userId,
-            channels: snapshot.channels
-        ) else {
-            throw ThreadsError.threadNotFound
-        }
-        let parentMessageId = snapshot.channels[threadId]?.parentMessageId ?? body.parentMessageId ?? ""
+        let threadId = try resolvedThread(
+            named, serverId: serverId, userId: userId, channels: snapshot.channels
+        )
         store.applyThreadFollow(
             serverId: serverId,
             userId: userId,
             threadChannelId: threadId,
-            parentMessageId: parentMessageId,
-            follow: follow,
+            parentMessageId: snapshot.channels[threadId]?.parentMessageId ?? body.parentMessageId ?? "",
+            follow: false,
             now: dependencies.now()
         )
-        if let requested = body.threadChannelId, !requested.isEmpty {
-            publishFollowersUpdated(ThreadFollowersUpdatedPayload(threadChannelId: requested))
+        publishFollowersUpdated(ThreadFollowersUpdatedPayload(threadChannelId: threadId))
+        return .unfollowed
+    }
+
+    /// The existing-thread checks shared by the direct thread-id form and
+    /// unfollow: the thread is on this server and its parent is currently
+    /// visible to the caller.
+    private func resolvedThread(
+        _ threadId: String,
+        serverId: String,
+        userId: String,
+        channels: [String: PostableChannel]
+    ) throws -> String {
+        guard dependencies.channelServerId(threadId) == serverId else {
+            throw ThreadsError.threadNotFound
         }
-        return ThreadFollowResponse(following: follow)
+        guard Self.threadParentVisible(threadId: threadId, userId: userId, channels: channels) else {
+            throw ThreadsError.threadNotFound
+        }
+        return threadId
     }
 
     /// A thread is readable only through its parent's current visibility.

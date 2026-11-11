@@ -213,6 +213,7 @@ extension OAuthLedger {
         public var id: String
         public var serverId: String
         public var name: String
+        public var avatarUrl: String?
         public var description: String?
         public var creatorUserId: String?
         public var runtime: String
@@ -266,6 +267,7 @@ extension OAuthLedger {
                 id: agent.id,
                 serverId: agent.serverId,
                 name: agent.name,
+                avatarUrl: agent.avatarUrl,
                 description: agent.description,
                 creatorUserId: agent.creatorUserId,
                 runtime: agent.runtime,

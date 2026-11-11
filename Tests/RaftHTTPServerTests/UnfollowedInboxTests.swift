@@ -22,6 +22,9 @@ import VaporTesting
     accounts.addPostableChannel(serverId: serverId, channelId: parent, memberId: ownerId, name: "unfollow-parent")
     accounts.addPostableChannel(serverId: serverId, channelId: parent, memberId: followerId, name: "unfollow-parent")
     let parentMessageId = UUID().uuidString.lowercased()
+    accounts.addChannelMessageForTesting(
+        id: parentMessageId, channelId: parent, content: "unfollow parent", senderId: ownerId
+    )
     let thread = accounts.oauth.createThreadChannel(parentChannelId: parent, parentMessageId: parentMessageId)
     for id in [ownerId, followerId] {
         accounts.addPostableChannel(serverId: serverId, channelId: thread, memberId: id, kind: "thread", parentChannelId: parent, parentMessageId: parentMessageId, name: "thread")
@@ -73,7 +76,13 @@ import VaporTesting
             try await follow(ownerToken)
             let before = try await send(ownerToken, "unfollow before boundary")
             try await unfollow(ownerToken)
-            _ = try await send(ownerToken, "unfollow after boundary")
+            // Upstream `channels.api.test.ts` ("human/web unfollow blocks
+            // ordinary replies until a direct mention reactivates the follow")
+            // sends this post-unfollow reply from another member: an ordinary
+            // reply must not reactivate the parent author's explicit unfollow.
+            // The owner's own reply would reactivate their follow
+            // (`recordThreadFollow(..., reactivateUnfollowed: true)`).
+            _ = try await send(followerToken, "unfollow after boundary")
 
             try await follow(followerToken)
             try await unfollow(followerToken)

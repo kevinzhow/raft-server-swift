@@ -108,6 +108,8 @@ struct MessagingPersistenceStoredHumanMessageDTO: Codable, Sendable {
     let causalActorType: String?
     let causalActorId: String?
     let mentions: [MessagingPersistenceStoredMessageMentionDTO]
+    /// Optional so every snapshot written before the owner opener decodes.
+    let agentSendKey: String?
 
     init(_ row: StoredHumanMessage) {
         id = row.id
@@ -135,6 +137,7 @@ struct MessagingPersistenceStoredHumanMessageDTO: Codable, Sendable {
         causalActorType = row.causalActorType
         causalActorId = row.causalActorId
         mentions = row.mentions.map(MessagingPersistenceStoredMessageMentionDTO.init)
+        agentSendKey = row.agentSendKey
     }
 
     var value: StoredHumanMessage {
@@ -163,7 +166,8 @@ struct MessagingPersistenceStoredHumanMessageDTO: Codable, Sendable {
             systemSubtype: systemSubtype,
             causalActorType: causalActorType,
             causalActorId: causalActorId,
-            mentions: mentions.map(\.value)
+            mentions: mentions.map(\.value),
+            agentSendKey: agentSendKey
         )
     }
 }
@@ -287,6 +291,9 @@ struct MessagingPersistenceStoredMentionDTO: Codable, Sendable {
     let notifiedById: String?
     let notifiedAction: String?
     let terminalCode: String?
+    /// New optional group. Absent in every snapshot written before the mention
+    /// delivery occurrence spine and never required by an older reader.
+    let mentionDeliveryOccurrence: MessagingPersistenceMentionDeliveryOccurrenceDTO?
 
     init(_ row: StoredMention) {
         id = row.id
@@ -303,6 +310,7 @@ struct MessagingPersistenceStoredMentionDTO: Codable, Sendable {
         notifiedById = row.notifiedById
         notifiedAction = row.notifiedAction
         terminalCode = row.terminalCode
+        mentionDeliveryOccurrence = row.mentionDeliveryOccurrence.map(MessagingPersistenceMentionDeliveryOccurrenceDTO.init)
     }
 
     var value: StoredMention {
@@ -320,8 +328,86 @@ struct MessagingPersistenceStoredMentionDTO: Codable, Sendable {
             notifiedByType: notifiedByType,
             notifiedById: notifiedById,
             notifiedAction: notifiedAction,
-            terminalCode: terminalCode
+            terminalCode: terminalCode,
+            mentionDeliveryOccurrence: mentionDeliveryOccurrence?.value
         )
+    }
+}
+
+/// Only the new optional key group. Every timestamp keeps reference-interval
+/// bits so a restore cannot silently round a receipt time.
+struct MessagingPersistenceMentionDeliveryOccurrenceDTO: Codable, Sendable {
+    let state: String
+    let deliveryPath: String
+    let machineIdSnapshot: String?
+    let launchIdSnapshot: String?
+    let sessionIdSnapshot: String?
+    let mentionRecordedAt: MessagingPersistenceDateBits
+    let serverDecidedAt: MessagingPersistenceDateBits?
+    let daemonReceivedAt: MessagingPersistenceDateBits?
+    let daemonPendingAt: MessagingPersistenceDateBits?
+    let daemonDrainedAt: MessagingPersistenceDateBits?
+    let ackedAt: MessagingPersistenceDateBits?
+    let terminalErrorAt: MessagingPersistenceDateBits?
+    let terminalErrorCode: String?
+    let terminalDecision: MessagingPersistenceMentionDeliveryTerminalDecisionDTO?
+    let pendingCoalescedCount: Int
+    let version: Int
+    let deliveryPayloadJSON: String?
+    let redriveCount: Int
+    let lastRedriveAt: MessagingPersistenceDateBits?
+    let recoveryCount: Int
+
+    init(_ row: MentionDeliveryOccurrence) {
+        state = row.state
+        deliveryPath = row.deliveryPath
+        machineIdSnapshot = row.machineIdSnapshot
+        launchIdSnapshot = row.launchIdSnapshot
+        sessionIdSnapshot = row.sessionIdSnapshot
+        mentionRecordedAt = MessagingPersistenceDateBits(row.mentionRecordedAt)
+        serverDecidedAt = row.serverDecidedAt.map(MessagingPersistenceDateBits.init)
+        daemonReceivedAt = row.daemonReceivedAt.map(MessagingPersistenceDateBits.init)
+        daemonPendingAt = row.daemonPendingAt.map(MessagingPersistenceDateBits.init)
+        daemonDrainedAt = row.daemonDrainedAt.map(MessagingPersistenceDateBits.init)
+        ackedAt = row.ackedAt.map(MessagingPersistenceDateBits.init)
+        terminalErrorAt = row.terminalErrorAt.map(MessagingPersistenceDateBits.init)
+        terminalErrorCode = row.terminalErrorCode
+        terminalDecision = row.terminalDecision.map(MessagingPersistenceMentionDeliveryTerminalDecisionDTO.init)
+        pendingCoalescedCount = row.pendingCoalescedCount
+        version = row.version
+        deliveryPayloadJSON = row.deliveryPayloadJSON
+        redriveCount = row.redriveCount
+        lastRedriveAt = row.lastRedriveAt.map(MessagingPersistenceDateBits.init)
+        recoveryCount = row.recoveryCount
+    }
+
+    var value: MentionDeliveryOccurrence {
+        MentionDeliveryOccurrence(
+            state: state, deliveryPath: deliveryPath,
+            machineIdSnapshot: machineIdSnapshot, launchIdSnapshot: launchIdSnapshot,
+            sessionIdSnapshot: sessionIdSnapshot,
+            mentionRecordedAt: mentionRecordedAt.value,
+            serverDecidedAt: serverDecidedAt?.value, daemonReceivedAt: daemonReceivedAt?.value,
+            daemonPendingAt: daemonPendingAt?.value, daemonDrainedAt: daemonDrainedAt?.value,
+            ackedAt: ackedAt?.value, terminalErrorAt: terminalErrorAt?.value,
+            terminalErrorCode: terminalErrorCode, terminalDecision: terminalDecision?.value,
+            pendingCoalescedCount: pendingCoalescedCount, version: version,
+            deliveryPayloadJSON: deliveryPayloadJSON, redriveCount: redriveCount,
+            lastRedriveAt: lastRedriveAt?.value, recoveryCount: recoveryCount)
+    }
+}
+
+struct MessagingPersistenceMentionDeliveryTerminalDecisionDTO: Codable, Sendable {
+    let layer: String
+    let stage: String
+    let originalDaemonCode: String?
+
+    init(_ row: MentionDeliveryTerminalDecision) {
+        layer = row.layer; stage = row.stage; originalDaemonCode = row.originalDaemonCode
+    }
+
+    var value: MentionDeliveryTerminalDecision {
+        MentionDeliveryTerminalDecision(layer: layer, stage: stage, originalDaemonCode: originalDaemonCode)
     }
 }
 

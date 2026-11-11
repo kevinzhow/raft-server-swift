@@ -56,10 +56,15 @@ struct AgentExecutionDomain: Sendable {
     func hasBlockingUnexitedExecution(agentId: String, agent: AgentExecutionAgent, state: AgentExecutionState) -> Bool {
         let current = agent.currentLaunchId.flatMap { agent.launches[$0] }
         let healthyCurrent = current.map {
-            $0.generation == agent.generation && !$0.terminalFailure && !$0.notSpawned
+            $0.retiredAfterDaemonRestart != true && $0.generation == agent.generation && !$0.terminalFailure && !$0.notSpawned
                 && agent.blockedUntil == nil && agent.probeLaunchId == nil
         } ?? false
+        let currentDaemonInstanceId = state.connections[agent.machineId]?.daemonInstanceId
         for process in agent.processes.values where !process.exited {
+            // An instance the current complete ready replaced can no longer
+            // report an exit, and its child cannot be adopted by this daemon;
+            // `ready` is the authoritative inventory for this machine.
+            if let currentDaemonInstanceId, process.daemonInstanceId != currentDaemonInstanceId { continue }
             let currentEpoch = process.launchIds.contains { agent.launches[$0]?.takeoverEpoch == agent.takeoverEpoch }
             if !currentEpoch { continue }
             if healthyCurrent, let current, process.launchIds.contains(current.launchId) { continue }
@@ -71,7 +76,8 @@ struct AgentExecutionDomain: Sendable {
                     || state.dispatches?[command.commandId.uuidString] != nil else { return nil }
             return command.launchId
         })
-        for launch in agent.launches.values where launch.takeoverEpoch == agent.takeoverEpoch && !launch.notSpawned {
+        for launch in agent.launches.values where launch.takeoverEpoch == agent.takeoverEpoch
+            && !launch.notSpawned && launch.retiredAfterDaemonRestart != true {
             if let processId = launch.processInstanceId {
                 if agent.processes[processId] == nil { return true }
             } else if launch.startAccepted || sentLaunches.contains(launch.launchId) {
@@ -89,6 +95,12 @@ struct AgentExecutionDomain: Sendable {
         }
         let machineId = try boundMachine(serverId: request.serverId, agentId: request.agentId)
         guard oauth.agentRuntimeInfo(id: request.agentId)?.runtime == "codex" else { throw AgentExecutionError.invalidRequest }
+        if let wake = request.wakeMessage {
+            guard deliveryIsAuthorized(serverId: request.serverId, agentId: request.agentId,
+                                       channelId: wake.channelId, messageId: wake.messageId) else {
+                throw AgentExecutionError.invalidRequest
+            }
+        }
         if agents.state.execution.commands[request.commandId.uuidString] == nil,
            hasActiveReset(serverId: request.serverId, agentId: request.agentId) { throw AgentExecutionError.manualRecoveryRequired }
         let result = try mutate { state -> (AgentExecutionCommand, Bool) in
@@ -97,10 +109,22 @@ struct AgentExecutionDomain: Sendable {
             if let previous = state.commands[request.commandId.uuidString] {
                 guard previous.kind == .start, previous.serverId == request.serverId,
                       previous.agentId == request.agentId,
-                      previous.humanStart == (request.control == .humanStart), previous.resumePrompt == request.resumePrompt else {
+                      previous.humanStart == (request.control == .humanStart), previous.resumePrompt == request.resumePrompt,
+                      previous.wakeMessage == request.wakeMessage else {
                     throw AgentExecutionError.conflictingCommand
                 }
                 return (previous, false)
+            }
+            // One message can be owed exactly one next attempt. A live start
+            // that already carries it, or a live delivery for it, owns that
+            // obligation; staging another would emit a second identical frame.
+            if let wake = request.wakeMessage,
+               let existing = state.liveObligationCommand(serverId: request.serverId, agentId: request.agentId,
+                                                          channelId: wake.channelId, messageId: wake.messageId) {
+                guard existing.kind == .start, existing.wakeMessage == wake else {
+                    throw AgentExecutionError.conflictingCommand
+                }
+                return (existing, false)
             }
             guard let connection = state.connections[machineId], connection.serverId == request.serverId,
                   connection.online, connection.ready, connection.runtimes.contains("codex"),
@@ -120,7 +144,8 @@ struct AgentExecutionDomain: Sendable {
                     state.agents[request.agentId] = agent
                     throw AgentExecutionError.manualRecoveryRequired
                 }
-                if let current = agent.currentLaunchId, let launch = agent.launches[current] {
+                if let current = agent.currentLaunchId, let launch = agent.launches[current],
+                   launch.retiredAfterDaemonRestart != true {
                     if !launch.completed && !launch.notSpawned && !launch.terminalFailure {
                         throw AgentExecutionError.launchInProgress
                     }
@@ -168,7 +193,8 @@ struct AgentExecutionDomain: Sendable {
                 agentId: request.agentId, launchId: launchId, startDispatchId: dispatchId, deliveryId: nil,
                 connectionEpochId: connection.connectionEpochId, takeoverEpoch: agent.takeoverEpoch,
                 breakerGeneration: agent.generation, humanStart: human, sessionId: agent.sessionId,
-                resumePrompt: request.resumePrompt, channelId: nil, messageId: nil, status: .pending, createdAt: now)
+                resumePrompt: request.resumePrompt, channelId: nil, messageId: nil, notice: nil, status: .pending, createdAt: now,
+                wakeMessage: request.wakeMessage)
             state.agents[request.agentId] = agent
             state.commands[request.commandId.uuidString] = command
             return (command, true)
@@ -177,8 +203,15 @@ struct AgentExecutionDomain: Sendable {
             do {
                 try stage(result.0)
                 if request.control == .humanStart {
+                    // Upstream `attempt-wake` / `maybeWakePendingInboxAfterReady`:
+                    // the oldest owed message becomes this start's first input,
+                    // so the process has something true to act on and no
+                    // separate delivery is needed for it. Remaining owed sends
+                    // release only after this launch reports its process (the
+                    // daemon start window never acknowledges a delivery).
+                    _ = try carryQueuedWakeMessage(on: result.0)
+                    try cancelUnauthorizedQueuedDeliveries(serverId: request.serverId, agentId: request.agentId)
                     setIntentStatus(agentId: request.agentId, status: "active")
-                    try releaseHeldDeliveries(start: result.0)
                     try retireKnownCredentials(agentId: request.agentId)
                 }
             } catch { DeferredEffects.markRollbackOnly(); throw error }
@@ -207,14 +240,33 @@ struct AgentExecutionDomain: Sendable {
                   agent.blockedUntil.map({ now >= $0 }) ?? true,
                   agent.probeExpiresAt.map({ now < $0 }) ?? true else { return nil }
             if let id = agent.currentLaunchId, let launch = agent.launches[id],
+               launch.retiredAfterDaemonRestart != true,
                (!launch.completed && !launch.notSpawned && !launch.terminalFailure
                 || launch.terminalFailure && agent.processes.values.contains(where: { !$0.exited && $0.launchIds.contains(id) })) { return nil }
         }
         return try requestStart(request)
     }
 
+    /// The staging result of one delivery request. `deferred` is not a refusal:
+    /// the canonical message and the durable mention occurrence keep the
+    /// obligation, and the daemon's next `agent:session` recovers it once the
+    /// concrete session identity exists (upstream never embeds a tracked mention
+    /// in `agent:start`).
+    enum DeliveryStaging: Sendable {
+        case staged(AgentExecutionAdmission)
+        case held
+        case deferred
+    }
+
     /// nil is a durable held delivery, not a failed user message or task write.
     func requestDelivery(_ request: AgentExecutionDeliveryRequest) throws -> AgentExecutionAdmission? {
+        switch try stageDelivery(request) {
+        case .staged(let admission): return admission
+        case .held, .deferred: return nil
+        }
+    }
+
+    func stageDelivery(_ request: AgentExecutionDeliveryRequest) throws -> DeliveryStaging {
         try requireTransaction()
         _ = try ownedAgent(serverId: request.serverId, agentId: request.agentId)
         guard deliveryIsAuthorized(serverId: request.serverId, agentId: request.agentId,
@@ -224,7 +276,10 @@ struct AgentExecutionDomain: Sendable {
         if let held = agents.state.execution.heldDeliveries?[request.commandId.uuidString] {
             guard held.serverId == request.serverId, held.agentId == request.agentId,
                   held.channelId == request.channelId, held.messageId == request.messageId else { throw AgentExecutionError.conflictingCommand }
-            return held.releasedCommandId.flatMap { agents.state.execution.commands[$0.uuidString]?.admission }
+            guard let admission = held.releasedCommandId.flatMap({ agents.state.execution.commands[$0.uuidString]?.admission }) else {
+                return .held
+            }
+            return .staged(admission)
         }
         guard agents.state.execution.stopIntents?[request.commandId.uuidString] == nil else { throw AgentExecutionError.conflictingCommand }
         if let previous = agents.state.execution.commands[request.commandId.uuidString] {
@@ -232,41 +287,150 @@ struct AgentExecutionDomain: Sendable {
                   previous.channelId == request.channelId, previous.messageId == request.messageId else {
                 throw AgentExecutionError.conflictingCommand
             }
-            return previous.admission
+            return .staged(previous.admission)
+        }
+        // Exactly one live attempt per message, whichever path asks: the send
+        // that produced it, a queued-release trigger, or the durable occurrence
+        // recovery. Reusing the live command is the upstream "same message, same
+        // deliveryId" rule; it cannot emit a second identical frame.
+        if let live = liveObligationCommand(serverId: request.serverId, agentId: request.agentId,
+                                            channelId: request.channelId, messageId: request.messageId) {
+            return .staged(live.admission)
         }
         if manuallyStopped(serverId: request.serverId, agentId: request.agentId) || hasActiveReset(serverId: request.serverId, agentId: request.agentId) {
             try holdDelivery(request)
-            return nil
+            return .held
         }
         let machineId = try boundMachine(serverId: request.serverId, agentId: request.agentId)
-        let snapshot = agents.state.execution.agents[request.agentId]
-        if snapshot?.currentLaunchId.flatMap({ snapshot?.launches[$0] }).map({ !$0.completed && !$0.notSpawned && !$0.terminalFailure }) != true {
-            _ = try requestStart(.init(serverId: request.serverId, agentId: request.agentId))
+        // A formal notifiable mention carries a durable occurrence from the send
+        // transaction; a mention resolved later (the sender's notify/add action)
+        // gains it here, before any delivery is prepared.
+        let occurrence = messages.ensureMentionDeliveryOccurrence(
+            messageId: request.messageId, agentId: request.agentId).flatMap {
+                messages.mentionDeliveryOccurrence(occurrenceId: $0)
+            }
+        let snapshot = agents.state.execution
+        let current = snapshot.agents[request.agentId].flatMap { agent in
+            agent.currentLaunchId.flatMap { agent.launches[$0] }
         }
+        let live = snapshot.agents[request.agentId].flatMap { liveRuntimeProcess($0, in: snapshot) }
+        // Upstream starts a runtime only when the daemon has none. A resident
+        // process (idle or busy) receives the delivery itself, and an admitted
+        // launch still starting buffers it. Neither case starts a new launch:
+        // that start is what used to be refused for the unexited process and
+        // silently wedged every message after the first turn.
+        let startsRuntime = live == nil && current.map(launchIsInFlight) != true
+        if startsRuntime {
+            // `attempt-wake`: the message that causes the start is the start's
+            // first input. A tracked mention is the exception (its occurrence
+            // needs the concrete session identity): the start merely wakes the
+            // runtime and the session pass delivers the occurrence once.
+            let wake: AgentExecutionWakeMessage? = occurrence == nil
+                ? AgentExecutionWakeMessage(channelId: request.channelId, messageId: request.messageId) : nil
+            let admission = try requestStart(.init(serverId: request.serverId, agentId: request.agentId, wakeMessage: wake))
+            if occurrence != nil { return .deferred }
+            return .staged(admission)
+        }
+        // `applyDirectDelivery`'s identity gate: without the daemon's current
+        // session there is nothing to track against, so the durable occurrence
+        // defers to the `agent:session` that rebuilds the acknowledgement
+        // obligation. Waiting is the branch's tracked-mention contract: the
+        // ordinary untracked delivery would lose the receipt chain.
+        if occurrence != nil, agents.state.execution.agents[request.agentId]?.sessionId == nil { return .deferred }
         do {
             let command = try mutate { state -> AgentExecutionCommand in
                 guard let connection = state.connections[machineId], connection.online, connection.ready,
-                      let agent = state.agents[request.agentId], agent.needsManual == nil,
-                      let launchId = agent.currentLaunchId, let launch = agent.launches[launchId], !launch.stopRequested, !launch.terminalFailure else {
+                      let owner = state.agents[request.agentId], owner.needsManual == nil else {
+                    throw AgentExecutionError.manualRecoveryRequired
+                }
+                // The delivery carries no launch id on the wire; the command
+                // nevertheless names the launch the daemon reports as current.
+                // A live process keeps carrying that launch across turns, so a
+                // completed turn adopts it again instead of cold-starting.
+                let launchId = try deliveryLaunchId(state: &state, agentId: request.agentId)
+                guard let agent = state.agents[request.agentId],
+                      let launch = agent.launches[launchId], launchIsUsableForDelivery(launch) else {
                     throw AgentExecutionError.manualRecoveryRequired
                 }
                 let command = AgentExecutionCommand(
                     commandId: request.commandId, kind: .delivery, serverId: request.serverId, machineId: machineId,
-                    agentId: request.agentId, launchId: launchId, startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
+                    agentId: request.agentId, launchId: launchId, startDispatchId: nil,
+                    deliveryId: occurrence?.occurrenceId ?? UUID().uuidString.lowercased(),
                     connectionEpochId: connection.connectionEpochId, takeoverEpoch: agent.takeoverEpoch,
                     breakerGeneration: agent.generation, humanStart: false, sessionId: agent.sessionId,
-                    resumePrompt: nil, channelId: request.channelId, messageId: request.messageId, status: .pending, createdAt: Date())
+                    resumePrompt: nil, channelId: request.channelId, messageId: request.messageId, notice: nil,
+                    mentionDeliveryOccurrenceId: occurrence?.occurrenceId,
+                    status: .pending, createdAt: Date())
                 state.commands[request.commandId.uuidString] = command
                 return command
             }
             try stage(command)
-            return command.admission
+            return .staged(command.admission)
         } catch {
             // A cold start may already be staged. Never commit half the producer
             // request if the caller converts this error to an HTTP response.
             DeferredEffects.markRollbackOnly()
             throw error
         }
+    }
+
+    /// The process the daemon reports as this agent's live runtime on the
+    /// current connection **and current takeover epoch**. Upstream's
+    /// `runtimeState === "running"`: a resident `codex app-server` keeps serving
+    /// after each turn completes, so a completed turn is not the absence of a
+    /// runtime. A human takeover starts a new epoch; a still-unexited process
+    /// from an older epoch is superseded and must neither capture the new
+    /// epoch's wake as a delivery nor suppress its start. This mirrors
+    /// `hasBlockingUnexitedExecution`'s current-epoch filter.
+    func liveRuntimeProcess(_ agent: AgentExecutionAgent, in state: AgentExecutionState) -> AgentExecutionProcess? {
+        guard let connection = state.connections[agent.machineId], connection.online,
+              connection.serverId == agent.serverId,
+              let daemonInstanceId = connection.daemonInstanceId else { return nil }
+        return agent.processes.values
+            .filter { process in
+                !process.exited && process.daemonInstanceId == daemonInstanceId
+                    && process.launchIds.contains { agent.launches[$0]?.takeoverEpoch == agent.takeoverEpoch }
+            }
+            .sorted { $0.processInstanceId < $1.processInstanceId }
+            .first
+    }
+
+    /// A launch the daemon admitted or still carries a process for. A stopped,
+    /// refused, terminally failed or daemon-restart-retired launch carries no
+    /// delivery.
+    func launchIsUsableForDelivery(_ launch: AgentExecutionLaunch) -> Bool {
+        launch.retiredAfterDaemonRestart != true && !launch.notSpawned && !launch.terminalFailure && !launch.stopRequested
+    }
+
+    /// A launch whose turn has not completed (or whose start result is still
+    /// unknown): a delivery may be staged on it because the daemon buffers it
+    /// during startup and queues it while the runtime is busy. A retired launch
+    /// belongs to a daemon instance that no longer exists.
+    func launchIsInFlight(_ launch: AgentExecutionLaunch) -> Bool {
+        launch.retiredAfterDaemonRestart != true && !launch.completed && !launch.notSpawned && !launch.terminalFailure
+    }
+
+    /// The launch a delivery command must name. The current launch is used when
+    /// it can carry a delivery. A configuration lift clears `currentLaunchId`
+    /// but not process facts; the live resident process still carries the
+    /// launch the daemon reports, so it becomes current again rather than
+    /// forcing a cold start the unexited process would refuse.
+    func deliveryLaunchId(state: inout AgentExecutionState, agentId: String) throws -> String {
+        guard var agent = state.agents[agentId] else { throw AgentExecutionError.manualRecoveryRequired }
+        if let currentId = agent.currentLaunchId, let current = agent.launches[currentId],
+           launchIsUsableForDelivery(current) {
+            return currentId
+        }
+        guard let process = liveRuntimeProcess(agent, in: state) else {
+            throw AgentExecutionError.manualRecoveryRequired
+        }
+        let carried = process.launchIds.compactMap { agent.launches[$0] }
+            .filter(launchIsUsableForDelivery)
+            .sorted { ($0.generation, $0.launchId) > ($1.generation, $1.launchId) }
+        guard let adopted = carried.first else { throw AgentExecutionError.manualRecoveryRequired }
+        agent.currentLaunchId = adopted.launchId
+        state.agents[agentId] = agent
+        return adopted.launchId
     }
 
     func retireKnownCredentials(agentId: String) throws {
@@ -297,23 +461,42 @@ struct AgentExecutionDomain: Sendable {
                 throw AgentExecutionError.ownershipMismatch
             }
         }
-        try mutate { state in
-            guard state.connections[context.machineId]?.connectionEpochId == context.connectionEpochId,
-                  state.connections[context.machineId]?.online == true else { throw AgentExecutionError.staleConnection }
-            state.connections[context.machineId]?.daemonInstanceId = daemonInstanceId
-            state.connections[context.machineId]?.runtimes = Set(runtimes)
-            state.connections[context.machineId]?.ready = detectionComplete && runtimes.contains("codex")
-            for agentId in runningAgentIds {
-                var agent = state.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                if !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
-                    agent.needsManual = "untracked_running_process"
+        let machineAgents = readyReconcileAgents(context)
+        let now = Date()
+        var presence = AgentPresenceReconcile()
+        let outcome: Result<Void, any Error> = agents.withState { state in
+            do {
+                guard state.execution.connections[context.machineId]?.connectionEpochId == context.connectionEpochId,
+                      state.execution.connections[context.machineId]?.online == true else {
+                    throw AgentExecutionError.staleConnection
                 }
-                state.agents[agentId] = agent
+                state.execution.connections[context.machineId]?.daemonInstanceId = daemonInstanceId
+                state.execution.connections[context.machineId]?.runtimes = Set(runtimes)
+                state.execution.connections[context.machineId]?.ready = detectionComplete && runtimes.contains("codex")
+                for agentId in runningAgentIds {
+                    var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
+                    // Only a complete detection pass may declare a reported
+                    // running agent untracked; a partial pass is not evidence
+                    // that the new process is missing from the owner's facts.
+                    if detectionComplete,
+                       !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
+                        agent.needsManual = "untracked_running_process"
+                    }
+                    state.execution.agents[agentId] = agent
+                }
+                reconcileConnectionRecovery(&state.execution, machineId: context.machineId,
+                    connectionEpochId: context.connectionEpochId, daemonInstanceId: daemonInstanceId,
+                    runningAgentIds: runningAgentIds)
+                presence = reconcileReadyPresence(&state, context: context, machineAgents: machineAgents,
+                                                  runningAgentIds: Set(runningAgentIds), now: now)
+                return .success(())
+            } catch {
+                return .failure(error)
             }
-            reconcileConnectionRecovery(&state, machineId: context.machineId,
-                connectionEpochId: context.connectionEpochId, daemonInstanceId: daemonInstanceId,
-                runningAgentIds: runningAgentIds)
         }
+        try outcome.get()
+        applyReadyPresenceStatusUpdates(presence.statusUpdates)
+        queuePresenceEmissions(presence.emissions)
     }
 
     func connectionClosed(_ context: AgentExecutionMachineContext) throws {

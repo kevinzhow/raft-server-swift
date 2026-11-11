@@ -87,6 +87,17 @@ public struct ManagedMCPToolExecutionService: Sendable {
         }
     }
 
+    /// Human channel-read authority. A thread is readable through its parent
+    /// message's channel, the same recursion `canUserAccessChannel` applies
+    /// (`channelService.ts:4994-5016`).
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        if HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+            .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
+        guard channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     /// The agent credential must carry the capability; a missing one is the
     /// published `capability_not_authorized` refusal.
     private func requireCapability(_ authorization: String?, _ capability: String) throws {
@@ -129,6 +140,35 @@ public struct ManagedMCPToolExecutionService: Sendable {
             return true
         }
         return SavedCheckResponse(savedIds: visible)
+    }
+
+    // MARK: - DELETE /api/channels/saved/:messageId
+
+    /// Upstream deletes the caller's saved row without verifying that the
+    /// message still exists or is visible to this server, so an already-unsaved
+    /// or unknown id is the same success as a removed row.
+    public func unsaveMessage(
+        authorization: String?,
+        messageId: String
+    ) throws -> OkResponse {
+        let userId = try requireSession(authorization)
+        oauth.unsaveMessage(userId: userId, messageId: messageId)
+        return OkResponse()
+    }
+
+    // MARK: - Channel conversion routes
+
+    /// The pinned default gate for `convert-to-joint` and the three
+    /// conversion-job routes: the flag is absent or off, so the request is
+    /// refused before any channel/job lookup with the documented 404. This port
+    /// does not implement joint conversion.
+    public func conversionDisabled(
+        authorization: String?,
+        serverId: String
+    ) throws -> OkResponse {
+        let userId = try requireSession(authorization)
+        _ = try requireMember(serverId: serverId, userId: userId)
+        throw ChannelConversionError.disabled
     }
 
     // MARK: - GET /api/channels/saved
@@ -550,8 +590,10 @@ public struct ManagedMCPToolExecutionService: Sendable {
         // A thread is visible to whoever can see its parent; a private parent
         // must not leak its child thread's existence or metadata.
         let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
-        let canSee = threadParentId.map { visibility.actorCanSee(channelId: $0, userId: userId) }
-            ?? visibility.actorCanSee(channelId: channelId, userId: userId)
+        let canSee = threadParentId.map { parentId in
+            oauth.channelInfo(id: parentId)?.serverId == serverId
+                && visibility.actorCanSee(channelId: parentId, userId: userId)
+        } ?? visibility.actorCanSee(channelId: channelId, userId: userId)
         guard canSee else { throw ChannelMembershipError.channelNotFound }
         let snapshot = channels.state
         let joined = channel.name == "all"
@@ -715,9 +757,9 @@ public struct ManagedMCPToolExecutionService: Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             throw ChannelMembershipError.channelNotFound
         }
-        let readable = channels.postableChannel(id: channelId).map { $0.kind == "channel" || $0.memberIds.contains(userId) }
-            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
-        guard readable else { throw ChannelMembershipError.channelNotFound }
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
+        }
         guard let seq = body?.seq, seq >= 0 else { throw ManagedMCPToolExecutionError.invalidReadSeq }
         switch messages.advanceChannelRead(
             channelId: channelId,
@@ -757,10 +799,9 @@ public struct ManagedMCPToolExecutionService: Sendable {
         guard let channel = channels.postableChannel(id: channelId), channel.serverId == serverId else {
             throw ChannelMembershipError.channelNotFound
         }
-        let readable = channel.kind == "channel"
-            || channel.memberIds.contains(userId)
-            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
-        guard readable else { throw ChannelMembershipError.channelNotFound }
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ChannelMembershipError.channelNotFound
+        }
         let channelAgentIds = Array(agents.channelAgentMembers[channelId] ?? []).sorted()
         let targets = requestedAgentIds.map { requested in channelAgentIds.filter { requested.contains($0) } }
             ?? channelAgentIds
@@ -831,8 +872,10 @@ public struct ManagedMCPToolExecutionService: Sendable {
             }
             return ChannelReadAllResponse(seq: advance.seq, readStateVersion: max(advance.version, 1))
         }
-        let readableAll = channels.postableChannel(id: channelId).map { $0.kind == "channel" || $0.memberIds.contains(userId) }
-            ?? (oauth.channelType(id: channelId) == "channel" || oauth.isChannelParticipant(channelId: channelId, userId: userId))
+        let deletedInboxResidueRead = channels.postableChannel(id: channelId)?.deletedAt != nil
+            && oauth.channelType(id: channelId) != "dm"
+        let readableAll = deletedInboxResidueRead
+            || canReadChannel(channelId: channelId, serverId: serverId, userId: userId)
         guard readableAll else {
             let facts = inboxFacts.all().filter {
                 $0.receiverType == "user" && $0.receiverId == userId

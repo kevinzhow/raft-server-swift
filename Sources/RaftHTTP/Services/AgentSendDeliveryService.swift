@@ -216,6 +216,11 @@ public struct AgentSendDeliveryService: Sendable {
     private let searchVisible: @Sendable (_ messageChannelId: String, _ serverId: String?, _ viewer: SearchViewer) -> Bool
     private let commitSend: @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome
     private let integrationServices: @Sendable (_ serverId: String) -> [AgentIntegrationServiceSnapshot]
+    /// The persisted-chat frontend publisher (`emitPersistedMessageToFrontend`):
+    /// joins the DM/thread audience, then emits the canonical `message:new`,
+    /// `dm:new` or `thread:updated`. The default keeps focused service tests
+    /// silent; the HTTP composition installs the real socket relay.
+    private let publishCommittedMessage: @Sendable (StoredHumanMessage) -> Void
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
 
@@ -232,6 +237,7 @@ public struct AgentSendDeliveryService: Sendable {
         prepare: ActionCardPrepareService,
         search: SearchMentionsService,
         ledger: MessageLedgerPort,
+        publishCommittedMessage: @escaping @Sendable (StoredHumanMessage) -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
@@ -260,6 +266,7 @@ public struct AgentSendDeliveryService: Sendable {
             integrationServices: { serverId in
                 oauth.integrationServices(serverId: serverId).map(AgentIntegrationProjection.snapshot)
             },
+            publishCommittedMessage: publishCommittedMessage,
             now: now,
             makeMessageId: makeMessageId
         )
@@ -278,6 +285,7 @@ public struct AgentSendDeliveryService: Sendable {
         searchVisible: @escaping @Sendable (String, String?, SearchViewer) -> Bool,
         commitSend: @escaping @Sendable (StoredHumanMessage, [String], String, String) throws -> AgentSendAppendOutcome,
         integrationServices: @escaping @Sendable (String) -> [AgentIntegrationServiceSnapshot],
+        publishCommittedMessage: @escaping @Sendable (StoredHumanMessage) -> Void = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         makeMessageId: @escaping @Sendable () -> String = { UUID().uuidString.lowercased() }
     ) {
@@ -299,6 +307,7 @@ public struct AgentSendDeliveryService: Sendable {
         self.searchVisible = searchVisible
         self.commitSend = commitSend
         self.integrationServices = integrationServices
+        self.publishCommittedMessage = publishCommittedMessage
         self.now = now
         self.makeMessageId = makeMessageId
     }
@@ -319,35 +328,22 @@ public struct AgentSendDeliveryService: Sendable {
         agentId: String,
         body: AgentSendRequest?
     ) throws -> any JSONBodyConvertible {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            throw AgentSendDeliveryError.machineAuthenticationRequired
-        }
-        let apiKey = String(authorization.dropFirst("Bearer ".count))
-        let credential = machines.machineCredential(apiKey: apiKey, agentId: nil)
-        guard let serverId = credential.machine?.serverId ?? credential.legacy?.serverId else {
-            throw AgentSendDeliveryError.invalidMachineAPIKey
-        }
+        // Upstream mounts `validateLegacyAgentSendBody` before
+        // `requireAgentScope`, so the shared gate is entered in two phases:
+        // machine authentication first, body validation second, then the
+        // agent/server/ownership/grant half.
+        let principal = try legacyMachineGate.machinePrincipal(authorization: authorization)
         let request = body ?? AgentSendRequest()
         guard request.issues.isEmpty else {
             throw AgentSendDeliveryError.legacyBodyInvalid(request.issues)
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
-            throw AgentSendDeliveryError.agentNotFound
-        }
-        let ownsAgent: Bool
-        if let machine = credential.machine {
-            ownsAgent = agents.agentMachineIds[agentId] == machine.id
-        } else if let legacy = credential.legacy {
-            ownsAgent = legacy.agentId == agentId
-        } else {
-            ownsAgent = false
-        }
-        guard ownsAgent else {
-            throw AgentSendDeliveryError.agentNotAssignedToMachine
-        }
-        if let grants = managedMCP.agentGrantSets[agentId], !grants.contains("message:send") {
-            throw AgentSendDeliveryError.missingAgentScope(scope: "message:send")
-        }
+        let actor = try legacyMachineGate.actor(
+            principal: principal,
+            agentId: agentId,
+            requiredScope: "message:send"
+        )
+        let agent = actor.agent
+        let serverId = actor.serverId
 
         if request.continueFlag {
             throw AgentSendError.continueUnsupported
@@ -402,18 +398,19 @@ public struct AgentSendDeliveryService: Sendable {
 
         func commit() throws -> AgentSendResponse {
             let messageId = makeMessageId()
+            var committed = StoredHumanMessage(
+                id: messageId,
+                channelId: resolved.channelId,
+                senderId: agent.id,
+                content: content,
+                randomId: nil,
+                attachmentIds: request.attachmentIds,
+                messageType: "chat",
+                senderType: "agent"
+            )
             let seq: Int
             switch try commitSend(
-                StoredHumanMessage(
-                    id: messageId,
-                    channelId: resolved.channelId,
-                    senderId: agent.id,
-                    content: content,
-                    randomId: nil,
-                    attachmentIds: request.attachmentIds,
-                    messageType: "chat",
-                    senderType: "agent"
-                ),
+                committed,
                 request.attachmentIds,
                 resolved.channelId,
                 agent.id
@@ -439,6 +436,8 @@ public struct AgentSendDeliveryService: Sendable {
                     key: receiptKey
                 )
             }
+            committed.seq = seq
+            publishCommittedMessage(committed)
             return AgentSendResponse(messageId: messageId, messageSeq: seq)
         }
 
@@ -1041,6 +1040,17 @@ public struct AgentSendDeliveryService: Sendable {
     }
 
     // MARK: - Credentials
+
+    /// The shared legacy machine/agent-ownership gate. The send route uses the
+    /// two-phase form to keep body validation between machine auth and scope.
+    private var legacyMachineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(
+            agents: agents,
+            machines: machines,
+            oauth: oauth,
+            cards: managedMCP
+        )
+    }
 
     /// The shared `sk_agent_*` credential check: revoked or absent credentials
     /// are `nil`, a live one is marked used by the store in one critical section.

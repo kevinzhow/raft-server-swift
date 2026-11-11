@@ -4,8 +4,20 @@ import RaftShared
 /// Ephemeral transport inputs, never a durable execution reference or log value.
 /// Only the worker's wire encoder consumes these JSON objects.
 public enum AgentExecutionMaterializedPayload: Sendable {
-    case start(configuration: Data)
-    case delivery(message: Data, sequence: Int64)
+    /// `resumeMessages` and `unreadSummary` are upstream `agent:start` resume
+    /// context. Both are omitted when the agent has no session or nothing is
+    /// unread, exactly as the Node producer omits undefined fields.
+    /// `wakeMessage` is the upstream `attempt-wake` input: the exact agent-visible
+    /// body of the message that caused this start. Upstream never sends that
+    /// message as a separate `agent:deliver`, and the daemon ignores the resume
+    /// catch-up when a wake message is present.
+    case start(configuration: Data, wakeMessage: JSONValue?, resumeMessages: [JSONValue], unreadSummary: [String: Int]?)
+    /// `mentionDelivery` is present only for a tracked formal mention whose
+    /// server decision was just committed with this exact payload.
+    case delivery(message: Data, sequence: Int64, mentionDelivery: MentionDeliveryIdentitySnapshot?)
+    /// A transient system-sender notice: no messages row and no stored seq.
+    /// The frame envelope always carries `seq: 0`.
+    case notice(message: Data)
 }
 
 /// These failures contain no config, message content, URL or credential material.
@@ -74,6 +86,21 @@ struct MaterializedAgentDelivery: Sendable {
     let parent: (id: String, name: String, type: String)?
 
     func encoded() throws -> Data {
+        try Self.encodeBody(
+            message: message, localChannelId: localChannelId, channelName: channelName,
+            channelType: channelType, senderName: senderName, senderDescription: senderDescription,
+            recipientId: recipientId, task: task, taskAssigneeName: taskAssigneeName,
+            attachments: attachments, parent: parent)
+    }
+
+    /// The one agent-visible message body, shared by live delivery and the
+    /// `agent:start` resume catch-up so both surfaces render identically.
+    static func encodeBody(
+        message: StoredHumanMessage, localChannelId: String, channelName: String, channelType: String,
+        senderName: String, senderDescription: String?, recipientId: String, task: TaskRecord?,
+        taskAssigneeName: String?, attachments: [ChannelAttachment],
+        parent: (id: String, name: String, type: String)?
+    ) throws -> Data {
         var body: [String: JSONValue] = [
             "channel_id": .string(localChannelId), "channel_name": .string(channelName), "channel_type": .string(channelType),
             "message_id": .string(message.id), "sender_id": .string(message.senderId), "sender_name": .string(senderName),
@@ -93,7 +120,8 @@ struct MaterializedAgentDelivery: Sendable {
         if !attachments.isEmpty {
             body["attachments"] = .array(attachments.map { attachment in
                 var result: [String: JSONValue] = ["id": .string(attachment.id), "filename": .string(attachment.filename),
-                    "mimeType": MaterializedCodexConfiguration.nullable(attachment.mimeType)]
+                    "mimeType": .string(ChannelFileRules.resolveAttachmentMimeType(
+                        filename: attachment.filename, stored: attachment.mimeType))]
                 if let size = attachment.sizeBytes { result["sizeBytes"] = .integer(Int64(size)) }
                 return .object(result)
             })
@@ -122,5 +150,26 @@ struct MaterializedAgentDelivery: Sendable {
             body["task_assignee_name"] = MaterializedCodexConfiguration.nullable(taskAssigneeName)
         }
         return try JSONValue.object(body).data()
+    }
+}
+
+/// The body of an upstream transient agent notice. The frame envelope adds
+/// `seq: 0` and `deliveryId`; the body carries the synthetic `message_id` the
+/// pinned server sends for the opener ledger and the owner-facts context.
+/// Sender identity is always the system principal, and no `seq` member is
+/// invented in the body.
+struct MaterializedAgentNotice: Sendable {
+    let channelId: String
+    let messageId: String
+    let notice: AgentExecutionNotice
+
+    func encoded() throws -> Data {
+        try JSONValue.object([
+            "channel_id": .string(channelId), "channel_name": .string(notice.channelName),
+            "channel_type": .string(notice.channelType), "message_id": .string(messageId),
+            "sender_id": .string("system"), "sender_name": .string("system"),
+            "sender_type": .string("system"), "content": .string(notice.content),
+            "timestamp": .string(notice.timestamp),
+        ]).data()
     }
 }

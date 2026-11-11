@@ -95,6 +95,21 @@ struct WebPushSubscription: Sendable {
         var endpoint: String
     }
 
+/// One browser push prompt telemetry row (`POST /api/push/prompt-events`,
+/// `routes/push.ts:92-139`). Every bounded field is already trimmed and
+/// truncated by the service.
+struct PushPromptEvent: Sendable, Equatable {
+        var userId: String
+        var serverId: String?
+        var event: String
+        var trigger: String
+        var result: String?
+        var permissionBefore: String?
+        var permissionAfter: String?
+        var detail: String?
+        var createdAt: Date
+    }
+
 struct ExternalAvatarAsset: Sendable {
         var id: String
         var contentType: String
@@ -385,6 +400,9 @@ struct StoredHumanMessage: Sendable {
         var causalActorType: String? = nil
         var causalActorId: String? = nil
         var mentions: [StoredMessageMention] = []
+        /// Upstream `messages.agentSendKey`: the producer's idempotency key.
+        /// Present only on server-authored agent messages (the owner opener).
+        var agentSendKey: String? = nil
     }
 
 struct StoredMessageMention: Equatable, Sendable {
@@ -469,7 +487,14 @@ struct StoredMention: Sendable {
         var notifiedByType: String?
         var notifiedById: String?
         var notifiedAction: String?
+        /// Legacy pre-occurrence terminal code. Never written by this port's
+        /// send path; retained so an older snapshot and the legacy test seam
+        /// still restore. The sender projection reads the occurrence below.
         var terminalCode: String? = nil
+        /// Upstream durable mention-delivery occurrence. Optional on purpose:
+        /// a snapshot written before the occurrence spine restores with none,
+        /// and an older build restores a snapshot that carries one.
+        var mentionDeliveryOccurrence: MentionDeliveryOccurrence? = nil
     }
 
 struct PostableChannel: Sendable {
@@ -539,7 +564,10 @@ struct Account: Sendable {
 struct LinkedIdentity: Sendable {
         var userId: String
         var provider: String
-        var providerUserId: String
+        /// The upstream `user_auth_identities.provider_user_id`. A row restored
+        /// from the retired `identityRows` field never carried this fact, so it
+        /// stays nil instead of inventing a subject.
+        var providerUserId: String? = nil
         var providerEmail: String? = nil
     }
 

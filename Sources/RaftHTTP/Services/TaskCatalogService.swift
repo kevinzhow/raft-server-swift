@@ -59,6 +59,61 @@ public struct TaskCatalogService: Sendable {
             serverId: serverId, channelId: channelId, userId: userId)
     }
 
+    /// The canonical task for an `asTask` send. The plain host message is
+    /// already committed in the same request transaction; this is the
+    /// idempotent link upstream `ensureTaskForMessage` performs in the send
+    /// transaction.
+    ///
+    /// A pre-existing canonical task always wins. A message that still carries
+    /// the frozen legacy `messages.task_*` shadow is left alone, matching
+    /// upstream's `already converted` result, so no second representation is
+    /// fabricated. Returns `nil` when no canonical task exists or is created.
+    func ensureSentTask(
+        channelId: String,
+        messageId: String,
+        title: String,
+        creatorId: String,
+        hasLegacyTask: Bool,
+        now: Date
+    ) -> (task: TaskRecord, created: Bool)? {
+        if let existing = tasks.task(messageId: messageId) {
+            return (existing, false)
+        }
+        guard !hasLegacyTask else { return nil }
+        let legacyMax = producer.messages.humanMessageRows
+            .filter { $0.channelId == channelId }.compactMap(\.taskNumber).max() ?? 0
+        switch tasks.ensureMessageTask(channelId: channelId, messageId: messageId, title: title,
+                                       creatorId: creatorId, legacyMessageMaxNumber: legacyMax, now: now) {
+        case .created(let task):
+            return (task, true)
+        case .existing(let task):
+            return (task, false)
+        }
+    }
+
+    /// Publish `task:created` for an `asTask` send on the requested local
+    /// channel room. The task-board frame is staged through the same durable
+    /// publication boundary the task routes use, so a failed commit cannot
+    /// leave a task the board never saw or announce one that rolled back.
+    func publishSentTask(_ task: TaskRecord, channelId: String, serverId: String) throws {
+        let stored = producer.channels.postableChannel(id: channelId)
+        let surface = TaskExecutionSurface(
+            channelId: channelId,
+            serverId: serverId,
+            name: producer.oauth.channelInfo(id: channelId)?.name ?? stored?.name,
+            type: producer.oauth.channelType(id: channelId) ?? stored?.kind ?? "channel"
+        )
+        let projected = producer.project(task, to: surface)
+        try AgentExecutionPublication.publish(
+            room: "channel:\(channelId)", event: "task:created", identity: task.id,
+            payloadJSON: OrderedJSON.object([
+                .init("channelId", channelId),
+                .init("tasks", .array([projected.createdEventBody])),
+            ]).render(),
+            emit: { RealtimeRelayService(messages: producer.messages).emit($0, $1, $2) }
+        )
+    }
+
     func canReadChannel(serverId: String, channelId: String, userId: String) -> Bool {
         switch taskChannelAccess(serverId: serverId, channelId: channelId, userId: userId) {
         case .missing: false
@@ -123,6 +178,31 @@ public struct TaskCatalogService: Sendable {
             try AgentExecutionPublication.publish(room: "channel:\(target.channelId)", event: "task:created",
                 identity: task.id, payloadJSON: OrderedJSON.object([.init("channelId", target.channelId),
                     .init("tasks", .array([payload.jsonBody]))]).render(), emit: { relay.emit($0, $1, $2) })
+        }
+    }
+
+    /// The `task:created` board row for an agent claim that converted a plain
+    /// host message. The host is unchanged, so there is no message update; the
+    /// payload is the same `projectTaskCreated` projection the send path uses.
+    func publishClaimCreatedTask(_ task: TaskRecord) throws {
+        let relay = RealtimeRelayService(messages: producer.messages)
+        for target in producer.surfaces(for: task.channelId) {
+            let payload = producer.project(task, to: target)
+            try AgentExecutionPublication.publish(room: "channel:\(target.channelId)", event: "task:created",
+                identity: task.id, payloadJSON: OrderedJSON.object([.init("channelId", target.channelId),
+                    .init("tasks", .array([payload.createdEventBody]))]).render(), emit: { relay.emit($0, $1, $2) })
+        }
+    }
+
+    /// The `task:updated` board row for a claim of an already-linked task.
+    func publishClaimUpdatedTask(_ task: TaskRecord) throws {
+        let relay = RealtimeRelayService(messages: producer.messages)
+        for target in producer.activeTaskSurfaces(for: task.channelId) {
+            let payload = producer.project(task, to: target)
+            try AgentExecutionPublication.publish(room: "channel:\(target.channelId)", event: "task:updated",
+                identity: "\(task.id):\(task.revision)",
+                payloadJSON: OrderedJSON.object([.init("channelId", target.channelId),
+                    .init("task", payload.jsonBody)]).render(), emit: { relay.emit($0, $1, $2) })
         }
     }
 

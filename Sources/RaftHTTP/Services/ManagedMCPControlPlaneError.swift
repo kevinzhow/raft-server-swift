@@ -12,6 +12,8 @@ public enum ManagedMCPControlPlaneError: DomainError, Equatable {
     case mcpServerNotFound
     case agentNotFound
     case agentNotFoundInServer
+    case oauthRequired
+    case oauthUnavailable
 
     public var status: UInt {
         switch self {
@@ -20,6 +22,8 @@ public enum ManagedMCPControlPlaneError: DomainError, Equatable {
         case .serverNotFound, .mcpServerNotFound, .agentNotFound, .agentNotFoundInServer: 404
         case .requestInvalid, .endpointInvalid: 400
         case .providerMustUseManagedEndpoint: 409
+        case .oauthRequired: 400
+        case .oauthUnavailable: 502
         }
     }
 
@@ -35,6 +39,8 @@ public enum ManagedMCPControlPlaneError: DomainError, Equatable {
         case .mcpServerNotFound: "MCP server not found"
         case .agentNotFound: "Agent not found"
         case .agentNotFoundInServer: "Agent not found"
+        case .oauthRequired: "MCP server does not use OAuth"
+        case .oauthUnavailable: "MCP server is unreachable"
         }
     }
 
@@ -45,6 +51,8 @@ public enum ManagedMCPControlPlaneError: DomainError, Equatable {
         case .providerMustUseManagedEndpoint: "managed_mcp_auth_invalid"
         case .mcpServerNotFound: "managed_mcp_server_not_found"
         case .agentNotFoundInServer: "managed_mcp_agent_not_found"
+        case .oauthRequired: "managed_mcp_oauth_required"
+        case .oauthUnavailable: "managed_mcp_unreachable"
         default: nil
         }
     }

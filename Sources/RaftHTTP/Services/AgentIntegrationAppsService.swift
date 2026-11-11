@@ -116,13 +116,16 @@ struct AgentIntegrationAppsDependencies: Sendable {
         _ scopes: [String],
         _ target: String
     ) -> String?
+    /// `getAppUrl()`: the origin a private share link is published under.
+    var appURL: @Sendable () -> String
 }
 
 extension AgentIntegrationAppsDependencies {
     init(lookup: AgentCredentialLookup, register: ActionCardIntegrationRegisterService) {
         self.init(
             agentCredential: lookup.agentCredentialAgent,
-            prepareMarketplaceInstallCard: register.prepareMarketplaceInstallCardForReference
+            prepareMarketplaceInstallCard: register.prepareMarketplaceInstallCardForReference,
+            appURL: { WebCORS.appURL(environment: ProcessInfo.processInfo.environment) }
         )
     }
 }
@@ -396,6 +399,292 @@ public struct AgentIntegrationAppsService: Sendable {
             requestId: UUID().uuidString.lowercased(),
             service: service.snapshot,
             scopes: effectiveScopes
+        )
+    }
+
+    // MARK: - Logo, manage, rotate-secret and transfer-owner
+
+    private static func isoString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private func managedClient(
+        _ agent: OAuthLedger.AgentRuntimeInfo,
+        clientKey: String,
+        authorityMessage: String
+    ) throws -> OAuthLedger.AgentManagedIntegrationClient {
+        let trimmed = clientKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw AgentIntegrationAppManageError.clientKeyRequired }
+        guard let client = oauth.agentManagedIntegrationClient(serverId: agent.serverId, clientKey: trimmed) else {
+            throw AgentIntegrationAppManageError.integrationAppNotFound
+        }
+        guard oauth.isAgentIntegrationAppManager(
+            serverId: agent.serverId, agentId: agent.id, clientRecordId: client.id
+        ) else {
+            throw AgentIntegrationAppManageError.manageAuthorityRequired(message: authorityMessage)
+        }
+        return client
+    }
+
+    /// `POST /internal/agent-api/integrations/app/logo`.
+    public func agentIntegrationAppLogo(
+        authorization: String?,
+        clientKey: String,
+        file: AttachmentUploadContent?
+    ) throws -> AgentIntegrationAppLogoResponse {
+        let agent = try requireAgent(authorization, requireRead: true)
+        let client = try managedClient(
+            agent,
+            clientKey: clientKey,
+            authorityMessage: "Only this app's owner or a current server admin can update its logo"
+        )
+        guard let file else { throw AgentIntegrationAppManageError.noLogoFile }
+        _ = try AgentAvatarUploadError.validatedMimeType(file.mimeType)
+        guard file.bytes.count > 0 else { throw AgentIntegrationAppManageError.noLogoFile }
+        guard file.bytes.count <= AgentAvatarUploadError.maximumBytes else {
+            throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: AgentAvatarUploadError.maximumBytes)
+        }
+        let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let logoUrl = "/api/integration-logos/\(client.id)/\(key).webp"
+        oauth.setAgentManagedIntegrationClientLogo(clientRecordId: client.id, logoUrl: logoUrl)
+        oauth.recordAgentManagedIntegrationAudit(
+            serverId: agent.serverId,
+            clientRecordId: client.id,
+            installationId: "",
+            eventType: "app.logo_updated"
+        )
+        return AgentIntegrationAppLogoResponse(
+            clientId: client.id,
+            clientKey: client.clientKey,
+            clientName: client.name,
+            logoUrl: logoUrl
+        )
+    }
+
+    /// `POST /internal/agent-api/integrations/app/rotate-secret`.
+    public func agentIntegrationAppRotateSecret(
+        authorization: String?,
+        clientKey: String
+    ) throws -> AgentIntegrationAppRotateSecretResponse {
+        let agent = try requireAgent(authorization, requireRead: true)
+        let client = try managedClient(
+            agent,
+            clientKey: clientKey,
+            authorityMessage: "Only this app's owner, delegated rotate maintainer, or a current server admin can rotate its secret"
+        )
+        guard let secret = oauth.rotateAgentManagedIntegrationClientSecret(clientRecordId: client.id) else {
+            throw AgentIntegrationAppManageError.integrationAppNotFound
+        }
+        oauth.recordAgentManagedIntegrationAudit(
+            serverId: agent.serverId,
+            clientRecordId: client.id,
+            installationId: "",
+            eventType: "client.secret_rotated"
+        )
+        return AgentIntegrationAppRotateSecretResponse(
+            clientId: client.id,
+            clientKey: client.clientKey,
+            clientName: client.name,
+            clientSecret: secret
+        )
+    }
+
+    /// `POST /internal/agent-api/integrations/app/transfer-owner`.
+    public func agentIntegrationAppTransferOwner(
+        authorization: String?,
+        clientKey: String,
+        targetAgent: String
+    ) throws -> AgentIntegrationAppTransferOwnerResponse {
+        let agent = try requireAgent(authorization, requireRead: true)
+        let targetName = targetAgent.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        guard !targetName.isEmpty else { throw AgentIntegrationAppManageError.clientKeyAndTargetRequired }
+        guard let target = oauth.serverAgents(serverId: agent.serverId).first(where: {
+            !$0.deleted && $0.name == targetName
+        }) else {
+            throw AgentIntegrationAppManageError.targetAgentNotFound
+        }
+        let client = try managedClient(
+            agent,
+            clientKey: clientKey,
+            authorityMessage: "Only this app's owner or a current server admin can transfer it"
+        )
+        guard let transfer = oauth.transferAgentManagedIntegrationClient(
+            clientRecordId: client.id, to: target.id
+        ) else {
+            throw AgentIntegrationAppManageError.manageAuthorityRequired(
+                message: "Only this app's owner or a current server admin can transfer it"
+            )
+        }
+        let auditEventId = oauth.recordAgentManagedIntegrationAudit(
+            serverId: agent.serverId,
+            clientRecordId: client.id,
+            installationId: "",
+            eventType: "app.owner_transferred"
+        )
+        return AgentIntegrationAppTransferOwnerResponse(
+            clientId: client.id,
+            clientKey: client.clientKey,
+            clientName: client.name,
+            ownerAgentId: target.id,
+            ownerAgentName: target.name,
+            ownershipOutcome: transfer.outcome,
+            auditEventId: auditEventId
+        )
+    }
+
+    /// `POST /internal/agent-api/integrations/app/manage`.
+    public func agentIntegrationAppManage(
+        authorization: String?,
+        clientKey: String,
+        action: String,
+        expiresInDays: Int?
+    ) throws -> AgentIntegrationAppManageResponse {
+        let agent = try requireAgent(authorization, requireRead: true)
+        let client = try managedClient(
+            agent,
+            clientKey: clientKey,
+            authorityMessage: "Only this app's owner or a current server admin can manage it"
+        )
+        switch action {
+        case "share_link_get":
+            let link = oauth.activeAgentManagedIntegrationShareLink(clientRecordId: client.id)
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name,
+                link: link.map(Self.shareLinkView),
+                linkPresent: true
+            )
+        case "share_link_create":
+            guard let created = oauth.createAgentManagedIntegrationShareLink(
+                serverId: agent.serverId,
+                clientRecordId: client.id,
+                actorAgentId: agent.id,
+                actorUserId: nil,
+                expiresInDays: expiresInDays
+            ) else {
+                throw AgentIntegrationAppManageError.shareLinkNotCreatable
+            }
+            oauth.recordAgentManagedIntegrationAudit(
+                serverId: agent.serverId,
+                clientRecordId: client.id,
+                installationId: "",
+                eventType: "private_share.link_created"
+            )
+            // `encodeURIComponent`: unreserved marks stay literal, `_` included.
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-._~!*'()")
+            let encoded = created.token.addingPercentEncoding(withAllowedCharacters: allowed) ?? created.token
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name,
+                shareUrl: dependencies.appURL() + "/integration-invites/" + encoded,
+                link: Self.shareLinkView(created.link),
+                linkPresent: true
+            )
+        case "share_link_revoke":
+            guard let revoked = oauth.revokeAgentManagedIntegrationShareLink(clientRecordId: client.id) else {
+                throw AgentIntegrationAppManageError.shareLinkNotFound
+            }
+            oauth.recordAgentManagedIntegrationAudit(
+                serverId: agent.serverId,
+                clientRecordId: client.id,
+                installationId: "",
+                eventType: "private_share.link_revoked"
+            )
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name,
+                link: Self.shareLinkView(revoked),
+                linkPresent: true
+            )
+        case "request_publish":
+            let description = (client.descriptionText ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !description.isEmpty else { throw AgentIntegrationAppManageError.descriptionRequired }
+            guard oauth.requestAgentManagedIntegrationClientPublish(
+                clientRecordId: client.id, status: "publish_requested"
+            ) else {
+                throw AgentIntegrationAppManageError.publishNotRequestable
+            }
+            oauth.recordAgentManagedIntegrationAudit(
+                serverId: agent.serverId,
+                clientRecordId: client.id,
+                installationId: "",
+                eventType: "app.publish_requested"
+            )
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name,
+                publishStatus: "publish_requested"
+            )
+        case "request_unpublish":
+            guard oauth.requestAgentManagedIntegrationClientPublish(
+                clientRecordId: client.id, status: "unpublish_requested"
+            ) else {
+                throw AgentIntegrationAppManageError.unpublishNotPublished
+            }
+            oauth.recordAgentManagedIntegrationAudit(
+                serverId: agent.serverId,
+                clientRecordId: client.id,
+                installationId: "",
+                eventType: "app.offline_requested"
+            )
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name,
+                publishStatus: "unpublish_requested"
+            )
+        case "clear_logo":
+            oauth.setAgentManagedIntegrationClientLogo(clientRecordId: client.id, logoUrl: nil)
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name,
+                logoUrl: nil,
+                logoUrlPresent: true
+            )
+        case "delete":
+            guard oauth.deleteAgentManagedIntegrationClient(clientRecordId: client.id) else {
+                throw AgentIntegrationAppManageError.deletePublished
+            }
+            oauth.recordAgentManagedIntegrationAudit(
+                serverId: agent.serverId,
+                clientRecordId: nil,
+                installationId: "",
+                eventType: "app.deleted"
+            )
+            return AgentIntegrationAppManageResponse(
+                action: action,
+                clientId: client.id,
+                clientKey: client.clientKey,
+                clientName: client.name
+            )
+        default:
+            throw AgentIntegrationAppManageError.clientKeyRequired
+        }
+    }
+
+    private static func shareLinkView(_ link: OAuthLedger.ClientShareLink) -> AgentIntegrationAppShareLinkView {
+        AgentIntegrationAppShareLinkView(
+            id: link.id,
+            expiresAt: link.expiresAt.map(Self.isoString),
+            revokedAt: link.revokedAt.map(Self.isoString),
+            lastUsedAt: link.lastUsedAt.map(Self.isoString),
+            createdAt: Self.isoString(link.createdAt),
+            updatedAt: Self.isoString(link.updatedAt)
         )
     }
 }

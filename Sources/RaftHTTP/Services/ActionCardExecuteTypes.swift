@@ -14,14 +14,21 @@ public enum ActionCardExecuteError: DomainError, Equatable {
     case inProgressToTodo
     case todoToTerminal(status: String)
     case resourceReceiptRequired
+    /// `assertAgentApiTaskWritableChannel` refuses every thread target.
+    case threadTaskClaim
+    /// A bare `dm:@name` held by both a human and an agent.
+    case dmTargetAmbiguous(peerName: String)
+    /// A `dm:@name~<suffix>` whose suffix is neither `agent` nor `human`.
+    case dmTargetInvalidPeerKind(rawPeer: String, suffix: String?)
 
     public var status: UInt {
         switch self {
-        case .invalidTaskClaim, .invalidTaskStatus:
+        case .invalidTaskClaim, .invalidTaskStatus, .dmTargetInvalidPeerKind:
             400
         case .channelNotFound, .taskNotFound:
             404
-        case .inProgressToTodo, .todoToTerminal, .resourceReceiptRequired:
+        case .inProgressToTodo, .todoToTerminal, .resourceReceiptRequired,
+             .threadTaskClaim, .dmTargetAmbiguous:
             409
         }
     }
@@ -42,6 +49,50 @@ public enum ActionCardExecuteError: DomainError, Equatable {
             "Task cannot transition from todo to \(status)"
         case .resourceReceiptRequired:
             "resource receipt required before task can move to done"
+        case .threadTaskClaim:
+            "Thread messages cannot be claimed as tasks"
+        case .dmTargetAmbiguous(let peerName):
+            "dm:@\(peerName) matches both a human and an agent named \(peerName). "
+                + "Name the one you mean: dm:@\(peerName)~agent for the agent, or dm:@\(peerName)~human for the human "
+                + "(for example: raft message read --target \"dm:@\(peerName)~agent\")."
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            "dm:@\(rawPeer) has an unknown peer kind\(suffix.map { " \"\($0)\"" } ?? ""). "
+                + "Use dm:@<name>, dm:@<name>~agent or dm:@<name>~human."
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .threadTaskClaim, .invalidTaskClaim, .invalidTaskStatus, .channelNotFound,
+             .taskNotFound, .inProgressToTodo, .todoToTerminal, .resourceReceiptRequired:
+            nil
+        case .dmTargetAmbiguous:
+            "DM_TARGET_AMBIGUOUS"
+        case .dmTargetInvalidPeerKind:
+            "DM_TARGET_INVALID_PEER_KIND"
+        }
+    }
+
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .dmTargetAmbiguous(let peerName):
+            var body = OrderedJSONObject()
+            body.append("error", errorMessage)
+            body.append("code", "DM_TARGET_AMBIGUOUS")
+            body.append(
+                "suggestedNextAction",
+                "retry with dm:@\(peerName)~agent for the agent or dm:@\(peerName)~human for the human"
+            )
+            return body.json
+        case .dmTargetInvalidPeerKind:
+            var body = OrderedJSONObject()
+            body.append("error", errorMessage)
+            body.append("code", "DM_TARGET_INVALID_PEER_KIND")
+            body.append("suggestedNextAction", "retry with dm:@<name>, dm:@<name>~agent or dm:@<name>~human")
+            return body.json
+        case .threadTaskClaim, .invalidTaskClaim, .invalidTaskStatus, .channelNotFound,
+             .taskNotFound, .inProgressToTodo, .todoToTerminal, .resourceReceiptRequired:
+            return nil
         }
     }
 }

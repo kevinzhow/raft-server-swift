@@ -137,13 +137,13 @@ public struct FeedbackLocatorService: Sendable {
     }
 
     /// `agentCapabilityDenial` without an HTTP reply.
-    enum CapabilityDecision: Sendable, Equatable {
+    public enum CapabilityDecision: Sendable, Equatable {
         case allowed
         case denied(capability: String)
     }
 
     /// `agentGrantDenial` without an HTTP reply.
-    enum GrantDecision: Sendable, Equatable {
+    public enum GrantDecision: Sendable, Equatable {
         case allowed
         case missingScope(scope: String)
     }
@@ -237,7 +237,7 @@ public struct FeedbackLocatorService: Sendable {
 
     /// An agent with no stored grant row carries every grantable scope, so only
     /// an explicit set without the scope is a denial.
-    func grantDecision(agentId: String, scope: String) -> GrantDecision {
+    public func grantDecision(agentId: String, scope: String) -> GrantDecision {
         guard let grants = cards.agentGrantSets[agentId], !grants.contains(scope) else {
             return .allowed
         }

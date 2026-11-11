@@ -149,7 +149,12 @@ private func resolveGet(
             #expect(channel["type"] as? String == "channel")
             let agents = try #require(result.body["agents"] as? [[String: Any]])
             let ownAgent = try #require(agents.first { $0["name"] as? String == f.agentName })
-            #expect(ownAgent["status"] as? String == "active")
+            // Upstream `toServerInfoAgentSummary` serves the stored `a.status`.
+            #expect(ownAgent["status"] as? String == "inactive")
+            f.accounts.oauth.setAgentStatus(id: f.agentId, status: "stopped")
+            let stopped = try await resolveGet(client, key: f.readKey, path: "/internal/agent-api/channel-members?channel=\(encoded)")
+            let stoppedAgent = try #require((stopped.body["agents"] as? [[String: Any]] ?? []).first { $0["name"] as? String == f.agentName })
+            #expect(stoppedAgent["status"] as? String == "stopped")
             let humans = try #require(result.body["humans"] as? [[String: Any]])
             let ownHuman = try #require(humans.first { $0["name"] as? String == f.ownerName })
             #expect(ownHuman["role"] as? String == "owner")

@@ -36,6 +36,7 @@ final class NotificationsStore: Sendable {
         var fcmPushAvailable = true
         var webPushEnabled = true
         var webPushSubscriptions: [WebPushSubscription] = []
+        var pushPromptEvents: [PushPromptEvent] = []
         var announcements: [AnnouncementRow] = []
         var announcementImageAssets: [String: AnnouncementImageAsset] = [:]
         var announcementImageStorageAvailable = true
@@ -81,6 +82,11 @@ final class NotificationsStore: Sendable {
     var webPushSubscriptions: [WebPushSubscription] {
         get { storage.withLock { $0.webPushSubscriptions } }
         set { storage.withLock { $0.webPushSubscriptions = newValue } }
+    }
+
+    var pushPromptEvents: [PushPromptEvent] {
+        get { storage.withLock { $0.pushPromptEvents } }
+        set { storage.withLock { $0.pushPromptEvents = newValue } }
     }
 
     var announcements: [AnnouncementRow] {
@@ -276,6 +282,27 @@ extension NotificationsStore {
             if !storage.webPushSubscriptions.contains(where: { $0.userId == userId && $0.endpoint == endpoint }) {
                 storage.webPushSubscriptions.append(WebPushSubscription(userId: userId, endpoint: endpoint))
             }
+        }
+    }
+
+    /// Removes every stored subscription for one user's endpoint.
+    func removeWebPushSubscription(userId: String, endpoint: String) {
+        storage.withLock { storage -> Void in
+            storage.webPushSubscriptions.removeAll { $0.userId == userId && $0.endpoint == endpoint }
+        }
+    }
+
+    /// The stored endpoint count for one user's test-push attempt.
+    func webPushSubscriptionCount(userId: String) -> Int {
+        storage.withLock { storage in
+            storage.webPushSubscriptions.filter { $0.userId == userId }.count
+        }
+    }
+
+    /// Appends the accepted prompt telemetry row.
+    func recordPushPromptEvent(_ event: PushPromptEvent) {
+        storage.withLock { storage -> Void in
+            storage.pushPromptEvents.append(event)
         }
     }
 

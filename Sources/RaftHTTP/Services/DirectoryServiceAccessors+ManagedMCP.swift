@@ -69,7 +69,14 @@ extension EmailLoginDirectory {
         ManagedMCPChannelRoutesService(
             sessionUserId: { [self] in sessionUserId(authorization: $0) },
             channelActorCanSee: { [self] channelId, userId in
-                channelActorCanSee(channelId: channelId, userId: userId)
+                guard let serverId = serversAndChannelsStore.postableChannels[channelId]?.serverId
+                    ?? oauth.channelInfo(id: channelId)?.serverId else { return false }
+                if HumanChannelReadAccessQuery(channels: serversAndChannelsStore,
+                    messages: messagesAndThreadsStore, oauth: oauth, flags: agentsRuntimeStore)
+                    .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
+                guard serversAndChannelsStore.postableChannel(id: channelId) == nil else { return false }
+                return LedgerChannelReadFallback.canReadHuman(
+                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
             },
             oauth: oauth,
             channels: serversAndChannelsStore,
@@ -117,7 +124,14 @@ extension EmailLoginDirectory {
     public func channelAssignments(
         publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
     ) -> ManagedMCPAssignmentsService {
-        let notices = SystemNoticeAppender(messages: messagesAndThreadsStore, ledger: MessageLedgerPort(oauth: oauth))
+        let notices = SystemNoticeAppender(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            ledger: MessageLedgerPort(oauth: oauth),
+            emit: { [realtimeRelay] room, event, payload in realtimeRelay.emit(room, event, payload) }
+        )
         let visibility = ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore)
         return ManagedMCPAssignmentsService(
             channels: serversAndChannelsStore,
@@ -139,6 +153,11 @@ extension EmailLoginDirectory {
                 visibility: visibility, notices: notices
             ),
             catalog: taskCatalog,
+            createThreadFirstReply: { [self] serverId, channelId, userId, content in
+                try humanMessageCreate.createThreadFirstReply(
+                    serverId: serverId, channelId: channelId, userId: userId, content: content
+                )
+            },
             publishTaskUpdated: publishTaskUpdated
         )
     }
@@ -159,7 +178,9 @@ extension EmailLoginDirectory {
             realtime: realtimeRelay,
             taskCredentials: AgentTaskCredentials(
                 agents: agentsRuntimeStore, machines: machinesAndComputersStore,
-                channels: serversAndChannelsStore, oauth: oauth
+                channels: serversAndChannelsStore, cards: managedMCPAndCardsStore, oauth: oauth,
+                accounts: authProfileStore,
+                reminderSurface: { [feedbackLocators] agentId in feedbackLocators.agentReminderSurfaceChannelId(agentId: agentId) }
             ),
             credentialLookup: agentCredentialLookup,
             suppression: MessageSuppressionService(messages: messagesAndThreadsStore, oauth: oauth)

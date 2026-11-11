@@ -657,7 +657,7 @@ public struct AgentMachineMigrationControlService: Sendable {
             lastErrorCode: nil,
             lastErrorAt: nil
         ))
-        tasks.releaseAgentWork(agentId: agentId)
+        tasks.releaseAgentWork(agentId: agentId, now: now())
         channels.appendServerMemberEvent(
             serverId: actor.info.serverId,
             eventType: "server.member_removed",
@@ -712,6 +712,79 @@ public struct AgentMachineMigrationControlService: Sendable {
         } catch let error as AgentExecutionError {
             throw AgentExecutionProducerError(operation: "stop agent", underlying: error)
         }
+    }
+
+    /// `POST /api/channels/:id/stop-all-agents`.
+    ///
+    /// The route authorizes once for the whole channel (a non-guest server
+    /// member), then stops every agent the channel roster lists. A per-agent
+    /// refusal is reported in `results` instead of failing the request.
+    public func stopAllChannelAgents(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) async throws -> StopAllAgentsResponse {
+        let userId = try requireUser(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw AgentMigrationControlError.notAMember
+        }
+        guard role != "guest" else { throw ChannelAgentControlError.controlRuntimeRequired }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw ChannelAgentControlError.channelNotFound
+        }
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        let parentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
+        let canSee = parentId.map { channelVisible($0, userId: userId) }
+            ?? channelVisible(channelId, userId: userId)
+        guard canSee else { throw ChannelAgentControlError.channelNotFound }
+        _ = channel
+
+        var agentIds = Set(oauth.channelAgentIds(channelId: channelId))
+        agentIds.formUnion(agents.channelAgentMembers[channelId] ?? [])
+        var results: [StopAllAgentsResponse.Result] = []
+        var stopped = 0
+        for agentId in agentIds.sorted() {
+            do {
+                try stopAgentWithoutActor(agentId: agentId, serverId: serverId)
+                stopped += 1
+                results.append(.init(agentId: agentId, error: nil))
+            } catch {
+                results.append(.init(agentId: agentId, error: errorMessage(error)))
+            }
+        }
+        return StopAllAgentsResponse(stopped: stopped, total: agentIds.count, results: results)
+    }
+
+    /// The caller already passed the channel gate; this only checks that the
+    /// agent belongs to this server and asks its runtime to stop.
+    private func stopAgentWithoutActor(agentId: String, serverId: String) throws {
+        guard let info = oauth.agentManagementInfo(id: agentId), !info.deleted, info.serverId == serverId else {
+            throw AgentMigrationControlError.agentMissing
+        }
+        if info.runtime == "external" { throw AgentMigrationControlError.externalAgentsHaveNoRuntimeLifecycle }
+        guard let execution else {
+            throw AgentExecutionProducerError(operation: "stop agent", underlying: .dispatchUnavailable)
+        }
+        do {
+            _ = try execution.requestStop(.init(serverId: serverId, agentId: agentId))
+        } catch let error as AgentExecutionError {
+            throw AgentExecutionProducerError(operation: "stop agent", underlying: error)
+        }
+    }
+
+    /// One channel's read visibility: a plain channel is visible to every
+    /// member; any other kind only to its participants.
+    private func channelVisible(_ channelId: String, userId: String) -> Bool {
+        if let postable = channels.postableChannel(id: channelId) {
+            return postable.kind == "channel" || postable.memberIds.contains(userId)
+        }
+        return oauth.channelType(id: channelId) == "channel"
+            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+    }
+
+    private func errorMessage(_ error: any Error) -> String {
+        if let domain = error as? any DomainError { return domain.errorMessage }
+        return String(describing: error)
     }
 
     /// `POST /api/agents/:id/reset`.

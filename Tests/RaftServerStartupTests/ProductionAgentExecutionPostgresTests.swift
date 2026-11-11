@@ -189,9 +189,18 @@ func postgresPublicAgentControlsWithProtocolPeer() async throws {
         #expect(resumed.execution.stopIntents?[stopIntent.commandId.uuidString]?.clearedByHumanStart == secondCommand.commandId)
         #expect(resumed.execution.receipts[receipt] == outcomeAudit.execution.receipts[receipt])
         #expect(resumed.execution.watermarks[scope] == 0)
+        // The human start carries the oldest held message as its wake input;
+        // only the remaining obligations become separate deliveries.
+        let restartWakeMessageId = try #require(secondFrame.object("wakeMessage")?.string("message_id"))
+        #expect(held.contains { $0.messageId == restartWakeMessageId })
+        let restartDeliveries = held.filter { $0.messageId != restartWakeMessageId }
         try await peer.acknowledgeControlledStart(secondFrame)
+        // The release gate is the daemon's process identity, not the start ACK:
+        // the official daemon buffers deliveries during the start window.
+        try await peer.sendProcessSpawned(agentId: agentId, launchId: secondLaunch,
+                                          processInstanceId: "protocol-restart-process")
         var received = Set<String>()
-        while received.count < held.count {
+        while received.count < restartDeliveries.count {
             let previous = received
             let delivery = try await peer.socket.nextObject(since: restartBoundary) {
                 $0.string("type") == "agent:deliver" && $0.string("agentId") == agentId && !previous.contains($0.string("deliveryId") ?? "")
@@ -199,7 +208,7 @@ func postgresPublicAgentControlsWithProtocolPeer() async throws {
             let deliveryId = try delivery.requireString("deliveryId")
             let released = try await fixture.audit()
             let command = try #require(released.execution.commands.values.first { $0.kind == .delivery && $0.deliveryId == deliveryId })
-            let origin = try #require(held.first { released.execution.heldDeliveries?[$0.commandId.uuidString]?.releasedCommandId == command.commandId })
+            let origin = try #require(restartDeliveries.first { released.execution.heldDeliveries?[$0.commandId.uuidString]?.releasedCommandId == command.commandId })
             #expect(command.commandId != origin.commandId)
             #expect(command.launchId == secondLaunch)
             #expect(command.connectionEpochId == epoch)
@@ -216,7 +225,7 @@ func postgresPublicAgentControlsWithProtocolPeer() async throws {
         }
         let afterDelivery = try await fixture.audit()
         #expect(afterDelivery.tasks.first { $0.string("id") == taskId }?.string("status") == "todo")
-        #expect(afterDelivery.execution.agents[agentId]?.processes.isEmpty == true)
+        #expect(afterDelivery.execution.agents[agentId]?.processes["protocol-restart-process"]?.exited == false)
 
         let noMachineBoundary = peer.socket.count
         let unassignedStop = try await fixture.http("POST", "/api/agents/\(unassignedId)/stop", token: member)
@@ -369,7 +378,6 @@ func postgresPublicAgentControlsWithProtocolPeer() async throws {
             #expect(settled.execution.commands[intent.startCommandId.uuidString]?.status == .accepted)
             #expect(settled.execution.dispatches?[intent.startCommandId.uuidString]?.phase == .accepted)
             #expect(settled.status(agent: agentId) == "active")
-            #expect(settled.execution.agents[agentId]?.processes.isEmpty == true)
             let workspace = try await fixture.outbox(intent.workspacePhaseId)
             #expect(workspace == nil)
         }

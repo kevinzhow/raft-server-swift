@@ -124,6 +124,33 @@ public struct HumanMessageCreateService: Sendable {
            oauth.memberRole(serverId: serverId, userId: userId) == nil {
             throw HumanMessageCreateError.notServerMember
         }
+        return try createHumanMessage(userId: userId, request: request, serverId: serverId, contract: contract)
+    }
+
+    /// `POST /api/channels/:channelId/threads` first reply: upstream runs the
+    /// same `broadcastAndDeliver` pipeline as `POST /api/messages`, but the
+    /// thread route has already authenticated and gated the caller, so this
+    /// entry takes the resolved user instead of repeating the session checks.
+    public func createThreadFirstReply(
+        serverId: String,
+        channelId: String,
+        userId: String,
+        content: String
+    ) throws {
+        _ = try createHumanMessage(
+            userId: userId,
+            request: HumanMessageCreateRequest(channelId: channelId, content: content),
+            serverId: serverId,
+            contract: .v1
+        )
+    }
+
+    private func createHumanMessage(
+        userId: String,
+        request: HumanMessageCreateRequest?,
+        serverId: String?,
+        contract: HumanMessageContract
+    ) throws -> HumanMessageCreatedResponse {
         guard let request, Self.isValidCreateBody(request),
               case .string(let channelId)? = request.channelId,
               case .string(let content)? = request.content
@@ -182,8 +209,9 @@ public struct HumanMessageCreateService: Sendable {
             }
             randomId = value
         }
-        let written = dependencies.storeHumanMessage(
-            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions
+        let written = try dependencies.storeHumanMessage(
+            channelId, userId, content, randomId, attachmentIds, senderTimezone, mentions,
+            Self.asTaskValue(request.asTask)
         )
         guard written.status == 200 else {
             throw HumanMessageCreateError.messageWriteRejected(status: UInt(written.status), body: written.body)
@@ -583,6 +611,13 @@ public struct HumanMessageCreateService: Sendable {
             if !ids.contains(id) { ids.append(id) }
         }
         return ids
+    }
+
+    /// The optional `asTask` flag: the body check already refused a present
+    /// non-boolean value, and an absent flag is the ordinary send.
+    static func asTaskValue(_ value: JSONValue?) -> Bool {
+        if case .bool(let flag)? = value { return flag }
+        return false
     }
 
     /// The legacy body check: a UUID `channelId`, an `attachmentIds` that is an

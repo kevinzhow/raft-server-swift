@@ -48,9 +48,19 @@ import VaporTesting
                 fields[HTTPField.Name("X-Server-Id")!] = serverId
                 return fields
             }
+            func multipartBody() -> Data {
+                var body = Data()
+                body.append(Data("--avatar\r\n".utf8))
+                body.append(Data("Content-Disposition: form-data; name=\"avatar\"; filename=\"server.gif\"\r\n".utf8))
+                body.append(Data("Content-Type: image/gif\r\n\r\n".utf8))
+                body.append(gif)
+                body.append(Data("\r\n--avatar--\r\n".utf8))
+                return body
+            }
             func upload(_ token: String) async throws -> ClientResponse {
-                try await client.send(.post, headers: headers(token), to: "/api/servers/\(serverId)/avatar") { request in
-                    request.body = .init(data: gif)
+                let body = multipartBody()
+                return try await client.send(.post, headers: headers(token), to: "/api/servers/\(serverId)/avatar") { request in
+                    request.body = .init(data: body)
                 }
             }
             let ownerToken = try await login("server-avatar-owner@slock.test")

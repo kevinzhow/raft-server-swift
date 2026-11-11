@@ -223,7 +223,7 @@ struct AuthServicesUnitFixture: Sendable {
 
     func linkedProviderUserIds(userId: String, provider: String) -> [String] {
         profiles.accountState.linkedIdentities
-            .filter { $0.userId == userId && $0.provider == provider }.map(\.providerUserId)
+            .filter { $0.userId == userId && $0.provider == provider }.compactMap(\.providerUserId)
     }
 
     func addOwnedServer(id: String, slug: String, name: String, ownerId: String) {

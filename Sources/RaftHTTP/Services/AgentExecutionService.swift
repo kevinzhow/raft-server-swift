@@ -58,6 +58,18 @@ public struct AgentExecutionService: Sendable {
         catch { DeferredEffects.markRollbackOnly(); throw error }
     }
 
+    /// One system-sender transient wake for an agent that can receive NOW.
+    ///
+    /// Returns a typed receipt. A `.dropped` reason is not a failed transaction
+    /// and never marks it rollback-only: the enclosing handoff/survey/ready
+    /// transaction stays valid, and the caller leaves its one-shot sent fact
+    /// unstamped. A transaction-less caller (unsealed test graph) also drops.
+    public func requestNotice(_ request: AgentExecutionNoticeRequest) throws -> AgentExecutionNoticeReceipt {
+        do { return try domain.requestNotice(request) }
+        catch AgentExecutionError.durableTransactionRequired { return .dropped(.transactionRequired) }
+        catch { DeferredEffects.markRollbackOnly(); throw error }
+    }
+
     func requestHumanMessageDelivery(_ request: AgentExecutionDeliveryRequest) throws -> HumanMessageExecutionDisposition {
         do { return try domain.requestHumanMessageDelivery(request) }
         catch { DeferredEffects.markRollbackOnly(); throw error }
@@ -168,6 +180,24 @@ public struct AgentExecutionService: Sendable {
                 }
             }
         }
+        // A separate committed step: a release refusal cannot roll back the
+        // ready reconciliation, and the durable pending facts stay for the next
+        // ready when the recipient is still not deliverable. The ready itself is
+        // already committed, so a release failure must not turn it into a hold.
+        do {
+            try await requirePersistence().execute {
+                try self.domain.releasePendingHumanDeliveries(context)
+            }
+        } catch {}
+        // Upstream `recoverDurableMentionDeliveriesForMachine` follows ready
+        // reconciliation in its own try/except: durable storage trouble must
+        // not take down the machine's return, and a later agent:session re-runs
+        // the authoritative pass.
+        do {
+            try await requirePersistence().execute {
+                try self.domain.recoverMentionDeliveriesForMachine(context)
+            }
+        } catch {}
     }
 
     public func connectionReady(_ context: AgentExecutionMachineContext, daemonInstanceId: String,
@@ -182,13 +212,76 @@ public struct AgentExecutionService: Sendable {
         try await requirePersistence().execute { try self.domain.connectionClosed(context) }
     }
 
+    /// The downstream half of the machine-disconnect projection: the upstream
+    /// ingress waits its two-second grace window and calls this only if the
+    /// machine is still offline on that connection epoch.
+    public func projectMachineDisconnect(_ context: AgentExecutionMachineContext) async throws {
+        try await requirePersistence().execute { try self.domain.projectMachineDisconnect(context) }
+    }
+
     /// The pending decision cannot escape this method before the atomic owner /
     /// watermark / receipt commit. Failed SQL/CAS/admission throws and authorizes
     /// no ACK, so the daemon keeps its durable evidence for a later connection.
     public func consume(context: AgentExecutionMachineContext, type: String, payload: Data) async throws -> AgentExecutionIngressResult {
-        try await requirePersistence().execute {
+        let result = try await requirePersistence().execute {
             try self.domain.stageIngress(context: context, type: type, payload: payload)
         }
+        // A start admission that carries the daemon's process identity settles
+        // a launch that previously blocked a human wake. Release the durable
+        // pending deliveries in a separate committed step: a release refusal
+        // must never fail the daemon's already-committed outcome ACK.
+        if case .committed = result, let agentId = Self.wakeSettlingAgentId(type: type, payload: payload) {
+            if let persistence = self.persistence {
+                try? await persistence.execute {
+                    try self.domain.releasePendingHumanDeliveries(serverId: context.serverId, agentId: agentId)
+                }
+            }
+        }
+        // Upstream re-arms the durable occurrence listing on every
+        // `agent:session` (each session_init and turn_end). The session identity
+        // that just committed is the fact a previously undecided row needed.
+        if case .committed = result, type == "agent:session",
+           let agentId = Self.sessionAgentId(payload: payload) {
+            if let persistence = self.persistence {
+                try? await persistence.execute {
+                    try self.domain.recoverMentionDeliveriesForAgent(
+                        serverId: context.serverId, agentId: agentId)
+                }
+            }
+        }
+        return result
+    }
+
+    /// The `agent:session` frame's agent id, already validated by the ingress.
+    private static func sessionAgentId(payload: Data) -> String? {
+        guard let body = try? JSONDecoder().decode(JSONValue.self, from: payload),
+              case .object(let fields) = body, case .string(let agentId)? = fields["agentId"],
+              !agentId.isEmpty else { return nil }
+        return agentId
+    }
+
+    /// Frames whose committed application can make a previously refused wake
+    /// deliverable: the start admission (with or without a rebind identity), the
+    /// outcomes that name the process, its exit (which frees the next start), a
+    /// session for a resident launch an abandoned start was hiding, and a clean
+    /// turn completion. Upstream sends `agent:session` at turn_end before the
+    /// outcome; a daemon that omits the legacy resync still owes the same
+    /// release when its turn_completed proves the in-flight turn settled. Only
+    /// a clean completion qualifies: a terminal failure or lost-evidence gap
+    /// keeps the ambiguity for manual recovery. The payload was already
+    /// validated by the ingress; this only reads the agent id for the release
+    /// step.
+    private static func wakeSettlingAgentId(type: String, payload: Data) -> String? {
+        guard ["agent:start:ack", "agent:process_spawned", "agent:start:outcome", "agent:process_exited",
+               "agent:session", "agent:runtime:outcome"].contains(type),
+              let body = try? JSONDecoder().decode(JSONValue.self, from: payload),
+              case .object(let fields) = body,
+              case .string(let agentId)? = fields["agentId"], !agentId.isEmpty else { return nil }
+        if type == "agent:runtime:outcome" {
+            guard case .object(let outcome)? = fields["outcome"],
+                  case .string("turn_completed")? = outcome["kind"] else { return nil }
+        }
+        return agentId
     }
 
     /// Worker/audit access only. This value contains confidential command input
@@ -238,6 +331,10 @@ public struct AgentExecutionService: Sendable {
                     dispatches[reference.commandId.uuidString] = dispatch
                     state.dispatches = dispatches
                 }
+                // Upstream removes a wake message from the inbox once its
+                // `agent:start` is dispatched. The wire write is the evidence
+                // this port needs; a later ACK is idempotent over this.
+                state.settleCarriedWakeMessage(command)
             }
         }
     }
@@ -259,6 +356,13 @@ extension AgentExecutionDomain {
                   messages.deliveryAckMessageSnapshot().rows.first(where: { $0.id == messageId }).map({ Int64($0.seq) }) == sequence else {
                 throw AgentExecutionError.invalidRequest
             }
+        } else if command.kind == .notice {
+            // The daemon ack for a synthetic notice is `seq: 0`
+            // (official Computer: ackSeq = msg.seq > 0 ? msg.seq : message.seq ?? 0).
+            // There is no stored row to read an authorized sequence from.
+            guard deliverySequence == 0, command.channelId?.isEmpty == false, command.messageId?.isEmpty == false else {
+                throw AgentExecutionError.invalidRequest
+            }
         } else if deliverySequence != nil { throw AgentExecutionError.invalidRequest }
         let stopped = manuallyStopped(serverId: command.serverId, agentId: command.agentId)
         return try mutate { state in
@@ -272,8 +376,30 @@ extension AgentExecutionDomain {
             if command.status == .accepted || command.kind == .stop && command.status == .dispatched { return .alreadyAccepted }
             if let previous = state.dispatches?[reference.commandId.uuidString] {
                 if previous.phase == .accepted { return .alreadyAccepted }
-                agent.needsManual = "dispatch_outcome_unknown"
-                state.agents[command.agentId] = agent
+                // Upstream ack-retry for a delivery: the same message is sent
+                // again under the same deliveryId when the previous write was
+                // not acknowledged. The daemon deduplicates by that id (or by
+                // the consumed message), so a late copy cannot double-deliver.
+                if command.kind == .delivery || command.kind == .notice,
+                   previous.phase == .ambiguous, previous.connectionEpochId == context.connectionEpochId,
+                   command.launchId == agent.currentLaunchId,
+                   agent.launches[command.launchId].map(launchIsUsableForDelivery) == true {
+                    var dispatches = state.dispatches ?? [:]
+                    dispatches[reference.commandId.uuidString] = AgentExecutionDispatch(
+                        connectionEpochId: context.connectionEpochId,
+                        deliverySequence: previous.deliverySequence, phase: .attempting)
+                    state.dispatches = dispatches
+                    return .granted
+                }
+                // A lost onboarding notice is a dropped transient wake, and a
+                // delivery write the daemon has not acknowledged is an in-flight
+                // send (upstream records it and retries acks; it never requires
+                // a human). Only a start's unknown outcome still pauses the
+                // agent: the launcher, not the message, is what became unknown.
+                if command.kind == .start {
+                    agent.needsManual = "dispatch_outcome_unknown"
+                    state.agents[command.agentId] = agent
+                }
                 return .uncertain
             }
             if command.kind != .stop {
@@ -281,7 +407,8 @@ extension AgentExecutionDomain {
                 guard connection.ready, connection.runtimes.contains("codex"), agent.needsManual == nil,
                       let launch = agent.launches[command.launchId], !launch.stopRequested,
                       !launch.notSpawned, command.kind != .start || !launch.completed,
-                      command.kind != .delivery || launch.startAccepted || launch.processInstanceId != nil else {
+                      (command.kind != .delivery && command.kind != .notice)
+                        || launch.startAccepted || launch.processInstanceId != nil else {
                     throw AgentExecutionError.manualRecoveryRequired
                 }
             }
@@ -305,7 +432,13 @@ extension AgentExecutionDomain {
             dispatch.phase = .ambiguous
             dispatches[reference.commandId.uuidString] = dispatch
             state.dispatches = dispatches
-            if state.agents[command.agentId]?.currentLaunchId == command.launchId,
+            // Upstream settles an unacknowledged delivery through its ack
+            // retry/give-up path; it never turns the agent into manual
+            // recovery. A delivery that the daemon buffered for a start has no
+            // ACK at all until it drains, and the later ACK still settles it.
+            // Only the launch itself (start) can be an unknown outcome.
+            if command.kind == .start,
+               state.agents[command.agentId]?.currentLaunchId == command.launchId,
                state.agents[command.agentId]?.generation == command.breakerGeneration {
                 state.agents[command.agentId]?.needsManual = "dispatch_outcome_unknown"
             }

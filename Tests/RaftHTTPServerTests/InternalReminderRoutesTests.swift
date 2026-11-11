@@ -19,6 +19,7 @@ import VaporTesting
     let agentId = accounts.oauth.createAgent(
         serverId: serverId, name: "reminder-agent", creatorUserId: ownerId, runtime: "claude"
     )
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
     let agentKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["read", "tasks"], name: "reminder-key")
     let externalAgent = accounts.oauth.createAgent(
         serverId: serverId, name: "external-reminder-agent", creatorUserId: ownerId, runtime: "external"
@@ -100,6 +101,7 @@ import VaporTesting
     let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "reminder-state-machine")
     let machineKey = try #require(accounts.machineAPIKey(machineId: machineId))
     let agentId = accounts.oauth.createAgent(serverId: serverId, name: "state-agent", creatorUserId: ownerId, runtime: "claude")
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
     let agentKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["read", "tasks"], name: "state-key")
 
     try await withApp { app in
@@ -171,6 +173,7 @@ import VaporTesting
     let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "rollout-machine")
     let machineKey = try #require(accounts.machineAPIKey(machineId: machineId))
     let agentId = accounts.oauth.createAgent(serverId: serverId, name: "rollout-agent", creatorUserId: ownerId, runtime: "claude")
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
     accounts.createFeatureFlagForTesting(key: "reminder_app", defaultEnabled: false)
     accounts.addFeatureFlagRuleForTesting(key: "reminder_app", stage: "server", decision: "allow", values: [serverId])
 

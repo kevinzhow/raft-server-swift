@@ -182,7 +182,7 @@ private func channelsEntryProbe(
                 )
                 #expect(thread.status == .ok)
                 let threadId = try #require(try channelsEntryJSON(thread)["threadChannelId"] as? String)
-                #expect(thread.body.string == "{\"threadChannelId\":\"\(threadId)\",\"messageId\":null,\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
+                #expect(thread.body.string == "{\"threadChannelId\":\"\(threadId)\",\"replyCount\":0,\"lastReplyAt\":null,\"participantIds\":[]}")
                 // Threads are not automatic handshake rooms. These public Hub
                 // joins are transport setup, then each queue proves reachability.
                 hubA.joinUserSessions(userId: ownerId, room: "channel:\(threadId)")
@@ -196,7 +196,7 @@ private func channelsEntryProbe(
                     client, "/api/channels/threads/follow", headers: memberHeaders, body: followBody
                 )
                 #expect(followed.status == .ok)
-                #expect(followed.body.string == #"{"ok":true,"following":true}"#)
+                #expect(followed.body.string == "{\"ok\":true,\"threadChannelId\":\"\(threadId)\"}")
                 let followerFrame = "42[\"thread:followers-updated\",{\"threadChannelId\":\"\(threadId)\"}]"
                 #expect(try await channelsEntryFrames(socketA, hub: hubA, userId: ownerId, start: followStartA) == [])
                 #expect(try await channelsEntryFrames(socketB, hub: hubB, userId: ownerId, start: followStartB) == [followerFrame])
@@ -210,7 +210,7 @@ private func channelsEntryProbe(
                     client, "/api/channels/threads/unfollow", headers: memberHeaders, body: followBody
                 )
                 #expect(unfollowed.status == .ok)
-                #expect(unfollowed.body.string == #"{"ok":true,"following":false}"#)
+                #expect(unfollowed.body.string == #"{"ok":true}"#)
                 #expect(try await channelsEntryFrames(socketA, hub: hubA, userId: ownerId, start: unfollowStartA) == [followerFrame])
                 #expect(try await channelsEntryFrames(socketB, hub: hubB, userId: ownerId, start: unfollowStartB) == [])
                 scene.auth.revokeSessionFamilies(userId: memberId)

@@ -233,10 +233,12 @@ extension AuthProfilePersistence {
         }
     }
 
-    struct LinkedIdentityRow: Codable, Sendable {
+    struct LinkedIdentityRow: Codable, Hashable, Sendable {
         let userId: String
         let provider: String
-        let providerUserId: String
+        /// Absent on rows restored from the retired `identityRows` field, which
+        /// never stored the provider subject.
+        let providerUserId: String?
         let providerEmail: String?
 
         init(_ record: LinkedIdentity) {
@@ -244,6 +246,13 @@ extension AuthProfilePersistence {
             provider = record.provider
             providerUserId = record.providerUserId
             providerEmail = record.providerEmail
+        }
+
+        init(userId: String, provider: String, providerUserId: String?, providerEmail: String?) {
+            self.userId = userId
+            self.provider = provider
+            self.providerUserId = providerUserId
+            self.providerEmail = providerEmail
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -257,7 +266,7 @@ extension AuthProfilePersistence {
             let values = try decoder.container(keyedBy: CodingKeys.self)
             userId = try values.decode(String.self, forKey: .userId)
             provider = try values.decode(String.self, forKey: .provider)
-            providerUserId = try values.decode(String.self, forKey: .providerUserId)
+            providerUserId = try values.decode(String?.self, forKey: .providerUserId)
             providerEmail = try values.decode(String?.self, forKey: .providerEmail)
         }
 

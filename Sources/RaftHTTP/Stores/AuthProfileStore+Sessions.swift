@@ -8,7 +8,7 @@ import Foundation
 
 /// A user's linked sign-in identities and the password flag, read together.
 struct AuthIdentitySnapshot {
-    var rows: [(provider: String, providerEmail: String)]
+    var rows: [(provider: String, providerEmail: String?)]
     var passwordConfigured: Bool
 }
 
@@ -67,6 +67,10 @@ enum ChangePasswordOutcome: Equatable, Sendable {
 /// The validated `PATCH /api/auth/me` profile fields. A double optional is
 /// "leave alone" (outer `nil`), "clear" (`.some(nil)`) or "set".
 struct AccountProfileUpdate: Sendable {
+    /// Outer `nil` leaves the display name alone; `.some(nil)` clears it.
+    var displayName: String?? = nil
+    /// Outer `nil` leaves the description alone; `.some(nil)` clears it.
+    var description: String?? = nil
     var referralSource: String?? = nil
     var referralSourceOther: String?? = nil
     var referralSourceSkipped = false
@@ -88,7 +92,8 @@ extension AuthProfileStore {
     /// The identity rows and the password flag in one critical section.
     func identitySnapshot(userId: String) -> AuthIdentitySnapshot {
         return state.withLock { state in
-            let rows = state.identityRows[userId] ?? []
+            let rows = state.accountSurface.linkedIdentities.filter { $0.userId == userId }
+                .map { (provider: $0.provider, providerEmail: $0.providerEmail) }
             return Self.identitySnapshotLocked(state: &state, userId: userId, rows: rows)
         }
     }
@@ -96,7 +101,7 @@ extension AuthProfileStore {
     private static func identitySnapshotLocked(
         state: inout State,
         userId: String,
-        rows: [(provider: String, providerEmail: String)]
+        rows: [(provider: String, providerEmail: String?)]
     ) -> AuthIdentitySnapshot {
         let passwordConfigured = state.accountSurface.accounts.values
             .first { $0.id == userId }?.passwordCredentialEstablishedAt != nil
@@ -109,16 +114,26 @@ extension AuthProfileStore {
     /// cannot both pass the guard.
     func unlinkIdentity(userId: String, provider: String) -> UnlinkIdentityOutcome {
         return state.withLock { state in
-            var rows = state.identityRows[userId] ?? []
+            // The user's rows in the one owner's insertion order. The locked
+            // read, final-credential guard and row removal are one critical
+            // section, so two concurrent unlinks of a passwordless user's last
+            // two identities cannot both pass the guard.
+            let globalIndices = state.accountSurface.linkedIdentities.indices.filter {
+                state.accountSurface.linkedIdentities[$0].userId == userId
+            }
+            var rows = globalIndices.map {
+                let row = state.accountSurface.linkedIdentities[$0]
+                return (provider: row.provider, providerEmail: row.providerEmail)
+            }
             let before = Self.identitySnapshotLocked(state: &state, userId: userId, rows: rows)
-            guard let index = rows.firstIndex(where: { $0.provider == provider }) else {
+            guard let rowIndex = rows.firstIndex(where: { $0.provider == provider }) else {
                 return .notLinked(before)
             }
             if rows.count == 1, !before.passwordConfigured {
                 return .passwordCredentialRequired
             }
-            rows.remove(at: index)
-            state.identityRows[userId] = rows
+            rows.remove(at: rowIndex)
+            state.accountSurface.linkedIdentities.remove(at: globalIndices[rowIndex])
             return .unlinked(Self.identitySnapshotLocked(state: &state, userId: userId, rows: rows))
         }
     }
