@@ -826,4 +826,27 @@ public struct AgentsLifecycleService: Sendable {
         guard kind == "antiproton" else { throw AgentsLifecycleError.unknownRuntimeProvider }
         return RuntimeProviderProbeResponse(available: agents.hostedProviderAvailable(serverId: serverId))
     }
+
+    /// `GET /api/agent-runtime-providers/:kind/models`. The deployment has no
+    /// hosted-runtime provider client (D5): an unavailable provider answers the
+    /// upstream 404, and an available one answers the upstream provider-failure
+    /// 502 instead of inventing a model list.
+    public func agentRuntimeProviderModels(
+        authorization: String?,
+        serverId: String,
+        kind: String
+    ) throws -> OrderedBodyDTO {
+        let userId = try requireUser(authorization)
+        guard kind == "antiproton" else { throw AgentsLifecycleError.runtimeProviderModelsUnknown }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw AgentsLifecycleError.notAMember
+        }
+        guard role == "owner" || role == "admin" else {
+            throw AgentsLifecycleError.runtimeProviderForbidden
+        }
+        guard agents.hostedProviderAvailable(serverId: serverId) else {
+            throw AgentsLifecycleError.runtimeProviderUnavailable
+        }
+        throw AgentsLifecycleError.hostedRuntimeModelUnavailable
+    }
 }

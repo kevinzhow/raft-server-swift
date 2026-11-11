@@ -133,6 +133,7 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
         case .profileSetupNameTaken: "PROFILE_SETUP_NAME_TAKEN"
         case .profileSetupRequired: "PROFILE_SETUP_REQUIRED"
         case .providerConnectionsDisabled: "provider_connections_disabled"
+        case .providerProbeRetired: "provider_connection_retired"
         default: nil
         }
     }

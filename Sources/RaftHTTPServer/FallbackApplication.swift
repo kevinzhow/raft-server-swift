@@ -254,6 +254,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         controlPlane: services.emailAccounts.managedMCPControlPlane,
         identities: services.emailAccounts.authIdentities,
         apps: services.emailAccounts.integrationsAndAppAccess,
+        appManagement: services.emailAccounts.integrationAppManagement,
         cardPrepare: services.emailAccounts.actionCardPrepare,
         agentsLifecycle: services.emailAccounts.agentsLifecycle,
         providerConnections: services.emailAccounts.managedMCPProviderConnections,

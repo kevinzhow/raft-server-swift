@@ -87,6 +87,8 @@ public final class OAuthLedger: Sendable {
 
         var clients: [Client] = []
         var clientShareLinks: [ClientShareLink] = []
+        var appWebhookConfigs: [String: AppWebhookConfig] = [:]
+        var appPermissionRevisions: [AppPermissionRevision] = []
         var integrationAuditEvents: [IntegrationAuditEvent] = []
         var requests: [AccessRequest] = []
         var tokens: [AccessToken] = []

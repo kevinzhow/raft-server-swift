@@ -483,6 +483,14 @@ func composeServices(
         serializeReceipt: MarketplaceReceiptProjection.renderObjectReceipt
     )
     let apps = IntegrationsAndAppAccessService(oauth: oauth, sessionUserId: lifecycle.sessionUserId)
+    let appManagement = IntegrationAppManagementService(
+        oauth: oauth,
+        sessionUserId: lifecycle.sessionUserId,
+        userDisplayName: { userId in
+            guard let account = profiles.account(userId: userId) else { return nil }
+            return account.displayName ?? account.name
+        }
+    )
     let integrationTokens = AgentIntegrationTokenService(agents: agents, grants: cards, profiles: profiles, oauth: oauth)
     let invites = JoinLinksAndInvitesService(
         store: channels,
@@ -525,6 +533,7 @@ func composeServices(
     )
     let actionCards = ActionCardService(
         store: cards,
+        productEvents: productEvents,
         oauth: oauth,
         sessionUserId: lifecycle.sessionUserId,
         cardWriteDecision: registration.actionCardWriteDecision,
@@ -603,7 +612,7 @@ func composeServices(
         tasks: TaskServices(catalog: catalog, labs: labs, marketplace: marketplace),
         integrations: IntegrationServices(
             prepare: prepare, execute: execute, cards: actionCards, registration: registration,
-            apps: apps, agentApps: agentApps, messageLookup: messageLookup, lifecycle: mcpLifecycle,
+            apps: apps, appManagement: appManagement, agentApps: agentApps, messageLookup: messageLookup, lifecycle: mcpLifecycle,
             providers: providers, oauth: mcpOAuth, channelRoutes: channelRoutes, reminders: reminders,
             control: control, tools: tools
         ),
