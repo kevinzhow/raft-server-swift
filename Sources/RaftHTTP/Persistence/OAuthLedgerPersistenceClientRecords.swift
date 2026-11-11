@@ -29,6 +29,20 @@ extension OAuthLedger.Client: Codable {
         case setupUrl
         case setupDescription
         case setupRevision
+        case category
+        case dataAccessSummary
+        case publishRejectionReason
+        case publishRequestedAt
+        case publishReviewedAt
+        case logoUrl
+        case logoStorageKey
+        case createdAt
+        case updatedAt
+        case outboundEvents
+        case outboundRequestRevision
+        case outboundCurrentRevisionId
+        case outboundPendingEvents
+        case outboundPendingRevisionState
     }
 
     init(from decoder: any Decoder) throws {
@@ -59,6 +73,20 @@ extension OAuthLedger.Client: Codable {
         self.setupUrl = try values.decode(String?.self, forKey: .setupUrl)
         self.setupDescription = try values.decode(String?.self, forKey: .setupDescription)
         self.setupRevision = try values.decode(Int.self, forKey: .setupRevision)
+        self.category = try values.decodeIfPresent(String.self, forKey: .category) ?? "Other"
+        self.dataAccessSummary = try values.decodeIfPresent(String.self, forKey: .dataAccessSummary)
+        self.publishRejectionReason = try values.decodeIfPresent(String.self, forKey: .publishRejectionReason)
+        self.publishRequestedAt = try values.decodeIfPresent(Date.self, forKey: .publishRequestedAt)
+        self.publishReviewedAt = try values.decodeIfPresent(Date.self, forKey: .publishReviewedAt)
+        self.logoUrl = try values.decodeIfPresent(String.self, forKey: .logoUrl)
+        self.logoStorageKey = try values.decodeIfPresent(String.self, forKey: .logoStorageKey)
+        self.createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        self.outboundEvents = try values.decodeIfPresent([String].self, forKey: .outboundEvents) ?? []
+        self.outboundRequestRevision = try values.decodeIfPresent(Int.self, forKey: .outboundRequestRevision) ?? 0
+        self.outboundCurrentRevisionId = try values.decodeIfPresent(String.self, forKey: .outboundCurrentRevisionId)
+        self.outboundPendingEvents = try values.decodeIfPresent([String].self, forKey: .outboundPendingEvents) ?? []
+        self.outboundPendingRevisionState = try values.decodeIfPresent(String.self, forKey: .outboundPendingRevisionState)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -89,6 +117,20 @@ extension OAuthLedger.Client: Codable {
         try values.encode(setupUrl, forKey: .setupUrl)
         try values.encode(setupDescription, forKey: .setupDescription)
         try values.encode(setupRevision, forKey: .setupRevision)
+        try values.encode(category, forKey: .category)
+        try values.encode(dataAccessSummary, forKey: .dataAccessSummary)
+        try values.encode(publishRejectionReason, forKey: .publishRejectionReason)
+        try values.encode(publishRequestedAt, forKey: .publishRequestedAt)
+        try values.encode(publishReviewedAt, forKey: .publishReviewedAt)
+        try values.encode(logoUrl, forKey: .logoUrl)
+        try values.encode(logoStorageKey, forKey: .logoStorageKey)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(updatedAt, forKey: .updatedAt)
+        try values.encode(outboundEvents, forKey: .outboundEvents)
+        try values.encode(outboundRequestRevision, forKey: .outboundRequestRevision)
+        try values.encode(outboundCurrentRevisionId, forKey: .outboundCurrentRevisionId)
+        try values.encode(outboundPendingEvents, forKey: .outboundPendingEvents)
+        try values.encode(outboundPendingRevisionState, forKey: .outboundPendingRevisionState)
     }
 }
 
@@ -166,6 +208,10 @@ extension OAuthLedger.Installation: Codable {
         case agentJwtEnabled
         case setupCompletedRevision
         case setupCompletedAt
+        case createdAt
+        case approvedRequestRevisionId
+        case subscribedEvents
+        case subscriptionRevision
     }
 
     init(from decoder: any Decoder) throws {
@@ -180,6 +226,10 @@ extension OAuthLedger.Installation: Codable {
         self.agentJwtEnabled = try values.decode(Bool?.self, forKey: .agentJwtEnabled)
         self.setupCompletedRevision = try values.decode(Int?.self, forKey: .setupCompletedRevision)
         self.setupCompletedAt = try values.decode(Date?.self, forKey: .setupCompletedAt)
+        self.createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        self.approvedRequestRevisionId = try values.decodeIfPresent(String.self, forKey: .approvedRequestRevisionId)
+        self.subscribedEvents = try values.decodeIfPresent([String].self, forKey: .subscribedEvents) ?? []
+        self.subscriptionRevision = try values.decodeIfPresent(Int.self, forKey: .subscriptionRevision) ?? 0
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -194,6 +244,10 @@ extension OAuthLedger.Installation: Codable {
         try values.encode(agentJwtEnabled, forKey: .agentJwtEnabled)
         try values.encode(setupCompletedRevision, forKey: .setupCompletedRevision)
         try values.encode(setupCompletedAt, forKey: .setupCompletedAt)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(approvedRequestRevisionId, forKey: .approvedRequestRevisionId)
+        try values.encode(subscribedEvents, forKey: .subscribedEvents)
+        try values.encode(subscriptionRevision, forKey: .subscriptionRevision)
     }
 }
 
@@ -216,6 +270,12 @@ extension OAuthLedger.AccessRequest: Codable {
         case oidcRedirectURI
         case createdAt
         case consumedAt
+        case remember
+        case resolvedByUserId
+        case resolvedAt
+        case updatedAt
+        case resource
+        case principalType
     }
 
     init(from decoder: any Decoder) throws {
@@ -237,6 +297,12 @@ extension OAuthLedger.AccessRequest: Codable {
         self.oidcRedirectURI = try values.decode(String?.self, forKey: .oidcRedirectURI)
         self.createdAt = try values.decode(Date.self, forKey: .createdAt)
         self.consumedAt = try values.decode(Date?.self, forKey: .consumedAt)
+        self.remember = try values.decodeIfPresent(Bool.self, forKey: .remember) ?? false
+        self.resolvedByUserId = try values.decodeIfPresent(String.self, forKey: .resolvedByUserId)
+        self.resolvedAt = try values.decodeIfPresent(Date.self, forKey: .resolvedAt)
+        self.updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt)
+        self.resource = try values.decodeIfPresent(String.self, forKey: .resource)
+        self.principalType = try values.decodeIfPresent(String.self, forKey: .principalType) ?? "agent"
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -258,6 +324,12 @@ extension OAuthLedger.AccessRequest: Codable {
         try values.encode(oidcRedirectURI, forKey: .oidcRedirectURI)
         try values.encode(createdAt, forKey: .createdAt)
         try values.encode(consumedAt, forKey: .consumedAt)
+        try values.encode(remember, forKey: .remember)
+        try values.encode(resolvedByUserId, forKey: .resolvedByUserId)
+        try values.encode(resolvedAt, forKey: .resolvedAt)
+        try values.encode(updatedAt, forKey: .updatedAt)
+        try values.encode(resource, forKey: .resource)
+        try values.encode(principalType, forKey: .principalType)
     }
 }
 
@@ -304,5 +376,94 @@ extension OAuthLedger.AccessToken: Codable {
         try values.encode(agentId, forKey: .agentId)
         try values.encode(resource, forKey: .resource)
         try values.encode(revokedAt, forKey: .revokedAt)
+    }
+}
+
+
+extension OAuthLedger.ClientShareLink: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, clientRecordId, tokenHash, expiresAt, revokedAt, lastUsedAt, createdAt, updatedAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try values.decode(String.self, forKey: .id)
+        self.clientRecordId = try values.decode(String.self, forKey: .clientRecordId)
+        self.tokenHash = try values.decode(String.self, forKey: .tokenHash)
+        self.expiresAt = try values.decodeIfPresent(Date.self, forKey: .expiresAt)
+        self.revokedAt = try values.decodeIfPresent(Date.self, forKey: .revokedAt)
+        self.lastUsedAt = try values.decodeIfPresent(Date.self, forKey: .lastUsedAt)
+        self.createdAt = try values.decode(Date.self, forKey: .createdAt)
+        self.updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(clientRecordId, forKey: .clientRecordId)
+        try values.encode(tokenHash, forKey: .tokenHash)
+        try values.encode(expiresAt, forKey: .expiresAt)
+        try values.encode(revokedAt, forKey: .revokedAt)
+        try values.encode(lastUsedAt, forKey: .lastUsedAt)
+        try values.encode(createdAt, forKey: .createdAt)
+        try values.encode(updatedAt, forKey: .updatedAt)
+    }
+}
+
+extension OAuthLedger.AppWebhookConfig: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case clientRecordId, endpointUrl, secret, previousSecret, previousValidUntil, revision, enabled, updatedAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.clientRecordId = try values.decode(String.self, forKey: .clientRecordId)
+        self.endpointUrl = try values.decode(String.self, forKey: .endpointUrl)
+        self.secret = try values.decode(String.self, forKey: .secret)
+        self.previousSecret = try values.decodeIfPresent(String.self, forKey: .previousSecret)
+        self.previousValidUntil = try values.decodeIfPresent(Date.self, forKey: .previousValidUntil)
+        self.revision = try values.decode(Int.self, forKey: .revision)
+        self.enabled = try values.decode(Bool.self, forKey: .enabled)
+        self.updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(clientRecordId, forKey: .clientRecordId)
+        try values.encode(endpointUrl, forKey: .endpointUrl)
+        try values.encode(secret, forKey: .secret)
+        try values.encode(previousSecret, forKey: .previousSecret)
+        try values.encode(previousValidUntil, forKey: .previousValidUntil)
+        try values.encode(revision, forKey: .revision)
+        try values.encode(enabled, forKey: .enabled)
+        try values.encode(updatedAt, forKey: .updatedAt)
+    }
+}
+
+extension OAuthLedger.AppPermissionRevision: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id, clientRecordId, revision, requestedGroups, requestedEvents, state, createdAt
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try values.decode(String.self, forKey: .id)
+        self.clientRecordId = try values.decode(String.self, forKey: .clientRecordId)
+        self.revision = try values.decode(Int.self, forKey: .revision)
+        self.requestedGroups = try values.decode([String].self, forKey: .requestedGroups)
+        self.requestedEvents = try values.decode([String].self, forKey: .requestedEvents)
+        self.state = try values.decode(String.self, forKey: .state)
+        self.createdAt = try values.decode(Date.self, forKey: .createdAt)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(clientRecordId, forKey: .clientRecordId)
+        try values.encode(revision, forKey: .revision)
+        try values.encode(requestedGroups, forKey: .requestedGroups)
+        try values.encode(requestedEvents, forKey: .requestedEvents)
+        try values.encode(state, forKey: .state)
+        try values.encode(createdAt, forKey: .createdAt)
     }
 }

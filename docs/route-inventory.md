@@ -19,10 +19,10 @@ python3 scripts/route_inventory.py --swift-dump /tmp/swift-routes.tsv --write do
 | Metric | Count |
 | --- | ---: |
 | Upstream route registrations | 644 |
-| Swift route registrations | 545 |
-| Exact matches | 517 |
+| Swift route registrations | 571 |
+| Exact matches | 543 |
 | Parameter-variant matches | 1 |
-| Missing in Swift | 123 |
+| Missing in Swift | 97 |
 | Extra in Swift | 27 |
 
 A parameter-variant match means one side registers a literal path segment where
@@ -92,30 +92,6 @@ does not prove no other consumer exists.
 | `GET /internal/machine/self` | 0 | 0 |
 | `POST /internal/trace-ingest/otlp/v1/traces` | 0 | 0 |
 
-### integrations — 19 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `GET /api/integrations/built-in` | 0 | 0 |
-| `POST /api/integrations/clients` | 3 | 0 |
-| `DELETE /api/integrations/clients/:param` | 3 | 0 |
-| `PUT /api/integrations/clients/:param/app-notifications/permissions` | 1 | 0 |
-| `DELETE /api/integrations/clients/:param/app-notifications/webhook` | 1 | 0 |
-| `PUT /api/integrations/clients/:param/app-notifications/webhook` | 1 | 0 |
-| `POST /api/integrations/clients/:param/app-notifications/webhook/rotate-secret` | 1 | 0 |
-| `POST /api/integrations/clients/:param/install/bot` | 0 | 0 |
-| `DELETE /api/integrations/clients/:param/logo` | 1 | 0 |
-| `POST /api/integrations/clients/:param/logo` | 1 | 0 |
-| `POST /api/integrations/clients/:param/regenerate-secret` | 1 | 0 |
-| `POST /api/integrations/clients/:param/request-publish` | 1 | 0 |
-| `POST /api/integrations/clients/:param/request-unpublish` | 1 | 0 |
-| `POST /api/integrations/clients/:param/review-publish` | 0 | 0 |
-| `DELETE /api/integrations/clients/:param/share-link` | 1 | 0 |
-| `POST /api/integrations/clients/:param/share-link` | 1 | 0 |
-| `PUT /api/integrations/marketplace/:param/install/app-notifications/grant` | 1 | 0 |
-| `GET /api/integrations/overview` | 1 | 0 |
-| `POST /api/integrations/requests/:param/deny` | 1 | 0 |
-
 ### billing — 9 missing
 
 | Method path | Web | CLI |
@@ -182,28 +158,13 @@ does not prove no other consumer exists.
 | `POST /api/push/test` | 1 | 0 |
 | `GET /api/push/vapid-key` | 1 | 0 |
 
-### mcp — 3 missing
+### integrations — 3 missing
 
 | Method path | Web | CLI |
 | --- | ---: | ---: |
-| `DELETE /api/mcp/servers/:param/oauth` | 1 | 0 |
-| `POST /api/mcp/servers/:param/oauth/start` | 1 | 0 |
-| `POST /api/mcp/servers/:param/test` | 1 | 0 |
-
-### provider-connections — 3 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `GET /api/provider-connections/:param/probes` | 1 | 0 |
-| `POST /api/provider-connections/:param/probes` | 1 | 0 |
-| `GET /api/provider-connections/:param/probes/:param` | 0 | 0 |
-
-### actions — 2 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `POST /api/actions/:param/event` | 1 | 0 |
-| `POST /api/actions/:param/reconfirm` | 1 | 0 |
+| `GET /api/integrations/built-in` | 0 | 0 |
+| `POST /api/integrations/clients/:param/install/bot` | 0 | 0 |
+| `POST /api/integrations/clients/:param/review-publish` | 0 | 0 |
 
 ### auth / login / oauth — 2 missing
 
@@ -211,13 +172,6 @@ does not prove no other consumer exists.
 | --- | ---: | ---: |
 | `POST /api/auth/forgot-password` | 2 | 0 |
 | `GET /api/auth/me/username-available` | 1 | 0 |
-
-### integration-invites — 2 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `GET /api/integration-invites/:param` | 1 | 1 |
-| `POST /api/integration-invites/:param/install` | 1 | 0 |
 
 ### webhooks — 2 missing
 
@@ -231,12 +185,6 @@ does not prove no other consumer exists.
 | Method path | Web | CLI |
 | --- | ---: | ---: |
 | `POST /^\/api\/message-translations:param` | 0 | 0 |
-
-### agent-runtime-providers — 1 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `GET /api/agent-runtime-providers/:param/models` | 1 | 0 |
 
 ### app-bot — 1 missing
 
@@ -279,6 +227,12 @@ does not prove no other consumer exists.
 | Method path | Web | CLI |
 | --- | ---: | ---: |
 | `PUT /api/oauth/installations/:param/subscriptions` | 0 | 0 |
+
+### provider-connections — 1 missing
+
+| Method path | Web | CLI |
+| --- | ---: | ---: |
+| `GET /api/provider-connections/:param/probes/:param` | 0 | 0 |
 
 ## Extra Swift routes
 
@@ -397,14 +351,14 @@ does not prove no other consumer exists.
 | Family | Upstream method path | Status |
 | --- | --- | --- |
 | ^\ | `POST /^\/api\/message-translations:param` | missing |
-| actions | `POST /api/actions/:param/event` | missing |
+| actions | `POST /api/actions/:param/event` | matched |
 | actions | `POST /api/actions/:param/execute` | matched |
 | actions | `POST /api/actions/:param/mark-executed` | matched |
-| actions | `POST /api/actions/:param/reconfirm` | missing |
+| actions | `POST /api/actions/:param/reconfirm` | matched |
 | actions | `POST /api/actions/migration-export` | matched |
 | agent | `POST /api/agent/login` | matched |
 | agent-runtime-providers | `GET /api/agent-runtime-providers/:param` | matched |
-| agent-runtime-providers | `GET /api/agent-runtime-providers/:param/models` | missing |
+| agent-runtime-providers | `GET /api/agent-runtime-providers/:param/models` | matched |
 | agents | `GET /api/agents` | matched |
 | agents | `POST /api/agents` | matched |
 | agents | `DELETE /api/agents/:param` | matched |
@@ -604,8 +558,8 @@ does not prove no other consumer exists.
 | email | `POST /api/email/mobile-app/unsubscribe` | matched |
 | external-avatars | `GET /api/external-avatars/:param` | matched |
 | feature-flags | `POST /api/feature-flags/evaluate` | matched |
-| integration-invites | `GET /api/integration-invites/:param` | missing |
-| integration-invites | `POST /api/integration-invites/:param/install` | missing |
+| integration-invites | `GET /api/integration-invites/:param` | matched |
+| integration-invites | `POST /api/integration-invites/:param/install` | matched |
 | integration-logos | `GET /api/integration-logos/:param/:param` | missing |
 | integrations | `GET /api/integrations/agents/:param` | matched |
 | integrations | `GET /api/integrations/agents/:param/events` | matched |
@@ -614,37 +568,37 @@ does not prove no other consumer exists.
 | integrations | `POST /api/integrations/agents/:param/grants` | matched |
 | integrations | `GET /api/integrations/built-in` | missing |
 | integrations | `GET /api/integrations/clients` | matched |
-| integrations | `POST /api/integrations/clients` | missing |
-| integrations | `DELETE /api/integrations/clients/:param` | missing |
+| integrations | `POST /api/integrations/clients` | matched |
+| integrations | `DELETE /api/integrations/clients/:param` | matched |
 | integrations | `PATCH /api/integrations/clients/:param` | matched |
 | integrations | `GET /api/integrations/clients/:param/agent-jwt` | matched |
 | integrations | `PUT /api/integrations/clients/:param/agent-jwt` | matched |
 | integrations | `GET /api/integrations/clients/:param/app-notifications` | matched |
-| integrations | `PUT /api/integrations/clients/:param/app-notifications/permissions` | missing |
+| integrations | `PUT /api/integrations/clients/:param/app-notifications/permissions` | matched |
 | integrations | `POST /api/integrations/clients/:param/app-notifications/permissions/review` | matched |
-| integrations | `DELETE /api/integrations/clients/:param/app-notifications/webhook` | missing |
-| integrations | `PUT /api/integrations/clients/:param/app-notifications/webhook` | missing |
-| integrations | `POST /api/integrations/clients/:param/app-notifications/webhook/rotate-secret` | missing |
+| integrations | `DELETE /api/integrations/clients/:param/app-notifications/webhook` | matched |
+| integrations | `PUT /api/integrations/clients/:param/app-notifications/webhook` | matched |
+| integrations | `POST /api/integrations/clients/:param/app-notifications/webhook/rotate-secret` | matched |
 | integrations | `POST /api/integrations/clients/:param/install/bot` | missing |
-| integrations | `DELETE /api/integrations/clients/:param/logo` | missing |
-| integrations | `POST /api/integrations/clients/:param/logo` | missing |
-| integrations | `POST /api/integrations/clients/:param/regenerate-secret` | missing |
-| integrations | `POST /api/integrations/clients/:param/request-publish` | missing |
-| integrations | `POST /api/integrations/clients/:param/request-unpublish` | missing |
+| integrations | `DELETE /api/integrations/clients/:param/logo` | matched |
+| integrations | `POST /api/integrations/clients/:param/logo` | matched |
+| integrations | `POST /api/integrations/clients/:param/regenerate-secret` | matched |
+| integrations | `POST /api/integrations/clients/:param/request-publish` | matched |
+| integrations | `POST /api/integrations/clients/:param/request-unpublish` | matched |
 | integrations | `POST /api/integrations/clients/:param/review-publish` | missing |
 | integrations | `GET /api/integrations/clients/:param/setup` | matched |
-| integrations | `DELETE /api/integrations/clients/:param/share-link` | missing |
+| integrations | `DELETE /api/integrations/clients/:param/share-link` | matched |
 | integrations | `GET /api/integrations/clients/:param/share-link` | matched |
-| integrations | `POST /api/integrations/clients/:param/share-link` | missing |
+| integrations | `POST /api/integrations/clients/:param/share-link` | matched |
 | integrations | `POST /api/integrations/grants/:param/revoke` | matched |
 | integrations | `GET /api/integrations/marketplace` | matched |
 | integrations | `DELETE /api/integrations/marketplace/:param/install` | matched |
 | integrations | `POST /api/integrations/marketplace/:param/install` | matched |
 | integrations | `GET /api/integrations/marketplace/:param/install/app-notifications` | matched |
-| integrations | `PUT /api/integrations/marketplace/:param/install/app-notifications/grant` | missing |
-| integrations | `GET /api/integrations/overview` | missing |
+| integrations | `PUT /api/integrations/marketplace/:param/install/app-notifications/grant` | matched |
+| integrations | `GET /api/integrations/overview` | matched |
 | integrations | `POST /api/integrations/requests/:param/approve` | matched |
-| integrations | `POST /api/integrations/requests/:param/deny` | missing |
+| integrations | `POST /api/integrations/requests/:param/deny` | matched |
 | internal | `GET /internal/agent-api` | matched |
 | internal | `POST /internal/agent-api/activity` | matched |
 | internal | `POST /internal/agent-api/app-sources/ack` | missing |
@@ -824,9 +778,9 @@ does not prove no other consumer exists.
 | mcp | `POST /api/mcp/servers` | matched |
 | mcp | `DELETE /api/mcp/servers/:param` | matched |
 | mcp | `PATCH /api/mcp/servers/:param` | matched |
-| mcp | `DELETE /api/mcp/servers/:param/oauth` | missing |
-| mcp | `POST /api/mcp/servers/:param/oauth/start` | missing |
-| mcp | `POST /api/mcp/servers/:param/test` | missing |
+| mcp | `DELETE /api/mcp/servers/:param/oauth` | matched |
+| mcp | `POST /api/mcp/servers/:param/oauth/start` | matched |
+| mcp | `POST /api/mcp/servers/:param/test` | matched |
 | mcp | `POST /api/mcp/servers/test-configuration` | matched |
 | messages | `POST /api/messages` | matched |
 | messages | `GET /api/messages/:param/mention-deliveries` | matched |
@@ -904,8 +858,8 @@ does not prove no other consumer exists.
 | provider-connections | `DELETE /api/provider-connections/:param/agents/:param` | matched |
 | provider-connections | `POST /api/provider-connections/:param/credentials/rotate` | matched |
 | provider-connections | `GET /api/provider-connections/:param/models` | matched |
-| provider-connections | `GET /api/provider-connections/:param/probes` | missing |
-| provider-connections | `POST /api/provider-connections/:param/probes` | missing |
+| provider-connections | `GET /api/provider-connections/:param/probes` | matched |
+| provider-connections | `POST /api/provider-connections/:param/probes` | matched |
 | provider-connections | `GET /api/provider-connections/:param/probes/:param` | missing |
 | provider-connections | `POST /api/provider-connections/:param/test` | matched |
 | public | `GET /api/public/feature-flags` | matched |

@@ -178,6 +178,7 @@ private func oauthDiscoveryBytes(issuer: String) -> String {
             controlPlane: scene.services.integrations.control,
             identities: scene.services.identity.identities,
             apps: scene.services.integrations.apps,
+            appManagement: scene.services.integrations.appManagement,
             cardPrepare: scene.services.integrations.prepare,
             agentsLifecycle: scene.services.agents.lifecycle,
             providerConnections: scene.services.integrations.providers,

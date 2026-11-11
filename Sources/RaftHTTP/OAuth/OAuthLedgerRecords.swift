@@ -89,6 +89,20 @@ extension OAuthLedger {
         var setupUrl: String? = nil
         var setupDescription: String? = nil
         var setupRevision: Int = 1
+        var category: String = "Other"
+        var dataAccessSummary: String? = nil
+        var publishRejectionReason: String? = nil
+        var publishRequestedAt: Date? = nil
+        var publishReviewedAt: Date? = nil
+        var logoUrl: String? = nil
+        var logoStorageKey: String? = nil
+        var createdAt: Date = Date()
+        var updatedAt: Date = Date()
+        var outboundEvents: [String] = []
+        var outboundRequestRevision: Int = 0
+        var outboundCurrentRevisionId: String? = nil
+        var outboundPendingEvents: [String] = []
+        var outboundPendingRevisionState: String? = nil
     }
 
     struct IntegrationAuditEvent: Sendable {
@@ -120,6 +134,42 @@ extension OAuthLedger {
         var agentJwtEnabled: Bool? = false
         var setupCompletedRevision: Int? = nil
         var setupCompletedAt: Date? = nil
+        var createdAt: Date = Date()
+        var approvedRequestRevisionId: String? = nil
+        var subscribedEvents: [String] = []
+        var subscriptionRevision: Int = 0
+    }
+
+    struct ClientShareLink: Sendable {
+        var id: String
+        var clientRecordId: String
+        var tokenHash: String
+        var expiresAt: Date?
+        var revokedAt: Date?
+        var lastUsedAt: Date?
+        var createdAt: Date
+        var updatedAt: Date
+    }
+
+    struct AppWebhookConfig: Sendable {
+        var clientRecordId: String
+        var endpointUrl: String
+        var secret: String
+        var previousSecret: String?
+        var previousValidUntil: Date?
+        var revision: Int
+        var enabled: Bool
+        var updatedAt: Date
+    }
+
+    struct AppPermissionRevision: Sendable {
+        var id: String
+        var clientRecordId: String
+        var revision: Int
+        var requestedGroups: [String]
+        var requestedEvents: [String]
+        var state: String
+        var createdAt: Date
     }
 
     struct AccessRequest: Sendable {
@@ -140,6 +190,12 @@ extension OAuthLedger {
         var oidcRedirectURI: String? = nil
         var createdAt: Date
         var consumedAt: Date? = nil
+        var remember: Bool = false
+        var resolvedByUserId: String? = nil
+        var resolvedAt: Date? = nil
+        var updatedAt: Date? = nil
+        var resource: String? = nil
+        var principalType: String = "agent"
     }
 
     struct AccessToken: Sendable {

@@ -25,6 +25,8 @@ public struct ManagedMCPControlPlaneDependencies: Sendable {
 /// caller, validates the request shape and maps rows to ordered DTOs.
 public struct ManagedMCPControlPlaneService: Sendable {
     let servers: ManagedMCPAndCardsStore
+    static let emptyToolCatalogJSON = "[]"
+
     let oauth: OAuthLedger
     let dependencies: ManagedMCPControlPlaneDependencies
 
@@ -82,13 +84,57 @@ public struct ManagedMCPControlPlaneService: Sendable {
             authMode: body.authMode,
             oauthStatus: body.authMode == "oauth" ? "disconnected" : nil,
             endpointUrl: endpointUrl,
-            toolCatalogJSON: "[]",
+            toolCatalogJSON: Self.emptyToolCatalogJSON,
             catalogVersion: 1,
             credentialHeaderNames: headerNames,
             credentialHeaders: headers
         )
         servers.appendManagedMCPServer(record)
         return Self.serverResponse(record)
+    }
+
+    /// `POST /api/mcp/servers/:id/oauth/start`. A non-OAuth server answers the
+    /// upstream 400; an OAuth server needs the third-party provider transport,
+    /// which this deployment does not configure (D5), so it answers the
+    /// upstream unreachable 502 instead of inventing an authorization URL.
+    public func startServerOAuth(
+        authorization: String?, serverId: String, serverIdPath: String
+    ) throws -> OrderedBodyDTO {
+        try requireManager(authorization: authorization, serverId: serverId)
+        guard let record = servers.managedMCPServer(id: serverIdPath, serverId: serverId) else {
+            throw ManagedMCPControlPlaneError.mcpServerNotFound
+        }
+        guard record.authMode == "oauth" else { throw ManagedMCPControlPlaneError.oauthRequired }
+        throw ManagedMCPControlPlaneError.oauthUnavailable
+    }
+
+    /// `DELETE /api/mcp/servers/:id/oauth`: clears any stored OAuth connection
+    /// and records the connection as disconnected. Idempotent when already
+    /// disconnected.
+    public func disconnectServerOAuth(
+        authorization: String?, serverId: String, serverIdPath: String
+    ) throws -> NoContentResponse {
+        try requireManager(authorization: authorization, serverId: serverId)
+        guard servers.updateManagedMCPServer(serverId: serverId, id: serverIdPath, { record in
+            record.oauthStatus = "disconnected"
+            record.toolCatalogJSON = Self.emptyToolCatalogJSON
+        }) != nil else {
+            throw ManagedMCPControlPlaneError.mcpServerNotFound
+        }
+        return NoContentResponse()
+    }
+
+    /// `POST /api/mcp/servers/:id/test`: refreshing the tool catalog needs a
+    /// live MCP transport to the third-party server; this deployment has none,
+    /// so a known server answers the upstream unreachable 502.
+    public func testServer(
+        authorization: String?, serverId: String, serverIdPath: String
+    ) throws -> OrderedBodyDTO {
+        try requireManager(authorization: authorization, serverId: serverId)
+        guard servers.managedMCPServer(id: serverIdPath, serverId: serverId) != nil else {
+            throw ManagedMCPControlPlaneError.mcpServerNotFound
+        }
+        throw ManagedMCPControlPlaneError.oauthUnavailable
     }
 
     public func patchServer(

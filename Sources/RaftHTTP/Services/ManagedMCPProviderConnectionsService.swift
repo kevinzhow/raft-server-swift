@@ -126,6 +126,32 @@ public struct ManagedMCPProviderConnectionsService: Sendable {
         throw ManagedMCPLifecycleError.providerProbeRetired
     }
 
+    // MARK: - Provider probes (GET/POST /api/provider-connections/:id/probes)
+
+    /// The provider-connections feature is off in this deployment, so both
+    /// probe routes answer the upstream disabled-surface refusal. When a server
+    /// enables the surface the retired probe refusal stays explicit (D5): this
+    /// build has no daemon carrier that could execute a probe.
+    public func listProviderProbes(
+        authorization: String?, serverId: String, connectionId: String
+    ) throws -> NoContentResponse {
+        try requireManager(authorization, serverId: serverId)
+        guard connectionId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            throw ManagedMCPLifecycleError.invalidProviderConnection
+        }
+        throw ManagedMCPLifecycleError.providerProbeRetired
+    }
+
+    public func createProviderProbe(
+        authorization: String?, serverId: String, connectionId: String
+    ) throws -> NoContentResponse {
+        try requireManager(authorization, serverId: serverId)
+        guard connectionId.wholeMatch(of: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/) != nil else {
+            throw ManagedMCPLifecycleError.invalidProviderConnection
+        }
+        throw ManagedMCPLifecycleError.providerProbeRetired
+    }
+
     // MARK: - PATCH /api/provider-connections/:id
 
     public func patchProviderConnection(
