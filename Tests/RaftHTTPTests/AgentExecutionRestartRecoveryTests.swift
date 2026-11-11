@@ -280,6 +280,117 @@ import Testing
                 "a completed turn with a live process is not an unsettled server-restart fence")
     }
 
+    /// The deployed production shape: a completed turn whose process stays
+    /// resident, then a later start staged on that same connection that never
+    /// reached the daemon (the outbox consumer stopped before dispatch). Main
+    /// restarts. The same daemon instance reconnects, reports the agent running
+    /// and carries the earlier admitted launch, while the current launch is the
+    /// never-admitted start. Recovery must adopt the launch the process carries
+    /// and retire the unsent start; otherwise the agent stays in manual recovery
+    /// and every transient notice (owner facts and the opener ledger) is dropped
+    /// even though the runtime is demonstrably alive.
+    @Test func staleUnadmittedStartAfterMainRestartAdoptsTheResidentLaunchForNotices() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        let first = try await startAndCompleteTurn(domain, context: context, f)
+        // Staged after the turn completed, but no beginDispatch/wire write ever
+        // happened: the production start command that stayed pending.
+        let staged = try await commit { try domain.requestStart(.init(serverId: f.server, agentId: f.agent)) }
+        #expect(staged.launchId != first.launchId)
+        #expect(f.agents.state.execution.agents[f.agent]?.currentLaunchId == staged.launchId)
+        #expect(f.agents.state.execution.dispatches?[staged.commandId.uuidString] == nil)
+
+        try await commit { try domain.connectionClosed(context) }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == "connection_lost_with_unsettled_execution")
+
+        let restoredAgents = AgentsRuntimeStore()
+        try restoredAgents.restorePersistenceData(f.agents.exportPersistenceData())
+        let restored = makeDomain(f, agents: restoredAgents)
+        _ = try await open(restored, f, epoch: "connection-2", running: [f.agent])
+
+        let agent = try #require(restoredAgents.state.execution.agents[f.agent])
+        #expect(agent.needsManual == nil,
+                "a ready-reported resident process clears the connection-loss fence")
+        #expect(agent.currentLaunchId == first.launchId,
+                "the launch the live process carries becomes current again")
+        #expect(agent.launches[staged.launchId]?.notSpawned == true,
+                "a start that never reached the daemon is retired, not a live launch")
+        #expect(restoredAgents.state.execution.commands[staged.commandId.uuidString]?.status == .superseded)
+
+        let receipt = try await commit {
+            try restored.requestNotice(.init(
+                serverId: f.server, agentId: f.agent,
+                channelId: "onboarding-context", channelName: "onboarding-context", channelType: "channel",
+                content: "owner facts", messageId: "onboarding-owner-facts-\(f.server)",
+                timestamp: "2026-11-11T00:46:48Z"))
+        }
+        guard case .accepted(let commandId) = receipt else {
+            Issue.record("a ready-reported resident process must admit the owner notice, got \(receipt)")
+            return
+        }
+        let command = try #require(restoredAgents.state.execution.commands[commandId.uuidString])
+        #expect(command.kind == .notice)
+        #expect(command.launchId == first.launchId,
+                "the notice names the daemon-admitted launch, not the retired start")
+    }
+
+    /// A human takeover (the operator's Start) increments the agent's takeover
+    /// epoch and thereby acknowledges every older launch, the same rule
+    /// `hasBlockingUnexitedExecution` already applies. An accepted delivery left
+    /// on the previous epoch can never complete after the takeover, so it must
+    /// not keep the agent in recovery or block the owner notices.
+    @Test func humanTakeoverRetiresPriorEpochInFlightEvidence() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        _ = try await startAndCompleteTurn(domain, context: context, f)
+        try await startInFlightTurn(domain, context: context, f)
+        #expect(f.agents.state.execution.agents[f.agent]?.hasUnsettledExecution == true)
+
+        let takeover = try await commit {
+            try domain.requestStart(.init(serverId: f.server, agentId: f.agent, control: .humanStart))
+        }
+        try await startAck(domain, context: context, launchId: takeover.launchId,
+                           startDispatchId: try #require(takeover.startDispatchId), agent: f.agent)
+        let spawned = try frame("agent:process_spawned", agent: f.agent, launch: takeover.launchId, seq: 2,
+                                extra: ["processInstanceId": "process-2"])
+        _ = try await commit {
+            try domain.stageIngress(context: context, type: "agent:process_spawned", payload: spawned)
+        }
+        let completed = try frame("agent:runtime:outcome", agent: f.agent, launch: takeover.launchId, seq: 3,
+                                  extra: ["v": 1, "sessionId": "codex-session-2",
+                                          "outcome": ["kind": "turn_completed"]])
+        _ = try await commit {
+            try domain.stageIngress(context: context, type: "agent:runtime:outcome", payload: completed)
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.takeoverEpoch == 1)
+        #expect(f.agents.state.execution.agents[f.agent]?.hasUnsettledExecution == false,
+                "the previous epoch's in-flight delivery is acknowledged by the takeover")
+
+        try await commit { try domain.connectionClosed(context) }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == nil,
+                "an acknowledged older epoch is not an unsettled execution")
+        let restoredAgents = AgentsRuntimeStore()
+        try restoredAgents.restorePersistenceData(f.agents.exportPersistenceData())
+        #expect(restoredAgents.state.execution.agents[f.agent]?.needsManual == nil)
+        let restored = makeDomain(f, agents: restoredAgents)
+        _ = try await open(restored, f, epoch: "connection-2", running: [f.agent])
+
+        let receipt = try await commit {
+            try restored.requestNotice(.init(
+                serverId: f.server, agentId: f.agent,
+                channelId: "onboarding-context", channelName: "onboarding-context", channelType: "channel",
+                content: "owner facts", messageId: "onboarding-owner-facts-\(f.server)",
+                timestamp: "2026-11-11T00:46:48Z"))
+        }
+        guard case .accepted(let commandId) = receipt else {
+            Issue.record("a human-takeover agent must admit the owner notice, got \(receipt)")
+            return
+        }
+        #expect(restoredAgents.state.execution.commands[commandId.uuidString]?.launchId == takeover.launchId)
+    }
+
     @Test func restoringAFlaggedInFlightTurnKeepsServerRestartRecovery() async throws {
         let f = fixture()
         let domain = makeDomain(f)

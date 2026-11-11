@@ -76,6 +76,7 @@ final class AgentExecutionPostgresFixture: Sendable {
     let session: URLSession
     let serverId: String
     let slug: String
+    let ownerId: String
     let ownerEmail: String
     let memberEmail: String
     let outsiderEmail: String
@@ -86,12 +87,13 @@ final class AgentExecutionPostgresFixture: Sendable {
                  executionConnection: ProductionAgentExecutionConnection, machineServer: MachineConnectServer,
                  realtimeServer: RealtimeServer, publications: ProductionRealtimePublicationWorker,
                  app: Application, httpTask: Task<Void, any Error>, baseURL: URL, keys: [DurableKey],
-                 serverId: String, slug: String, ownerEmail: String, memberEmail: String, outsiderEmail: String) {
+                 serverId: String, slug: String, ownerId: String, ownerEmail: String, memberEmail: String,
+                 outsiderEmail: String) {
         self.accounts = accounts; self.runtime = runtime; self.observer = observer
         self.executionConnection = executionConnection; self.machineServer = machineServer
         self.realtimeServer = realtimeServer; self.publications = publications
         self.app = app; self.httpTask = httpTask; self.baseURL = baseURL; self.keys = keys
-        self.serverId = serverId; self.slug = slug
+        self.serverId = serverId; self.slug = slug; self.ownerId = ownerId
         self.ownerEmail = ownerEmail; self.memberEmail = memberEmail; self.outsiderEmail = outsiderEmail
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 12
@@ -184,7 +186,7 @@ final class AgentExecutionPostgresFixture: Sendable {
             return .init(accounts: accounts, runtime: writer, observer: observer, executionConnection: execution,
                 machineServer: listener, realtimeServer: socketServer, publications: publisher,
                 app: app, httpTask: task, baseURL: baseURL, keys: keys, serverId: serverId, slug: slug,
-                ownerEmail: ownerEmail, memberEmail: memberEmail, outsiderEmail: outsiderEmail)
+                ownerId: ownerId, ownerEmail: ownerEmail, memberEmail: memberEmail, outsiderEmail: outsiderEmail)
         } catch {
             await publication?.stop()
             await connection?.worker.stop()
@@ -267,6 +269,17 @@ final class AgentExecutionPostgresFixture: Sendable {
         } catch { throw ProtocolPGFailure.invalidSnapshot }
     }
     func outbox(_ commandId: UUID) async throws -> DurableOutboxEntry? { try await observer.outboxEffect(effectID: commandId) }
+    /// The retained collaboration document. The onboarding opener ledger is the
+    /// one-shot sent fact the briefing trigger stamps after a typed notice
+    /// acceptance; reading it through the second PG client proves the durable
+    /// write rather than a store projection.
+    func serversAndChannels() async throws -> ProtocolPGObject {
+        let documents = try await observer.readSnapshot(keys)
+        guard let document = documents.first(where: {
+            $0.key.domain == .serversAndChannels && $0.key.aggregateID == "root"
+        }), document.codecVersion == 1 else { throw ProtocolPGFailure.invalidSnapshot }
+        return try ProtocolPGObject(data: document.decode(Data.self, codecVersion: 1))
+    }
     /// Pause the real consumer to expose an independently committed pending row;
     /// restarting creates the same production worker, never an injected sink.
     func pausePublications() async { await publications.stop() }

@@ -86,6 +86,20 @@ extension AgentExecutionDomain {
         let running = Set(runningAgentIds)
         for agentId in Array(state.agents.keys) {
             guard var agent = state.agents[agentId], agent.machineId == machineId else { continue }
+            // The daemon's report is the only reconnect fact that proves this
+            // process survived; an absent report cannot be distinguished from
+            // a process that the daemon lost track of.
+            guard running.contains(agentId),
+                  let liveProcess = agent.processes.values.first(where: {
+                      !$0.exited && $0.daemonInstanceId == daemonInstanceId
+                  }) else { continue }
+            // The resident process is the daemon's running runtime. Adopt the
+            // launch it carries before evaluating the recovery fence: a start
+            // the previous connection staged but never admitted cannot be sent
+            // on this one, and it must not keep the agent out of recovery.
+            adoptResidentLaunch(&agent, agentId: agentId, connectionEpochId: connectionEpochId,
+                                process: liveProcess, state: &state)
+            state.agents[agentId] = agent
             guard agent.needsManual == "connection_lost_with_unsettled_execution"
                     || agent.needsManual == "server_restarted_with_unsettled_execution" else { continue }
             guard let currentId = agent.currentLaunchId, let current = agent.launches[currentId] else { continue }
@@ -94,12 +108,6 @@ extension AgentExecutionDomain {
             // incomplete one must have been admitted by the daemon.
             guard current.completed || current.notSpawned || current.terminalFailure
                     || current.startAccepted || current.processInstanceId != nil else { continue }
-            // The daemon's report is the only reconnect fact that proves this
-            // process survived; an absent report cannot be distinguished from
-            // a process that the daemon lost track of.
-            guard running.contains(agentId),
-                  agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId })
-            else { continue }
             guard !state.hasUnsettledDeliveryWrite(agentId: agentId),
                   !state.hasAcceptedTurnWithoutCompletion(agentId: agentId) else { continue }
             // A pending delivery with no dispatch record was never written:
@@ -114,6 +122,57 @@ extension AgentExecutionDomain {
             agent.needsManual = nil
             state.agents[agentId] = agent
         }
+    }
+
+    /// The reconnect half of `deliveryLaunchId`. A start the previous connection
+    /// staged but never admitted has no daemon identity that can receive a
+    /// delivery: its launch names the old connection epoch, its start command was
+    /// never dispatched (`beginDispatch` would have written a dispatch record),
+    /// and the ready-reported resident process carries an earlier admitted
+    /// launch. Retire that unsent start as never spawned and make the carried
+    /// launch current again. Without this a single start abandoned by a Main
+    /// restart keeps the agent in manual recovery, so every transient notice
+    /// (owner facts and the opener ledger) and every delivery is dropped even
+    /// though the runtime is demonstrably alive.
+    private func adoptResidentLaunch(_ agent: inout AgentExecutionAgent, agentId: String,
+                                     connectionEpochId: String, process: AgentExecutionProcess,
+                                     state: inout AgentExecutionState) {
+        let current = agent.currentLaunchId.flatMap { agent.launches[$0] }
+        let stale: AgentExecutionLaunch?
+        if let current, current.connectionEpochId != connectionEpochId,
+           !current.completed, !current.notSpawned, !current.terminalFailure,
+           !current.startAccepted, current.processInstanceId == nil {
+            // A dispatch record means the start may have reached the daemon:
+            // never retire evidence of a wire write or a daemon admission.
+            let start = state.commands.values.first {
+                $0.kind == .start && $0.agentId == agentId && $0.launchId == current.launchId
+            }
+            let dispatched = start.flatMap { state.dispatches?[$0.commandId.uuidString] } != nil
+            stale = dispatched ? nil : current
+        } else {
+            stale = nil
+        }
+        // Only an absent current launch or the never-admitted start is replaceable.
+        guard current == nil || stale != nil else { return }
+        let carried = process.launchIds.compactMap { agent.launches[$0] }
+            .filter { $0.launchId != stale?.launchId && launchIsUsableForDelivery($0)
+                      && ($0.startAccepted || $0.processInstanceId != nil) }
+            .sorted { ($0.generation, $0.launchId) > ($1.generation, $1.launchId) }
+        guard let adopted = carried.first else { return }
+        if let stale {
+            // The launch never became a daemon fact. Retire it as never spawned
+            // so it cannot fence a later restart or look deliverable, and
+            // supersede its pending start so dispatch resolution cannot send it.
+            agent.launches[stale.launchId]?.notSpawned = true
+            for key in Array(state.commands.keys) {
+                guard var command = state.commands[key], command.kind == .start,
+                      command.agentId == agentId, command.launchId == stale.launchId,
+                      command.status == .pending else { continue }
+                command.status = .superseded
+                state.commands[key] = command
+            }
+        }
+        agent.currentLaunchId = adopted.launchId
     }
 
     /// Internal pending decision. Never expose this result to transport until
