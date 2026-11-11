@@ -146,12 +146,7 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
             return .object([
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("code", "PROFILE_SETUP_BODY_INVALID"),
-                OrderedJSONField("issues", .array(issues.map {
-                    .object([
-                        OrderedJSONField("path", $0.path),
-                        OrderedJSONField("message", $0.message),
-                    ])
-                })),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
             ])
         default:
             return nil

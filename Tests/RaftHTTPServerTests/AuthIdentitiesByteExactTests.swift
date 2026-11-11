@@ -86,14 +86,20 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             emailAccounts: fixture.accounts
         ))
         try await app.testing { client in
+            // Pinned `routes/auth.ts:114` runs zod 4.3.6 and publishes
+            // `formatBodyIssues`; a JSON number is `number`, not the boolean the
+            // retired Foundation bridge reported.
             let missing = try await send(client, .post, "/api/auth/login", body: #"{"password":1}"#)
             #expect(missing.status == .badRequest)
-            #expect(missing.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Required"},{"path":"password","message":"Expected string, received boolean"}]}"#)
+            #expect(missing.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received number"}]}"#)
 
             let notObject = try await send(client, .post, "/api/auth/login", body: "[]")
-            #expect(notObject.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"","message":"Expected object, received string"}]}"#)
+            #expect(notObject.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#)
+            // The route passes `req.body ?? {}`, so a missing body reports the
+            // two required members rather than a root-type issue.
             let empty = try await send(client, .post, "/api/auth/login")
             #expect(empty.status == .badRequest)
+            #expect(empty.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received undefined"}]}"#)
 
             let rejected = try await send(client, .post, "/api/auth/login", body: #"{"email":"bytes@slock.test","password":"nope"}"#)
             #expect(rejected.status == .unauthorized)
@@ -172,6 +178,45 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
     }
 }
 
+
+@Test func passwordResetAndChangePublishTheUpstreamLengthRules() async throws {
+    let fixture = byteFixture()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: fixture.accounts
+        ))
+        try await app.testing { client in
+            // Pinned `routes/auth.ts:1776-1779`: the length check runs before the
+            // reset token lookup, so an unknown token with a short password is
+            // the password refusal.
+            let shortReset = try await send(
+                client, .post, "/api/auth/reset-password",
+                body: #"{"token":"unknown-token","password":"short"}"#
+            )
+            #expect(shortReset.status == .badRequest)
+            #expect(shortReset.body.string == #"{"error":"Password must be at least 8 characters"}"#)
+
+            let missingPassword = try await send(
+                client, .post, "/api/auth/reset-password",
+                body: #"{"token":"unknown-token"}"#
+            )
+            #expect(missingPassword.status == .badRequest)
+            #expect(missingPassword.body.string == #"{"error":"Token and password are required"}"#)
+
+            // Pinned `routes/auth.ts:1503-1506`: the same eight-character floor
+            // for a password change, before the current password is checked.
+            let shortChange = try await send(
+                client, .patch, "/api/auth/me", bearer: fixture.bearer,
+                body: #"{"currentPassword":"wrong","newPassword":"short"}"#
+            )
+            #expect(shortChange.status == .badRequest)
+            #expect(shortChange.body.string == #"{"error":"New password must be at least 8 characters"}"#)
+        }
+    }
+}
 
 @Test func passwordLoginPublishesStoredVerificationAndProfileForEveryBrowserGateState() async throws {
     let completedAt = Date(timeIntervalSince1970: 1_700_000_000)

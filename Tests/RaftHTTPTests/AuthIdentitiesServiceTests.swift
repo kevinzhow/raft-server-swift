@@ -77,9 +77,9 @@ private func render(_ error: AuthIdentitiesError) -> String {
         == #"{"error":"App login request expired","code":"request_expired","redirectUrl":"raft:\/\/login\/callback?requestId=r&error=expired"}"#
         .replacingOccurrences(of: "\\/", with: "/"))
     #expect(render(.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Required"),
-        AuthRequestIssue(path: "password", message: "Expected string, received boolean"),
-    ])) == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Required"},{"path":"password","message":"Expected string, received boolean"}]}"#)
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received undefined"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received number"),
+    ])) == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received number"}]}"#)
     #expect(AuthIdentitiesError.requestNotFound.status == 404)
     #expect(AuthIdentitiesError.codeConsumed.status == 410)
     #expect(AuthIdentitiesError.requestNotApproved.status == 409)
@@ -94,21 +94,27 @@ private func render(_ error: AuthIdentitiesError) -> String {
     }
 
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "", message: "Expected object, received string"),
+        AuthRequestIssue(path: "", message: "Invalid input: expected object, received array"),
     ])) { try service.login(decode("[1]")) }
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Required"),
-        AuthRequestIssue(path: "password", message: "String must contain at least 1 character(s)"),
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received undefined"),
+        AuthRequestIssue(path: "password", message: "Too small: expected string to have >=1 characters"),
     ])) { try service.login(decode(#"{"password":""}"#)) }
-    // A JSON 0 or 1 read as a boolean through the old number bridge.
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Expected string, received number"),
-        AuthRequestIssue(path: "password", message: "Expected string, received boolean"),
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received number"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received number"),
     ])) { try service.login(decode(#"{"email":5,"password":1}"#)) }
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Expected string, received null"),
-        AuthRequestIssue(path: "password", message: "Expected string, received object"),
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received null"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received object"),
     ])) { try service.login(decode(#"{"email":null,"password":{}}"#)) }
+    // zod 4 also runs the string length check on a received array, so an empty
+    // array reports both the type and the minimum.
+    #expect(throws: AuthIdentitiesError.invalidLoginBody([
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received array"),
+        AuthRequestIssue(path: "email", message: "Too small: expected array to have >=1 items"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received undefined"),
+    ])) { try service.login(decode(#"{"email":[]}"#)) }
     #expect(throws: AuthIdentitiesError.invalidCredentials) {
         try service.login(LoginRequest(email: "identity-02@slock.test", password: "wrong"))
     }

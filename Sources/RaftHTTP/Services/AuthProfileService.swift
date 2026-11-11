@@ -24,8 +24,10 @@ public struct FirstOnboardingCompletion: Sendable, Equatable {
 public enum AuthProfileError: DomainError, Equatable {
     case emailRequired
     case missingResetCredentials
+    case resetPasswordTooShort
     case invalidOrExpiredResetToken
     case unauthenticated
+    case invalidTimezoneObservationBody([AuthRequestIssue])
     case invalidTimezoneObservation
     case observationNotStored
 
@@ -35,7 +37,8 @@ public enum AuthProfileError: DomainError, Equatable {
             401
         case .observationNotStored:
             500
-        case .emailRequired, .missingResetCredentials, .invalidOrExpiredResetToken,
+        case .emailRequired, .missingResetCredentials, .resetPasswordTooShort,
+             .invalidOrExpiredResetToken, .invalidTimezoneObservationBody,
              .invalidTimezoneObservation:
             400
         }
@@ -46,15 +49,41 @@ public enum AuthProfileError: DomainError, Equatable {
         case .emailRequired:
             "Email is required"
         case .missingResetCredentials:
-            "token and password are required"
+            "Token and password are required"
+        case .resetPasswordTooShort:
+            "Password must be at least 8 characters"
         case .invalidOrExpiredResetToken:
             "Invalid or expired reset token"
         case .unauthenticated:
             "Unauthorized"
+        case .invalidTimezoneObservationBody:
+            "Invalid timezone observation body"
         case .invalidTimezoneObservation:
             "Invalid timezone observation"
         case .observationNotStored:
             "Timezone observation not stored"
+        }
+    }
+
+    public var errorCode: String? {
+        switch self {
+        case .invalidTimezoneObservationBody: "timezone_observation_body_invalid"
+        default: nil
+        }
+    }
+
+    public var errorBody: OrderedJSON? {
+        switch self {
+        case .invalidTimezoneObservationBody(let issues):
+            // Pinned `routes/auth.ts:1370-1376` publishes `error`, `code`,
+            // then `issues`.
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "timezone_observation_body_invalid"),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
+            ])
+        default:
+            return nil
         }
     }
 }
@@ -193,6 +222,10 @@ public struct AuthProfileService: Sendable {
     private func resetInput(_ request: ResetPasswordRequest) throws -> (candidate: PasswordCredentialCandidate, tokenHash: String, password: String) {
         guard let token = request.token, !token.isEmpty,
               let password = request.password, !password.isEmpty else { throw AuthProfileError.missingResetCredentials }
+        // Pinned `routes/auth.ts:1776-1779`: the eight-character floor runs
+        // before the token is looked up, so an unknown token with a short
+        // password is the password refusal.
+        guard password.utf16.count >= 8 else { throw AuthProfileError.resetPasswordTooShort }
         let tokenHash = hashToken(token)
         guard let candidate = store.resetPasswordCandidate(tokenHash: tokenHash, now: now()) else {
             throw AuthProfileError.invalidOrExpiredResetToken
@@ -216,12 +249,17 @@ public struct AuthProfileService: Sendable {
         guard let userId = userId(authorization: authorization) else {
             throw AuthProfileError.unauthenticated
         }
+        // Pinned `routes/auth.ts:1406-1413`: the strict schema runs before the
+        // zone value is parsed, and its failures publish an issue list.
+        guard request.issues.isEmpty else {
+            throw AuthProfileError.invalidTimezoneObservationBody(request.issues)
+        }
         guard let raw = request.timezone else {
             throw AuthProfileError.invalidTimezoneObservation
         }
         let timezone = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !timezone.isEmpty,
-              timezone.count <= Self.maximumTimezoneLength,
+              timezone.utf16.count <= Self.maximumTimezoneLength,
               timezone == "UTC" || timezone.contains("/"),
               let zone = TimeZone(identifier: timezone)
         else {

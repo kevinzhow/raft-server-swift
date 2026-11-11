@@ -48,13 +48,31 @@ private func services(_ accounts: EmailLoginDirectory) -> FallbackServices {
     try await withApp { app in
         configure(app, services: services(accounts))
         try await app.testing { client in
+            // Pinned `routes/auth.ts:102` runs zod 4.3.6: a non-object root is
+            // one `expected object` issue naming the received type.
             let register = try await post(client, "/api/auth/register", body: "[1]")
             #expect(register.status == .badRequest)
-            #expect(register.body.string == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"","message":"Expected object, received string"}]}"#)
+            #expect(register.body.string == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#)
             expectStandard(register)
 
             let typed = try await post(client, "/api/auth/register", body: #"{"email":1,"password":"","name":null}"#)
-            #expect(typed.body.string == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"email","message":"Expected string, received boolean"},{"path":"password","message":"String must contain at least 1 character(s)"},{"path":"name","message":"Expected string, received null"}]}"#)
+            #expect(typed.body.string == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received number"},{"path":"password","message":"Too small: expected string to have >=1 characters"},{"path":"name","message":"Invalid input: expected string, received null"}]}"#)
+
+            // `req.body ?? {}` makes an absent body report the required members.
+            let empty = try await post(client, "/api/auth/register", body: nil)
+            #expect(empty.status == .badRequest)
+            #expect(empty.body.string == #"{"error":"Invalid email registration body","code":"email_register_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received undefined"}]}"#)
+            expectStandard(empty)
+
+            // Pinned `routes/auth.ts:659-661`: register enforces the eight
+            // character password floor after the handle checks.
+            let shortPassword = try await post(
+                client, "/api/auth/register",
+                body: #"{"email":"short-password@slock.test","password":"short","acceptTerms":true,"termsVersion":"\#(AuthLegalPolicy.termsVersion)","privacyVersion":"\#(AuthLegalPolicy.privacyVersion)"}"#
+            )
+            #expect(shortPassword.status == .badRequest)
+            #expect(shortPassword.body.string == #"{"error":"Password must be at least 8 characters"}"#)
+            expectStandard(shortPassword)
 
             // A body sent without a JSON Content-Type is still read as JSON.
             let rawRefresh = try await post(client, "/api/auth/refresh", body: "{}", contentType: "text/plain")
