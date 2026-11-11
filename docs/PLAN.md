@@ -32,21 +32,46 @@ deployed state is recorded by the production release manifest and launch spec,
 the staged verification report in the qualified-artifact staging directory, and
 the upgrade record with the pre/post durable-state snapshots in the production
 provision directory. A full scripted acceptance against the deployed Main
-passes 11/11, including a Main restart, socket reconnect and post-restart agent
-reply.
+passes 11/11 in 67 s, including a Main restart, socket reconnect and a
+post-restart reply from the official Computer/Codex agent. The opener ledger
+read after that restart shows the `owner-opener-v2.0` stamp with four messages
+and `needsManual` null.
 
 The engine is in the "qualify the deployed release, then promote and deploy the
 next integration" stage. Verification is scripted-first
 (`scripts/acceptance/`), with the browser used only for visual confirmation.
 
-The `integrate-4` branch is at `ccf4137` and is four commits ahead of the
-deployed trunk. It adds zod-4 issues for legacy send and agent queries, the
-pinned agent-api request-contract schemas and validator, and one
-capability/per-agent-grant/params-query/body gate over the routes upstream
-wires. Its gate (3144 tests, one isolated retry) and 46/46 fresh-database
-persistence run are recorded in the integration worktree, but it is not merged
-to trunk and has no release artifact, upgrade record or scripted acceptance. Do
-not report it as deployed or complete.
+A direct Computer-stop acceptance fails on the deployed release: with the
+official Computer service stopped, a DM sent while it was offline got no
+correlated reply within 180 s after the service started again. The connection
+reported online and ready, but recovery was left in
+`connection_lost_with_unsettled_execution` with one pending human delivery. The
+services stay up and the live failure state is retained deliberately; the owner
+account and Codex login are untouched. A recovery worker is active in the
+restart-recovery tree; nothing is published until its fix is gated and
+accepted.
+
+The authenticated Web pages for a channel, Tasks, Members and Computers render
+against the deployed release. Each page logs the same 404 for
+`/api/product-feedback/tickets`, the Hands feedback proxy that is intentionally
+not ported (DEVIATIONS D5), so the console is not zero-error and the
+zero-console condition stays open. The full-static public profile is still
+unpublished.
+
+The `integrate-4` branch is at `6445789` and is seven commits ahead of the
+deployed trunk; it carries the merged process-refactor docs. It adds zod-4
+issues for legacy send and agent queries, the pinned agent-api request-contract
+schemas and validator, and one capability/per-agent-grant/params-query/body
+gate over the routes upstream wires. A contract review of `ccf4137` found four
+defects: object-refinement schemas suppress check errors,
+`integration:register_app` accepts a body without the required `name` and with a
+duplicate `returnUrl`, provider-complete validation runs with the wrong
+precedence, and binary/octal plus `Infinity` coercion is wrong. The fixes are in
+flight. The recorded gate (3144 tests, one isolated retry) and 46/46
+fresh-database persistence run cover only the `ccf4137` source, and the
+candidate build for `ccf4137` was stopped, so there is no release artifact,
+upgrade record or scripted acceptance for it. Do not report it as deployed or
+complete.
 
 ## What works
 
@@ -93,10 +118,10 @@ not report it as deployed or complete.
   (64/64, missing 0), and the developer-platform integrations family dropped
   from 19 missing to 3.
 - **Deployed acceptance.** The scripted acceptance against the running release
-  passes 11/11: health/version, owner login and refresh, server collection,
-  read-only revision sweep, DM and mention replies, Task creation, attachment
-  download and HTML preview, thread reply with `thread:updated`, and a unit
-  restart with socket reconnect and post-restart agent reply.
+  passes 11/11 in 67 s: health/version, owner login and refresh, server
+  collection, read-only revision sweep, DM and mention replies, Task creation,
+  attachment download and HTML preview, thread reply with `thread:updated`, and
+  a unit restart with socket reconnect and a post-restart official Codex reply.
 - **Production operations.** Reproducible Main release build, stage, verify and
   maintenance-ordered upgrade are in `deploy/swift-production/`; the current
   release replaced `7b4cd3c8`, and that release with the pre-upgrade `pg_dump`
@@ -107,32 +132,41 @@ not report it as deployed or complete.
 | ID | Finding | State | Next action |
 | --- | --- | --- | --- |
 | G1 | A verified owner with no membership still got 401 from `GET /api/servers` instead of 200 `[]` | Fixed in the deployed `15219ef` release with the canonical-principal collection path; gated by a real-PG onboarding acceptance | Confirm the deployed release returns 200 `[]` for a verified owner with no membership; the production owner currently has a server |
-| G2 | The opener ledger notice is not delivered/stamped in production | The fix is in the deployed `15219ef` release: a complete ready or `agent:session` retires a never-dispatched previous-epoch start, adopts the resident launch and clears connection-loss recovery, so the opener ledger notice is admitted and delivered. Gated by `AgentExecutionRestartRecoveryTests` and `postgresOwnerOpenerLedgerNoticeReachesAResidentAgentAfterMainRestart` | Confirm the sent stamp on the next Computer ready; do not fabricate it |
+| G2 | The opener ledger notice is not delivered/stamped in production | Confirmed on `15219ef`: the ledger read after a Main restart shows the `owner-opener-v2.0` stamp with four messages and `needsManual` null. The fix (a complete ready or `agent:session` retires a never-dispatched previous-epoch start, adopts the resident launch and clears connection-loss recovery) is gated by `AgentExecutionRestartRecoveryTests` and `postgresOwnerOpenerLedgerNoticeReachesAResidentAgentAfterMainRestart` | Keep the stamp check in the Computer acceptance; re-open if a restart clears or duplicates it |
 | G3 | Ready-time agent status/activity could stay `inactive`/`offline` while the process runs | Presence reconciliation, ready `runningAgents` handling, `activityDetailKind` and the terminal-failure pause projection are deployed and gated | Confirm live status after the next Computer ready and after a Main restart |
 | G4 | Legacy opener instruction text when the opener flag is explicitly off | Deliberately out of scope (see DEVIATIONS D11) | Re-open only if the flag is turned off in production |
 | G5 | Full-static public profile not yet published | Restricted profile verified; public entry still limited | Publish only after full Web/console and provider acceptance |
-| G6 | Official Computer/Codex/provider acceptance after the deployed release | Pending on `15219ef`; separate from the unit gate by design | Run it on the deployed release and record the result with the deployment record |
+| G6 | Official Computer/Codex/provider acceptance after the deployed release | Partially run on `15219ef`: the Web pages render and a Main restart produced a real Codex reply, but the direct Computer-stop/offline-DM/restart scenario fails (G11) | Fix and gate G11, then rerun the full Computer acceptance and record the result with the deployment record |
 | G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; the sharded runner isolates and retries, and the latest integration gate passed its one isolated Kimi token-refresh retry | Re-open only if a failure survives the isolated retry; keep the shard log |
 | G8 | Activity trajectory entries and gap recovery are not stored | Deliberate (see DEVIATIONS D10) | Re-open only if the pinned Web consumes them |
 | G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. The keep-session wake integration added three more: a tracked mention action was dropped instead of queued for an admitted launch, and two gated suites waited for `agent:deliver` without reporting the process identity, or assumed a trigger message never rides the start. | Fixed and merged; the fresh-database run passes 46/46 gated startup suites plus database-health and infrastructure-check for the deployed trunk and the integration tree | Keep the fresh-database run in the deploy checklist; re-open if a fixture depends on warm state again |
 | G10 | Route inventory still lists 57 upstream Express registrations without a Swift counterpart and 27 Swift-only routes; the largest remaining families are `internal*.ts` (28, mostly agent-side labs/machine/profile variants and trace ingest), other/top-level (8), slack-bridge (6), public search index/detail (4) and integrations (3). | Tracked by `docs/route-inventory.md`; most missing families are unported external services covered by D5/D12/D19/D21 or not referenced by the pinned Web/CLI | Re-run `make route-inventory` after each slice; register the reachable gaps and record every remaining exclusion in `docs/DEVIATIONS.md` |
+| G11 | A DM sent while the official Computer is stopped gets no reply after the Computer restarts | Open on `15219ef`: no correlated reply within 180 s; the connection is online and ready but recovery stays in `connection_lost_with_unsettled_execution` with one pending human delivery. The services and the live failure state are retained deliberately | Recovery worker in the restart-recovery tree; publish only after a gated, accepted fix; rerun the direct stop/offline/restart scenario |
+| G12 | Contract review of `ccf4137` found four defects: object-refinement schemas suppress check errors; `integration:register_app` accepts a body without the required `name` and with a duplicate `returnUrl`; provider-complete validation precedence is wrong; binary/octal and `Infinity` coercion is wrong | Open; the recorded gate and 46/46 persistence run cover only the `ccf4137` source | Land the fixes, rebuild and rerun `make gate` on the changed source before any release candidate |
 
 ## Next steps
 
-1. Confirm the deployed `15219ef` release's open behaviors: the opener ledger
-   stamp on the next Computer ready (G2), live agent presence (G3) and
-   `GET /api/servers` = 200 `[]` for a verified owner with no membership (G1).
-2. Promote the gated `integrate-4` tip to trunk with a real merge, then build,
-   stage, verify and `make deploy COMMIT=<sha>`. Keep `15219ef` and the
-   pre-upgrade dump as the rollback pair.
-3. Run the read-only scripted acceptance, then the full scripted acceptance
+1. Confirm the remaining deployed `15219ef` behaviors: live agent presence (G3)
+   and `GET /api/servers` = 200 `[]` for a verified owner with no membership
+   (G1). The opener stamp (G2) is confirmed.
+2. Fix the Computer offline-delivery recovery defect (G11) in the
+   restart-recovery tree; gate and accept it before publishing.
+3. Land the four contract-review fixes (G12), rebuild and rerun `make gate` on
+   the changed source, then promote `integrate-4` to trunk with a real merge,
+   build, stage, verify and `make deploy COMMIT=<sha>`. Keep `15219ef` and the
+   pre-upgrade dump as the rollback pair; do not deploy the stopped `ccf4137`
+   candidate.
+4. Finish the in-flight attachment nonce proof and record its result with the
+   release evidence.
+5. Run the read-only scripted acceptance, then the full scripted acceptance
    (including the Main restart) on the new release in a quiet window.
-4. Run official Computer enrollment, model execution, workspace and cold-read
-   checks, restart recovery and the browser console audit on the deployed
-   release.
-5. Publish the full-static public profile and run the public canary only after
-   the Web/console and provider checks pass.
-6. Re-run `make route-inventory` and either implement the reachable G10 gaps or
+6. Run official Computer enrollment, model execution, workspace and cold-read
+   checks, the direct stop/offline/restart recovery and the browser console
+   audit on the deployed release.
+7. Publish the full-static public profile and run the public canary only after
+   the Web/console and provider checks pass; keep the D5
+   `/api/product-feedback/tickets` 404 documented.
+8. Re-run `make route-inventory` and either implement the reachable G10 gaps or
    record each remaining exclusion in `docs/DEVIATIONS.md`.
 
 ## Completion conditions
@@ -146,9 +180,9 @@ release:
   skip) against the deployed environment, including restart/reconnect delivery.
 - The deployed Main serves the complete normal Web path (login, server, DM,
   mention, Task, attachment, thread) with no console errors on the audited
-  pages.
+  pages other than documented DEVIATIONS entries.
 - The official Computer/Codex path completes a real reply and survives a Main
-  restart without manual intervention.
+  restart and a Computer stop/start without manual intervention.
 - The public entry is intentionally published (full-static profile) and the
   maintenance/rollback procedure has been rehearsed on the same release.
 - Remaining differences are listed in `docs/DEVIATIONS.md`; no undocumented
