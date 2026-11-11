@@ -141,13 +141,14 @@ import TestSupport
         _ = try await ready(domain, server: server, machine: machine)
         let stopRequest = AgentExecutionStopRequest(serverId: server, agentId: agent)
         _ = try await publish { try domain.requestStop(stopRequest) }
-        let queuedId = try await publish {
+        let queued = try await publish {
             let message = append(domain, channel: conversation, content: "Resume only after human Start")
             let request = AgentExecutionDeliveryRequest(serverId: server, agentId: agent, channelId: conversation, messageId: message)
             let admission = try domain.requestDelivery(request)
             #expect(admission == nil)
-            return request.commandId
+            return (commandId: request.commandId, messageId: message)
         }
+        let queuedId = queued.commandId
         let restoredAgents = AgentsRuntimeStore()
         try restoredAgents.restorePersistenceData(domain.agents.exportPersistenceData())
         let restored = AgentExecutionDomain(agents: restoredAgents, machines: domain.machines, oauth: domain.oauth,
@@ -174,10 +175,13 @@ import TestSupport
             #expect(restored.oauth.agentRuntimeInfo(id: agent)?.status == "active")
             #expect(restoredAgents.state.serverAgents[agent]?.status == "active")
             #expect(restoredAgents.state.execution.stopIntents?[stopRequest.commandId.uuidString]?.clearedByHumanStart == human.commandId)
+            // Upstream attempt-wake: the held message rides the human start as
+            // its first input instead of a separate delivery frame.
             let release = try #require(restoredAgents.state.execution.heldDeliveries?[queuedId.uuidString]?.releasedCommandId)
-            #expect(release != queuedId)
+            #expect(release == human.commandId)
             let command = try #require(restoredAgents.state.execution.commands[release.uuidString])
-            #expect(command.kind == .delivery)
+            #expect(command.kind == .start)
+            #expect(command.wakeMessage == AgentExecutionWakeMessage(channelId: conversation, messageId: queued.messageId))
             #expect(command.launchId == human.launchId)
             #expect(command.connectionEpochId == reconnected.connectionEpochId)
             #expect(restoredAgents.state.execution.dispatches?[release.uuidString] == nil)
@@ -187,8 +191,8 @@ import TestSupport
             #expect(restored.oauth.agentRuntimeInfo(id: agent)?.status == "active")
             try transaction.prepareCommit()
             let effects = try transaction.preparedDurableEffects()
-            #expect(effects.count == 2)
-            #expect(Set(effects.map(\.effectID)) == [human.commandId, release])
+            #expect(effects.count == 1)
+            #expect(Set(effects.map(\.effectID)) == [human.commandId])
             transaction.publishCommitted()
             transaction.flushDeferredEffects()
         }
@@ -198,14 +202,21 @@ import TestSupport
         let (domain, server, machine, agent) = fixture()
         let conversation = channel(domain, server: server, agent: agent)
         let context = try await ready(domain, server: server, machine: machine)
+        // A resident process is what carries agent:deliver. A message to an
+        // agent without one is the start's wake input, not a delivery command.
+        let resident = try await publish { try domain.requestStart(.init(serverId: server, agentId: agent)) }
+        let residentAck = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:start:ack", "agentId": agent, "launchId": resident.launchId,
+            "startDispatchId": try #require(resident.startDispatchId), "queueState": "running",
+            "queueDepth": 0, "queueAgeMs": 0, "processInstanceId": "resident-process",
+        ])
+        _ = try await publish { try domain.stageIngress(context: context, type: "agent:start:ack", payload: residentAck) }
         let first = try await publish {
             let message = append(domain, channel: conversation, content: "Not sent yet")
             return try #require(try domain.requestDelivery(.init(serverId: server, agentId: agent, channelId: conversation, messageId: message)))
         }
-        let launch = try #require(domain.agents.state.execution.agents[agent]?.launches[first.launchId])
-        let ack = try JSONSerialization.data(withJSONObject: ["type": "agent:start:ack", "agentId": agent, "launchId": launch.launchId,
-            "startDispatchId": launch.startDispatchId, "queueState": "queued", "queueDepth": 0, "queueAgeMs": 0])
-        _ = try await publish { try domain.stageIngress(context: context, type: "agent:start:ack", payload: ack) }
+        #expect(domain.agents.state.execution.commands[first.commandId.uuidString]?.kind == .delivery)
+        #expect(domain.agents.state.execution.commands[first.commandId.uuidString]?.launchId == resident.launchId)
         let second = try await publish {
             let message = append(domain, channel: conversation, content: "Attempt already persisted")
             let admission = try #require(try domain.requestDelivery(.init(serverId: server, agentId: agent, channelId: conversation, messageId: message)))
@@ -220,10 +231,12 @@ import TestSupport
         await #expect(throws: AgentExecutionError.manuallyStopped) {
             try await publish { try domain.beginDispatch(reference: .init(commandId: first.commandId), context: context, deliverySequence: 1) }
         }
-        _ = try await publish { try domain.requestStart(.init(serverId: server, agentId: agent, control: .humanStart)) }
+        let human = try await publish { try domain.requestStart(.init(serverId: server, agentId: agent, control: .humanStart)) }
         let release = try #require(domain.agents.state.execution.heldDeliveries?[first.commandId.uuidString]?.releasedCommandId)
+        #expect(release == human.commandId, "the held message becomes the human start's wake")
+        let carried = try #require(domain.agents.state.execution.commands[release.uuidString])
+        #expect(carried.kind == .start && carried.wakeMessage?.messageId != nil)
         #expect(domain.agents.state.execution.commands[first.commandId.uuidString]?.status == .superseded)
-        #expect(domain.agents.state.execution.commands[release.uuidString]?.deliveryId != first.deliveryId)
         #expect(domain.agents.state.execution.commands[second.commandId.uuidString]?.status == .superseded)
         #expect(domain.agents.state.execution.dispatches?[second.commandId.uuidString]?.phase == .attempting)
         #expect(domain.agents.state.execution.heldDeliveries?.count == 1)
@@ -443,14 +456,32 @@ import TestSupport
         #expect(start.takeoverEpoch == 2)
         #expect(resumed.commands[old.commandId.uuidString]?.machineId == f.first)
         #expect(resumed.stopIntents?[old.commandId.uuidString]?.clearedByHumanStart == start.commandId)
-        for key in originalHeld {
-            let held = try #require(resumed.heldDeliveries?[key])
-            let released = try #require(held.releasedCommandId)
-            let delivery = try #require(resumed.commands[released.uuidString])
-            #expect(released.uuidString != key)
+        // Upstream attempt-wake: one held message rides the human start. The
+        // remaining held send releases as agent:deliver once the launch reports
+        // its process; the start window itself never acknowledges a delivery.
+        let heldRows = try #require(resumed.heldDeliveries)
+        let carriedKey = try #require(heldRows.first { $0.value.releasedCommandId == start.commandId }?.key)
+        let carried = try #require(heldRows[carriedKey])
+        #expect(start.wakeMessage == AgentExecutionWakeMessage(channelId: carried.channelId, messageId: carried.messageId))
+        let spawned = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:process_spawned", "agentId": f.agent,
+            "daemonInstanceId": "binding-daemon-\(f.second)", "clientSeq": 1,
+            "launchId": start.launchId, "processInstanceId": "binding-process",
+        ])
+        _ = try await publish { try f.domain.stageIngress(context: context, type: "agent:process_spawned", payload: spawned) }
+        try await publish { try f.domain.releasePendingHumanDeliveries(serverId: f.server, agentId: f.agent) }
+        let released = f.accounts.agentsRuntimeStore.state.execution
+        for key in originalHeld where key != carriedKey {
+            let held = try #require(released.heldDeliveries?[key])
+            let releasedCommand = try #require(held.releasedCommandId)
+            let delivery = try #require(released.commands[releasedCommand.uuidString])
+            #expect(releasedCommand.uuidString != key)
+            #expect(delivery.kind == .delivery)
             #expect(delivery.machineId == f.second && delivery.launchId == start.launchId)
             #expect(delivery.messageId == held.messageId)
         }
+        let startAfter = try #require(released.commands[start.commandId.uuidString])
+        #expect(startAfter.status == .accepted)
         #expect(Set(f.accounts.messagesAndThreadsStore.humanMessageRows.map(\.id)) == originalMessages)
         #expect(f.accounts.tasksAndRemindersStore.taskRecords.first?.status == "todo")
         _ = try await publish { try f.execution.requestStop(.init(commandId: old.commandId, serverId: f.server, agentId: f.agent)) }

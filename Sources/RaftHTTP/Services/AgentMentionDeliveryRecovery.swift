@@ -76,12 +76,11 @@ extension AgentExecutionDomain {
             // An undecided row needs no decision here: the materializer freezes
             // it with the exact payload it is about to send.
             if current.state == MentionDeliveryState.daemonDrained.rawValue { continue }
-            // A command that is still waiting to be written already owns the
-            // next attempt; re-staging would duplicate the same frame.
-            if agents.state.execution.commands.values.contains(where: {
-                $0.kind == .delivery && $0.mentionDeliveryOccurrenceId == row.occurrenceId
-                    && ($0.status == .pending || $0.status == .dispatched)
-            }) { continue }
+            // A command that is still live already owns the next attempt; one
+            // live attempt per message is the release invariant shared with the
+            // ordinary queued-send path, so re-staging would duplicate a frame.
+            if liveObligationCommand(serverId: serverId, agentId: agentId,
+                                     channelId: row.channelId, messageId: row.messageId) != nil { continue }
             // Every automatic round for an occurrence the daemon already holds
             // spends budget; a row the daemon never received keeps recovering.
             let claim = messages.claimMentionDeliveryRecovery(

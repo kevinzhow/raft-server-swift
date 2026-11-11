@@ -181,8 +181,9 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         #expect(try selfReplay.object().string("messageId") == selfId)
         let replayBlocked = try await conversationSend(f, owner: owner, channel: thread, content: "Agent receipt replay cannot reactivate a removed follow")
         try await conversationAssertNoDelivery(f, messageId: replayBlocked)
-        // B needs a real admitted start for its actual runner credential. Start
-        // ACK is protocol evidence; it does not assert a spawned/model process.
+        // B needs a real admitted start for its actual runner credential. The
+        // controlled daemon then reports the process and session that carry
+        // later deliveries (a start ACK alone is not a process).
         let bStartBoundary = peer.socket.count
         #expect(try await f.http("POST", "/api/agents/\(bId)/start", token: owner).status == 200)
         let bStart = try await peer.socket.nextObject(since: bStartBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == bId }
@@ -360,8 +361,9 @@ private func conversationAssertCommittedDelivery(_ f: AgentExecutionPostgresFixt
     let audit = try await f.audit()
     #expect(audit.messages.filter { $0.string("id") == messageId && $0.string("channelId") == channelId }.count == 1)
     let commands = audit.execution.commands.values.filter { $0.kind == .delivery && $0.messageId == messageId }
-    #expect(commands.count == agentIds.count)
-    try #require(Set(commands.map(\.agentId)) == agentIds)
+    let starts = audit.execution.commands.values.filter { $0.kind == .start && $0.wakeMessage?.messageId == messageId }
+    #expect(commands.count == agentIds.count, "message \(messageId) starts=\(starts.count) deliveries=\(commands.count)")
+    try #require(Set(commands.map(\.agentId)) == agentIds, "message \(messageId)")
     for command in commands {
         #expect(command.serverId == f.serverId && command.channelId == channelId)
         let effect = try #require(try await f.outbox(command.commandId))

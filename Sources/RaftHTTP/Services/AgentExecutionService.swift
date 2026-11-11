@@ -322,6 +322,10 @@ public struct AgentExecutionService: Sendable {
                     dispatches[reference.commandId.uuidString] = dispatch
                     state.dispatches = dispatches
                 }
+                // Upstream removes a wake message from the inbox once its
+                // `agent:start` is dispatched. The wire write is the evidence
+                // this port needs; a later ACK is idempotent over this.
+                state.settleCarriedWakeMessage(command)
             }
         }
     }
@@ -363,9 +367,27 @@ extension AgentExecutionDomain {
             if command.status == .accepted || command.kind == .stop && command.status == .dispatched { return .alreadyAccepted }
             if let previous = state.dispatches?[reference.commandId.uuidString] {
                 if previous.phase == .accepted { return .alreadyAccepted }
-                // A lost onboarding notice is a dropped transient wake, not a
-                // reason to require manual recovery of the whole agent.
-                if command.kind != .notice {
+                // Upstream ack-retry for a delivery: the same message is sent
+                // again under the same deliveryId when the previous write was
+                // not acknowledged. The daemon deduplicates by that id (or by
+                // the consumed message), so a late copy cannot double-deliver.
+                if command.kind == .delivery || command.kind == .notice,
+                   previous.phase == .ambiguous, previous.connectionEpochId == context.connectionEpochId,
+                   command.launchId == agent.currentLaunchId,
+                   agent.launches[command.launchId].map(launchIsUsableForDelivery) == true {
+                    var dispatches = state.dispatches ?? [:]
+                    dispatches[reference.commandId.uuidString] = AgentExecutionDispatch(
+                        connectionEpochId: context.connectionEpochId,
+                        deliverySequence: previous.deliverySequence, phase: .attempting)
+                    state.dispatches = dispatches
+                    return .granted
+                }
+                // A lost onboarding notice is a dropped transient wake, and a
+                // delivery write the daemon has not acknowledged is an in-flight
+                // send (upstream records it and retries acks; it never requires
+                // a human). Only a start's unknown outcome still pauses the
+                // agent: the launcher, not the message, is what became unknown.
+                if command.kind == .start {
                     agent.needsManual = "dispatch_outcome_unknown"
                     state.agents[command.agentId] = agent
                 }
@@ -401,7 +423,12 @@ extension AgentExecutionDomain {
             dispatch.phase = .ambiguous
             dispatches[reference.commandId.uuidString] = dispatch
             state.dispatches = dispatches
-            if command.kind != .notice,
+            // Upstream settles an unacknowledged delivery through its ack
+            // retry/give-up path; it never turns the agent into manual
+            // recovery. A delivery that the daemon buffered for a start has no
+            // ACK at all until it drains, and the later ACK still settles it.
+            // Only the launch itself (start) can be an unknown outcome.
+            if command.kind == .start,
                state.agents[command.agentId]?.currentLaunchId == command.launchId,
                state.agents[command.agentId]?.generation == command.breakerGeneration {
                 state.agents[command.agentId]?.needsManual = "dispatch_outcome_unknown"

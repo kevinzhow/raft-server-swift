@@ -89,6 +89,12 @@ struct AgentExecutionDomain: Sendable {
         }
         let machineId = try boundMachine(serverId: request.serverId, agentId: request.agentId)
         guard oauth.agentRuntimeInfo(id: request.agentId)?.runtime == "codex" else { throw AgentExecutionError.invalidRequest }
+        if let wake = request.wakeMessage {
+            guard deliveryIsAuthorized(serverId: request.serverId, agentId: request.agentId,
+                                       channelId: wake.channelId, messageId: wake.messageId) else {
+                throw AgentExecutionError.invalidRequest
+            }
+        }
         if agents.state.execution.commands[request.commandId.uuidString] == nil,
            hasActiveReset(serverId: request.serverId, agentId: request.agentId) { throw AgentExecutionError.manualRecoveryRequired }
         let result = try mutate { state -> (AgentExecutionCommand, Bool) in
@@ -97,10 +103,22 @@ struct AgentExecutionDomain: Sendable {
             if let previous = state.commands[request.commandId.uuidString] {
                 guard previous.kind == .start, previous.serverId == request.serverId,
                       previous.agentId == request.agentId,
-                      previous.humanStart == (request.control == .humanStart), previous.resumePrompt == request.resumePrompt else {
+                      previous.humanStart == (request.control == .humanStart), previous.resumePrompt == request.resumePrompt,
+                      previous.wakeMessage == request.wakeMessage else {
                     throw AgentExecutionError.conflictingCommand
                 }
                 return (previous, false)
+            }
+            // One message can be owed exactly one next attempt. A live start
+            // that already carries it, or a live delivery for it, owns that
+            // obligation; staging another would emit a second identical frame.
+            if let wake = request.wakeMessage,
+               let existing = state.liveObligationCommand(serverId: request.serverId, agentId: request.agentId,
+                                                          channelId: wake.channelId, messageId: wake.messageId) {
+                guard existing.kind == .start, existing.wakeMessage == wake else {
+                    throw AgentExecutionError.conflictingCommand
+                }
+                return (existing, false)
             }
             guard let connection = state.connections[machineId], connection.serverId == request.serverId,
                   connection.online, connection.ready, connection.runtimes.contains("codex"),
@@ -168,7 +186,8 @@ struct AgentExecutionDomain: Sendable {
                 agentId: request.agentId, launchId: launchId, startDispatchId: dispatchId, deliveryId: nil,
                 connectionEpochId: connection.connectionEpochId, takeoverEpoch: agent.takeoverEpoch,
                 breakerGeneration: agent.generation, humanStart: human, sessionId: agent.sessionId,
-                resumePrompt: request.resumePrompt, channelId: nil, messageId: nil, notice: nil, status: .pending, createdAt: now)
+                resumePrompt: request.resumePrompt, channelId: nil, messageId: nil, notice: nil, status: .pending, createdAt: now,
+                wakeMessage: request.wakeMessage)
             state.agents[request.agentId] = agent
             state.commands[request.commandId.uuidString] = command
             return (command, true)
@@ -177,8 +196,15 @@ struct AgentExecutionDomain: Sendable {
             do {
                 try stage(result.0)
                 if request.control == .humanStart {
+                    // Upstream `attempt-wake` / `maybeWakePendingInboxAfterReady`:
+                    // the oldest owed message becomes this start's first input,
+                    // so the process has something true to act on and no
+                    // separate delivery is needed for it. Remaining owed sends
+                    // release only after this launch reports its process (the
+                    // daemon start window never acknowledges a delivery).
+                    _ = try carryQueuedWakeMessage(on: result.0)
+                    try cancelUnauthorizedQueuedDeliveries(serverId: request.serverId, agentId: request.agentId)
                     setIntentStatus(agentId: request.agentId, status: "active")
-                    try releaseHeldDeliveries(start: result.0)
                     try retireKnownCredentials(agentId: request.agentId)
                 }
             } catch { DeferredEffects.markRollbackOnly(); throw error }
@@ -255,6 +281,14 @@ struct AgentExecutionDomain: Sendable {
             }
             return .staged(previous.admission)
         }
+        // Exactly one live attempt per message, whichever path asks: the send
+        // that produced it, a queued-release trigger, or the durable occurrence
+        // recovery. Reusing the live command is the upstream "same message, same
+        // deliveryId" rule; it cannot emit a second identical frame.
+        if let live = liveObligationCommand(serverId: request.serverId, agentId: request.agentId,
+                                            channelId: request.channelId, messageId: request.messageId) {
+            return .staged(live.admission)
+        }
         if manuallyStopped(serverId: request.serverId, agentId: request.agentId) || hasActiveReset(serverId: request.serverId, agentId: request.agentId) {
             try holdDelivery(request)
             return .held
@@ -279,13 +313,16 @@ struct AgentExecutionDomain: Sendable {
         // silently wedged every message after the first turn.
         let startsRuntime = live == nil && current.map(launchIsInFlight) != true
         if startsRuntime {
-            _ = try requestStart(.init(serverId: request.serverId, agentId: request.agentId))
+            // `attempt-wake`: the message that causes the start is the start's
+            // first input. A tracked mention is the exception (its occurrence
+            // needs the concrete session identity): the start merely wakes the
+            // runtime and the session pass delivers the occurrence once.
+            let wake: AgentExecutionWakeMessage? = occurrence == nil
+                ? AgentExecutionWakeMessage(channelId: request.channelId, messageId: request.messageId) : nil
+            let admission = try requestStart(.init(serverId: request.serverId, agentId: request.agentId, wakeMessage: wake))
+            if occurrence != nil { return .deferred }
+            return .staged(admission)
         }
-        // Upstream `applyWakeAction`: a tracked mention is not embedded in
-        // `agent:start` because the concrete session identity does not exist
-        // yet. Start the runtime, then `agent:session` rebuilds the acknowledgement
-        // obligation from the durable occurrence.
-        if occurrence != nil, startsRuntime { return .deferred }
         // `applyDirectDelivery`'s identity gate: without the daemon's current
         // session there is nothing to track against, so the durable occurrence
         // defers to the `agent:session` that rebuilds the acknowledgement

@@ -111,41 +111,6 @@ extension AgentExecutionDomain {
         }
     }
 
-    func releaseHeldDeliveries(start: AgentExecutionCommand) throws {
-        let held = (agents.state.execution.heldDeliveries ?? [:]).values.filter {
-            $0.serverId == start.serverId && $0.agentId == start.agentId && $0.releasedCommandId == nil && !$0.cancelled
-        }.sorted {
-            $0.createdAt == $1.createdAt ? $0.commandId.uuidString < $1.commandId.uuidString : $0.createdAt < $1.createdAt
-        }
-        for delivery in held {
-            guard agents.state.execution.dispatches?[delivery.commandId.uuidString] == nil else {
-                throw AgentExecutionError.manualRecoveryRequired
-            }
-            let authorized = deliveryIsAuthorized(serverId: delivery.serverId, agentId: delivery.agentId,
-                                                 channelId: delivery.channelId, messageId: delivery.messageId)
-            let released = try mutate { state -> AgentExecutionCommand? in
-                guard var current = state.heldDeliveries?[delivery.commandId.uuidString],
-                      current.releasedCommandId == nil, !current.cancelled else { throw AgentExecutionError.conflictingCommand }
-                guard authorized else {
-                    current.cancelled = true
-                    state.heldDeliveries?[delivery.commandId.uuidString] = current
-                    return nil
-                }
-                let command = AgentExecutionCommand(commandId: UUID(), kind: .delivery,
-                    serverId: start.serverId, machineId: start.machineId, agentId: start.agentId,
-                    launchId: start.launchId, startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
-                    connectionEpochId: start.connectionEpochId, takeoverEpoch: start.takeoverEpoch,
-                    breakerGeneration: start.breakerGeneration, humanStart: false, sessionId: start.sessionId,
-                    resumePrompt: nil, channelId: current.channelId, messageId: current.messageId, notice: nil, status: .pending, createdAt: Date())
-                current.releasedCommandId = command.commandId
-                state.heldDeliveries?[delivery.commandId.uuidString] = current
-                state.commands[command.commandId.uuidString] = command
-                return command
-            }
-            if let released { try stage(released) }
-        }
-    }
-
     /// Caller holds the business transaction or committed read view. Transport
     /// still needs beginDispatch's committed attempt and the socket epoch fence.
     func resolveDispatch(reference: AgentExecutionIntentReference) -> AgentExecutionDispatchResolution {

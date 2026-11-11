@@ -188,6 +188,46 @@ struct AgentExecutionAgent: Codable, Sendable {
 }
 
 extension AgentExecutionState {
+    /// One message can be owed exactly one live attempt: a delivery command on
+    /// the agent's current usable launch, or a start that already carries the
+    /// message as its wake input. Every release authority (queued send, human
+    /// start, occurrence recovery) consults this before staging a frame.
+    func liveObligationCommand(serverId: String, agentId: String,
+                               channelId: String, messageId: String) -> AgentExecutionCommand? {
+        guard let agent = agents[agentId], agent.serverId == serverId else { return nil }
+        return commands.values
+            .filter { command in
+                guard command.serverId == serverId, command.agentId == agentId,
+                      command.status != .superseded, command.launchId == agent.currentLaunchId else { return false }
+                if command.kind == .delivery {
+                    return command.channelId == channelId && command.messageId == messageId
+                        && agent.launches[command.launchId].map {
+                            !$0.notSpawned && !$0.terminalFailure && !$0.stopRequested
+                        } == true
+                }
+                guard command.kind == .start else { return false }
+                return command.wakeMessage == AgentExecutionWakeMessage(channelId: channelId, messageId: messageId)
+            }
+            .sorted { ($0.createdAt, $0.commandId.uuidString) < ($1.createdAt, $1.commandId.uuidString) }
+            .first
+    }
+
+    /// Upstream removes a wake message from the server inbox once `agent:start`
+    /// carries it. This port records the same settlement durably when the start
+    /// is written or acknowledged: the carried queued fact ends, and the
+    /// canonical message row keeps its history. Idempotent; a start without a
+    /// wake message settles nothing.
+    mutating func settleCarriedWakeMessage(_ command: AgentExecutionCommand) {
+        guard command.kind == .start, let wake = command.wakeMessage else { return }
+        guard var pending = pendingHumanDeliveries else { return }
+        pending = pending.filter { _, row in
+            !(row.serverId == command.serverId && row.agentId == command.agentId
+                && (row.releasedCommandId == command.commandId
+                    || (row.channelId == wake.channelId && row.messageId == wake.messageId)))
+        }
+        pendingHumanDeliveries = pending.isEmpty ? nil : pending
+    }
+
     /// A delivery the daemon acknowledged on a launch whose turn the server has
     /// not observed complete. A resident runtime keeps one launch across turns,
     /// so this retained set (not `launch.completed`) is the in-flight-turn fact.

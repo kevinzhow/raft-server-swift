@@ -37,12 +37,12 @@ import Testing
             "extension": ["2": 2, "10": 10, "a": true, "B": NSNull(), "text": "é😀 a/b\n\u{1}", "fraction": 0.5]
         ]
         let config = try JSONSerialization.data(withJSONObject: configuration)
-        let data = try ProductionAgentExecutionWire.start(intent, configuration: config, resumeMessages: [], unreadSummary: nil)
+        let data = try ProductionAgentExecutionWire.start(intent, configuration: config, wakeMessage: nil, resumeMessages: [], unreadSummary: nil)
         let expected: [String: Any] = ["type": "agent:start", "agentId": "agent", "config": configuration,
                                        "launchId": "launch", "startDispatchId": "dispatch", "breakerGeneration": 3,
                                        "takeoverEpoch": 2, "humanStart": true, "connectionEpochId": "epoch"]
         #expect(data == (try JSONSerialization.data(withJSONObject: expected, options: .sortedKeys)))
-        #expect(data == (try ProductionAgentExecutionWire.start(intent, configuration: config, resumeMessages: [], unreadSummary: nil)))
+        #expect(data == (try ProductionAgentExecutionWire.start(intent, configuration: config, wakeMessage: nil, resumeMessages: [], unreadSummary: nil)))
         let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(frame["type"] as? String == "agent:start")
         #expect(frame["launchId"] as? String == "launch")
@@ -63,13 +63,13 @@ import Testing
         foreign["runtimeContext"] = ["agentId": "foreign", "serverId": "server", "machineId": "machine"]
         let invalid = try JSONSerialization.data(withJSONObject: foreign)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidConfiguration) {
-            try ProductionAgentExecutionWire.start(intent, configuration: invalid, resumeMessages: [], unreadSummary: nil)
+            try ProductionAgentExecutionWire.start(intent, configuration: invalid, wakeMessage: nil, resumeMessages: [], unreadSummary: nil)
         }
         var unsupported = configuration
         unsupported["extension"] = UInt64.max
         let unrepresentable = try JSONSerialization.data(withJSONObject: unsupported)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidConfiguration) {
-            try ProductionAgentExecutionWire.start(intent, configuration: unrepresentable, resumeMessages: [], unreadSummary: nil)
+            try ProductionAgentExecutionWire.start(intent, configuration: unrepresentable, wakeMessage: nil, resumeMessages: [], unreadSummary: nil)
         }
     }
 
@@ -169,7 +169,7 @@ import Testing
         let resume: [JSONValue] = [.object(["message_id": .string("m1"), "seq": .integer(1)]),
                                    .object(["message_id": .string("m2"), "seq": .integer(2)])]
         let data = try ProductionAgentExecutionWire.start(
-            intent, configuration: config, resumeMessages: resume,
+            intent, configuration: config, wakeMessage: nil, resumeMessages: resume,
             unreadSummary: ["#room": 2, "dm:@peer": 1])
         let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let messages = try #require(frame["resumeMessages"] as? [[String: Any]])
@@ -181,7 +181,7 @@ import Testing
         // Both fields are omitted when there is nothing to resume, exactly as
         // the Node producer omits undefined members.
         let empty = try ProductionAgentExecutionWire.start(
-            intent, configuration: config, resumeMessages: [], unreadSummary: nil)
+            intent, configuration: config, wakeMessage: nil, resumeMessages: [], unreadSummary: nil)
         let emptyFrame = try #require(JSONSerialization.jsonObject(with: empty) as? [String: Any])
         #expect(emptyFrame["resumeMessages"] == nil)
         #expect(emptyFrame["unreadSummary"] == nil)
