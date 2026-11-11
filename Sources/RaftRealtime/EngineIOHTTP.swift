@@ -321,6 +321,23 @@ func engineIOWebSocketAbortBytes(message: String) -> [UInt8] {
     return Array(head.utf8) + body
 }
 
+/// One polling GET's immutable response position on its HTTP connection.
+///
+/// The token is created when the request is dispatched, before any engine
+/// write can happen, and carries the bytes to that exact slot. Delivery may
+/// happen on another event loop; the connection's sequencer owns ordering.
+struct EngineIOPollResponseWriter: Sendable {
+    private let deliver: @Sendable ([UInt8], Bool) -> Void
+
+    init(deliver: @escaping @Sendable ([UInt8], Bool) -> Void) {
+        self.deliver = deliver
+    }
+
+    func write(bytes: [UInt8], closeAfter: Bool) {
+        deliver(bytes, closeAfter)
+    }
+}
+
 func engineIOWrite(_ bytes: [UInt8], to channel: any Channel, closeAfterWrite: Bool) {
     guard !bytes.isEmpty else {
         if closeAfterWrite { channel.close(promise: nil) }
