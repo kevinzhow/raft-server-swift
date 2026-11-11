@@ -60,14 +60,21 @@ screenshots. Proof: `/mnt/data/raft-swift-development/tmp/qualification-b23b2516
 
 ## Closed source defects
 
-All source defects found this round are merged and closed by the actual
-acceptance above:
+All source defects found this round are merged; each fix is qualified by its
+focused or affected tests plus the full gate and PostgreSQL qualification. The
+14-check actual acceptance proves attachment, Main restart and continuous DM
+delivery recovery specifically; it does not prove per-case coverage of every
+contract, assignee matching and typed DM included.
 
-- Main turn completion now restores the fence and pending release.
+- A completed Main turn settles and clears the recoverable restart fence and
+  releases queued DMs. Genuinely unacknowledged or ambiguous writes remain
+  manual; this fix does not claim they are all cleared.
 - DM task claim converts a plain message while keeping the host unchanged, and
   publishes only the task event with durable PostgreSQL state.
-- Exact canonical peer and assignee matching, 8-hex and typed DM grammar, and an
-  independent `identity_borrowing` for raw assistant posting.
+- Exact canonical peer and assignee matching, 8-hex and typed DM grammar. A raw
+  retained assistant owner binding restricts posting regardless of the
+  `identity_borrowing` flag or owner server membership; `liveOwner` still
+  borrows the identity with the UI deciding, and no new flag exists.
 - History, search, action card, modern/legacy send and DM thread list share
   canonical DM references; one escaping path defines the exact DM wire.
 
