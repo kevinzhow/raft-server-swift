@@ -18,15 +18,10 @@ the unchanged release artifact. That artifact is immutable and tested; its
 source was merged to trunk by `3be7bcc` (tree `fd58f0aa`), and a docs-only trunk
 commit followed at `34be1afe`. The release selector is `db2ebc71`, not a merge SHA.
 
-The process worktree started clean at `f5c1d94`. This is a docs-only milestone.
-`integrate-4` was merged with `--no-ff`; the merge commit is `3c86db23` and it
-brings `bbd3e73` (Core/Main), `0c09992+0736ce0d` (Task), `16865709` (DM) and
-the prior docs, ending at `008a1480`. This commit changes only `docs/PLAN.md`:
-no Source, Tests, scripts, PARITY, DEVIATIONS or root files.
-
-The integration is UNRELEASED. Its source fixes are not fully qualified: the
-full gate and full persistence gate below ran on the `db2ebc71` candidate, not
-on `008a1480`.
+Main recovery `bbd3e73`, Task `0c09992`+`0736ce0d` and DM `16865709` are merged
+at integration root `008a1480`. These are UNRELEASED integrated slices, not
+qualified or deployed: the full gate and full persistence gate below ran on the
+`db2ebc71` candidate, not on `008a1480`.
 
 The real 14-check acceptance on `db2ebc71` finished 22:55 JST with 12 PASS,
 2 FAIL, 0 blocked/skipped, 497.0 s. `attachment-read` and `restart-main` failed
@@ -40,9 +35,12 @@ rows unchanged. Main is healthy; the owner account and Codex login were not rese
   kept the fence. The turn's completion at 13:50:25Z (22:50:25 JST) cleared
   `inFlight` but not the fence or the release hold, so seq 97 was not delivered
   until the later Computer restart.
-- **Attachment read.** The hidden 33-byte nonce file downloads normally over
-  GET; the file path is healthy. The failure is the agent reply path, not the
-  download, and no harness change was made.
+- **Attachment read.** The hidden 33-byte nonce downloads correctly over GET;
+  no agent post failed. The turn blocked before work: the agent followed its
+  mandatory claim-before-work step, but the task claim to `dm:@owner` answered
+  400 and the claim-message conversion also answered 400. It then asked a human
+  for a fix without invoking the download. This is the same claim gate as the
+  Task cause.
 - **Task claim.** A mandatory claim to `dm:@owner` answered 400, and claim
   message conversion was missing. `0c09992` plus `0736ce0d`, merged by
   `e9fa8a1f`, add canonical DM names and typed errors, the writable claim gate,
@@ -55,13 +53,13 @@ rows unchanged. Main is healthy; the owner account and Codex login were not rese
 - **Main recovery.** `bbd3e73`, merged by `42f435dc`, releases the queued human
   message only on a committed completion with no unsettled writes. It passed
   25 recovery units, 87 affected tests and 3 real-PostgreSQL restart cases.
-- **Same-class TaskRoot fixes.** Two pending worker fixes close the remaining
-  class without source overlap with the merge. `e6b5a1d8` on `agent-contract`
-  closes the Task family writable and owned-assistant paths, typed conflict and
-  thread refs, and a dedicated real-PG claim, conversion and durable outbox.
-  `67886e61` on `dm-list` closes known-history and reminder prefixes, thread
+- **Same-class TaskRoot work.** Two fixes are in progress on the `agent-contract`
+  and `dm-list` area branches, with no source overlap with the integration.
+  `agent-contract` covers the Task family writable and owned-assistant paths,
+  typed conflict and thread refs, and a dedicated real-PG claim, conversion and
+  durable outbox. `dm-list` covers known-history and reminder prefixes, thread
   suffixes, the `~kind` projection, search DM targets and malformed sender
-  grammar. Neither is in `008a1480`; neither deployed a new fix.
+  grammar. Neither is merged into `008a1480` or verified.
 
 ## Qualified evidence and limits
 
@@ -98,7 +96,7 @@ rows unchanged. Main is healthy; the owner account and Codex login were not rese
 
 ## Next steps
 
-1. Let the two pending TaskRoot fixes land on their area branches; review the
+1. Let the two in-progress TaskRoot fixes land on their area branches; review the
    dedicated real-PG claim/conversion/outbox and DM history/reminder coverage.
 2. Freeze the final candidate after both land, then run ONE full gate and the
    full persistence gate sequentially in the same worktree.
@@ -114,8 +112,10 @@ rows unchanged. Main is healthy; the owner account and Codex login were not rese
 Complete only when all of these hold on one qualified release:
 
 - `make gate` and `make test-pg` pass on the deployed commit.
-- The 14-check actual acceptance passes (or records reviewed skips), including
-  the hidden-file attachment read and all restart paths.
+- The 14-check actual acceptance records 14 PASS and 0 FAIL, BLOCKED or SKIP,
+  including both hidden-nonce attachment-read rounds and the applicable Main,
+  Computer and keep-session restart deliveries (first and second for the
+  Computer and keep-session checks), plus an authenticated Web pass.
 - The deployed Web path has no console errors on audited pages except DEVIATIONS.
 - The official Computer/Codex path survives Main restart and Computer stop/start
   without manual intervention.
