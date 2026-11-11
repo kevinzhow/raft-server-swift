@@ -287,15 +287,22 @@ struct AgentExecutionDomain: Sendable {
     }
 
     /// The process the daemon reports as this agent's live runtime on the
-    /// current connection. Upstream's `runtimeState === "running"`: a resident
-    /// `codex app-server` keeps serving after each turn completes, so a
-    /// completed turn is not the absence of a runtime.
+    /// current connection **and current takeover epoch**. Upstream's
+    /// `runtimeState === "running"`: a resident `codex app-server` keeps serving
+    /// after each turn completes, so a completed turn is not the absence of a
+    /// runtime. A human takeover starts a new epoch; a still-unexited process
+    /// from an older epoch is superseded and must neither capture the new
+    /// epoch's wake as a delivery nor suppress its start. This mirrors
+    /// `hasBlockingUnexitedExecution`'s current-epoch filter.
     func liveRuntimeProcess(_ agent: AgentExecutionAgent, in state: AgentExecutionState) -> AgentExecutionProcess? {
         guard let connection = state.connections[agent.machineId], connection.online,
               connection.serverId == agent.serverId,
               let daemonInstanceId = connection.daemonInstanceId else { return nil }
         return agent.processes.values
-            .filter { !$0.exited && $0.daemonInstanceId == daemonInstanceId }
+            .filter { process in
+                !process.exited && process.daemonInstanceId == daemonInstanceId
+                    && process.launchIds.contains { agent.launches[$0]?.takeoverEpoch == agent.takeoverEpoch }
+            }
             .sorted { $0.processInstanceId < $1.processInstanceId }
             .first
     }

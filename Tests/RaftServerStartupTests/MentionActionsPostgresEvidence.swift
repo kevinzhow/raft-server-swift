@@ -21,8 +21,14 @@ struct MentionPGSnapshot: Sendable, CustomStringConvertible {
     static func read(_ f: AgentExecutionPostgresFixture) async throws -> Self {
         let keys = try keys()
         let documents = try await f.observer.readSnapshot(keys)
+        // Since the fail-closed fix, a commit writes only owners whose bytes
+        // changed while its CAS conditions still pin all fourteen. Per-owner
+        // revisions therefore legitimately diverge; a single shared revision
+        // was an artifact of the old write-every-owner behavior, never a
+        // contract. What a coherent current snapshot must prove is all
+        // fourteen keys present, each with a live revision.
         guard documents.count == 14, Set(documents.map(\.key)) == Set(keys),
-              Set(documents.map(\.revision)).count == 1 else { throw ProtocolPGFailure.invalidSnapshot }
+              documents.allSatisfy({ $0.revision > 0 }) else { throw ProtocolPGFailure.invalidSnapshot }
         func bytes(_ domain: DurableDomain) throws -> Data {
             guard let document = documents.first(where: { $0.key.domain == domain && $0.key.aggregateID == "root" }),
                   document.codecVersion == 1 else { throw ProtocolPGFailure.invalidSnapshot }
