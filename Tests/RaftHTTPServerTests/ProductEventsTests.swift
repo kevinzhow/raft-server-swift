@@ -120,7 +120,16 @@ private func clientEventsRequest(
 
 private let clientEventSession = "8f6c3e2a-1b4d-4c5e-9f7a-2b3c4d5e6f70"
 
-private func clientEvent(_ event: String, properties: String, uuid: String, timestamp: String = "2026-11-04T00:00:00.000Z") -> String {
+/// The batch endpoint drops events older than seven days. The fixture must be
+/// inside that window, so a hardcoded calendar date would expire the test; one
+/// case still passes its own explicitly stale timestamp.
+private func clientEventTimestamp(now: Date = Date()) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: now.addingTimeInterval(-60))
+}
+
+private func clientEvent(_ event: String, properties: String, uuid: String, timestamp: String = clientEventTimestamp()) -> String {
     "{\"uuid\":\"\(uuid)\",\"event\":\"\(event)\",\"timestamp\":\"\(timestamp)\",\"client_session_id\":\"\(clientEventSession)\",\"properties\":\(properties)}"
 }
 
