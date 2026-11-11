@@ -14,8 +14,8 @@ extension EmailLoginDirectory {
     }
 
     /// Links an assistant to its owner through the same store fact the HTTP
-    /// `PUT /api/agents/:id/assistant-owner` writes. The test still enables the
-    /// live feature flag when it needs `assistantMayPostTo`.
+    /// `PUT /api/agents/:id/assistant-owner` writes. Post authority reads this
+    /// raw link, so a test can exercise it with `identity_borrowing` off.
     public func linkAssistantOwnerForTesting(agentId: String, userId: String) {
         _ = agentsRuntimeStore.claimAssistantOwner(agentId: agentId, userId: userId, isLive: { _ in true })
     }
