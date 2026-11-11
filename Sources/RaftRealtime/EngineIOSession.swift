@@ -24,7 +24,9 @@ final class EngineIOSession: Sendable {
 
     private struct PendingPoll: Sendable {
         var connectionID: UUID
-        var channel: any Channel
+        /// The exact HTTP request this poll owns. The connection sequences its
+        /// bytes; the session never writes an arbitrary channel position.
+        var writer: EngineIOPollResponseWriter
         var origin: String?
         var userAgent: String?
         var keepAlive: Bool
@@ -129,7 +131,7 @@ final class EngineIOSession: Sendable {
     }
 
     func attachPoll(
-        connectionID: UUID, channel: any Channel, origin: String?,
+        connectionID: UUID, writer: EngineIOPollResponseWriter, origin: String?,
         userAgent: String?, keepAlive: Bool
     ) -> PollAttachResult {
         var result: PollAttachResult = .accepted
@@ -149,7 +151,7 @@ final class EngineIOSession: Sendable {
                 return
             }
             let poll = PendingPoll(
-                connectionID: connectionID, channel: channel, origin: origin,
+                connectionID: connectionID, writer: writer, origin: origin,
                 userAgent: userAgent, keepAlive: keepAlive
             )
             if state.upgrading, state.probeReceived, state.queue.isEmpty, !state.closeWhenFlushed {
@@ -694,7 +696,7 @@ final class EngineIOSession: Sendable {
             body: body, cors: cors, origin: pending.origin,
             userAgent: pending.userAgent, keepAlive: pending.keepAlive
         )
-        engineIOWrite(bytes, to: pending.channel, closeAfterWrite: !pending.keepAlive)
+        pending.writer.write(bytes: bytes, closeAfter: !pending.keepAlive)
     }
 
     private func perform(_ action: DrainAction) {

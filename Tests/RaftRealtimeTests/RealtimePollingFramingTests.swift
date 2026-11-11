@@ -122,7 +122,8 @@ struct RealtimePollingFramingTests {
         )
         client.send(bytes)
         let rejected = try await client.nextResponse()
-        #expect(rejected.status == 400)
+        // Pinned Node 22.22.3 llhttp overflow response: 431/close, no body.
+        #expect(rejected.status == 431)
         #expect(rejected.text.isEmpty)
         #expect(await client.waitForClose())
 
