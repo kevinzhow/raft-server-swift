@@ -219,6 +219,22 @@ enum AgentApiContractPatterns {
 }
 
 enum AgentApiContractSchemaValidator {
+    /// One schema parse: the published issues plus zod's abort state.
+    ///
+    /// zod 4.3.6 (`core/schemas.js`, `$ZodType`'s `runChecks`) starts
+    /// `isAborted = util.aborted(payload)` and skips every check while that is
+    /// true. `util.aborted` (`core/util.js`) treats an issue as continuable
+    /// only when `continue === true`; the checks these contract schemas use
+    /// (`min`/`max`, `regex`, `positive`, and `int`'s safe-range guard) set
+    /// that, while parse failures (`invalid_type` for a wrong or missing
+    /// member, `invalid_value` for enum/literal, `invalid_union`) leave it
+    /// unset. An object `.refine`/`.superRefine` is such a check, so it runs
+    /// after continuable member issues but is skipped after an aborting one.
+    private struct ParseResult {
+        var issues: [AuthRequestIssue] = []
+        var aborted = false
+    }
+
     /// The issues of one value against one schema, with `nil` meaning the JS
     /// `undefined` an absent member has.
     static func issues(
@@ -226,15 +242,23 @@ enum AgentApiContractSchemaValidator {
         _ value: JSONValue?,
         path: String
     ) -> [AuthRequestIssue] {
-        guard let value else { return missingIssues(schema, path: path) }
+        result(schema, value, path: path).issues
+    }
+
+    private static func result(
+        _ schema: AgentApiContractSchema,
+        _ value: JSONValue?,
+        path: String
+    ) -> ParseResult {
+        guard let value else { return missingResult(schema, path: path) }
         switch schema {
         case .any:
-            return []
+            return ParseResult()
         case .string(_, _, _, _, _, _):
-            return stringIssues(schema, value, path: path)
+            return stringResult(schema, value, path: path)
         case .number(let int, let positive, let nonnegative, let max):
-            return numberIssues(
-                value,
+            return numberResult(
+                for: value,
                 path: path,
                 int: int,
                 positive: positive,
@@ -242,123 +266,187 @@ enum AgentApiContractSchemaValidator {
                 max: max
             )
         case .coerceNumber(let int, let positive):
-            return coerceNumberIssues(value, path: path, int: int, positive: positive)
+            return coerceNumberResult(value, path: path, int: int, positive: positive)
         case .boolean:
             guard case .bool = value else {
-                return [typeIssue("boolean", received: value.zodKind, path: path)]
+                return ParseResult(
+                    issues: [typeIssue("boolean", received: value.zodKind, path: path)],
+                    aborted: true
+                )
             }
-            return []
+            return ParseResult()
         case .literal(let expected):
-            if case .string(let text) = value, text == expected { return [] }
-            return [AuthRequestIssue(path: path, message: "Invalid input: expected \"\(expected)\"")]
+            if case .string(let text) = value, text == expected { return ParseResult() }
+            return ParseResult(
+                issues: [AuthRequestIssue(
+                    path: path,
+                    message: "Invalid input: expected \"\(expected)\""
+                )],
+                aborted: true
+            )
         case .enumeration(let options):
-            if case .string(let text) = value, options.contains(text) { return [] }
-            return [AuthRequestIssue(path: path, message: enumMessage(options))]
+            if case .string(let text) = value, options.contains(text) { return ParseResult() }
+            return ParseResult(
+                issues: [AuthRequestIssue(path: path, message: enumMessage(options))],
+                aborted: true
+            )
         case .array(let element, let min, let max):
-            guard case .array(let items) = value else {
-                return [typeIssue("array", received: value.zodKind, path: path)]
-            }
-            var issues: [AuthRequestIssue] = []
-            for (index, item) in items.enumerated() {
-                issues += self.issues(element, item, path: join(path, String(index)))
-            }
-            if let min, items.count < min {
-                issues.append(AuthRequestIssue(
-                    path: path,
-                    message: "Too small: expected array to have >=\(min) items"
-                ))
-            }
-            if let max, items.count > max {
-                issues.append(AuthRequestIssue(
-                    path: path,
-                    message: "Too big: expected array to have <=\(max) items"
-                ))
-            }
-            return issues
+            return arrayResult(element, value, path: path, min: min, max: max)
         case .object(let object):
-            return objectIssues(object, value, path: path)
+            return objectResult(object, value, path: path)
         case .record(let element):
-            guard case .object(let members) = value else {
-                return [typeIssue("record", received: value.zodKind, path: path)]
-            }
-            var issues: [AuthRequestIssue] = []
-            for key in members.keys.sorted() {
-                issues += self.issues(element, members[key], path: join(path, key))
-            }
-            return issues
+            return recordResult(element, value, path: path)
         case .union(let options):
-            for option in options where self.issues(option, value, path: path).isEmpty {
-                return []
+            for option in options where self.result(option, value, path: path).issues.isEmpty {
+                return ParseResult()
             }
-            return [AuthRequestIssue(path: path, message: "Invalid input")]
+            return ParseResult(
+                issues: [AuthRequestIssue(path: path, message: "Invalid input")],
+                aborted: true
+            )
         case .discriminatedUnion(let discriminator, let members):
-            return discriminatedUnionIssues(
+            return discriminatedUnionResult(
                 discriminator: discriminator,
                 members: members,
                 value: value,
                 path: path
             )
         case .nullable(let inner):
-            if case .null = value { return [] }
-            return self.issues(inner, value, path: path)
+            if case .null = value { return ParseResult() }
+            return self.result(inner, value, path: path)
         }
     }
 
     // MARK: - Objects
 
-    private static func objectIssues(
+    private static func objectResult(
         _ object: AgentApiContractObject,
         _ value: JSONValue,
         path: String
-    ) -> [AuthRequestIssue] {
+    ) -> ParseResult {
         guard case .object(let members) = value else {
-            return [typeIssue("object", received: value.zodKind, path: path)]
+            return ParseResult(
+                issues: [typeIssue("object", received: value.zodKind, path: path)],
+                aborted: true
+            )
         }
-        var issues: [AuthRequestIssue] = []
+        var result = ParseResult()
         for field in object.fields {
             let child = members[field.name]
             let childPath = join(path, field.name)
             if child == nil {
                 if field.required {
-                    issues += missingIssues(field.schema, path: childPath)
+                    let missing = missingResult(field.schema, path: childPath)
+                    result.issues += missing.issues
+                    result.aborted = result.aborted || missing.aborted
                 }
                 continue
             }
-            issues += self.issues(field.schema, child, path: childPath)
+            let parsed = self.result(field.schema, child, path: childPath)
+            result.issues += parsed.issues
+            result.aborted = result.aborted || parsed.aborted
         }
         if object.strict {
             let known = Set(object.fields.map(\.name))
             let unknown = members.keys.filter { !known.contains($0) }
             if let issue = AuthRequestSchema.unrecognizedKeys(unknown) {
-                issues.append(AuthRequestIssue(path: path, message: issue.message))
+                result.issues.append(AuthRequestIssue(path: path, message: issue.message))
+                // `unrecognized_keys` has no `continue: true`; zod skips the
+                // object's own checks after it.
+                result.aborted = true
             }
         }
-        guard issues.isEmpty else { return issues }
+        guard !result.aborted else { return result }
         for refinement in object.refinements {
             if let message = refinement.message(fields: members) {
-                issues.append(AuthRequestIssue(path: path, message: message))
+                result.issues.append(AuthRequestIssue(path: path, message: message))
             }
         }
-        return issues
+        return result
     }
 
-    private static func discriminatedUnionIssues(
+    private static func arrayResult(
+        _ element: AgentApiContractSchema,
+        _ value: JSONValue,
+        path: String,
+        min: Int?,
+        max: Int?
+    ) -> ParseResult {
+        guard case .array(let items) = value else {
+            return ParseResult(
+                issues: [typeIssue("array", received: value.zodKind, path: path)],
+                aborted: true
+            )
+        }
+        var result = ParseResult()
+        for (index, item) in items.enumerated() {
+            let parsed = self.result(element, item, path: join(path, String(index)))
+            result.issues += parsed.issues
+            result.aborted = result.aborted || parsed.aborted
+        }
+        // Length checks use zod's `when` predicate, so they still run after an
+        // aborting element issue and contribute only continuable issues.
+        if let min, items.count < min {
+            result.issues.append(AuthRequestIssue(
+                path: path,
+                message: "Too small: expected array to have >=\(min) items"
+            ))
+        }
+        if let max, items.count > max {
+            result.issues.append(AuthRequestIssue(
+                path: path,
+                message: "Too big: expected array to have <=\(max) items"
+            ))
+        }
+        return result
+    }
+
+    private static func recordResult(
+        _ element: AgentApiContractSchema,
+        _ value: JSONValue,
+        path: String
+    ) -> ParseResult {
+        guard case .object(let members) = value else {
+            return ParseResult(
+                issues: [typeIssue("record", received: value.zodKind, path: path)],
+                aborted: true
+            )
+        }
+        var result = ParseResult()
+        for key in members.keys.sorted() {
+            let parsed = self.result(element, members[key], path: join(path, key))
+            result.issues += parsed.issues
+            result.aborted = result.aborted || parsed.aborted
+        }
+        return result
+    }
+
+    private static func discriminatedUnionResult(
         discriminator: String,
         members: [AgentApiContractSchema],
         value: JSONValue,
         path: String
-    ) -> [AuthRequestIssue] {
+    ) -> ParseResult {
         guard case .object(let fields) = value else {
-            return [typeIssue("object", received: value.zodKind, path: path)]
+            return ParseResult(
+                issues: [typeIssue("object", received: value.zodKind, path: path)],
+                aborted: true
+            )
         }
         let discriminatorPath = join(path, discriminator)
         guard case .string(let tag)? = fields[discriminator] else {
-            return [AuthRequestIssue(path: discriminatorPath, message: "Invalid input")]
+            return ParseResult(
+                issues: [AuthRequestIssue(path: discriminatorPath, message: "Invalid input")],
+                aborted: true
+            )
         }
         guard let member = members.first(where: { memberTag($0, discriminator: discriminator) == tag }) else {
-            return [AuthRequestIssue(path: discriminatorPath, message: "Invalid input")]
+            return ParseResult(
+                issues: [AuthRequestIssue(path: discriminatorPath, message: "Invalid input")],
+                aborted: true
+            )
         }
-        return self.issues(member, value, path: path)
+        return self.result(member, value, path: path)
     }
 
     private static func memberTag(
@@ -374,11 +462,11 @@ enum AgentApiContractSchemaValidator {
 
     // MARK: - Strings
 
-    private static func stringIssues(
+    private static func stringResult(
         _ schema: AgentApiContractSchema,
         _ value: JSONValue,
         path: String
-    ) -> [AuthRequestIssue] {
+    ) -> ParseResult {
         guard case .string(
             let min,
             let max,
@@ -386,39 +474,64 @@ enum AgentApiContractSchemaValidator {
             let pattern,
             let patternMessage,
             let refinement
-        ) = schema else { return [] }
-        let checked = AuthRequestSchema.string(
-            value,
-            path: path,
-            min: min,
-            max: max,
-            trim: trim,
-            pattern: pattern,
-            patternMessage: patternMessage
-        )
-        var issues = checked.issues
-        guard case .string(let raw) = value else { return issues }
-        if let refinement {
-            let text = trim
-                ? raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                : raw
-            if let message = refinement.message(for: text) {
-                issues.append(AuthRequestIssue(path: path, message: message))
+        ) = schema else { return ParseResult() }
+        guard case .string(var text) = value else {
+            var issues = [typeIssue("string", received: value.zodKind, path: path)]
+            // zod's length checks run whenever the received value has a
+            // `length`; a JSON array is the only other such value here.
+            if case .array(let items) = value {
+                if let min, items.count < min {
+                    issues.append(AuthRequestIssue(
+                        path: path,
+                        message: "Too small: expected array to have >=\(min) items"
+                    ))
+                }
+                if let max, items.count > max {
+                    issues.append(AuthRequestIssue(
+                        path: path,
+                        message: "Too big: expected array to have <=\(max) items"
+                    ))
+                }
             }
+            return ParseResult(issues: issues, aborted: true)
         }
-        return issues
+        if trim { text = MessageMentionRules.trimmingJavaScriptWhitespace(text) }
+        var issues: [AuthRequestIssue] = []
+        let length = text.utf16.count
+        if let min, length < min {
+            issues.append(AuthRequestIssue(
+                path: path,
+                message: "Too small: expected string to have >=\(min) characters"
+            ))
+        }
+        if let max, length > max {
+            issues.append(AuthRequestIssue(
+                path: path,
+                message: "Too big: expected string to have <=\(max) characters"
+            ))
+        }
+        if let pattern, text.range(of: pattern, options: .regularExpression) == nil {
+            issues.append(AuthRequestIssue(
+                path: path,
+                message: patternMessage ?? "Invalid string: must match pattern /\(pattern)/"
+            ))
+        }
+        if let refinement, let message = refinement.message(for: text) {
+            issues.append(AuthRequestIssue(path: path, message: message))
+        }
+        return ParseResult(issues: issues)
     }
 
     // MARK: - Numbers
 
-    private static func numberIssues(
-        _ value: JSONValue,
+    private static func numberResult(
+        for value: JSONValue,
         path: String,
         int: Bool,
         positive: Bool,
         nonnegative: Bool,
         max: Double?
-    ) -> [AuthRequestIssue] {
+    ) -> ParseResult {
         let number: Double
         switch value {
         case .integer(let integer):
@@ -426,17 +539,48 @@ enum AgentApiContractSchemaValidator {
         case .number(let double):
             number = double
         case .object, .array, .string, .bool, .null:
-            return [typeIssue("number", received: value.zodKind, path: path)]
+            return ParseResult(
+                issues: [typeIssue("number", received: value.zodKind, path: path)],
+                aborted: true
+            )
         }
+        return numberResult(
+            number,
+            path: path,
+            int: int,
+            positive: positive,
+            nonnegative: nonnegative,
+            max: max
+        )
+    }
+
+    private static func numberResult(
+        _ number: Double,
+        path: String,
+        int: Bool,
+        positive: Bool,
+        nonnegative: Bool,
+        max: Double?
+    ) -> ParseResult {
         guard number.isFinite else {
-            return [typeIssue("number", received: number.isNaN ? "NaN" : "number", path: path)]
+            return ParseResult(
+                issues: [typeIssue(
+                    "number",
+                    received: number.isNaN ? "NaN" : "number",
+                    path: path
+                )],
+                aborted: true
+            )
         }
         if int {
             guard number.rounded() == number else {
-                return [AuthRequestIssue(
-                    path: path,
-                    message: "Invalid input: expected int, received number"
-                )]
+                return ParseResult(
+                    issues: [AuthRequestIssue(
+                        path: path,
+                        message: "Invalid input: expected int, received number"
+                    )],
+                    aborted: true
+                )
             }
             var issues: [AuthRequestIssue] = []
             if number > Double(AgentApiContractPatterns.maximumSafeInteger) {
@@ -467,54 +611,122 @@ enum AgentApiContractSchemaValidator {
                     message: "Too big: expected number to be <=\(format(max))"
                 ))
             }
-            return issues
+            return ParseResult(issues: issues)
         }
         if let max, number > max {
-            return [AuthRequestIssue(
+            return ParseResult(issues: [AuthRequestIssue(
                 path: path,
                 message: "Too big: expected number to be <=\(format(max))"
-            )]
+            )])
         }
-        return []
+        return ParseResult()
     }
 
-    private static func coerceNumberIssues(
+    private static func coerceNumberResult(
         _ value: JSONValue,
         path: String,
         int: Bool,
         positive: Bool
-    ) -> [AuthRequestIssue] {
-        let text: String
-        switch value {
-        case .string(let string): text = string
-        case .integer, .number, .bool, .object, .array, .null: text = ""
+    ) -> ParseResult {
+        switch JavaScriptNumber.coerce(value) {
+        case .finite(let number):
+            return numberResult(
+                number,
+                path: path,
+                int: int,
+                positive: positive,
+                nonnegative: false,
+                max: nil
+            )
+        case .notANumber:
+            return ParseResult(
+                issues: [typeIssue("number", received: "NaN", path: path)],
+                aborted: true
+            )
+        case .infinite:
+            // `Number("Infinity")` and `Number("1e999")` stay numbers; zod
+            // names the received type `number`, never `NaN`.
+            return ParseResult(
+                issues: [typeIssue("number", received: "number", path: path)],
+                aborted: true
+            )
         }
-        let number = javascriptNumber(text)
-        guard number.isFinite else {
-            return [typeIssue("number", received: "NaN", path: path)]
-        }
-        return numberIssues(
-            .number(number),
-            path: path,
-            int: int,
-            positive: positive,
-            nonnegative: false,
-            max: nil
-        )
     }
 
-    /// JavaScript `Number(text)` for the query strings `z.coerce.number()`
-    /// receives.
-    private static func javascriptNumber(_ text: String) -> Double {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return 0 }
-        if trimmed == "Infinity" || trimmed == "+Infinity" { return .infinity }
-        if trimmed == "-Infinity" { return -.infinity }
-        if trimmed.hasPrefix("0x") || trimmed.hasPrefix("0X") {
-            guard let parsed = Int64(trimmed.dropFirst(2), radix: 16) else { return .nan }
-            return Double(parsed)
+    /// JavaScript `Number(value)` for `z.coerce.number()`, keeping `NaN` and
+    /// non-finite results distinct because zod prints them differently.
+    private enum JavaScriptNumber {
+        case finite(Double)
+        case notANumber
+        case infinite
+
+        static func coerce(_ value: JSONValue) -> JavaScriptNumber {
+            switch value {
+            case .integer(let integer):
+                return .finite(Double(integer))
+            case .number(let number):
+                if number.isNaN { return .notANumber }
+                return number.isFinite ? .finite(number) : .infinite
+            case .bool(let flag):
+                return .finite(flag ? 1 : 0)
+            case .null:
+                return .finite(0)
+            case .string(let text):
+                return parse(text)
+            case .array(let items):
+                // `Number([])` is 0 and `Number([x])` is `Number(String(x))`;
+                // two or more elements join with "," and are not numeric.
+                if items.isEmpty { return .finite(0) }
+                guard items.count == 1 else { return .notANumber }
+                return coerce(items[0])
+            case .object:
+                return .notANumber
+            }
         }
-        return Double(trimmed) ?? .nan
+
+        /// JavaScript `Number(string)`: ECMAScript whitespace trim, optional
+        /// sign on decimal/Infinity forms, unsigned `0x`/`0b`/`0o` integer
+        /// literals, and `Infinity` for a decimal overflow such as `1e999`.
+        static func parse(_ text: String) -> JavaScriptNumber {
+            let trimmed = MessageMentionRules.trimmingJavaScriptWhitespace(text)
+            if trimmed.isEmpty { return .finite(0) }
+            switch trimmed {
+            case "Infinity", "+Infinity", "-Infinity":
+                return .infinite
+            default:
+                break
+            }
+            let lower = trimmed.lowercased()
+            if lower.hasPrefix("0x") || lower.hasPrefix("0b") || lower.hasPrefix("0o") {
+                let radix: Int
+                switch lower.prefix(2) {
+                case "0x": radix = 16
+                case "0b": radix = 2
+                default: radix = 8
+                }
+                let digits = trimmed.utf8.dropFirst(2)
+                guard !digits.isEmpty else { return .notANumber }
+                var value = 0.0
+                for byte in digits {
+                    let digit: Int
+                    switch byte {
+                    case 48...57: digit = Int(byte - 48)
+                    case 65...70: digit = Int(byte - 55)
+                    case 97...102: digit = Int(byte - 87)
+                    default: return .notANumber
+                    }
+                    guard digit < radix else { return .notANumber }
+                    value = value * Double(radix) + Double(digit)
+                }
+                return .finite(value)
+            }
+            guard trimmed.range(
+                of: #"\A[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\z"#,
+                options: .regularExpression
+            ) != nil else { return .notANumber }
+            guard let number = Double(trimmed) else { return .notANumber }
+            return number.isFinite ? .finite(number) : .infinite
+        }
     }
 
     private static func format(_ value: Double) -> String {
@@ -526,38 +738,68 @@ enum AgentApiContractSchemaValidator {
 
     // MARK: - Missing and type issues
 
-    private static func missingIssues(
+    private static func missingResult(
         _ schema: AgentApiContractSchema,
         path: String
-    ) -> [AuthRequestIssue] {
+    ) -> ParseResult {
         switch schema {
         case .any:
-            return []
+            return ParseResult()
         case .string:
-            return [typeIssue("string", received: "undefined", path: path)]
+            return ParseResult(
+                issues: [typeIssue("string", received: "undefined", path: path)],
+                aborted: true
+            )
         case .number:
-            return [typeIssue("number", received: "undefined", path: path)]
+            return ParseResult(
+                issues: [typeIssue("number", received: "undefined", path: path)],
+                aborted: true
+            )
         case .coerceNumber:
-            return [typeIssue("number", received: "NaN", path: path)]
+            return ParseResult(
+                issues: [typeIssue("number", received: "NaN", path: path)],
+                aborted: true
+            )
         case .boolean:
-            return [typeIssue("boolean", received: "undefined", path: path)]
+            return ParseResult(
+                issues: [typeIssue("boolean", received: "undefined", path: path)],
+                aborted: true
+            )
         case .literal(let expected):
-            return [AuthRequestIssue(
-                path: path,
-                message: "Invalid input: expected \"\(expected)\""
-            )]
+            return ParseResult(
+                issues: [AuthRequestIssue(
+                    path: path,
+                    message: "Invalid input: expected \"\(expected)\""
+                )],
+                aborted: true
+            )
         case .enumeration(let options):
-            return [AuthRequestIssue(path: path, message: enumMessage(options))]
+            return ParseResult(
+                issues: [AuthRequestIssue(path: path, message: enumMessage(options))],
+                aborted: true
+            )
         case .array:
-            return [typeIssue("array", received: "undefined", path: path)]
+            return ParseResult(
+                issues: [typeIssue("array", received: "undefined", path: path)],
+                aborted: true
+            )
         case .object, .discriminatedUnion:
-            return [typeIssue("object", received: "undefined", path: path)]
+            return ParseResult(
+                issues: [typeIssue("object", received: "undefined", path: path)],
+                aborted: true
+            )
         case .record:
-            return [typeIssue("record", received: "undefined", path: path)]
+            return ParseResult(
+                issues: [typeIssue("record", received: "undefined", path: path)],
+                aborted: true
+            )
         case .union:
-            return [AuthRequestIssue(path: path, message: "Invalid input")]
+            return ParseResult(
+                issues: [AuthRequestIssue(path: path, message: "Invalid input")],
+                aborted: true
+            )
         case .nullable(let inner):
-            return missingIssues(inner, path: path)
+            return missingResult(inner, path: path)
         }
     }
 
