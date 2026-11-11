@@ -262,16 +262,25 @@ public struct AgentExecutionService: Sendable {
 
     /// Frames whose committed application can make a previously refused wake
     /// deliverable: the start admission (with or without a rebind identity), the
-    /// outcomes that name the process, its exit (which frees the next start),
-    /// and a session for a resident launch an abandoned start was hiding. The
-    /// payload was already validated by the ingress; this only reads the agent
-    /// id for the release step.
+    /// outcomes that name the process, its exit (which frees the next start), a
+    /// session for a resident launch an abandoned start was hiding, and a clean
+    /// turn completion. Upstream sends `agent:session` at turn_end before the
+    /// outcome; a daemon that omits the legacy resync still owes the same
+    /// release when its turn_completed proves the in-flight turn settled. Only
+    /// a clean completion qualifies: a terminal failure or lost-evidence gap
+    /// keeps the ambiguity for manual recovery. The payload was already
+    /// validated by the ingress; this only reads the agent id for the release
+    /// step.
     private static func wakeSettlingAgentId(type: String, payload: Data) -> String? {
         guard ["agent:start:ack", "agent:process_spawned", "agent:start:outcome", "agent:process_exited",
-               "agent:session"].contains(type),
+               "agent:session", "agent:runtime:outcome"].contains(type),
               let body = try? JSONDecoder().decode(JSONValue.self, from: payload),
               case .object(let fields) = body,
               case .string(let agentId)? = fields["agentId"], !agentId.isEmpty else { return nil }
+        if type == "agent:runtime:outcome" {
+            guard case .object(let outcome)? = fields["outcome"],
+                  case .string("turn_completed")? = outcome["kind"] else { return nil }
+        }
         return agentId
     }
 

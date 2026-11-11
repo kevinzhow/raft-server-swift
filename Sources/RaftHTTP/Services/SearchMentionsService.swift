@@ -435,16 +435,21 @@ public struct SearchMentionsService: Sendable {
         }
         var senderScope: String?
         if let sender, !sender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let handle = sender.hasPrefix("@") ? String(sender.dropFirst()) : sender
+            let trimmed = sender.trimmingCharacters(in: .whitespacesAndNewlines)
+            let handle = trimmed.hasPrefix("@")
+                ? String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                : trimmed
             let directoryHidden = channelState.hideHumansFromMembers[serverId] == true
                 && oauth.agentRole(serverId: serverId, agentId: agentId) == "member"
+            // Pinned `resolveUserByName` / `resolveAgentByName`: canonical
+            // handles only, exact and case-sensitive, with humans restricted
+            // to members of this server. A display name is not a handle.
             let humans = directoryHidden ? [] : profiles.accounts.values.filter { account in
                 oauth.memberRole(serverId: serverId, userId: account.id) != nil
-                    && (account.name.caseInsensitiveCompare(handle) == .orderedSame
-                        || (account.displayName ?? "").caseInsensitiveCompare(handle) == .orderedSame)
+                    && account.name == handle
             }.map(\.id)
             let agents = oauth.activeAgentIds(serverId: serverId).filter {
-                oauth.agentRuntimeInfo(id: $0)?.name.caseInsensitiveCompare(handle) == .orderedSame
+                oauth.agentRuntimeInfo(id: $0)?.name == handle
             }
             let matches = humans + agents
             if matches.isEmpty {
@@ -608,17 +613,23 @@ public struct SearchMentionsService: Sendable {
         // one, so the query cannot enumerate a hidden human directory.
         var senderScope: String?
         if let senderRef, !senderRef.isEmpty {
-            let handle = senderRef.hasPrefix("@") ? String(senderRef.dropFirst()) : senderRef
+            let trimmed = senderRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            let handle = trimmed.hasPrefix("@")
+                ? String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+                : trimmed
             let directoryHidden = channelState.hideHumansFromMembers[agent.serverId] == true
                 && oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "member"
+            // Pinned `resolveUserByName` / `resolveAgentByName`: canonical
+            // handles only, exact and case-sensitive, with humans restricted
+            // to members of this server (never another tenant's account).
             let agentMatch = oauth.activeAgentIds(serverId: agent.serverId).first {
-                oauth.agentRuntimeInfo(id: $0)?.name.lowercased() == handle.lowercased()
+                oauth.agentRuntimeInfo(id: $0)?.name == handle
             }
             let humanMatches: [String] = directoryHidden
                 ? []
                 : profiles.accounts.values.filter { account in
-                    account.name.lowercased() == handle.lowercased()
-                        || (account.displayName ?? "").lowercased() == handle.lowercased()
+                    oauth.memberRole(serverId: agent.serverId, userId: account.id) != nil
+                        && account.name == handle
                 }.map(\.id)
             if agentMatch != nil && !humanMatches.isEmpty {
                 throw SearchMentionsError.ambiguousMemberReference

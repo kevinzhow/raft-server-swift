@@ -312,6 +312,14 @@ extension AgentExecutionDomain {
                 return .hold(reason: refusal)
             }
             state.agents[frame.agentId] = agent
+            if case .turnCompleted = frame.event {
+                // The retained launch now carries the completion instead of
+                // the acknowledged-delivery evidence the restore fenced. The
+                // completion is the later fact that settles the execution;
+                // unacknowledged writes and other unsettled launches refuse.
+                state.settleTurnCompletionRecovery(agentId: frame.agentId)
+                agent = state.agents[frame.agentId] ?? agent
+            }
             state.receipts[receipt] = frame.fingerprint
             if let sequence = frame.clientSeq {
                 state.watermarks[scope] = max(state.watermarks[scope] ?? sequence, sequence)

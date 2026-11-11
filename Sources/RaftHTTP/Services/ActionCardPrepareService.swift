@@ -176,6 +176,11 @@ public struct ActionCardPrepareService: Sendable {
     private let assistantOwner: @Sendable (String, String) -> String?
     private let environment: @Sendable (String) -> String?
 
+    /// The account ledger the shared task-channel resolver matches DM peer
+    /// names against. Exposed read-only so the execute service can construct
+    /// the same `AgentTaskCredentials` policy without a second account store.
+    var accountStore: AuthProfileStore { accounts }
+
     init(
         oauth: OAuthLedger,
         cards: ManagedMCPAndCardsStore,
@@ -474,6 +479,21 @@ public struct ActionCardPrepareService: Sendable {
 
     /// Resolves one `dm:@name[~kind]` target.
     ///
+    /// This mirrors the pinned `channelService.resolveDMByPeerName`:
+    ///
+    /// - a `migration-receipt-` ref resolves the owning agent's hidden receipt
+    ///   first, then falls through to the ordinary peer rules when this agent
+    ///   owns no receipt by that exact name (a real peer may legitimately use
+    ///   the prefix);
+    /// - `~agent` / `~human` must be the exact lowercase suffix: any other
+    ///   suffix is a caller error, never a bare name and never case-folded;
+    /// - the peer name matches the canonical `users.name` / `agents.name`
+    ///   exactly. A display name is not a handle: `dm:@bob` cannot select
+    ///   alice because alice's display name happens to be bob;
+    /// - a bare name held by BOTH a human member and a non-deleted agent is
+    ///   ambiguous regardless of which DM exists today, so one target cannot
+    ///   silently change conversation as the other DM appears.
+    ///
     /// A migration-receipt DM has no peer account: its only member is the
     /// migrated agent, and only that agent may name it.
     func resolveDMPeer(
@@ -482,42 +502,56 @@ public struct ActionCardPrepareService: Sendable {
         name rawName: String,
         kind rawKind: String?
     ) -> DMPeerResolution {
-        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let kind = rawKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if let kind, kind != "agent", kind != "human" {
-            return .invalidKind(kind, name)
-        }
-        if kind == nil, name.hasPrefix("migration-receipt-") {
+        // Callers split the ref at the first `~`; reconstruct the upstream
+        // raw spelling so the receipt prefix test sees what the caller wrote.
+        let rawPeer = rawKind.map { "\(rawName)~\($0)" } ?? rawName
+        if rawPeer.hasPrefix("migration-receipt-") {
             let postable = channels.postableChannels
             let owned = postable.first { id, channel in
                 channel.serverId == serverId && channel.deletedAt == nil
-                    && channel.kind == "dm" && channel.name == name && channel.memberIds == [agentId]
+                    && channel.kind == "dm" && channel.name == rawPeer && channel.memberIds == [agentId]
                     && oauth.channelAgentIds(channelId: id) == [agentId]
                     && oauth.channelHumanIds(channelId: id).isEmpty
             }
-            guard let owned else { return .notFound }
-            return .resolved(peerId: agentId, peerKind: "agent", name: name)
+            if let owned {
+                return .resolved(peerId: agentId, peerKind: "agent", name: rawPeer)
+            }
+            // No receipt for this agent: keep going to the peer rules below.
         }
-        let accounts = self.accounts.accounts
-        let humans = accounts.values.filter {
-            ($0.name.caseInsensitiveCompare(name) == .orderedSame
-                    || ($0.displayName ?? "").caseInsensitiveCompare(name) == .orderedSame)
-                && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
+        let kind: String?
+        switch rawKind {
+        case nil:
+            kind = nil
+        case "agent", "human":
+            kind = rawKind
+        case .some(let invalid):
+            return .invalidKind(invalid, rawName)
+        }
+        // `parseDmPeerRef` refuses an empty name instead of matching an empty
+        // display name; keep the neutral not-found.
+        guard !rawName.isEmpty else { return .notFound }
+        let humans = accounts.accounts.values.filter {
+            $0.name == rawName && oauth.memberRole(serverId: serverId, userId: $0.id) != nil
         }.map(\.id)
         let agents = oauth.serverAgents(serverId: serverId)
-            .filter { $0.id != agentId && $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            .filter { $0.id != agentId && $0.name == rawName }
             .map(\.id)
         switch kind {
         case "agent":
             guard let id = agents.first else { return .notFound }
-            return .resolved(peerId: id, peerKind: "agent", name: name)
+            return .resolved(peerId: id, peerKind: "agent", name: rawName)
         case "human":
             guard let id = humans.first else { return .notFound }
-            return .resolved(peerId: id, peerKind: "human", name: name)
+            return .resolved(peerId: id, peerKind: "human", name: rawName)
         default:
-            if !humans.isEmpty, !agents.isEmpty { return .ambiguous(name) }
-            if let id = humans.first { return .resolved(peerId: id, peerKind: "human", name: name) }
-            if let id = agents.first { return .resolved(peerId: id, peerKind: "agent", name: name) }
+            // `findCrossKindTwinPeerNames` counts every non-deleted agent in
+            // the server, including the caller's own row.
+            if !humans.isEmpty,
+               oauth.serverAgents(serverId: serverId).contains(where: { $0.name == rawName }) {
+                return .ambiguous(rawName)
+            }
+            if let id = humans.first { return .resolved(peerId: id, peerKind: "human", name: rawName) }
+            if let id = agents.first { return .resolved(peerId: id, peerKind: "agent", name: rawName) }
             return .notFound
         }
     }

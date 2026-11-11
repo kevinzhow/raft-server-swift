@@ -313,6 +313,159 @@ func postgresComputerRestartWithoutRunningAgentDeliversTheQueuedDMOnce() async t
     await fixture.close(machine: machine)
 }
 
+/// The deployed `restart-main` failure: Main restarted while an acknowledged
+/// delivery's turn was still in flight. The same daemon reconnected with its
+/// resident process, the post-restart human DM was durably queued behind the
+/// restart fence, and the turn then completed. That completion is the retained
+/// fact that settles the accepted delivery; the queued DM must be released
+/// through the ordinary strict delivery path exactly once. The old in-flight
+/// message stays historical and is never resent.
+@Test(.enabled(if: restartRecoveryPGEnabled), .serialized)
+func postgresTurnCompletionSettlesServerRestartFenceAndReleasesQueuedDM() async throws {
+    guard let databaseURL = ProcessInfo.processInfo.environment["RAFT_RESTART_RECOVERY_TEST_DATABASE_URL"],
+          !databaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ProtocolPGFailure.missingDedicatedDatabase
+    }
+    func phase(_ value: String) { print("RESTART_RECOVERY_PG \(value)") }
+    let fixture = try await AgentExecutionPostgresFixture.start(databaseURL: databaseURL)
+    phase("fixture-started")
+    var machine: ControlledMachineProtocolPeer?
+    let daemonId = "restart-inflight-daemon-\(UUID().uuidString.lowercased())"
+    let sequence = ProtocolPGSequence()
+    do {
+        let owner = try await fixture.login(fixture.ownerEmail)
+        let attached = try await fixture.http("POST", "/api/computer/attach", token: owner,
+            body: .init(["serverSlug": .string(fixture.slug), "name": .string("In-flight restart fixture")]))
+        guard attached.status == 201 else { throw ProtocolPGFailure.invalidResponse }
+        let computer = try attached.object()
+        let machineID = try computer.requireString("machineId")
+        let key = try computer.requireString("apiKey")
+        let config: JSONValue = .object(["version": .integer(1), "runtime": .string("codex"),
+            "model": .object(["kind": .string("preset"), "id": .string("gpt-5.3-codex")])])
+        let created = try await fixture.http("POST", "/api/agents", token: owner,
+            body: .init(["name": .string("In-flight restart recipient"), "machineId": .string(machineID),
+                         "runtimeConfig": config]))
+        guard created.status == 200 else { throw ProtocolPGFailure.invalidResponse }
+        let agentID = try created.object().requireString("id")
+        let dm = try await fixture.http("POST", "/api/channels/dm", token: owner,
+            body: .init(["agentId": .string(agentID)]))
+        guard dm.status == 200 else { throw ProtocolPGFailure.invalidResponse }
+        let channelID = try dm.object().requireString("id")
+        phase("http-setup-complete")
+
+        let first = try await ControlledMachineProtocolPeer.connect(
+            port: fixture.machineServer.port, key: key, daemonId: daemonId, sequence: sequence)
+        machine = first
+        try await first.sendControlledReady(runningAgentIds: [])
+        let startBoundary = first.socket.count
+        let wake = try await postHumanRestart(fixture, owner: owner, channel: channelID,
+                                              content: "Wake the resident runtime")
+        let start = try await first.socket.nextObject(since: startBoundary) {
+            $0.string("type") == "agent:start" && $0.string("agentId") == agentID
+        }
+        let launch = try start.requireString("launchId")
+        #expect(start.object("wakeMessage")?.string("message_id") == wake.messageId)
+        try await first.acknowledgeControlledStart(start)
+        try await first.sendProcessSpawned(agentId: agentID, launchId: launch, processInstanceId: "process-1")
+        try await first.sendSession(agentId: agentID, launchId: launch, sessionId: "codex-session")
+        try await first.sendTurnCompleted(agentId: agentID, launchId: launch, sessionId: "codex-session")
+        try await protocolPGEventually {
+            (try await fixture.audit()).execution.agents[agentID]?.launches[launch]?.completed == true
+        }
+        phase("resident-idle")
+
+        // The delivery the daemon acknowledges but whose turn never completes
+        // before Main stops. This is the accepted in-flight evidence.
+        let inFlightBoundary = first.socket.count
+        let inFlight = try await postHumanRestart(fixture, owner: owner, channel: channelID,
+                                                  content: "Acknowledged in-flight turn")
+        let inFlightFrame = try await first.socket.nextObject(since: inFlightBoundary) {
+            $0.string("type") == "agent:deliver" && $0.string("agentId") == agentID
+                && $0.object("message")?.string("message_id") == inFlight.messageId
+        }
+        try await first.acknowledgeControlledDelivery(inFlightFrame)
+        let inFlightCommand = try #require(try await fixture.audit().execution.commands.values.first {
+            $0.kind == .delivery && $0.agentId == agentID && $0.messageId == inFlight.messageId
+        })
+        try await protocolPGEventually {
+            (try await fixture.audit()).execution.agents[agentID]?
+                .launches[launch]?.inFlightDeliveryCommandIds?.contains(inFlightCommand.commandId) == true
+        }
+        phase("in-flight-turn")
+
+        // Main stops. The production restore row is the server-restart fence for
+        // the accepted delivery that has no observed completion yet.
+        await first.socket.close()
+        machine = nil
+        try await protocolPGEventually {
+            try await fixture.audit().execution.connections[machineID]?.online == false
+        }
+        try await fixture.runtime.execute {
+            fixture.accounts.agentsRuntimeStore.withState {
+                $0.execution.agents[agentID]?.needsManual = "server_restarted_with_unsettled_execution"
+            }
+        }
+        phase("restore-fenced")
+
+        // The post-restart DM is accepted while the Computer socket is gone.
+        // It must stay readable and durably queued, never a fake delivery.
+        let restart = try await postHumanRestart(fixture, owner: owner, channel: channelID,
+                                                 content: "Post-restart DM")
+        try await protocolPGEventually {
+            (try await fixture.audit()).execution.pendingHumanDeliveries?.values.contains {
+                $0.agentId == agentID && $0.messageId == restart.messageId
+            } == true
+        }
+        phase("restart-dm-queued")
+
+        // The same daemon (one instance id, one outcome sequence) reconnects and
+        // reports its resident process. Ready cannot settle the acknowledged
+        // turn, so the fence and the queued DM remain until the outcome arrives.
+        let second = try await ControlledMachineProtocolPeer.connect(
+            port: fixture.machineServer.port, key: key, daemonId: daemonId, sequence: sequence)
+        machine = second
+        try await second.sendControlledReady(runningAgentIds: [agentID])
+        let ready = try await fixture.audit()
+        #expect(ready.execution.connections[machineID]?.ready == true)
+        #expect(ready.execution.agents[agentID]?.needsManual != nil)
+        #expect(ready.execution.pendingHumanDeliveries?.values.contains {
+            $0.agentId == agentID && $0.messageId == restart.messageId
+        } == true)
+        #expect(!ready.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == agentID && $0.messageId == restart.messageId
+        }, "ready cannot write the queued DM while the accepted turn is unresolved")
+        phase("ready-kept-fence")
+
+        // The in-flight turn completes. The accepted delivery was consumed, the
+        // fence clears, and the queued DM is released as one ordinary delivery.
+        let completionBoundary = second.socket.count
+        try await second.sendTurnCompleted(agentId: agentID, launchId: launch, sessionId: "codex-session")
+        let released = try await second.socket.nextObject(since: completionBoundary) {
+            $0.string("type") == "agent:deliver" && $0.string("agentId") == agentID
+                && $0.object("message")?.string("message_id") == restart.messageId
+        }
+        #expect(released.integer("seq") == Int64(restart.seq))
+        try await second.acknowledgeControlledDelivery(released)
+        try await protocolPGEventually {
+            let execution = (try await fixture.audit()).execution
+            return execution.agents[agentID]?.needsManual == nil
+                && !(execution.pendingHumanDeliveries ?? [:]).values.contains {
+                    $0.agentId == agentID && $0.messageId == restart.messageId
+                }
+        }
+        let wire = try await second.socket.wireFence(since: completionBoundary)
+        #expect(wire.filter { $0.contains("\"agent:deliver\"") && $0.contains(restart.messageId) }.count == 1,
+                "the post-restart DM is delivered exactly once")
+        #expect(!wire.contains { $0.contains(inFlight.messageId) },
+                "the acknowledged pre-restart delivery is historical and is never resent")
+        phase("complete")
+    } catch {
+        await fixture.close(machine: machine)
+        throw error
+    }
+    await fixture.close(machine: machine)
+}
+
 private func postHumanRestart(_ fixture: AgentExecutionPostgresFixture, owner: String, channel: String,
                               content: String) async throws -> (messageId: String, seq: Int) {
     let posted = try await fixture.http("POST", "/api/v2/messages", token: owner,

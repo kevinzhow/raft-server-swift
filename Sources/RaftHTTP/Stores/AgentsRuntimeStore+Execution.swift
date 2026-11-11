@@ -314,6 +314,33 @@ extension AgentExecutionState {
             return command.status == .dispatched
         }
     }
+
+    /// A turn completion is the later fact that can settle a server or
+    /// connection restart fence created while that same turn was in flight.
+    /// The completion clears the launch's acknowledged-delivery set before this
+    /// runs, so an accepted delivery whose turn was cut off by the restart is
+    /// known consumed, not ambiguous. Only the three connection/daemon-history
+    /// reasons are clearable, and only while no other retained execution or
+    /// delivery-write fact is unsettled: an unacknowledged delivery write or
+    /// wake start keeps manual recovery because the completion proves a turn
+    /// ran, not that the ambiguous write reached the runtime.
+    mutating func settleTurnCompletionRecovery(agentId: String) {
+        let historyReasons: Set<String> = [
+            "connection_lost_with_unsettled_execution",
+            "server_restarted_with_unsettled_execution",
+            "daemon_restarted_with_unsettled_execution",
+        ]
+        guard var agent = agents[agentId], let reason = agent.needsManual,
+              historyReasons.contains(reason),
+              let currentId = agent.currentLaunchId,
+              let current = agent.launches[currentId], current.completed,
+              !agent.hasUnsettledExecution,
+              !hasUnsettledDeliveryWrite(agentId: agentId),
+              !hasUnsettledWakeStart(agentId: agentId),
+              !hasAcceptedTurnWithoutCompletion(agentId: agentId) else { return }
+        agent.needsManual = nil
+        agents[agentId] = agent
+    }
 }
 
 struct AgentExecutionLaunch: Codable, Sendable {
