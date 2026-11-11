@@ -27,7 +27,11 @@ full-static public profile has not been published.
 The engine is in the "close remaining delivery gaps, then qualify and deploy"
 stage. Verification is moving from browser-only acceptance to scripted API
 acceptance (`scripts/acceptance/`), with the browser used only for visual
-confirmation.
+confirmation. The `integrate-4` batch adds canonical `message:updated` and
+system-notice frames, durable mention-delivery occurrences with `agent:start`
+resume context, and unified resident-launch adoption on both ready and
+`agent:session` with takeover-epoch scoping; it awaits the trunk gate and a
+deploy.
 
 ## What works
 
@@ -42,13 +46,17 @@ confirmation.
 - **Real PostgreSQL acceptance.** Gated suites cover onboarding, presence and
   restart recovery, offline agent queue, resident delivery, human message
   execution, realtime active-auth, runtime forms/breakers, machine queries,
-  business-persistence fail-closed, email shutdown and infrastructure fencing.
+  business-persistence fail-closed, email shutdown, mention-delivery
+  occurrences, opener-notice recovery and infrastructure fencing.
   `make test-pg` runs them on one throwaway PostgreSQL 17 + Redis pair.
 - **Delivery paths.** Human auth (web/native/mobile), server/channel/DM/task/
   thread/attachment routes, owner onboarding (survey, handoff, opener-v2
   briefing and Team-Mode thread/artifact), resident agent delivery, presence
-  reconciliation, mention deliveries, task history and `asTask`, canonical
-  message payloads, Socket.IO room joins/`message:new`/`thread:updated`/`dm:new`.
+  reconciliation, resident-launch adoption after a restart, mention deliveries
+  (durable occurrences, redrive and outcome projection), task history and
+  `asTask`, canonical message payloads and `message:updated` updates, system
+  notices, Socket.IO room joins/`message:new`/`thread:updated`/`dm:new`,
+  `activityDetailKind` and terminal-failure visibility.
 - **Production operations.** Reproducible Main release build, stage, verify and
   maintenance-ordered upgrade are in `deploy/swift-production/`; the previous
   release is kept for rollback and the pre-upgrade `pg_dump` is taken.
@@ -58,14 +66,14 @@ confirmation.
 | ID | Finding | State | Next action |
 | --- | --- | --- | --- |
 | G1 | A verified owner with no membership still got 401 from `GET /api/servers` instead of 200 `[]` | Fixed on trunk with the canonical-principal collection path; gated by a real-PG onboarding acceptance | Re-qualify the affected release and deploy; confirm with scripted acceptance server collection |
-| G2 | The opener ledger notice is not delivered/stamped in production | Diagnosed; visible opener messages and the Team-Mode thread/artifact are present | Confirm the retry path on the next Computer ready; do not fabricate the sent stamp |
-| G3 | Ready-time agent status/activity could stay `inactive`/`offline` while the process runs | Presence reconciliation and ready `runningAgents` handling are implemented and gated | Confirm live status after the next deploy |
+| G2 | The opener ledger notice is not delivered/stamped in production | Fixed on `integrate-4`: a complete ready or `agent:session` retires a never-dispatched previous-epoch start, adopts the resident launch and clears connection-loss recovery, so the opener ledger notice is admitted and delivered. Gated by `AgentExecutionRestartRecoveryTests` and `postgresOwnerOpenerLedgerNoticeReachesAResidentAgentAfterMainRestart` | Deploy the integration release and confirm the sent stamp on the next Computer ready; do not fabricate it |
+| G3 | Ready-time agent status/activity could stay `inactive`/`offline` while the process runs | Presence reconciliation, ready `runningAgents` handling, `activityDetailKind` and the terminal-failure pause projection are implemented and gated | Confirm live status after the next deploy |
 | G4 | Legacy opener instruction text when the opener flag is explicitly off | Deliberately out of scope (see DEVIATIONS D11) | Re-open only if the flag is turned off in production |
 | G5 | Full-static public profile not yet published | Restricted profile verified; public entry still limited | Publish only after full Web/console and provider acceptance |
 | G6 | Official Computer/Codex/provider acceptance after the latest release | Separate from the unit gate by design | Run it after deploy and record the result in the deployment record |
 | G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; sharded runner now isolates and retries | Re-run `make gate`; keep the shard log if it recurs |
 | G8 | Activity trajectory entries and gap recovery are not stored | Deliberate (see DEVIATIONS D10) | Re-open only if the pinned Web consumes them |
-| G9 | `make test-pg` with one fresh database per test exposes gated tests that were only passing on a warm database or under low load: `postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims` (`.invalidSnapshot`, expects 14 durable documents), `postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks` (`.timeout` after 30s) and `postgresRuntimeFormSourcesUseActualMachineQueries` (projection expectations). `writerLeaseLoss...` and `RuntimeFormSources` also appeared load-sensitive. | Tooling is correct; these are test-fixture or product gaps outside the process slice | Owning area (agent execution/persistence) should re-run each test alone on a fresh database and fix the fixture dependency or the product path; do not mask them with a retry |
+| G9 | `make test-pg` with one fresh database per test exposes gated tests that were only passing on a warm database or under low load: `postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims` (`.invalidSnapshot`, expects 14 durable documents), `postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks` (`.timeout` after 30s) and `postgresRuntimeFormSourcesUseActualMachineQueries` (projection expectations). `writerLeaseLoss...` and `RuntimeFormSources` also appeared load-sensitive. | A parallel owner is repairing these fixture/product gaps; the integration batch does not mask them with retries and wires the new mention-delivery and opener-notice gated suites into `scripts/test-pg.sh` | Owning area (agent execution/persistence) re-runs each test alone on a fresh database and fixes the fixture dependency or the product path; re-run the full persistence gate on the integration commit |
 
 ## Next steps
 
