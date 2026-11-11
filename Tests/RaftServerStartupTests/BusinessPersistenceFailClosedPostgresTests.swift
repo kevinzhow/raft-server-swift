@@ -120,7 +120,11 @@ private let businessPGFailClosedEnabled =
     /// The production composition must not stay alive as a 503-only zombie.
     /// A lost writer lease logs the redacted cause and exits non-zero so the
     /// systemd unit (`Restart=on-failure`) starts a fresh process that claims a
-    /// new epoch and reloads every owner from PostgreSQL.
+    /// new epoch and reloads every owner from PostgreSQL. The terminating
+    /// backend is observed concurrently by the 100 ms lease-health monitor and
+    /// by any fenced command in flight; whichever records the fatal failure
+    /// first wins, so the journal legitimately names either the stale lease or
+    /// the redacted PostgreSQL failure of that command.
     @Test(.enabled(if: businessPGFailClosedEnabled))
     func writerLeaseLossLogsTheRedactedCauseAndExitsForSupervisorRestart() async throws {
         let environment = ProcessInfo.processInfo.environment
@@ -174,8 +178,15 @@ private let businessPGFailClosedEnabled =
                     "expected exit 70 for the supervisor, got \(process.terminationStatus)")
             let journal = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
             #expect(journal.contains("business persistence failed closed"))
-            #expect(journal.contains("writer lease"),
-                    "the journal must name the lost writer lease without leaking driver details")
+            // Both observations prove the same lost writer: the stale lease
+            // heartbeat, or the redacted driver failure of any fenced command
+            // (an outbox claim or a business commit) that lost its session.
+            let observedLeaseLoss = journal.contains("writer lease")
+            let fencedOperations = ["operation=outbox command", "operation=business commit"]
+            let observedFencedFailure = fencedOperations.contains { journal.contains($0) }
+                && journal.contains("reason=PostgreSQL ")
+            #expect(observedLeaseLoss || observedFencedFailure,
+                    "the journal must name the lost writer lease or the fenced command that observed it")
             #expect(journal.contains("writerEpoch="))
             if let password = URLComponents(string: databaseURL)?.password, !password.isEmpty {
                 #expect(!journal.contains(password), "the journal must not contain the database password")
