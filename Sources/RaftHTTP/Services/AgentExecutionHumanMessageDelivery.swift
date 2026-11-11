@@ -39,6 +39,15 @@ extension AgentExecutionDomain {
             // (machine ready, a settled start, a human start) releases it
             // exactly once. It is not a launch, process or receipt.
             try queuePendingHumanDelivery(request)
+            // RFC 071 §9: a manual/breaker suppression is shown to the Web as
+            // the typed offline activity, exactly like upstream's
+            // `projectTerminalBlock` wake-refusal projection.
+            if refusal == .recoveryRequired || refusal == .breakerPaused,
+               let recovery = agents.state.execution.agents[request.agentId],
+               let block = AgentPresenceSignal.terminalBlock(needsManual: recovery.needsManual,
+                                                             blockedUntil: recovery.blockedUntil, now: Date()) {
+                queueTerminalBlockFrame(serverId: request.serverId, agentId: request.agentId, block: block)
+            }
             return .readableOnly(refusal)
         }
         switch try stageDelivery(request) {

@@ -610,20 +610,30 @@ public struct AgentPrivateSurfaceService: Sendable {
             reasoningEffort: AgentRuntimeConfigProjection.parse(agent.runtimeConfigJSON).reasoningEffort,
             avatarUrl: agent.avatarUrl,
             activity: facts.activity,
-            activityDetail: facts.detail
+            activityDetail: facts.detail,
+            activityDetailKind: facts.detailKind
         )
     }
 
     /// Upstream `getActivity`: a retained live observation wins; otherwise the
-    /// `active` + reachable-machine fallback is `online`. Both the full and the
-    /// guest projections read the same resolved facts.
-    private func presenceFacts(_ agent: OAuthLedger.AgentRuntimeInfo) -> (machineId: String?, activity: String, detail: String) {
+    /// `active` + reachable-machine fallback is `online`. A terminal-failure /
+    /// manual-recovery gate is a server-authored block (RFC 071 §9), served as
+    /// the typed offline `terminal_failure_paused` activity regardless of what
+    /// the daemon last reported. Both the full and the guest projections read
+    /// the same resolved facts.
+    private func presenceFacts(_ agent: OAuthLedger.AgentRuntimeInfo)
+        -> (machineId: String?, activity: String, detail: String, detailKind: String?) {
         let facts = dependencies.agents.presenceFacts(agentId: agent.id)
+        if agent.status != "stopped",
+           let block = AgentPresenceSignal.terminalBlock(needsManual: facts.needsManual,
+                                                         blockedUntil: facts.blockedUntil, now: Date()) {
+            return (facts.machineId, "offline", block.detail, block.detailKind)
+        }
         let reachable = facts.machineId.map {
             dependencies.machines.machineIsReachable(machineId: $0, serverId: agent.serverId)
         } ?? false
         let visible = AgentPresenceSignal.visiblePresence(recorded: facts.activity, status: agent.status, machineReachable: reachable)
-        return (facts.machineId, visible.activity, visible.detail)
+        return (facts.machineId, visible.activity, visible.detail, facts.detailKind)
     }
 
     private func guestSummary(_ agent: OAuthLedger.AgentRuntimeInfo) -> GuestAgentSummary {

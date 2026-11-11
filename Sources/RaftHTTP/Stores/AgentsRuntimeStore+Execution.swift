@@ -194,16 +194,18 @@ extension AgentExecutionState {
         }
     }
 
-    /// A command write was attempted without a durable daemon acknowledgement.
-    /// A `.pending` delivery without a dispatch record is provably unsent; it
-    /// is retryable rather than ambiguous.
+    /// A delivery write was attempted without a durable daemon acknowledgement.
+    /// Only the delivery itself makes the turn unresolved: a start or stop
+    /// dispatch whose launch the daemon's ready report has already ruled out is
+    /// obsolete bookkeeping (it is never redispatched once it is not current),
+    /// not evidence that a message may have reached a runtime. A `.pending`
+    /// delivery without a dispatch record is provably unsent, and the transient
+    /// onboarding notice never blocks agent recovery.
     func hasUnsettledDeliveryWrite(agentId: String) -> Bool {
         commands.contains { key, command in
-            // A transient onboarding notice never blocks agent recovery: its
-            // own sent fact is stamped elsewhere and the wake is lost.
-            guard command.agentId == agentId, command.kind != .notice else { return false }
+            guard command.agentId == agentId, command.kind == .delivery else { return false }
             if let dispatch = dispatches?[key] { return dispatch.phase != .accepted }
-            return command.kind == .delivery && command.status == .dispatched
+            return command.status == .dispatched
         }
     }
 }

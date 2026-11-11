@@ -210,4 +210,29 @@ enum AgentPresenceSignal {
         if let recorded { return recorded }
         return (status == "active" && machineReachable ? "online" : "offline", "")
     }
+
+    /// RFC 071 §9 / upstream `terminalBlockView` + `terminalBlockDetail`: the
+    /// server-authored offline activity that shows why automatic wakes stopped.
+    /// `needs_manual` wins over a pause. The pause text matches upstream
+    /// `new Date(ms).toISOString()`; the failure kind is omitted because this
+    /// port does not retain the last failure kind. Needs-manual never says it
+    /// will retry, and always names the required manual start.
+    static func terminalBlock(needsManual: String?, blockedUntil: Date?, now: Date)
+        -> (detail: String, detailKind: String)? {
+        if let needsManual {
+            let why: String
+            switch needsManual {
+            case "outcome_evidence_lost": why = "Runtime outcome reports for this agent were lost."
+            case "daemon_outcome_storage_unreliable": why = "This computer can no longer report runtime outcomes for this agent."
+            default: why = "The previous runtime process could not be confirmed stopped."
+            }
+            return ("Automatic wake stopped: \(why) A manual start is needed.", "terminal_failure_paused")
+        }
+        guard let blockedUntil, now < blockedUntil else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return ("Automatic wake paused until \(formatter.string(from: blockedUntil)) after repeated runtime failures. "
+                + "The next message, reminder or manual start after that retries; a manual start lifts it now.",
+                "terminal_failure_paused")
+    }
 }
