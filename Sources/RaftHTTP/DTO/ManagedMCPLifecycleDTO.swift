@@ -119,6 +119,123 @@ public struct JointInviteAcceptedResponse: JSONBodyConvertible, Equatable {
     }
 }
 
+/// One pending joint-channel invite row.
+///
+/// Member order follows the upstream `listPendingJointChannelInvites` select:
+/// `id`, `jointChannelId`, `fromServerId`, `fromServerName`, `fromServerSlug`,
+/// `channelName`, `channelDescription`, `invitedByUserId`, `invitedUserId`,
+/// `expiresAt`, `createdAt`.
+public struct JointInviteRow: JSONBodyConvertible, Equatable, Sendable {
+    let id: String
+    let jointChannelId: String
+    let fromServerId: String
+    let fromServerName: String
+    let fromServerSlug: String
+    let channelName: String
+    let channelDescription: String?
+    let invitedByUserId: String
+    let invitedUserId: String
+    let expiresAt: Date
+    let createdAt: Date
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("id", id),
+            OrderedJSONField("jointChannelId", jointChannelId),
+            OrderedJSONField("fromServerId", fromServerId),
+            OrderedJSONField("fromServerName", fromServerName),
+            OrderedJSONField("fromServerSlug", fromServerSlug),
+            OrderedJSONField("channelName", channelName),
+            OrderedJSONField("channelDescription", optional: channelDescription),
+            OrderedJSONField("invitedByUserId", invitedByUserId),
+            OrderedJSONField("invitedUserId", invitedUserId),
+            OrderedJSONField("expiresAt", RuntimeUsageISO.string(expiresAt)),
+            OrderedJSONField("createdAt", RuntimeUsageISO.string(createdAt)),
+        ])
+    }
+}
+
+/// `POST /api/channels/:id/joint-invites` request.
+///
+/// The retired handler read each member with `typeof`/`Array.isArray`; a member
+/// of the wrong type reads as absent here. `invitedPeople` keeps the create
+/// route's all-or-nothing `[String]` decode.
+public struct JointChannelInviteRequest: Decodable, Sendable, Equatable {
+    public var targetServerSlug: String?
+    public var invitedPeople: [String]?
+    public var sameAdmin: Bool?
+
+    public init(
+        targetServerSlug: String? = nil,
+        invitedPeople: [String]? = nil,
+        sameAdmin: Bool? = nil
+    ) {
+        self.targetServerSlug = targetServerSlug
+        self.invitedPeople = invitedPeople
+        self.sameAdmin = sameAdmin
+    }
+
+    private enum CodingKeys: String, CodingKey { case targetServerSlug, invitedPeople, sameAdmin }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        targetServerSlug = try? container.decode(String.self, forKey: .targetServerSlug)
+        invitedPeople = try? container.decode([String].self, forKey: .invitedPeople)
+        sameAdmin = try? container.decode(Bool.self, forKey: .sameAdmin)
+    }
+}
+
+/// `GET /api/channels/joint-invites`.
+public struct JointInviteListResponse: JSONBodyConvertible {
+    let invites: [JointInviteRow]
+
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("invites", .array(invites.map(\.jsonBody)))])
+    }
+}
+
+/// `POST /api/channels/:id/joint-invite/resend`.
+public struct JointInviteResendResponse: JSONBodyConvertible, Equatable {
+    let resentCount: Int
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", true),
+            OrderedJSONField("resentCount", resentCount),
+        ])
+    }
+}
+
+/// `POST /api/channels/:id/joint-invites`.
+///
+/// The upstream reply is the updated channel projection with `jointInvites` and
+/// `jointInvite` appended. This port projects the retained channel fields; the
+/// omitted columns are the same ones `GET /api/channels` does not carry yet.
+public struct JointChannelInviteResponse: JSONBodyConvertible {
+    let id: String
+    let serverId: String
+    let name: String
+    let description: String?
+    let type: String
+    let createdAt: Date?
+    let joined: Bool
+    let invites: [JointInviteRow]
+
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("serverId", serverId)
+        body.append("name", name)
+        body.append("description", ifPresent: description)
+        body.append("type", type)
+        body.append("createdAt", ifPresent: createdAt.map(RuntimeUsageISO.string))
+        body.append("joined", joined)
+        body.append("jointInvites", .array(invites.map(\.jsonBody)))
+        body.append("jointInvite", invites.first?.jsonBody ?? .null)
+        return body.json
+    }
+}
+
 /// `GET /api/channels`.
 ///
 /// Published row order for the fields this port retains: `id`, `serverId`,

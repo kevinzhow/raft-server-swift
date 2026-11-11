@@ -856,3 +856,48 @@ public struct AgentChannelMuteResponse: JSONBodyConvertible, Sendable, Equatable
         ])
     }
 }
+
+/// `200` body of `POST /api/channels/:channelId/stop-all-agents`.
+///
+/// Published order: `ok` (always `true`), `stopped`, `total`, `results`.
+/// A failed stop carries `error` instead of `reason`; the resumed route uses
+/// the separate `ResumeAllAgentsResponse` shape.
+public struct StopAllAgentsResponse: JSONBodyConvertible, Sendable, Equatable {
+    public struct Result: Sendable, Equatable {
+        public var agentId: String
+        public var error: String?
+
+        public init(agentId: String, error: String?) {
+            self.agentId = agentId
+            self.error = error
+        }
+
+        var json: OrderedJSON {
+            var fields = [
+                OrderedJSONField("agentId", agentId),
+                OrderedJSONField("ok", error == nil),
+            ]
+            if let error { fields.append(OrderedJSONField("error", error)) }
+            return .object(fields)
+        }
+    }
+
+    public var stopped: Int
+    public var total: Int
+    public var results: [Result]
+
+    public init(stopped: Int, total: Int, results: [Result]) {
+        self.stopped = stopped
+        self.total = total
+        self.results = results
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", true),
+            OrderedJSONField("stopped", stopped),
+            OrderedJSONField("total", total),
+            OrderedJSONField("results", .array(results.map(\.json))),
+        ])
+    }
+}
