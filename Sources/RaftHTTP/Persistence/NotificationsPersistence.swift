@@ -9,6 +9,8 @@ import Foundation
 private struct NotificationsBusinessSnapshot: Codable, Sendable {
     let pushRegistrations: [NotificationsPushRegistrationRow]
     let webPushSubscriptions: [NotificationsWebPushRow]
+    /// Absent in snapshots written before prompt telemetry was retained.
+    let pushPromptEvents: [NotificationsPushPromptEventRow]?
     let announcements: [NotificationsAnnouncementRow]
     let announcementImageAssets: [String: NotificationsAnnouncementAssetRow]
     let announcementDismissals: [String]
@@ -17,6 +19,7 @@ private struct NotificationsBusinessSnapshot: Codable, Sendable {
     init(_ state: NotificationsStore.State) {
         pushRegistrations = state.pushRegistrations.map(NotificationsPushRegistrationRow.init)
         webPushSubscriptions = state.webPushSubscriptions.map(NotificationsWebPushRow.init)
+        pushPromptEvents = state.pushPromptEvents.map(NotificationsPushPromptEventRow.init)
         announcements = state.announcements.map(NotificationsAnnouncementRow.init)
         announcementImageAssets = state.announcementImageAssets.mapValues(NotificationsAnnouncementAssetRow.init)
         announcementDismissals = state.announcementDismissals.sorted()
@@ -68,6 +71,38 @@ private struct NotificationsWebPushRow: Codable, Sendable {
     }
 
     var record: WebPushSubscription { WebPushSubscription(userId: userId, endpoint: endpoint) }
+}
+
+private struct NotificationsPushPromptEventRow: Codable, Sendable {
+    let userId: String
+    let serverId: NotificationsPersistenceCoding.RequiredOptional<String>
+    let event: String
+    let trigger: String
+    let result: NotificationsPersistenceCoding.RequiredOptional<String>
+    let permissionBefore: NotificationsPersistenceCoding.RequiredOptional<String>
+    let permissionAfter: NotificationsPersistenceCoding.RequiredOptional<String>
+    let detail: NotificationsPersistenceCoding.RequiredOptional<String>
+    let createdAt: Date
+
+    init(_ row: PushPromptEvent) {
+        userId = row.userId
+        serverId = .init(row.serverId)
+        event = row.event
+        trigger = row.trigger
+        result = .init(row.result)
+        permissionBefore = .init(row.permissionBefore)
+        permissionAfter = .init(row.permissionAfter)
+        detail = .init(row.detail)
+        createdAt = row.createdAt
+    }
+
+    var record: PushPromptEvent {
+        PushPromptEvent(
+            userId: userId, serverId: serverId.value, event: event, trigger: trigger,
+            result: result.value, permissionBefore: permissionBefore.value,
+            permissionAfter: permissionAfter.value, detail: detail.value, createdAt: createdAt
+        )
+    }
 }
 
 private struct NotificationsAnnouncementRow: Codable, Sendable {
@@ -154,6 +189,7 @@ extension NotificationsStore {
         )
         let pushRegistrations = snapshot.pushRegistrations.map(\.record)
         let webPushSubscriptions = snapshot.webPushSubscriptions.map(\.record)
+        let pushPromptEvents = (snapshot.pushPromptEvents ?? []).map(\.record)
         let announcements = snapshot.announcements.map(\.record)
         let announcementImageAssets = snapshot.announcementImageAssets.mapValues(\.record)
         let announcementDismissals = Set(snapshot.announcementDismissals)
@@ -164,6 +200,7 @@ extension NotificationsStore {
         storage.withLock { state in
             state.pushRegistrations = pushRegistrations
             state.webPushSubscriptions = webPushSubscriptions
+            state.pushPromptEvents = pushPromptEvents
             state.announcements = announcements
             state.announcementImageAssets = announcementImageAssets
             state.announcementDismissals = announcementDismissals

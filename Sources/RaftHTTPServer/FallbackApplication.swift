@@ -303,6 +303,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     FeedbackFeature(services: services).register(routes: app)
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)
+    BillingFeature(services: services).register(routes: app)
+    RaftBenchFeature(services: services).register(routes: app)
     AuthFeature(
         core: services.emailAccounts.authCore.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
         identities: services.emailAccounts.authIdentities,

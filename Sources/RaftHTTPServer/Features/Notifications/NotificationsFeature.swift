@@ -68,6 +68,18 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             }
         }
         PixelAvatarRoutes().register(routes: app)
+        // Public, capability-based avatar object serving. Uploaded avatars are
+        // stored in the CDN bucket upstream; this deployment has no avatar
+        // object store, so the route keeps the published filename validation
+        // and answers the upstream unconfigured 500.
+        let avatars = app.grouped("api", "avatars")
+        avatars.get(":namespace", ":filename") { request async throws -> Response in
+            let filename = request.parameters.get("filename") ?? ""
+            guard filename.wholeMatch(of: /^[0-9a-f]+\.webp$/) != nil else {
+                return avatarError(400, "Invalid filename")
+            }
+            return avatarError(500, "Storage not configured")
+        }
         desktopDownload.get { request async in
             routeResponse(await DesktopDownload.downloadReply(
                 target: desktopQuery(request.url.query, "target"),
@@ -317,6 +329,42 @@ public struct NotificationsFeature: RouteCollection, Sendable {
                 )
             }
         }
+        // VAPID is deployment configuration; without it the Web treats push as
+        // unavailable (503). The route is intentionally unauthenticated.
+        push.get("vapid-key") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPPush.vapidKey(
+                    configuredKey: services.releaseEnvironment["VAPID_PUBLIC_KEY"]
+                )
+            }
+        }
+        push.post("prompt-events") { request async throws -> Response in
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPPush.recordPushPromptEvent(
+                    authorization: request.headers[.authorization],
+                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
+                    body: body
+                )
+            }
+        }
+        push.delete("subscribe") { request async throws -> Response in
+            let body = await jsonRequestBody(WebPushSubscribeRequest.self, request)
+            return try await respond {
+                try services.emailAccounts.managedMCPPush.removeWebPushSubscription(
+                    authorization: request.headers[.authorization],
+                    body: body
+                )
+            }
+        }
+        push.post("test") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.managedMCPPush.sendTestPush(
+                    authorization: request.headers[.authorization],
+                    configuredKey: services.releaseEnvironment["VAPID_PUBLIC_KEY"]
+                )
+            }
+        }
         releaseNotes.get { request async throws -> Response in
             try await respond(status: { $0.status }, headers: { $0.headers }) {
                 try ReleaseNotes.list(
@@ -540,4 +588,9 @@ private func mobileAppEmailUnsubscribeResponse(_ outcome: MobileAppEmailUnsubscr
     headers[.cacheControl] = "no-store"
     headers[HTTPField.Name("Referrer-Policy")!] = "no-referrer"
     return Response(status: status, headers: headers, body: .init(string: html))
+}
+
+/// One `{"error": …}` reply for the avatar object route.
+private func avatarError(_ status: UInt, _ error: String) -> Response {
+    respond(status: status, rawJSON: OrderedJSON.object([OrderedJSONField("error", error)]).render())
 }
