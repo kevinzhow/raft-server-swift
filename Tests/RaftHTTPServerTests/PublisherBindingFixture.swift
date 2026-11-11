@@ -103,7 +103,10 @@ struct PublisherBindingFixture: Sendable {
         timedAssignments = ManagedMCPAssignmentsService(
             channels: channels, messages: messages, tasks: tasks, agents: agents, profiles: profiles,
             oauth: oauth, auth: services.identity.core, ownership: AssistantOwnershipQuery(agents: agents, oauth: oauth),
-            probe: probe, notices: SystemNoticeAppender(messages: messages, ledger: MessageLedgerPort(oauth: oauth)),
+            probe: probe, notices: SystemNoticeAppender(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth,
+                ledger: MessageLedgerPort(oauth: oauth)
+            ),
             membership: services.channels.membership, catalog: services.tasks.catalog,
             createThreadFirstReply: { serverId, channelId, userId, content in
                 try services.messaging.create.createThreadFirstReply(

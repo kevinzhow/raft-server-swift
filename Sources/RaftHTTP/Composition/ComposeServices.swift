@@ -56,7 +56,6 @@ func composeServices(
     let projection = MessageReadProjection(messages: messages, channels: channels, profiles: profiles, agents: agents, oauth: oauth, tasks: tasks)
     let mentions = MessageMentionsService(messages: messages, channels: channels, profiles: profiles, agents: agents, oauth: oauth)
     let metadata = ActionCardMetadataProjection(cards: cards, oauth: oauth)
-    let notices = SystemNoticeAppender(messages: messages, ledger: ledger)
     let locators = FeedbackLocatorService(feedback: feedback, agents: agents, channels: channels, cards: cards, oauth: oauth)
 
     let core = AuthCoreService(store: profiles)
@@ -69,6 +68,12 @@ func composeServices(
     let principal = OAuthPrincipalService(profiles: profiles, oauth: oauth)
     let runtimePolicy = DirectoryRuntimePolicy(profiles: profiles)
     let realtime = RealtimeRelayService(messages: messages)
+    let notices = SystemNoticeAppender(
+        messages: messages, channels: channels, profiles: profiles, oauth: oauth,
+        ledger: ledger, emit: { room, event, payload in
+            realtime.emit(room, event, payload)
+        }
+    )
     let connections = AgentConnectionRelayService(agents: agents)
     let credentialUse = AgentCredentialUseService(agents: agents, oauth: oauth, realtime: realtime)
     let native = NativeNotificationsService(rows: notifications.native, settings: notifications, profiles: profiles)
@@ -78,7 +83,7 @@ func composeServices(
         store: feedback,
         dependencies: FeedbackService.Dependencies(profiles: profiles, flags: agents)
     )
-    let roleNotices = AgentRoleNoticeService(profiles: profiles, channels: channels, messages: messages, oauth: oauth)
+    let roleNotices = AgentRoleNoticeService(profiles: profiles, channels: channels, oauth: oauth, notices: notices)
 
     let lifecycle = AgentsLifecycleService(
         profiles: profiles,
@@ -274,6 +279,12 @@ func composeServices(
                 )
             },
             emitRealtime: realtime.emit,
+            publishMessageUpdated: { messageId, metadataJSON in
+                MessageUpdatePublisher(
+                    messages: messages, channels: channels, profiles: profiles, oauth: oauth,
+                    emit: { room, event, payload in realtime.emit(room, event, payload) }
+                ).actionCard(messageId: messageId, metadataJSON: metadataJSON)
+            },
             marketplaceInstallableClient: oauth.marketplaceInstallableClientIdentity,
             publicIntegrationClient: oauth.publicIntegrationClientIdentity
         )
@@ -404,7 +415,8 @@ func composeServices(
                 try mentions.resolve(serverId: serverId, channelId: channelId, senderId: senderId,
                     content: content, typed: typed, warnUnresolved: warn, surface: surface)
             },
-            recordMemberMentionRows: mentions.register
+            recordMemberMentionRows: mentions.register,
+            emitRealtime: { room, event, payload in realtime.emit(room, event, payload) }
         )
     )
     let messageLookup = AgentMessageLookupService(
@@ -508,7 +520,13 @@ func composeServices(
         oauth: oauth,
         sessionUserId: lifecycle.sessionUserId,
         cardWriteDecision: registration.actionCardWriteDecision,
-        mcpIdentity: { locators.identityResolution(authorization: $0, capability: "mcp") }
+        mcpIdentity: { locators.identityResolution(authorization: $0, capability: "mcp") },
+        publishMessageUpdated: { messageId, metadataJSON in
+            MessageUpdatePublisher(
+                messages: messages, channels: channels, profiles: profiles, oauth: oauth,
+                emit: { room, event, payload in realtime.emit(room, event, payload) }
+            ).actionCard(messageId: messageId, metadataJSON: metadataJSON)
+        }
     )
     let history = AgentHistoryService(
         messages: messages,

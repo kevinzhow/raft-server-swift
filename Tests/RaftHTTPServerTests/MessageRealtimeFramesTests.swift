@@ -648,4 +648,452 @@ struct MessageRealtimeFramesTests {
             }
         }
     }
+
+    // MARK: - Producer parity: follow, updates, system notices, forward
+
+    /// Upstream `POST /api/channels/threads/follow` runs
+    /// `getOrCreateThreadForChannel` for a `parentMessageId`: a parent with no
+    /// thread still gets the empty thread, then the follow row and
+    /// `thread:followers-updated`. Missing message/channel/access all answer the
+    /// neutral `Message not found` 404.
+    @Test func followParentWithoutThreadCreatesItAndPublishes() async throws {
+        let fixture = RealtimeFramesFixture()
+        let channelId = fixture.addChannel(name: "follow-empty-thread")
+        let parentId = fixture.accounts.addChannelMessageForTesting(
+            channelId: channelId, content: "follow parent", senderId: fixture.ownerId
+        )
+        let privateChannelId = fixture.accounts.oauth.createChannel(
+            serverId: fixture.serverId, name: "follow-private", creatorUserId: fixture.ownerId, type: "private"
+        )
+        fixture.accounts.addPostableChannel(
+            serverId: fixture.serverId, channelId: privateChannelId, memberId: fixture.ownerId,
+            kind: "private", name: "follow-private"
+        )
+        fixture.accounts.oauth.addChannelHuman(channelId: privateChannelId, userId: fixture.ownerId)
+        let privateParent = fixture.accounts.addChannelMessageForTesting(
+            channelId: privateChannelId, content: "private follow parent", senderId: fixture.ownerId
+        )
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let ownerSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.ownerId)
+        let memberSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.memberId)
+        defer {
+            ownerSocket.close()
+            memberSocket.close()
+            Task { try? await realtime.close() }
+        }
+        realtimeFramesInstall(fixture, hub: realtime.hub)
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let followed = try await realtimeFramesPOST(
+                    client, path: "/api/channels/threads/follow",
+                    body: "{\"parentMessageId\":\"\(parentId)\"}",
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                #expect(followed.status == .ok, "\(realtimeFramesBody(followed))")
+                let body = try realtimeFramesObject(realtimeFramesBody(followed))
+                #expect(Set(body.keys) == ["ok", "threadChannelId"])
+                #expect(body["ok"] as? Bool == true)
+                let threadId = try #require(body["threadChannelId"] as? String)
+                #expect(fixture.accounts.serversAndChannelsStore.state
+                    .postableChannels[threadId]?.parentMessageId == parentId)
+                #expect(fixture.accounts.messagesAndThreadsStore.isThreadFollowed(
+                    serverId: fixture.serverId, userId: fixture.memberId, threadChannelId: threadId
+                ))
+                // A socket already inside the thread room receives the follower
+                // frame. Following itself does not need to join the room, so
+                // open the panel first and repeat the (idempotent) follow.
+                realtime.hub.joinUserSessions(userId: fixture.ownerId, room: "channel:\(threadId)")
+                let again = try await realtimeFramesPOST(
+                    client, path: "/api/channels/threads/follow",
+                    body: "{\"parentMessageId\":\"\(parentId)\"}",
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                #expect(again.status == .ok, "\(realtimeFramesBody(again))")
+                let frame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["thread:followers-updated""#) && $0.contains(threadId)
+                })
+                let event = try realtimeFramesEvent(frame)
+                #expect(event.payload["threadChannelId"] as? String == threadId)
+
+                let listed = try await client.get(
+                    URI(string: "/api/channels/threads/followed"),
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                let rows = (try realtimeFramesObject(realtimeFramesBody(listed)))["threads"] as? [[String: Any]] ?? []
+                #expect(rows.contains { $0["threadChannelId"] as? String == threadId })
+
+                let missing = try await realtimeFramesPOST(
+                    client, path: "/api/channels/threads/follow",
+                    body: "{\"parentMessageId\":\"99999999-9999-4999-8999-999999999999\"}",
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                #expect(missing.status == .notFound)
+                #expect(try realtimeFramesBody(missing) == #"{"error":"Message not found"}"#)
+
+                let denied = try await realtimeFramesPOST(
+                    client, path: "/api/channels/threads/follow",
+                    body: "{\"parentMessageId\":\"\(privateParent)\"}",
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                #expect(denied.status == .notFound)
+                #expect(try realtimeFramesBody(denied) == #"{"error":"Message not found"}"#)
+            }
+        }
+    }
+
+    /// A reaction inserts the enriched canonical `message:updated` row: the
+    /// retained reactions, attachments, mentions and sender facts, without the
+    /// creation-time `conversationContext`.
+    @Test func reactionPublishesCanonicalEnrichedUpdate() async throws {
+        let fixture = RealtimeFramesFixture()
+        let channelId = fixture.addChannel(name: "reaction-canonical")
+        let attachmentId = fixture.accounts.addChannelAttachment(
+            channelId: channelId, uploaderId: fixture.ownerId,
+            filename: "reaction.pdf", mimeType: "application/pdf", sizeBytes: 12
+        )
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let ownerSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.ownerId)
+        defer {
+            ownerSocket.close()
+            Task { try? await realtime.close() }
+        }
+        realtimeFramesInstall(fixture, hub: realtime.hub)
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let sent = try await realtimeFramesPOST(
+                    client, path: "/api/messages",
+                    body: """
+                    {"channelId":"\(channelId)","content":"reaction canonical @realtime-frames-member",
+                     "attachmentIds":["\(attachmentId)"],
+                     "mentions":[{"type":"user","id":"\(fixture.memberId)","name":"realtime-frames-member"}]}
+                    """,
+                    headers: fixture.headers(fixture.ownerToken)
+                )
+                #expect(sent.status == .ok, "\(realtimeFramesBody(sent))")
+                let sentBody = try realtimeFramesObject(realtimeFramesBody(sent))
+                let messageId = try #require(sentBody["id"] as? String)
+                let createdAt = try #require(sentBody["createdAt"] as? String)
+                let seq = try #require(sentBody["seq"] as? Int)
+
+                let reacted = try await realtimeFramesPOST(
+                    client, path: "/api/messages/\(messageId)/reactions",
+                    body: "{\"emoji\":\"👍\"}",
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                #expect(reacted.status == .ok, "\(realtimeFramesBody(reacted))")
+
+                let frame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:updated""#) && $0.contains(messageId)
+                })
+                let event = try realtimeFramesEvent(frame)
+                #expect(event.event == "message:updated")
+                let payload = event.payload
+                #expect(Set(payload.keys) == realtimeCanonicalKeys)
+                #expect(realtimeStorageOnlyKeys.isDisjoint(with: Set(payload.keys)))
+                #expect(payload["id"] as? String == messageId)
+                #expect(payload["seq"] as? Int == seq)
+                #expect(payload["channelId"] as? String == channelId)
+                #expect(payload["senderType"] as? String == "user")
+                #expect(payload["senderId"] as? String == fixture.ownerId)
+                #expect(payload["messageType"] as? String == "chat")
+                #expect(payload["content"] as? String == "reaction canonical @realtime-frames-member")
+                #expect(payload["createdAt"] as? String == createdAt)
+                #expect(payload["updatedAt"] as? String == createdAt)
+                #expect(payload["senderName"] as? String == "realtime-frames-owner")
+                #expect(payload["senderDescription"] is NSNull)
+                #expect(payload["senderMembershipStatus"] as? String == "active")
+                #expect(payload["threadId"] is NSNull)
+                #expect(payload["actionMetadata"] is NSNull)
+                #expect(payload["commentRef"] is NSNull)
+                #expect(payload["externalAuthor"] is NSNull)
+                #expect(payload["conversationContext"] == nil)
+                let attachments = try #require(payload["attachments"] as? [[String: Any]])
+                #expect(attachments.map { $0["id"] as? String } == [attachmentId])
+                #expect(Set(attachments[0].keys) == [
+                    "id", "filename", "mimeType", "sizeBytes", "width", "height", "thumbnailUrl",
+                ])
+                let mentions = try #require(payload["mentions"] as? [[String: Any]])
+                #expect(mentions.map { $0["id"] as? String } == [fixture.memberId])
+                let reactions = try #require(payload["reactions"] as? [[String: Any]])
+                #expect(reactions.count == 1)
+                #expect(reactions[0]["emoji"] as? String == "👍")
+                #expect(reactions[0]["count"] as? Int == 1)
+                #expect(reactions[0]["reactorIds"] as? [String] == [fixture.memberId])
+                #expect(reactions[0]["reactorNames"] as? [String] == ["realtime-frames-member"])
+            }
+        }
+    }
+
+    /// A comment is an ordinary thread reply plus the shared privacy scrub:
+    /// `message:new` and the parent `thread:updated`, then the sparse
+    /// `{id, channelId, commentRef:null}` update the Web reloads on.
+    @Test func attachmentCommentPublishesReplyAndPrivacyScrub() async throws {
+        let fixture = RealtimeFramesFixture()
+        let channelId = fixture.addChannel(name: "attachment-comment-frames")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let memberSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.memberId)
+        defer {
+            memberSocket.close()
+            Task { try? await realtime.close() }
+        }
+        realtimeFramesInstall(fixture, hub: realtime.hub)
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let host = try await realtimeFramesPOST(
+                    client, path: "/api/messages",
+                    body: "{\"channelId\":\"\(channelId)\",\"content\":\"comment host\"}",
+                    headers: fixture.headers(fixture.ownerToken)
+                )
+                #expect(host.status == .ok, "\(realtimeFramesBody(host))")
+                let hostId = try #require(try realtimeFramesObject(realtimeFramesBody(host))["id"] as? String)
+                let attachmentId = fixture.accounts.addChannelAttachment(
+                    channelId: channelId, uploaderId: fixture.ownerId,
+                    filename: "comment.pdf", mimeType: "application/pdf", sizeBytes: 5, messageId: hostId
+                )
+                let comment = try await realtimeFramesPOST(
+                    client, path: "/api/attachments/\(attachmentId)/comments",
+                    body: "{\"content\":\"live comment\"}",
+                    headers: fixture.headers(fixture.memberToken)
+                )
+                #expect(comment.status == .ok, "\(realtimeFramesBody(comment))")
+                let commentBody = try realtimeFramesObject(realtimeFramesBody(comment))
+                let commentMessage = try #require(commentBody["message"] as? [String: Any])
+                let commentId = try #require(commentMessage["id"] as? String)
+                let threadId = try #require(commentBody["threadChannelId"] as? String)
+
+                let messageFrame = try #require(await memberSocket.waitForText {
+                    $0.hasPrefix(#"42["message:new""#) && $0.contains("\"live comment\"")
+                })
+                let message = try realtimeFramesEvent(messageFrame)
+                #expect(Set(message.payload.keys) == realtimeCanonicalKeys.union(["conversationContext"]))
+                #expect(message.payload["id"] as? String == commentId)
+                #expect(message.payload["channelId"] as? String == threadId)
+                #expect(message.payload["senderId"] as? String == fixture.memberId)
+                #expect(message.payload["messageType"] as? String == "comment")
+                #expect(message.payload["content"] as? String == "live comment")
+
+                let updateFrame = try #require(await memberSocket.waitForText {
+                    $0.hasPrefix(#"42["thread:updated""#)
+                })
+                let update = try realtimeFramesEvent(updateFrame)
+                #expect(update.payload["parentMessageId"] as? String == hostId)
+                #expect(update.payload["threadChannelId"] as? String == threadId)
+                #expect(update.payload["replyCount"] as? Int == 1)
+
+                let scrubFrame = try #require(await memberSocket.waitForText {
+                    $0.hasPrefix(#"42["message:updated""#) && $0.contains(commentId)
+                })
+                let scrub = try realtimeFramesEvent(scrubFrame)
+                #expect(Set(scrub.payload.keys) == ["id", "channelId", "commentRef"])
+                #expect(scrub.payload["id"] as? String == commentId)
+                #expect(scrub.payload["channelId"] as? String == threadId)
+                #expect(scrub.payload["commentRef"] is NSNull)
+                let frames = memberSocket.textFrames
+                #expect(try #require(frames.firstIndex(of: messageFrame))
+                    < (try #require(frames.firstIndex(of: scrubFrame))))
+            }
+        }
+    }
+
+    /// The role-change notice is an upstream `broadcastSystemMessage` DM: the
+    /// retained row is a system-sender `system` message and the frontend gets
+    /// `message:new` plus `dm:new`.
+    @Test func systemRoleNoticePublishesMessageAndDmNew() async throws {
+        let fixture = RealtimeFramesFixture()
+        let channelId = fixture.addChannel(name: "role-notice-frames")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let ownerSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.ownerId)
+        defer {
+            ownerSocket.close()
+            Task { try? await realtime.close() }
+        }
+        realtimeFramesInstall(fixture, hub: realtime.hub)
+        let agent = fixture.addAgent(
+            channelId: channelId, channelName: "role-notice-frames", name: "RoleNoticeAgent"
+        )
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let patched = try await client.send(
+                    .patch, headers: fixture.headers(fixture.ownerToken),
+                    to: URI(string: "/api/agents/\(agent.agentId)")
+                ) { request in
+                    request.body = .init(string: "{\"serverRole\":\"admin\"}")
+                }
+                #expect(patched.status == .ok, "\(realtimeFramesBody(patched))")
+                let dmId = try #require(fixture.accounts.directChannelIdForTesting(
+                    serverId: fixture.serverId, firstId: fixture.ownerId, secondId: agent.agentId
+                ))
+
+                let messageFrame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:new""#) && $0.contains("changed @RoleNoticeAgent's server role")
+                })
+                let message = try realtimeFramesEvent(messageFrame)
+                #expect(Set(message.payload.keys) == realtimeCanonicalKeys.union(["conversationContext"]))
+                #expect(message.payload["channelId"] as? String == dmId)
+                #expect(message.payload["senderId"] as? String == "system")
+                #expect(message.payload["senderType"] as? String == "system")
+                #expect(message.payload["messageType"] as? String == "system")
+                #expect(message.payload["senderName"] as? String == "System")
+                let context = try #require(message.payload["conversationContext"] as? [String: Any])
+                #expect(Set(context.keys) == ["channelType"])
+                #expect(context["channelType"] as? String == "dm")
+
+                let dmFrame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["dm:new""#)
+                })
+                let dm = try realtimeFramesEvent(dmFrame)
+                #expect(dm.payload["channelId"] as? String == dmId)
+            }
+        }
+    }
+
+    /// Action-card state changes publish the canonical carrier update with the
+    /// executed action metadata (execute and mark-executed).
+    @Test func actionCardStateChangesPublishCanonicalUpdatedRow() async throws {
+        let fixture = RealtimeFramesFixture()
+        let channelId = fixture.addChannel(name: "action-card-frames")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let ownerSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.ownerId)
+        defer {
+            ownerSocket.close()
+            Task { try? await realtime.close() }
+        }
+        realtimeFramesInstall(fixture, hub: realtime.hub)
+        let agent = fixture.addAgent(
+            channelId: channelId, channelName: "action-card-frames", name: "CardAgent"
+        )
+        func addCarrierCard() -> String {
+            let id = fixture.accounts.addActionCardForTesting(
+                serverId: fixture.serverId, agentId: agent.agentId, carrierChannelId: channelId
+            )
+            _ = fixture.accounts.messagesAndThreadsStore.appendMessage(StoredHumanMessage(
+                id: id, channelId: channelId, senderId: agent.agentId,
+                content: "@CardAgent proposed creating channel #test-card-channel",
+                randomId: nil, messageType: "system", senderType: "agent"
+            ), ledger: MessageLedgerPort(oauth: fixture.accounts.oauth))
+            return id
+        }
+        let markCardId = addCarrierCard()
+        let executeCardId = addCarrierCard()
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let marked = try await realtimeFramesPOST(
+                    client, path: "/api/actions/\(markCardId)/mark-executed",
+                    body: "{\"result\":{\"kind\":\"channel\"}}",
+                    headers: fixture.headers(fixture.ownerToken)
+                )
+                #expect(marked.status == .ok, "\(realtimeFramesBody(marked))")
+                let markFrame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:updated""#) && $0.contains(markCardId)
+                })
+                let mark = try realtimeFramesEvent(markFrame)
+                #expect(Set(mark.payload.keys) == realtimeCanonicalKeys)
+                #expect(mark.payload["channelId"] as? String == channelId)
+                #expect(mark.payload["senderId"] as? String == agent.agentId)
+                let markMetadata = try #require(mark.payload["actionMetadata"] as? [String: Any])
+                #expect(markMetadata["kind"] as? String == "action-card")
+                #expect(markMetadata["state"] as? String == "executed")
+
+                let executed = try await realtimeFramesPOST(
+                    client, path: "/api/actions/\(executeCardId)/execute",
+                    body: "{\"expectedState\":\"prepared\"}",
+                    headers: fixture.headers(fixture.ownerToken)
+                )
+                #expect(executed.status == .ok, "\(realtimeFramesBody(executed))")
+                let executeFrame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:updated""#) && $0.contains(executeCardId)
+                })
+                let execute = try realtimeFramesEvent(executeFrame)
+                #expect(Set(execute.payload.keys) == realtimeCanonicalKeys)
+                let executeMetadata = try #require(execute.payload["actionMetadata"] as? [String: Any])
+                #expect(executeMetadata["kind"] as? String == "action-card")
+                #expect(executeMetadata["state"] as? String == "executed")
+                let action = try #require(executeMetadata["action"] as? [String: Any])
+                #expect(action["type"] as? String == "channel:create")
+                let result = try #require(executeMetadata["result"] as? [String: Any])
+                #expect(result["kind"] as? String == "channel")
+            }
+        }
+    }
+
+    /// The forward `message:new` carries the forwarded-bundle action metadata
+    /// that the post-commit forward write attaches, not the null a fresh row
+    /// would publish.
+    @Test func forwardedMessageNewCarriesActionMetadata() async throws {
+        let fixture = RealtimeFramesFixture()
+        let sourceChannelId = fixture.addChannel(name: "forward-source")
+        let destinationChannelId = fixture.addChannel(name: "forward-destination")
+        let realtime = try await RealtimeServer.start(auth: fixture.auth)
+        let ownerSocket = try await realtimeFramesConnect(fixture, server: realtime, userId: fixture.ownerId)
+        defer {
+            ownerSocket.close()
+            Task { try? await realtime.close() }
+        }
+        realtimeFramesInstall(fixture, hub: realtime.hub)
+
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
+                emailAccounts: fixture.accounts, realtime: realtime.hub
+            ))
+            try await app.testing { client in
+                let source = try await realtimeFramesPOST(
+                    client, path: "/api/messages",
+                    body: "{\"channelId\":\"\(sourceChannelId)\",\"content\":\"forward source body\"}",
+                    headers: fixture.headers(fixture.ownerToken)
+                )
+                #expect(source.status == .ok, "\(realtimeFramesBody(source))")
+                let sourceId = try #require(try realtimeFramesObject(realtimeFramesBody(source))["id"] as? String)
+                let forwarded = try await realtimeFramesPOST(
+                    client, path: "/api/messages/forward",
+                    body: """
+                    {"sourceMessageIds":["\(sourceId)"],"destinationChannelId":"\(destinationChannelId)",
+                     "note":"forward frame note"}
+                    """,
+                    headers: fixture.headers(fixture.ownerToken)
+                )
+                #expect(forwarded.status == .ok, "\(realtimeFramesBody(forwarded))")
+                let frame = try #require(await ownerSocket.waitForText {
+                    $0.hasPrefix(#"42["message:new""#) && $0.contains("\"forward frame note\"")
+                })
+                let message = try realtimeFramesEvent(frame)
+                #expect(Set(message.payload.keys) == realtimeCanonicalKeys.union(["conversationContext"]))
+                #expect(message.payload["channelId"] as? String == destinationChannelId)
+                #expect(message.payload["content"] as? String == "forward frame note")
+                let metadata = try #require(message.payload["actionMetadata"] as? [String: Any])
+                #expect(metadata["kind"] as? String == "forwarded-bundle")
+                #expect(metadata["destinationTargetId"] as? String == destinationChannelId)
+                let items = try #require(metadata["forwardedItems"] as? [[String: Any]])
+                #expect(items.count == 1)
+                #expect(items[0]["contentSnapshot"] as? String == "forward source body")
+                let context = try #require(message.payload["conversationContext"] as? [String: Any])
+                #expect(context["channelType"] as? String == "channel")
+            }
+        }
+    }
 }

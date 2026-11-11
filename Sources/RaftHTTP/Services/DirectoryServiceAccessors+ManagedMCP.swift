@@ -117,7 +117,14 @@ extension EmailLoginDirectory {
     public func channelAssignments(
         publishTaskUpdated: @escaping @Sendable (String) -> Void = { _ in }
     ) -> ManagedMCPAssignmentsService {
-        let notices = SystemNoticeAppender(messages: messagesAndThreadsStore, ledger: MessageLedgerPort(oauth: oauth))
+        let notices = SystemNoticeAppender(
+            messages: messagesAndThreadsStore,
+            channels: serversAndChannelsStore,
+            profiles: authProfileStore,
+            oauth: oauth,
+            ledger: MessageLedgerPort(oauth: oauth),
+            emit: { [realtimeRelay] room, event, payload in realtimeRelay.emit(room, event, payload) }
+        )
         let visibility = ManagedMCPChannelVisibility(oauth: oauth, channels: serversAndChannelsStore)
         return ManagedMCPAssignmentsService(
             channels: serversAndChannelsStore,

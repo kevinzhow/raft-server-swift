@@ -138,19 +138,24 @@ public struct ActionCardService: Sendable {
     private let sessionUserId: @Sendable (String?) -> String?
     private let cardWriteDecision: @Sendable (String, ActionCardRecord) -> ActionCardWriteDecision
     private let mcpIdentity: @Sendable (String?) -> FeedbackLocatorService.IdentityResolution
+    /// Publishes the executed carrier's `message:updated`; upstream
+    /// `emitActionCardMessageUpdated` reloads the row after the write.
+    private let publishMessageUpdated: @Sendable (_ messageId: String, _ metadataJSON: String) -> Void
 
     init(
         store: ManagedMCPAndCardsStore,
         oauth: OAuthLedger,
         sessionUserId: @escaping @Sendable (String?) -> String?,
         cardWriteDecision: @escaping @Sendable (String, ActionCardRecord) -> ActionCardWriteDecision,
-        mcpIdentity: @escaping @Sendable (String?) -> FeedbackLocatorService.IdentityResolution
+        mcpIdentity: @escaping @Sendable (String?) -> FeedbackLocatorService.IdentityResolution,
+        publishMessageUpdated: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) {
         self.store = store
         self.oauth = oauth
         self.sessionUserId = sessionUserId
         self.cardWriteDecision = cardWriteDecision
         self.mcpIdentity = mcpIdentity
+        self.publishMessageUpdated = publishMessageUpdated
     }
 
     // MARK: - Action cards (`POST /api/actions/:id/mark-executed`)
@@ -197,6 +202,15 @@ public struct ActionCardService: Sendable {
         }
         guard store.markActionCardExecuted(messageId: messageId, userId: userId) != nil else {
             throw ActionCardServiceError.actionCardNotFound
+        }
+        // Upstream emits only on the transition, not on an idempotent replay.
+        // The plain action-card row projects the legacy fallback metadata shape.
+        if stored.state != "executed" {
+            let metadataJSON = OrderedJSON.object([
+                OrderedJSONField("kind", "action-card"),
+                OrderedJSONField("state", "executed"),
+            ]).render()
+            publishMessageUpdated(messageId, metadataJSON)
         }
         return MarkActionCardExecutedResponse(messageId: messageId)
     }
@@ -413,6 +427,16 @@ extension EmailLoginDirectory {
                     authorization: authorization,
                     capability: "mcp"
                 )
+            },
+            publishMessageUpdated: { [messages = messagesAndThreadsStore, serversAndChannelsStore,
+                                      authProfileStore, oauth, realtimeRelay] messageId, metadataJSON in
+                MessageUpdatePublisher(
+                    messages: messages,
+                    channels: serversAndChannelsStore,
+                    profiles: authProfileStore,
+                    oauth: oauth,
+                    emit: { room, event, payload in realtimeRelay.emit(room, event, payload) }
+                ).actionCard(messageId: messageId, metadataJSON: metadataJSON)
             }
         )
     }

@@ -60,6 +60,9 @@ extension EmailLoginDirectory {
                 },
                 recordMemberMentionRows: { [self] messageId, channelId, resolution in
                     messageMentions.register(messageId: messageId, channelId: channelId, resolution: resolution)
+                },
+                emitRealtime: { [self] room, event, payload in
+                    realtimeRelay.emit(room, event, payload)
                 }
             )
         )
