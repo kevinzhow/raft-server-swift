@@ -908,31 +908,26 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         // credential capability, the `attachment:upload` grant and the request
         // validator still run first, exactly as they do upstream.
         agentApi.post("attachment-upload-sessions") { request async throws -> Response in
-            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let refusal = try await agentApiContractRefusal(.attachmentUploadSessionCreate, request, services: services) { return refusal }
+            let (_, denial) = agentApiGate(request, capability: "send", grant: nil)
             if let denial { return denial }
-            let body = await jsonRequestBody(LegacyJSONObjectBody.self, request)
-            let validated = AgentApiRequestContract.uploadSessionCreateBody(body)
-            guard validated.isValid else {
-                return try await respond(status: 400) {
-                    AgentApiContractInvalidResponse(
-                        routeKey: "attachmentUploadSessionCreate", part: "body", issues: validated.issues
-                    )
-                }
-            }
             return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
         }
         agentApi.get("attachment-upload-sessions", ":uploadId") { request async throws -> Response in
-            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let refusal = try await agentApiContractRefusal(.attachmentUploadSessionStatus, request, services: services) { return refusal }
+            let (_, denial) = agentApiGate(request, capability: "send", grant: nil)
             if let denial { return denial }
             return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
         }
         agentApi.delete("attachment-upload-sessions", ":uploadId") { request async throws -> Response in
-            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let refusal = try await agentApiContractRefusal(.attachmentUploadSessionCancel, request, services: services) { return refusal }
+            let (_, denial) = agentApiGate(request, capability: "send", grant: nil)
             if let denial { return denial }
             return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
         }
         agentApi.post("attachment-upload-sessions", ":uploadId", "complete") { request async throws -> Response in
-            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let refusal = try await agentApiContractRefusal(.attachmentUploadSessionComplete, request, services: services) { return refusal }
+            let (_, denial) = agentApiGate(request, capability: "send", grant: nil)
             if let denial { return denial }
             return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
         }
@@ -940,43 +935,37 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         // MARK: - Task history and unclaim
 
         agentApi.get("tasks", "history") { request async throws -> Response in
-            let (_, denial) = agentApiGate(request, capability: "tasks", grant: "task:read")
+            if let refusal = try await agentApiContractRefusal(.taskHistory, request, services: services) { return refusal }
+            let (_, denial) = agentApiGate(request, capability: "tasks", grant: nil)
             if let denial { return denial }
-            let validated = AgentApiRequestContract.taskHistoryQuery(rawQuery: request.url.query)
-            guard let query = validated.value else {
-                return try await respond(status: 400) {
-                    AgentApiContractInvalidResponse(
-                        routeKey: "taskHistory", part: "query", issues: validated.issues
-                    )
-                }
-            }
+            let query = desktopQuery(request.url.query, "channel")
+            let taskNumber = desktopQuery(request.url.query, "task_number").flatMap(Int.init) ?? 0
             return try await respond {
                 try services.emailAccounts.tasksAndLabs.agentTaskHistory(
                     authorization: request.headers[.authorization],
                     legacyAgentId: nil,
-                    channelRef: query.channel,
-                    taskNumber: query.taskNumber
+                    channelRef: query ?? "",
+                    taskNumber: taskNumber
                 )
             }
         }
         agentApi.post("tasks", "unclaim") { request async throws -> Response in
-            let (_, denial) = agentApiGate(request, capability: "tasks", grant: "task:write")
+            if let refusal = try await agentApiContractRefusal(.taskUnclaim, request, services: services) { return refusal }
+            let (_, denial) = agentApiGate(request, capability: "tasks", grant: nil)
             if let denial { return denial }
             let body = await jsonRequestBody(LegacyJSONObjectBody.self, request)
-            let validated = AgentApiRequestContract.taskUnclaimBody(body)
-            guard let fields = validated.value else {
-                return try await respond(status: 400) {
-                    AgentApiContractInvalidResponse(
-                        routeKey: "taskUnclaim", part: "body", issues: validated.issues
-                    )
-                }
+            let taskNumber: Int
+            switch body?["task_number"] {
+            case .integer(let value)?: taskNumber = Int(exactly: value) ?? 0
+            case .number(let value)?: taskNumber = Int(exactly: value) ?? 0
+            default: taskNumber = 0
             }
             return try await respond {
                 try services.emailAccounts.actionCardExecute.agentTaskUnclaim(
                     authorization: request.headers[.authorization],
                     legacyAgentId: nil,
-                    channel: fields.channel,
-                    taskNumber: fields.taskNumber
+                    channel: body?.string("channel") ?? "",
+                    taskNumber: taskNumber
                 )
             }
         }

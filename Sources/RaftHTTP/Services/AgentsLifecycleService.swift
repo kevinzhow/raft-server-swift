@@ -133,14 +133,18 @@ public struct AgentsLifecycleService: Sendable {
         try agentApiIdentity(authorization: authorization).identity
     }
 
-    /// The scopes of a live agent credential, without recording a use.
+    /// The bound agent and scopes of a live agent credential, without recording
+    /// a use.
     ///
     /// The contract-validation gate asks this before publishing request-schema
-    /// issues so an absent/invalid credential or a missing capability keeps
-    /// answering 401/403 first, exactly like the pinned
-    /// `authFromRegistry()` + `requireAgentCapability` middleware order.
-    /// `nil` means the request must continue to the route's own auth path.
-    public func agentApiCredentialScopes(authorization: String?) -> [String]? {
+    /// issues so an absent or invalid credential keeps answering the route's
+    /// own 401 first. A live credential then runs the pinned
+    /// `requireAgentCapability` and `requireAgentGrant` checks, so those 403s
+    /// precede every schema issue. `nil` means the request must continue to the
+    /// route's own auth path.
+    public func agentApiCredentialIdentity(
+        authorization: String?
+    ) -> (agentId: String, scopes: [String])? {
         guard let token = Self.bearerToken(authorization) else { return nil }
         guard let credential = agents.agentCredentials[token], credential.revokedAt == nil else {
             return nil
@@ -148,7 +152,7 @@ public struct AgentsLifecycleService: Sendable {
         guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
             return nil
         }
-        return Array(credential.scopes)
+        return (credential.agentId, Array(credential.scopes))
     }
 
     /// `GET /internal/agent-api`. The credential use is recorded after the token

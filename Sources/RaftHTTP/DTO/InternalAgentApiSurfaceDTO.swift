@@ -57,44 +57,6 @@ public struct AgentTaskUnclaimResponse: Sendable, Equatable, JSONBodyConvertible
     public var jsonBody: OrderedJSON { .object([OrderedJSONField("ok", true)]) }
 }
 
-/// Upstream `validateAgentApiRequestPart` refusal for a body/query that fails
-/// the published agent-api contract. The validator runs before the handler, so
-/// the status and `code` are the contract's, not the domain's.
-public struct AgentApiContractInvalidResponse: Sendable, Equatable, JSONBodyConvertible {
-    public struct Issue: Sendable, Equatable {
-        public var path: String
-        public var message: String
-
-        public init(path: String, message: String) {
-            self.path = path
-            self.message = message
-        }
-    }
-
-    public let part: String
-    public let routeKey: String
-    public let issues: [Issue]
-
-    public init(routeKey: String, part: String, issues: [Issue]) {
-        self.routeKey = routeKey
-        self.part = part
-        self.issues = issues
-    }
-
-    public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("error", "Invalid agent-api \(routeKey) \(part)"),
-            OrderedJSONField("code", "agent_api_contract_invalid"),
-            OrderedJSONField("issues", .array(issues.map { issue in
-                .object([
-                    OrderedJSONField("path", issue.path),
-                    OrderedJSONField("message", issue.message),
-                ])
-            })),
-        ])
-    }
-}
-
 /// The flat error body the credential routes publish when the direct-upload
 /// service is not installed. Upstream keeps this body for every upload-session
 /// verb in a deployment without the service (this port has no presigned object

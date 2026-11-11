@@ -93,12 +93,21 @@ import VaporTesting
             #expect(object(denied)["code"] as? String == "capability_not_authorized")
             #expect(object(denied)["requiredCapability"] as? String == "send")
 
+            // Only the create and complete verbs carry the `attachment:upload`
+            // grant upstream; status and cancel run the capability and request
+            // contract only.
             accounts.setAgentGrantsForTesting(agentId: agent, scopes: ["message:read"])
             let missingGrant = try await client.send(
-                .get, headers: headers, to: "/internal/agent-api/attachment-upload-sessions/\(uploadId)"
+                .post, headers: headers,
+                to: "/internal/agent-api/attachment-upload-sessions/\(uploadId)/complete"
             )
             #expect(missingGrant.status == .forbidden)
             #expect(object(missingGrant)["requiredScope"] as? String == "attachment:upload")
+            let noGrantStatus = try await client.send(
+                .get, headers: headers, to: "/internal/agent-api/attachment-upload-sessions/\(uploadId)"
+            )
+            #expect(noGrantStatus.status == .notFound)
+            #expect(object(noGrantStatus)["code"] as? String == "UPLOAD_SESSION_NOT_FOUND")
 
             var anonymousHeaders = HTTPFields()
             anonymousHeaders[.contentType] = "application/json"

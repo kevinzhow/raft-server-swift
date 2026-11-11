@@ -70,6 +70,16 @@ enum AgentApiContractSchemas {
         case (.taskDelete, .body): return taskDeleteBody
         case (.taskConvert, .body): return taskConvertBody
         case (.taskAmend, .body): return taskAmendBody
+        case (.taskHistory, .query): return taskHistoryQuery
+        case (.taskUnclaim, .body): return taskUnclaimBody
+        case (.attachmentUploadSessionCreate, .body): return attachmentUploadSessionCreateBody
+        case (.attachmentUploadSessionComplete, .params),
+             (.attachmentUploadSessionCancel, .params),
+             (.attachmentUploadSessionStatus, .params):
+            return attachmentUploadSessionParams
+        case (.integrationAppRotateSecret, .body): return integrationAppRotateSecretBody
+        case (.integrationAppTransferOwner, .body): return integrationAppTransferOwnerBody
+        case (.integrationAppManage, .body): return integrationAppManageBody
         case (.reminderList, .query): return reminderListQuery
         case (.reminderCreate, .body): return reminderCreateBody
         case (.reminderCancel, .params), (.reminderSnooze, .params),
@@ -461,6 +471,51 @@ enum AgentApiContractSchemas {
         .field("freshnessContextMode", freshnessContextMode),
     ], refinements: [
         .atLeastOneOf(["title", "description"], "At least one of title or description is required"),
+    ])
+
+    private static let taskHistoryQuery = O([
+        .field("channel", .text(trim: true, min: 1), required: true),
+        .field("task_number", .coerceNumber(int: true, positive: true), required: true),
+    ])
+
+    private static let taskUnclaimBody = O([
+        .field("channel", .text(trim: true, min: 1), required: true),
+        .field("task_number", .integer(positive: true), required: true),
+    ])
+
+    // MARK: - Direct attachment upload sessions
+
+    /// `createAttachmentUploadSessionRequestSchema` (`strictObject`, 200 MiB).
+    private static let attachmentUploadSessionCreateBody = O([
+        .field("channelId", .uuid(), required: true),
+        .field("filename", .text(min: 1, max: 255), required: true),
+        .field("mimeType", .text(min: 1, max: 255), required: true),
+        .field("sizeBytes", .integer(positive: true, max: 209_715_200), required: true),
+        .field("clientRequestId", .uuid(), required: true),
+    ], strict: true)
+
+    private static let attachmentUploadSessionParams = O([
+        .field("uploadId", .uuid(), required: true),
+    ], strict: true)
+
+    // MARK: - Integration-app management
+
+    private static let integrationAppRotateSecretBody = O([
+        .field("clientKey", .text(trim: true, min: 1), required: true),
+    ])
+
+    private static let integrationAppTransferOwnerBody = O([
+        .field("clientKey", .text(trim: true, min: 1), required: true),
+        .field("targetAgent", .text(trim: true, min: 1), required: true),
+    ])
+
+    private static let integrationAppManageBody = O([
+        .field("clientKey", .text(trim: true, min: 1), required: true),
+        .field("action", .enumeration([
+            "share_link_get", "share_link_create", "share_link_revoke",
+            "request_publish", "request_unpublish", "clear_logo", "delete",
+        ]), required: true),
+        .field("expiresInDays", .integer(positive: true, max: 365)),
     ])
 
     // MARK: - Reminders

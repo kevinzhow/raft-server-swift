@@ -40,7 +40,11 @@ releases exactly once), the single `LegacyAgentMachineGate` plus middleware for
 every legacy `/internal/agent/:id/*` route, the developer-platform integration,
 MCP OAuth and action-reconfirm route families, real avatar/logo object storage
 with the public capability routes, and the shared zod-4 auth issue builder with
-the password-length rules. It awaits the trunk gate and a deploy.
+the password-length rules, and the shared `/internal/agent-api` request-contract
+validator (one engine and transport gate for every route upstream wires, in the
+pinned capability, per-agent-grant, then params/query/body order, including task
+history/unclaim, the direct upload sessions and integration-app management). It
+awaits the trunk gate and a deploy.
 
 ## What works
 
@@ -67,8 +71,9 @@ the password-length rules. It awaits the trunk gate and a deploy.
   notices, Socket.IO room joins/`message:new`/`thread:updated`/`dm:new`,
   `activityDetailKind` and terminal-failure visibility, the channels joint/
   conversion and saved-message routes, attachment preview plus agent attachment
-  metadata and thread-parent read authority, the internal agent API task
-  history/unclaim, avatar, upload-session and integration-app routes, legacy
+  metadata and thread-parent read authority, the internal agent API contract
+  validator on the task history/unclaim, avatar, upload-session and
+  integration-app routes, legacy
   machine agent routes behind one machine-ownership gate and scope table, the
   developer-platform App-management/integration/MCP OAuth/action routes, real
   user/server/agent avatar and integration-logo byte storage behind

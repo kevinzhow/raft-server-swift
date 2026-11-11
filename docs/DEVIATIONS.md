@@ -499,25 +499,6 @@ project takes an explicit ICU/tzdata dependency); then replace
 `AccountNaming.timezoneAliases` and the special cases with that lookup and add
 the alias cases above to `TimezoneObservationTests`.
 
-### D34. Contract schema validation precedes per-agent grant checks
-
-**What.** The shared `/internal/agent-api` request validator runs after the
-credential and route capability are accepted, but before the operation's
-per-agent grant (`requireAgentGrant`) check. When a credential carries the
-route capability but the bound agent lacks the operation grant, an invalid
-params/query/body answers the schema 400 here; upstream's middleware order
-(`requireAgentCapability` -> `requireAgentGrant` -> request validators) answers
-the 403 `missing required scope` first.
-**Why.** Grants are enforced inside each Swift service operation, which also
-needs the resource (channel/task/reminder); the transport gate has no generic
-grant lookup without duplicating the service authorization path. The successful
-and capability-denied paths are unchanged, and every invalid-input case with a
-granted agent publishes the exact upstream bytes.
-**Upstream.** `packages/server/src/routes/internalAgentApi.ts` `registerAgentApiRoute`
-(handler order) and `agentApiRequestValidators`; `app.ts:809`.
-**Re-evaluate.** When a generic agent-scope accessor is available to the
-transport layer, or a parity case requires the grant-before-schema order.
-
 ## Maintaining this list
 
 1. Add an entry only after the excluded assertion is understood and the

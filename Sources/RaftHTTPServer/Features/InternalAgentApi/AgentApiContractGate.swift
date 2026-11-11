@@ -3,26 +3,48 @@ import RaftHTTP
 import RaftShared
 import Vapor
 
-/// The one transport adapter for `AgentApiContractValidator`: it extracts the
-/// request parts the route's pinned schema covers, in the upstream validator
-/// order (params, query, body), and projects a rejection through the shared
+/// The one transport adapter for `AgentApiContractValidator`: it runs the
+/// pinned middleware order around the request parts (capability, per-agent
+/// grant, then params/query/body) and projects a rejection through the shared
 /// `DomainError` response path.
 ///
-/// Pinned `routes/internalAgentApi.ts:402-431` answers the first failing part
-/// with the `issues` list of that part only.
+/// Pinned `routes/internalAgentApi.ts:985-1011` composes every contract route
+/// as `requireAgentCapability(route.capability)` ->
+/// `requireAgentGrant(AGENT_API_ROUTE_GRANTS[key])` -> `agentApiRequestValidators`,
+/// and `:402-431` answers the first failing part with the `issues` list of that
+/// part only. An absent or invalid credential, or a missing credential
+/// capability, is not decided here: it returns `nil` so the route keeps its own
+/// published 401/403.
 func agentApiContractRefusal(
     _ key: AgentApiContractRouteKey,
     _ request: Request,
     services: FallbackServices
 ) async throws -> Response? {
-    // Pinned `app.ts:809` mounts `authFromRegistry()` before the router and
-    // `registerAgentApiRoute` checks the capability before the request
-    // validators. Keep those refusals ahead of a schema 400: when the
-    // credential or capability cannot pass, the route's own auth path answers.
-    guard let scopes = services.emailAccounts.agentsLifecycle.agentApiCredentialScopes(
+    // `authFromRegistry()` accepts the credential before any route middleware;
+    // a request it would refuse continues to the route's own auth path.
+    guard let credential = services.emailAccounts.agentsLifecycle.agentApiCredentialIdentity(
         authorization: request.headers[.authorization]
-    ), scopes.contains(key.capability) else {
+    ) else {
         return nil
+    }
+    for precondition in key.preconditions {
+        switch precondition {
+        case .capability(let capability):
+            // The route's own capability projection answers this: every
+            // contract handler repeats the capability check before its
+            // service, so a credential without it never reaches a schema
+            // issue and keeps its published 403 body.
+            guard credential.scopes.contains(capability) else { return nil }
+        case .grant(let scope):
+            switch services.emailAccounts.feedbackLocators.grantDecision(
+                agentId: credential.agentId, scope: scope
+            ) {
+            case .allowed:
+                continue
+            case .missingScope(let missing):
+                return domainErrorResponse(FeedbackLocatorError.missingScope(scope: missing))
+            }
+        }
     }
     for part in AgentApiContractPart.allCases {
         guard AgentApiContractValidator.hasSchema(for: key, part: part) else {
