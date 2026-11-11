@@ -31,25 +31,26 @@ struct KnowledgeFeature: RouteCollection, Sendable {
             routeResponse(Self.searchReply(request: request, services: services))
         }
 
-        // Legacy machine surface: the same content contract after the
-        // `/internal/agent/:id/*` machine authentication and `knowledge:read`
-        // gate. `services` is used for the gate only; the body rules are shared.
+        // Legacy machine surface: the same content contract after the shared
+        // `/internal/agent/:id/*` machine-authentication and `knowledge:read`
+        // middleware. The body rules are shared with the credential route.
         let legacyAgent = routes.grouped("internal", "agent", ":agentId")
+            .grouped(LegacyAgentMachineGateMiddleware(gate: services.emailAccounts.legacyAgentMachineGate))
         legacyAgent.get("knowledge") { request -> Response in
             do {
-                let agent = try services.emailAccounts.legacyAgentSurface.knowledgeAgent(
+                let actor = try services.emailAccounts.legacyAgentMachineGate.actor(
                     authorization: request.headers[.authorization],
-                    agentId: request.parameters.get("agentId") ?? ""
-                )
+                    agentId: request.parameters.get("agentId") ?? "",
+                    requiredScope: nil)
                 return routeResponse(Self.getReply(
                     request: request,
                     services: services,
-                    identity: KnowledgeIdentity(agentId: agent.id, serverId: agent.serverId)
+                    identity: KnowledgeIdentity(agentId: actor.agent.id, serverId: actor.serverId)
                 ))
             } catch let error as any DomainError {
                 return domainErrorResponse(error)
             } catch {
-                return domainErrorResponse(LegacyAgentMachineError.invalidAuthentication)
+                return domainErrorResponse(LegacyAgentMachineGateError.invalidAuthentication)
             }
         }
     }

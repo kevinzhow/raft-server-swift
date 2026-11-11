@@ -195,6 +195,17 @@ extension EmailLoginDirectory {
         machinesAndHostedRuntime.machineIdForCredential(authorization: authorization)
     }
 
+    /// The one machine-auth + agent-scope gate for the legacy
+    /// `/internal/agent/:id/*` surface.
+    public var legacyAgentMachineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            cards: managedMCPAndCardsStore
+        )
+    }
+
     func canMachineServeAgent(machineId: String, agent: OAuthLedger.AgentRuntimeInfo) -> Bool {
         machinesAndHostedRuntime.canMachineServeAgent(machineId: machineId, agent: agent)
     }
@@ -768,14 +779,10 @@ extension EmailLoginDirectory {
     }
 
     /// The legacy machine-key agent surface (`/internal/agent/:id/*`): the
-    /// machine authentication and keyed-grant gates, then the task, message and
-    /// avatar operations the owning services already implement.
+    /// task, message and avatar operations the owning services already
+    /// implement, for the actor `LegacyAgentMachineGate` resolved.
     public var legacyAgentSurface: LegacyAgentSurfaceService {
         LegacyAgentSurfaceService(
-            agents: agentsRuntimeStore,
-            machines: machinesAndComputersStore,
-            oauth: oauth,
-            cards: managedMCPAndCardsStore,
             tasksAndLabs: tasksAndLabs,
             messageLookup: agentMessageLookup,
             agentChannels: agentChannels

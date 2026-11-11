@@ -15,60 +15,77 @@ struct AgentTaskCredentials: Sendable {
     private let agents: AgentsRuntimeStore
     private let machines: MachinesAndComputersStore
     private let channels: ServersAndChannelsStore
+    private let cards: ManagedMCPAndCardsStore
     private let oauth: OAuthLedger
 
     init(
         agents: AgentsRuntimeStore,
         machines: MachinesAndComputersStore,
         channels: ServersAndChannelsStore,
+        cards: ManagedMCPAndCardsStore,
         oauth: OAuthLedger
     ) {
         self.agents = agents
         self.machines = machines
         self.channels = channels
+        self.cards = cards
         self.oauth = oauth
     }
 
-    /// The legacy `agentTaskAuth` reading order: credential path first (a live
-    /// credential without `tasks` is the published invalid-token 401), then the
-    /// machine key plus the path agent id.
-    func auth(authorization: String?, legacyAgentId: String?) -> AuthOutcome {
-        guard let authorization, authorization.hasPrefix("Bearer ") else { return .missingAuthorization }
-        let token = String(authorization.dropFirst("Bearer ".count))
-        let credential = agents.agentCredential(token: token)
-        let machine = machines.machine(apiKey: token)
-        if let credential, credential.revokedAt == nil {
-            guard credential.scopes.contains("tasks") else { return .invalidCredential }
-            guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
-                return .invalidCredential
-            }
-            return .ok(agentId: agent.id, serverId: agent.serverId)
-        }
-        if let machine, let legacyAgentId,
-           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
-           agent.serverId == machine.serverId {
-            return .ok(agentId: agent.id, serverId: agent.serverId)
-        }
-        return .invalidCredential
+    private var machineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(agents: agents, machines: machines, oauth: oauth, cards: cards)
     }
 
-    /// The legacy `agentTaskWriter`: write routes accept both an `sk_agent_*`
-    /// credential and the legacy machine key plus path agent id.
+    /// The legacy `agentTaskAuth` reading order: the path-agent machine route
+    /// runs `requireMachineAuth` + `requireAgentScope`, while the id-less
+    /// `/internal/agent-api/*` twin reads a live `sk_agent_*` credential (a
+    /// credential without `tasks` is the published capability 403 in the
+    /// caller; here it is the same invalid-token outcome as before).
+    func auth(authorization: String?, legacyAgentId: String?) -> AuthOutcome {
+        guard let authorization, authorization.hasPrefix("Bearer ") else { return .missingAuthorization }
+        if let legacyAgentId {
+            guard let actor = try? machineGate.actor(
+                authorization: authorization,
+                agentId: legacyAgentId,
+                requiredScope: nil
+            ) else {
+                return .invalidCredential
+            }
+            return .ok(agentId: actor.agent.id, serverId: actor.serverId)
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let credential = agents.agentCredential(token: token), credential.revokedAt == nil else {
+            return .invalidCredential
+        }
+        guard credential.scopes.contains("tasks") else { return .invalidCredential }
+        guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
+            return .invalidCredential
+        }
+        return .ok(agentId: agent.id, serverId: agent.serverId)
+    }
+
+    /// The legacy `agentTaskWriter`: write routes on the legacy path agent surface
+    /// accept the machine key that owns the agent; their `/internal/agent-api/*`
+    /// twin accepts the bound `sk_agent_*` credential.
     func writer(authorization: String?, legacyAgentId: String?) -> (agentId: String, serverId: String)? {
         guard let authorization, authorization.hasPrefix("Bearer ") else { return nil }
+        if let legacyAgentId {
+            guard let actor = try? machineGate.actor(
+                authorization: authorization,
+                agentId: legacyAgentId,
+                requiredScope: nil
+            ) else {
+                return nil
+            }
+            return (actor.agent.id, actor.serverId)
+        }
         let token = String(authorization.dropFirst("Bearer ".count))
-        let credential = agents.agentCredential(token: token)
-        let machine = machines.machine(apiKey: token)
-        if let credential, credential.revokedAt == nil,
-           let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted {
-            return (agent.id, agent.serverId)
+        guard let credential = agents.agentCredential(token: token), credential.revokedAt == nil,
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            return nil
         }
-        if let machine, let legacyAgentId,
-           let agent = oauth.agentRuntimeInfo(id: legacyAgentId), !agent.deleted,
-           agent.serverId == machine.serverId {
-            return (agent.id, agent.serverId)
-        }
-        return nil
+        return (agent.id, agent.serverId)
     }
 
     /// The legacy `agentTaskChannel` reference resolution (`#name` or a raw id).

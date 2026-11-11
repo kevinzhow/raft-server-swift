@@ -347,13 +347,22 @@ public struct ProfileAndChannelFilesService: Sendable {
             )
         }
         let token = String(authorization.dropFirst("Bearer ".count))
-        guard let machine = machines.machineKeys[token], machine.agentId == agentId else {
+        let credential = machines.machineCredential(apiKey: token, agentId: agentId)
+        let serverId: String
+        if let machine = credential.machine {
+            guard agents.agentMachineIds[agentId] == machine.id else {
+                throw ProfileAndChannelFilesError.agentAuthRequired(message: "Invalid or expired token")
+            }
+            serverId = machine.serverId
+        } else if let legacy = credential.legacy, legacy.agentId == agentId {
+            serverId = legacy.serverId
+        } else {
             throw ProfileAndChannelFilesError.agentAuthRequired(message: "Invalid or expired token")
         }
         let state = channelState()
         let rows = messages.humanMessageRows
         guard let message = rows.first(where: { $0.id.caseInsensitiveCompare(messageId) == .orderedSame }),
-              state.channels[message.channelId]?.serverId == machine.serverId,
+              state.channels[message.channelId]?.serverId == serverId,
               state.agentMembers[message.channelId]?.contains(agentId) == true
         else {
             throw ProfileAndChannelFilesError.messageNotFound
@@ -368,7 +377,7 @@ public struct ProfileAndChannelFilesService: Sendable {
             message: message,
             rows: written.rows,
             actorId: agentId,
-            serverId: machine.serverId,
+            serverId: serverId,
             state: state,
             viewerVersion: nil
         )

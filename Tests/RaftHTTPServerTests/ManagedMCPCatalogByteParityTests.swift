@@ -195,6 +195,7 @@ private func jsonField(_ body: String, _ key: String) -> String {
     let fixture = makeCatalogFixture("03")
     let accounts = fixture.accounts
     let machineId = accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "catalog-machine")
+    accounts.assignAgentMachineForTesting(agentId: fixture.agentId, machineId: machineId)
     let machineKey = try #require(accounts.machineAPIKey(machineId: machineId))
     let agentKey = accounts.mintAgentCredential(agentId: fixture.agentId, scopes: ["read", "tasks"], name: "catalog-key")
     try await withApp { app in

@@ -42,6 +42,7 @@ private func makeAgentGrantFixture(suffix: String) -> AgentGrantFixture {
     accounts.oauth.addChannelHuman(channelId: joinChannel, userId: ownerId)
 
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "agent-api-grants-machine-\(suffix)")
+    accounts.assignAgentMachineForTesting(agentId: agent, machineId: machine)
     let machineKey = accounts.machineAPIKey(machineId: machine) ?? ""
     let agentKey = accounts.mintAgentCredential(agentId: agent, scopes: ["channels", "tasks"], name: "grants-test-\(suffix)")
     return AgentGrantFixture(

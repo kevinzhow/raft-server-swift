@@ -109,6 +109,9 @@ public struct ActionCardExecuteService: Sendable {
         legacyAgentId: String?,
         channelRef: String?
     ) throws -> AgentTasksListResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
         let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
         try requireGrant(agentId: identity.agentId, scope: "task:read")
         guard let channelRef,
@@ -819,7 +822,7 @@ public struct ActionCardExecuteService: Sendable {
     // that have not migrated yet still call, so the policy has one copy.
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
     }
 
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).

@@ -73,6 +73,7 @@ private struct ReminderWireFixture: Sendable {
         let otherMachine = accounts.registerMachine(serverId: otherServerId, userId: otherOwnerId, name: "other-writer")
         otherMachineKey = try #require(accounts.machineAPIKey(machineId: otherMachine))
         agentId = accounts.oauth.createAgent(serverId: serverId, name: "wire-agent", creatorUserId: creatorId, runtime: "claude")
+        accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
         externalAgentId = accounts.oauth.createAgent(serverId: serverId, name: "external-wire-agent", creatorUserId: creatorId, runtime: "external")
         agentKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["read", "tasks"], name: "wire-tasks")
         readOnlyKey = accounts.mintAgentCredential(agentId: agentId, scopes: ["read"], name: "wire-read")
@@ -228,7 +229,7 @@ struct ReminderScheduledDeliverySocketTests {
                 var cases: [(path: String, headers: HTTPFields, body: String, status: Int)] = [
                     (entry.path(agentId: fixture.agentId), fixture.headers(key: nil), validBody, 401),
                     (entry.path(agentId: fixture.agentId), fixture.headers(entry), "{\"title\":\"No message\",\"delaySeconds\":3600}", 400),
-                    (entry.path(agentId: fixture.externalAgentId), fixture.headers(key: entry == .machine ? fixture.machineKey : fixture.externalKey), validBody, 409),
+                    (entry.path(agentId: fixture.externalAgentId), fixture.headers(key: entry == .machine ? fixture.machineKey : fixture.externalKey), validBody, entry == .machine ? 403 : 409),
                 ]
                 if entry == .machine {
                     cases.append((entry.path(agentId: fixture.agentId), fixture.headers(key: fixture.otherMachineKey), validBody, 404))

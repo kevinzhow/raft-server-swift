@@ -190,6 +190,28 @@ extension EmailLoginDirectory {
         }
     }
 
+    /// A message-domain server agent that also exists in the OAuth agent ledger.
+    /// The machine-authenticated legacy routes resolve the canonical agent row
+    /// before applying machine ownership, so fixtures that exercise those
+    /// routes seed both projections with the same id.
+    public func addLedgerServerAgent(
+        serverId: String, id: String, name: String, avatarUrl: String?, status: String = "inactive"
+    ) {
+        addServerAgent(serverId: serverId, id: id, name: name, avatarUrl: avatarUrl, status: status)
+        oauth.state.withLock { state in
+            state.agents[id] = OAuthLedger.Agent(
+                id: id,
+                serverId: serverId,
+                name: name,
+                displayName: name,
+                avatarUrl: avatarUrl,
+                description: nil,
+                status: status
+            )
+            state.agentRoles["\(serverId)\n\(id)"] = "member"
+        }
+    }
+
     public func setForwardedBundle(messageId: String, items: [ForwardedSource]) {
         messagesAndThreadsStore.withState { state in
             state.forwardedBundles[messageId] = items

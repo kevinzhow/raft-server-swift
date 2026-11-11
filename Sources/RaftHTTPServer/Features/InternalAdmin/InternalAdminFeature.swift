@@ -47,10 +47,17 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
     public func register(routes: any RoutesBuilder) {
         let app = routes
         let agent = app.grouped("internal", "agent", ":agentId")
+        // Every legacy agent route runs the one shared machine-auth + agent-scope
+        // gate. Only the send route stays on the bare group: upstream registers
+        // its body validator before `requireAgentScope`, so that service calls
+        // the same gate between validation and the handler.
+        let gatedAgent = agent.grouped(LegacyAgentMachineGateMiddleware(
+            gate: services.emailAccounts.legacyAgentMachineGate
+        ))
         let computer = app.grouped("internal", "computer")
         let machine = app.grouped("internal", "machine")
 
-        agent.get("reminders") { request async throws -> Response in
+        gatedAgent.get("reminders") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.managedMCPAgentCatalog.legacyReminderList(
                     authorization: request.headers[.authorization],
@@ -59,7 +66,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("reminders") { request async throws -> Response in
+        gatedAgent.post("reminders") { request async throws -> Response in
             let agentId = request.parameters.get("agentId") ?? ""
             let body = await jsonRequestBody(ReminderCreateRequest.self, request, emptyDefault: "{}")
             let hub = services.realtime
@@ -79,7 +86,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 return completion.response
             }
         }
-        agent.delete("reminders", ":reminderId") { request async throws -> Response in
+        gatedAgent.delete("reminders", ":reminderId") { request async throws -> Response in
             let body = await jsonRequestBody(ReminderCancelRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.managedMCPAgentCatalog.legacyReminderCancel(
@@ -90,7 +97,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
+        gatedAgent.post("reminders", ":reminderId", "snooze") { request async throws -> Response in
             let body = await jsonRequestBody(ReminderSnoozeRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.managedMCPAgentCatalog.legacyReminderSnooze(
@@ -101,7 +108,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.patch("reminders", ":reminderId") { request async throws -> Response in
+        gatedAgent.patch("reminders", ":reminderId") { request async throws -> Response in
             let body = await jsonRequestBody(ReminderUpdateRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.managedMCPAgentCatalog.legacyReminderUpdate(
@@ -112,7 +119,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("reminders", ":reminderId", "log") { request async throws -> Response in
+        gatedAgent.get("reminders", ":reminderId", "log") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.managedMCPAgentCatalog.legacyReminderLog(
                     authorization: request.headers[.authorization],
@@ -131,7 +138,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("receive-ack") { request async throws -> Response in
+        gatedAgent.post("receive-ack") { request async throws -> Response in
             let body = await jsonRequestBody(AgentReceiveAckRequest.self, request)
             return try await respond {
                 try services.emailAccounts.agentSendDelivery.legacyAgentReceiveAck(
@@ -141,7 +148,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("runtime-profile", "migration-done") { request async throws -> Response in
+        gatedAgent.post("runtime-profile", "migration-done") { request async throws -> Response in
             let body = await jsonRequestBody(AgentRuntimeProfileMigrationDTO.self, request)
             return try await respond {
                 try services.emailAccounts.agentSendDelivery.runtimeProfileMigrationDone(
@@ -151,7 +158,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("server") { request async throws -> Response in
+        gatedAgent.get("server") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.agentChannels.serverInfo(
                     authorization: request.headers[.authorization],
@@ -159,7 +166,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.patch("server") { request async throws -> Response in
+        gatedAgent.patch("server") { request async throws -> Response in
             let body = await jsonRequestBody(AgentServerUpdateRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.agentChannels.updateServer(
@@ -169,7 +176,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("channels") { request async throws -> Response in
+        gatedAgent.post("channels") { request async throws -> Response in
             let body = await jsonRequestBody(AgentCreateChannelRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.agentChannels.createChannel(
@@ -179,7 +186,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.patch("channels", ":channelId") { request async throws -> Response in
+        gatedAgent.patch("channels", ":channelId") { request async throws -> Response in
             let body = await jsonRequestBody(AgentChannelUpdateRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.agentChannels.updateChannel(
@@ -190,7 +197,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("channels", ":channelId", "members") { request async throws -> Response in
+        gatedAgent.post("channels", ":channelId", "members") { request async throws -> Response in
             let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.agentChannels.writeChannelMember(
@@ -202,7 +209,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.delete("channels", ":channelId", "members") { request async throws -> Response in
+        gatedAgent.delete("channels", ":channelId", "members") { request async throws -> Response in
             let body = await jsonRequestBody(AgentChannelMemberRequest.self, request, emptyDefault: "{}")
             return try await respond {
                 try services.emailAccounts.agentChannels.writeChannelMember(
@@ -214,7 +221,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("channels", ":channelId", "join") { request async throws -> Response in
+        gatedAgent.post("channels", ":channelId", "join") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.agentHistory.agentChannelMembershipFromMachine(
                     authorization: request.headers[.authorization],
@@ -224,7 +231,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("channels", ":channelId", "leave") { request async throws -> Response in
+        gatedAgent.post("channels", ":channelId", "leave") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.agentHistory.agentChannelMembershipFromMachine(
                     authorization: request.headers[.authorization],
@@ -234,7 +241,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("channel-members") { request async throws -> Response in
+        gatedAgent.get("channel-members") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.agentChannels.channelMembers(
                     authorization: request.headers[.authorization],
@@ -244,49 +251,55 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("messages", ":messageId", "resolve") { request async throws -> Response in
-            try await respond {
+        gatedAgent.get("messages", ":messageId", "resolve") { request async throws -> Response in
+            let actor = try services.emailAccounts.legacyAgentMachineGate.actor(
+                authorization: request.headers[.authorization],
+                agentId: request.parameters.get("agentId") ?? "",
+                requiredScope: nil)
+            return try await respond {
                 try services.emailAccounts.legacyAgentSurface.messageResolve(
-                    authorization: request.headers[.authorization],
-                    agentId: request.parameters.get("agentId") ?? "",
+                    actor: actor,
                     messageRef: request.parameters.get("messageId") ?? ""
                 )
             }
         }
-        agent.get("receive") { request async throws -> Response in
+        gatedAgent.get("receive") { request async throws -> Response in
             // `block` and `timeout` are accepted for daemon compatibility; the
             // port has no queued orchestrator inbox, so a receive is empty.
-            try await respond {
-                try services.emailAccounts.legacyAgentSurface.receive(
-                    authorization: request.headers[.authorization],
-                    agentId: request.parameters.get("agentId") ?? ""
-                )
+            let actor = try services.emailAccounts.legacyAgentMachineGate.actor(
+                authorization: request.headers[.authorization],
+                agentId: request.parameters.get("agentId") ?? "",
+                requiredScope: nil)
+            return try await respond {
+                try services.emailAccounts.legacyAgentSurface.receive(actor: actor)
             }
         }
-        agent.get("tasks") { request async throws -> Response in
-            try await respond {
+        gatedAgent.get("tasks") { request async throws -> Response in
+            let actor = try services.emailAccounts.legacyAgentMachineGate.actor(
+                authorization: request.headers[.authorization],
+                agentId: request.parameters.get("agentId") ?? "",
+                requiredScope: nil)
+            return try await respond {
                 try services.emailAccounts.legacyAgentSurface.tasks(
-                    authorization: request.headers[.authorization],
-                    agentId: request.parameters.get("agentId") ?? "",
+                    actor: actor,
                     channelRef: desktopQuery(request.url.query, "channel") ?? "",
                     rawQuery: request.url.query
                 )
             }
         }
-        agent.post("server", "avatar") { request async throws -> Response in
-            try await respond {
-                let agent = try services.emailAccounts.legacyAgentSurface.actor(
-                    authorization: request.headers[.authorization],
-                    agentId: request.parameters.get("agentId") ?? "",
-                    requiredScope: "server:update"
-                )
+        gatedAgent.post("server", "avatar") { request async throws -> Response in
+            let actor = try services.emailAccounts.legacyAgentMachineGate.actor(
+                authorization: request.headers[.authorization],
+                agentId: request.parameters.get("agentId") ?? "",
+                requiredScope: nil)
+            return try await respond {
                 let file = try await singleAvatarUploadFile(request)
-                return try services.emailAccounts.agentChannels.uploadServerAvatar(
-                    agent: agent, byteCount: file.bytes.count
+                return try services.emailAccounts.legacyAgentSurface.uploadServerAvatar(
+                    actor: actor, byteCount: file.bytes.count
                 )
             }
         }
-        agent.get("history") { request async throws -> Response in
+        gatedAgent.get("history") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.agentHistory.history(
                     authorization: request.headers[.authorization],
@@ -300,7 +313,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("tasks") { request async throws -> Response in
+        gatedAgent.post("tasks") { request async throws -> Response in
             // The published handler accepted a raw JSON body, so the typed
             // decode falls back to the collected bytes. The raw text is also
             // what the idempotency fingerprint covers.
@@ -315,7 +328,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("tasks", "claim") { request async throws -> Response in
+        gatedAgent.post("tasks", "claim") { request async throws -> Response in
             let body = await jsonRequestBody(AgentTaskClaimRequest.self, request)
             return try await respond {
                 try services.emailAccounts.actionCardExecute.agentTaskClaim(
@@ -325,7 +338,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("tasks", "update-status") { request async throws -> Response in
+        gatedAgent.post("tasks", "update-status") { request async throws -> Response in
             let body = await jsonRequestBody(AgentTaskStatusUpdateRequest.self, request)
             return try await respond {
                 try services.emailAccounts.actionCardExecute.agentTaskUpdateStatus(
@@ -335,7 +348,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("tasks", "delete") { request async throws -> Response in
+        gatedAgent.post("tasks", "delete") { request async throws -> Response in
             let body = await jsonRequestBody(AgentTaskDeleteRequest.self, request)
             return try await respond {
                 try services.emailAccounts.actionCardMarketplace.deleteTask(
@@ -345,7 +358,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("tasks", "convert") { request async throws -> Response in
+        gatedAgent.post("tasks", "convert") { request async throws -> Response in
             let body = await jsonRequestBody(AgentTaskConvertRequest.self, request)
             return try await respond {
                 try services.emailAccounts.actionCardMarketplace.convertTask(
@@ -355,7 +368,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("messages", ":messageId", "reactions") { request async throws -> Response in
+        gatedAgent.post("messages", ":messageId", "reactions") { request async throws -> Response in
             let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
             return try await respond {
                 try services.emailAccounts.profileAndChannelFiles.mutateAgentMessageReaction(
@@ -367,7 +380,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.delete("messages", ":messageId", "reactions") { request async throws -> Response in
+        gatedAgent.delete("messages", ":messageId", "reactions") { request async throws -> Response in
             let body = await jsonRequestBody(ProfileReactionRequestDTO.self, request)
             return try await respond {
                 try services.emailAccounts.profileAndChannelFiles.mutateAgentMessageReaction(
@@ -379,7 +392,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("threads", "unfollow") { request async throws -> Response in
+        gatedAgent.post("threads", "unfollow") { request async throws -> Response in
             let body = await jsonRequestBody(AgentThreadUnfollowRequest.self, request)
             return try await respond {
                 try services.emailAccounts.agentSendDelivery.agentThreadUnfollow(
@@ -389,7 +402,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.get("search") { request async throws -> Response in
+        gatedAgent.get("search") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.searchMentions.searchAgentMessages(
                     agentId: request.parameters.get("agentId") ?? "",
@@ -411,7 +424,7 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agent.post("upload") { request async throws -> Response in
+        gatedAgent.post("upload") { request async throws -> Response in
             try await respond {
                 let parsed = try await AttachmentMultipartDecoder.decode(request)
                 guard let file = parsed.files.first else { throw AttachmentContentError.noFiles }
