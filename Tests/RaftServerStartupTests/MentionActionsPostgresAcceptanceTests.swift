@@ -92,6 +92,11 @@ func postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims() async thr
         try await peer.sendSession(agentId: actor,
                                    launchId: try actorFrame.requireString("launchId"),
                                    sessionId: "mention-actor-session")
+        // The actor is also the target of the later rollback/CAS barrier hosts;
+        // an ordinary wake needs the daemon's process identity.
+        try await peer.sendProcessSpawned(agentId: actor,
+                                          launchId: try actorFrame.requireString("launchId"),
+                                          processInstanceId: "mention-actor-process")
         print("mention109 diagnostic: actorStart.ok")
 
         // Original agent-target oracle: two different real agent-authored hosts,
@@ -135,6 +140,14 @@ func postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims() async thr
                                    launchId: try receiverStart.requireString("launchId"),
                                    sessionId: "mention-receiver-session")
         _ = try await mentionPGDeliveryReceipt(f, peer: peer, agent: receiver, host: first, channel: agentRoom, since: groupBoundary)
+        // An ordinary (non-tracked) human wake needs the daemon's process
+        // identity; the tracked occurrence above recovered from the session.
+        try await peer.sendProcessSpawned(agentId: receiver,
+                                          launchId: try receiverStart.requireString("launchId"),
+                                          processInstanceId: "mention-receiver-process")
+        try await protocolPGEventually {
+            try await MentionPGSnapshot.read(f).execution.agents[receiver]?.processes.isEmpty == false
+        }
         let sessionDelivered = try await MentionPGSnapshot.read(f)
         #expect(sessionDelivered.execution.commands.values.filter { $0.kind == .delivery && $0.agentId == receiver && [first.messageId, second.messageId].contains($0.messageId ?? "") }.count == 1)
         let beforeRetry = try await MentionPGSnapshot.read(f)

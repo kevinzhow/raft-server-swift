@@ -210,7 +210,6 @@ func mentionPGDeliveryReceipt(_ f: AgentExecutionPostgresFixture, peer: Controll
     let accepted = try await MentionPGSnapshot.read(f)
     #expect(accepted.execution.commands[command.commandId.uuidString]?.status == .accepted)
     #expect(accepted.execution.dispatches?[command.commandId.uuidString]?.phase == .accepted)
-    #expect(accepted.execution.agents[agent]?.processes.isEmpty == true)
     return command
 }
 func mentionPGNoAgentFrames(_ peer: ControlledMachineProtocolPeer, since boundary: Int, agent: String? = nil) async throws {

@@ -34,8 +34,13 @@ resume context, unified resident-launch adoption on both ready and
 the complete channels/joint and thread-read route family, attachment preview
 and agent attachment context, the missing internal agent API routes,
 account/billing/push/raftbench/avatar routes, and one shared handle validator
-for register, complete-profile and username-available. It awaits the trunk gate
-and a deploy.
+for register, complete-profile and username-available. It also carries the
+keep-session restart fix (a queued message rides `agent:start.wakeMessage` and
+releases exactly once), the single `LegacyAgentMachineGate` plus middleware for
+every legacy `/internal/agent/:id/*` route, the developer-platform integration,
+MCP OAuth and action-reconfirm route families, real avatar/logo object storage
+with the public capability routes, and the shared zod-4 auth issue builder with
+the password-length rules. It awaits the trunk gate and a deploy.
 
 ## What works
 
@@ -64,13 +69,17 @@ and a deploy.
   conversion and saved-message routes, attachment preview plus agent attachment
   metadata and thread-parent read authority, the internal agent API task
   history/unclaim, avatar, upload-session and integration-app routes, legacy
-  machine agent routes, and account (forgot-password, username-available),
-  billing, push, raftbench and avatar-serving routes.
+  machine agent routes behind one machine-ownership gate and scope table, the
+  developer-platform App-management/integration/MCP OAuth/action routes, real
+  user/server/agent avatar and integration-logo byte storage behind
+  `/api/avatars` and `/api/integration-logos`, and account (forgot-password,
+  username-available), billing, push and raftbench routes.
 - **Route inventory.** `make route-inventory` dumps the booted Vapor router and
   diffs it against the pinned Express registrations into
-  `docs/route-inventory.md`: upstream 644, Swift 584, exact matches 556,
-  parameter variants 1, missing 84, extra 27. The channels family is complete
-  (64/64, missing 0).
+  `docs/route-inventory.md`: upstream 644, Swift 611, exact matches 583,
+  parameter variants 1, missing 57, extra 27. The channels family is complete
+  (64/64, missing 0), and the developer-platform integrations family dropped
+  from 19 missing to 3.
 - **Production operations.** Reproducible Main release build, stage, verify and
   maintenance-ordered upgrade are in `deploy/swift-production/`; the previous
   release is kept for rollback and the pre-upgrade `pg_dump` is taken.
@@ -87,8 +96,8 @@ and a deploy.
 | G6 | Official Computer/Codex/provider acceptance after the latest release | Separate from the unit gate by design | Run it after deploy and record the result in the deployment record |
 | G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; sharded runner now isolates and retries | Re-run `make gate`; keep the shard log if it recurs |
 | G8 | Activity trajectory entries and gap recovery are not stored | Deliberate (see DEVIATIONS D10) | Re-open only if the pinned Web consumes them |
-| G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. | Fixed and merged; `make test-pg` was green on the owning branch and is re-run on the integration commit | Deploy after the integration gate and the full persistence gate |
-| G10 | Route inventory still lists 84 upstream Express registrations without a Swift counterpart and 27 Swift-only routes; the largest remaining families are `internal*.ts` (28, mostly agent-side labs/machine/profile variants and trace ingest), integrations (19), slack-bridge (6), public search index/detail (4), MCP/provider connections (6) and OIDC installation routes (8). | Tracked by `docs/route-inventory.md`; most missing families are unported external services covered by D5/D12/D19/D21 or not referenced by the pinned Web/CLI | Re-run `make route-inventory` after each slice; register the reachable gaps and record every remaining exclusion in `docs/DEVIATIONS.md` |
+| G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. The keep-session wake integration added three more: a tracked mention action was dropped instead of queued for an admitted launch, and two gated suites waited for `agent:deliver` without reporting the process identity, or assumed a trigger message never rides the start. | Fixed and merged; the full `make test-pg` passes 46/46 gated startup suites plus database-health and infrastructure-check on the integration commit | Deploy after the integration gate and the full persistence gate |
+| G10 | Route inventory still lists 57 upstream Express registrations without a Swift counterpart and 27 Swift-only routes; the largest remaining families are `internal*.ts` (28, mostly agent-side labs/machine/profile variants and trace ingest), other/top-level (8), slack-bridge (6), public search index/detail (4) and integrations (3). | Tracked by `docs/route-inventory.md`; most missing families are unported external services covered by D5/D12/D19/D21 or not referenced by the pinned Web/CLI | Re-run `make route-inventory` after each slice; register the reachable gaps and record every remaining exclusion in `docs/DEVIATIONS.md` |
 
 ## Next steps
 

@@ -29,7 +29,7 @@ import VaporTesting
     #expect(agents.count == 53)
     #expect(computers.count == 3)
     #expect(reminders.count == 1)
-    #expect(notifications.count == 44)
+    #expect(notifications.count == 43)
     #expect(agents == Set(expectedAgentsRoutes))
     #expect(computers == Set(expectedComputersRoutes))
     #expect(reminders == Set(expectedRemindersRoutes))
@@ -44,9 +44,9 @@ import VaporTesting
     #expect(expectedAgentsRoutes.count == 53)
     #expect(expectedComputersRoutes.count == 3)
     #expect(expectedRemindersRoutes.count == 1)
-    #expect(expectedNotificationsRoutes.count == 44)
-    #expect(expectedAll.count == 101)
-    #expect(Set(expectedAll).count == 101)
+    #expect(expectedNotificationsRoutes.count == 43)
+    #expect(expectedAll.count == 100)
+    #expect(Set(expectedAll).count == 100)
 
     #expect(agents.isDisjoint(with: computers))
     #expect(agents.isDisjoint(with: reminders))
@@ -56,10 +56,10 @@ import VaporTesting
     #expect(reminders.isDisjoint(with: notifications))
 
     let union = agents.union(computers).union(reminders).union(notifications)
-    #expect(union.count == 101)
+    #expect(union.count == 100)
     #expect(union == Set(expectedAll))
 
-    // Mounted together on one router the four collections stay at 101 routes,
+    // Mounted together on one router the four collections stay at 100 routes,
     // which is what `FallbackApplication.configure` composes.
     try await withApp { app in
         try await app.register(collection: AgentsFeature(services: services))
@@ -67,7 +67,7 @@ import VaporTesting
         try await app.register(collection: RemindersFeature(services: services))
         try await app.register(collection: NotificationsFeature(services: services))
 
-        #expect(app.routes.all.count == 101)
+        #expect(app.routes.all.count == 100)
         #expect(registeredRouteKeys(app.routes.all) == union)
     }
 }
@@ -166,7 +166,6 @@ private let expectedNotificationsRoutes: [String] = [
     "DELETE api/push/subscribe",
     "GET api/announcements/active",
     "GET api/announcements/images/:imageId",
-    "GET api/avatars/:namespace/:filename",
     "GET api/avatars/pixel/:file",
     "GET api/desktop-download",
     "GET api/desktop-download/platforms",

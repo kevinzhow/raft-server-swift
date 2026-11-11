@@ -304,30 +304,69 @@ RFC5987, MIME normalization) and six enabled upload-session fake-service cases a
 excluded; the observable attachment HTTP behavior is locked by
 `attachments.api`, `attachmentPreviewBridge.api`, `attachmentComments.api` and
 `attachmentUploadSessions.api` default surface. The four upload-session verbs are
-registered and answer the pinned direct-uploads-disabled 404 (see D23).
+registered and answer the pinned direct-uploads-disabled 404 (see D5).
 **Why.** Helper-unit and fake-service assertions have no black-box HTTP surface.
 **Upstream.** `attachments`, `attachmentUploadSessions.api` enabled-fake cases.
 **Re-evaluate.** If a new public upload path is added.
 
-### D23. No object storage for avatars, app logos or direct uploads
+### D23. Profile avatar and integration-logo image processing
 
-**What.** `GET /api/avatars/:namespace/:filename` validates the filename and then
-answers the unconfigured `500 {"error":"Storage not configured"}`; profile and
-server avatar uploads (credential and legacy routes) validate the image part and
-store only the `/api/avatars/<server>/<key>.webp` URL projection, not the bytes;
-integration-app logo uploads likewise store only the logo URL projection. The
-attachment upload-session verbs answer the pinned
-`404 {"code":"UPLOAD_SESSION_NOT_FOUND","message":"Direct uploads are disabled."}`
-and the capabilities route already publishes `directUploadEnabled:false`.
-**Why.** This deployment has no S3/CDN bucket binding or avatar object store;
-fabricating bytes, object URLs or an attachment row would invent state.
-**Upstream.** `routes/agents.ts:3707-3733`, `services/avatarService.ts:11-21`,
-`routes/internalAgentApi.ts:5627-5755` (upload sessions),
-`routes/internalAgentApi.ts:7133-7250` (app logo).
-**Re-evaluate.** When object storage or a CDN bucket is provisioned; implement
-the real adapter and its own acceptance rail, then serve the retained bytes.
+**What.** Uploaded profile avatars and integration logos are not resized to
+256×256 WebP. The server validates the multipart part type (`image/jpeg`,
+`image/png`, `image/gif`, `image/webp`, 5 MB limit), checks the real image
+signature, stores the original bytes, and serves them with their real content
+type under the upstream capability path (`/api/avatars/<namespace>/<sha256-prefix>.webp`
+and `/api/integration-logos/<clientId>/<sha256-prefix>.webp`). The filename hash
+is the SHA-256 prefix of the stored bytes; the `.webp` suffix is retained for
+consumer and OAuth `picture` URL compatibility.
+**Why.** Upstream uses `sharp` to decode and re-encode. The Swift release
+closure contains only the Swift runtime and JavaScriptCore; ImageMagick and
+`libwebp` exist on the development host but are not in the verified release
+closure, so depending on them would make the production artifact unverified.
+**Upstream.** `services/avatarService.ts` (`storeProfileAvatar`),
+`services/oauthService.ts` (`storeIntegrationLogo`).
+**Re-evaluate.** When a packaged WebP encoder is accepted into the release
+closure and its artifact inventory; then restore the 256×256 cover resize,
+`image/webp` responses and the WebP-content hash.
 
-### D24. No web-push delivery transport
+### D24. Profile asset storage, CDN URLs and unknown-object status
+
+**What.** Avatar and logo bytes use the existing encrypted R2/S3 bucket and
+attachment credentials through `S3AttachmentStorage`
+(`PUT`/`GET`/`DELETE` public asset methods, AES-GCM with the attachment key and
+a `raft-public-asset:v1:` associated-data domain). A development process without
+S3 keeps the bytes in memory, mirroring the attachment development fallback.
+Published URLs stay on the application paths even when `CDN_BASE_URL` is set. A
+missing avatar object answers `404 {"error":"Avatar not found"}`.
+**Why.** This deployment has one private encrypted bucket and no public CDN
+bucket; publishing `<CDN_BASE_URL>/avatars/...` would expose ciphertext. The
+parent task's published-path contract requires an unknown object to answer 404
+rather than upstream's catch-all 500.
+**Upstream.** `services/storageService.ts` (`getCdnStorage`,
+`resolvePublicAssetUrl`), `routes/agents.ts` avatar route, `routes/integrations.ts`
+logo route. Upstream's catch-all turns a missing avatar object into
+`500 {"error":"Failed to serve avatar"}`; integration logos already answer 404
+`{"error":"Logo not found"}`.
+**Re-evaluate.** If a public unencrypted CDN bucket is provisioned, publish CDN
+URLs from `resolvePublicAssetUrl` and serve bytes without the encryption
+boundary; revisit the missing-avatar status only with that storage change.
+
+### D25. Superseded: developer-platform app logo upload without object storage
+
+**What.** The developer-platform route slice first answered the upstream
+no-storage 500 (`{error:"Failed to upload OAuth client logo", correlationId}`)
+for `POST /api/integrations/clients/:clientId/logo` and did not register the
+public logo GET.
+**Why it is superseded.** Merged with `gap-avatar-storage`: the logo upload now
+stores the original bytes through `AvatarService` and the public
+`/api/integration-logos/:clientId/:file` route serves them (D23/D24). The entry
+is kept as the branch decision record, not as a current deviation.
+**Upstream.** `packages/server/src/routes/integrations.ts:986-1033`,
+`services/oauthService.ts:853-871,3095-3300`, `services/avatarService.ts`.
+**Re-evaluate.** Never for the refusal; re-open only if the avatar object store
+is removed from the deployment.
+
+### D26. No web-push delivery transport
 
 **What.** `/api/push/vapid-key` is public and answers the disabled 503 without a
 VAPID key; `/api/push/test` answers the disabled 503, and a stored subscription
@@ -338,6 +377,101 @@ delivery. `prompt-events` persists only the closed event shape and
 delivery cannot be claimed.
 **Upstream.** `routes/push.ts:77-208,349-397`.
 **Re-evaluate.** When VAPID keys and a real push transport are deployed.
+
+### D27. Provider probes have no daemon carrier
+
+**What.** `GET/POST /api/provider-connections/:id/probes` keep the feature-flag
+gate (404 `provider_connections_disabled`) and the owner/admin gate. When the
+surface is enabled they answer 410 `provider_connection_retired`; the single
+probe read route is not registered.
+**Why.** A probe needs a live Computer daemon to materialize the carrier; the
+port has no such relay for this surface, and D5 already retires provider test
+and model endpoints (410). Returning a receipt or success would fabricate
+provider acceptance.
+**Upstream.** `packages/server/src/routes/providerConnections.ts:235-388`,
+`services/providerProbeService.ts`.
+**Re-evaluate.** If the daemon relay exposes `provider-probe:v1` and an
+acceptance rail can drive a controlled Computer peer.
+
+### D28. Third-party MCP OAuth and catalog refresh are unreachable
+
+**What.** `POST /api/mcp/servers/:id/oauth/start` keeps the upstream 400
+`managed_mcp_oauth_required` for a non-OAuth server, but an OAuth-mode server
+answers 502 `managed_mcp_unreachable`; `POST /api/mcp/servers/:id/test` answers
+the same 502 for a known server. `DELETE .../oauth` remains a real idempotent
+disconnect (204, catalog cleared, `oauthStatus:"disconnected"`).
+**Why.** Both routes depend on outbound MCP discovery / dynamic client
+registration / tool-catalog fetches to a third-party server, which this
+deployment does not configure (D5). The 502 is the upstream transport-failure
+status, not an invented authorization URL or tool catalog.
+**Upstream.** `packages/server/src/routes/managedMcp.ts:349-373`,
+`services/managedMcpOAuthService.ts`, `services/managedMcpGateway`.
+**Re-evaluate.** If an MCP transport adapter with a controlled test server is
+deployed.
+
+### D29. Hosted runtime model lists are not available
+
+**What.** `GET /api/agent-runtime-providers/:kind/models` keeps the unknown-kind,
+capability and availability refusals. When the hosted provider is available it
+answers 502 `hosted_runtime_model_unavailable` instead of a model list.
+**Why.** The provider client that lists `/provision/models` is not part of this
+deployment (D5); inventing an empty or bundled list would misstate the create
+form's choices.
+**Upstream.** `packages/server/src/routes/agentRuntimeProviders.ts:64-87`,
+`services/hostedAgentModelService.ts`.
+**Re-evaluate.** If the hosted-runtime provider adapter is deployed.
+
+### D30. Action-card reconfirmation cannot succeed
+
+**What.** `POST /api/actions/:messageId/reconfirm` applies the session,
+membership and card-visibility gates, then always answers 409
+`action_card_conversion_frozen` with `errorCode`
+`action_card_conversion_frozen`.
+**Why.** Reconfirmation only exists for action cards frozen by a joint-channel
+conversion. This port does not implement joint channel conversion (D12), so no
+card can legitimately leave the frozen state; returning a reconfirmed version
+would fabricate state.
+**Upstream.** `packages/server/src/routes/actions.ts:285-312`,
+`services/actionCardConversionService.ts:496-545`.
+**Re-evaluate.** If joint channel conversion is implemented; then persist the
+conversion epoch/freeze state and lock the real reconfirm transition.
+
+### D31. Legacy machine routes reject live computer credentials
+
+**What.** Every legacy `/internal/agent/:id/*` route runs the shared
+`LegacyAgentMachineGate` (`requireMachineAuth` + `requireAgentScope`). A live
+`sk_agent_*` credential and a `sk_computer_*` computer credential are both
+refused with 401 `Invalid authentication: machine API key required`; only
+`sk_machine_*` and legacy `sk_daemon_*` keys authenticate. Upstream
+`requireMachineAuth` also resolves a `sk_computer_*` key to its linked machine
+and admits it on `/internal/*`.
+**Why.** This port has no `findComputerByApiKey`/linked-machine lookup on the
+legacy machine surface; the computer principal exists only on
+`/internal/computer/*` and `/daemon/connect`. Admitting the key without the
+upstream machine binding would either invent an identity or bypass the
+machine-ownership check, so the gate fails closed. `sk_agent_*` is the
+credential-surface principal and was never a machine principal upstream either.
+**Upstream.** `middleware/auth.ts:482-568` (`requireMachineAuth`,
+`isComputerApiKey` branch).
+**Re-evaluate.** When a Computer credential registry can resolve
+`computer.machineId` to a live machine on the legacy surface; then map it to the
+same `LegacyAgentMachinePrincipal` instead of refusing.
+
+### D32. Malformed-JSON bodies and multi-key strict ordering
+
+**What.** The auth body-schema routes report a missing or malformed JSON body as
+`req.body ?? {}` (the schema's required-member issues). Upstream Express also
+answers a 400 for malformed JSON, but with the JSON parser's own body before the
+route runs. When a `.strict()` auth schema receives several unknown members, the
+published `Unrecognized keys` list is sorted by key; upstream prints zod's
+received member order.
+**Why.** The shared request helper returns `nil` for both "no body" and
+"unparseable JSON", and the shared `JSONValue` object is a dictionary without
+member order. The projected status (400) and every single-key issue are identical.
+**Upstream.** `routes/auth.ts:126-158` (`formatBodyIssues` and the four schemas)
+and `express.json()`'s error path; zod 4 `unrecognized_keys` ordering.
+**Re-evaluate.** If the request layer exposes whether a body was parsed, or an
+ordered JSON object is adopted for request bodies.
 
 ## Maintaining this list
 
