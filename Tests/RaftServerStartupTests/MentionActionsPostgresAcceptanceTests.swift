@@ -87,6 +87,11 @@ func postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims() async thr
         let actorConfig = try #require(actorFrame.object("config"))
         let actorKey = try actorConfig.requireString("agentCredentialKey")
         #expect(actorConfig.object("runtimeContext")?.string("agentId") == actor)
+        // The tracked-delivery contract needs the concrete session before a
+        // mention action can stage a delivery for this agent.
+        try await peer.sendSession(agentId: actor,
+                                   launchId: try actorFrame.requireString("launchId"),
+                                   sessionId: "mention-actor-session")
         print("mention109 diagnostic: actorStart.ok")
 
         // Original agent-target oracle: two different real agent-authored hosts,
@@ -121,9 +126,17 @@ func postgresMentionActionsRequireActualAgentReceiptsAndAtomicClaims() async thr
         let claimed = try await MentionPGSnapshot.read(f)
         try mentionPGClaim(claimed, hosts: [first, second], actor: actor, actorType: "agent", channel: agentRoom, target: receiver, action: "notify_only")
         #expect(try !claimed.member("channelAgents", channel: agentRoom, id: receiver))
-        #expect(claimed.execution.commands.values.filter { $0.kind == .delivery && $0.agentId == receiver && [first.messageId, second.messageId].contains($0.messageId ?? "") }.count == 1)
-        try await mentionPGStartReceipt(f, peer: peer, agent: receiver, since: groupBoundary, human: false)
+        // A tracked mention is not embedded in `agent:start`: the wake start is
+        // admitted first, and the durable occurrence keeps the obligation until
+        // the daemon reports the concrete session identity.
+        #expect(claimed.execution.commands.values.filter { $0.kind == .delivery && $0.agentId == receiver && [first.messageId, second.messageId].contains($0.messageId ?? "") }.isEmpty)
+        let receiverStart = try await mentionPGStartReceipt(f, peer: peer, agent: receiver, since: groupBoundary, human: false)
+        try await peer.sendSession(agentId: receiver,
+                                   launchId: try receiverStart.requireString("launchId"),
+                                   sessionId: "mention-receiver-session")
         _ = try await mentionPGDeliveryReceipt(f, peer: peer, agent: receiver, host: first, channel: agentRoom, since: groupBoundary)
+        let sessionDelivered = try await MentionPGSnapshot.read(f)
+        #expect(sessionDelivered.execution.commands.values.filter { $0.kind == .delivery && $0.agentId == receiver && [first.messageId, second.messageId].contains($0.messageId ?? "") }.count == 1)
         let beforeRetry = try await MentionPGSnapshot.read(f)
         let retryBoundary = peer.socket.count
         let replay = try await mentionPGAction(f, token: actorKey, ids: [first.resolutionId, first.resolutionId], action: "notify", agent: true)

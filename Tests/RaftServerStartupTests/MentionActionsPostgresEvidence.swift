@@ -125,7 +125,8 @@ func mentionPGAction(_ f: AgentExecutionPostgresFixture, token: String, ids: [St
                      agent: Bool = false) async throws -> ProtocolPGObject {
     let response = try await f.http("POST", agent ? "/internal/agent-api/mention-actions/execute" : "/api/messages/mention-actions/execute",
         token: token, body: .init(["action": .string(action), "resolutionIds": .array(ids.map(JSONValue.string))]))
-    try #require(response.status == 200)
+    try #require(response.status == 200,
+                 Comment(rawValue: "mention action \(action) returned \(response.status): \(String(decoding: response.body, as: UTF8.self))"))
     let object = try response.object()
     #expect(object.bool("ok") == true)
     #expect(object.string("action") == action)
