@@ -938,13 +938,20 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
             if let refusal = try await agentApiContractRefusal(.taskHistory, request, services: services) { return refusal }
             let (_, denial) = agentApiGate(request, capability: "tasks", grant: nil)
             if let denial { return denial }
-            let query = desktopQuery(request.url.query, "channel")
-            let taskNumber = desktopQuery(request.url.query, "task_number").flatMap(Int.init) ?? 0
+            // The pinned query middleware replaces `req.query` with the parsed
+            // schema output, so the lookup consumes the trimmed channel and the
+            // coerced task number; `Int(raw)` would turn `0b101`/`0o17`/`1e1`
+            // into task 0.
+            let parsedQuery = AgentApiContractValidator.taskHistoryQuery(
+                contractQueryValue(request.url.query)
+            )
+            let channelRef = parsedQuery?.channel ?? desktopQuery(request.url.query, "channel") ?? ""
+            let taskNumber = parsedQuery?.taskNumber ?? 0
             return try await respond {
                 try services.emailAccounts.tasksAndLabs.agentTaskHistory(
                     authorization: request.headers[.authorization],
                     legacyAgentId: nil,
-                    channelRef: query ?? "",
+                    channelRef: channelRef,
                     taskNumber: taskNumber
                 )
             }

@@ -90,7 +90,9 @@ private func contractParameterName(_ name: String) -> String {
 
 /// Express `req.query` for the forms the contract schemas read: repeated keys
 /// become arrays, `+` is a space, and a key without `=` is the empty string.
-private func contractQueryValue(_ query: String?) -> JSONValue {
+/// The route handler reuses this to read the same parsed values the pinned
+/// query middleware writes back onto the request.
+func contractQueryValue(_ query: String?) -> JSONValue {
     guard let query, !query.isEmpty else { return .object([:]) }
     var fields: [String: JSONValue] = [:]
     for pair in query.split(separator: "&", omittingEmptySubsequences: false) {

@@ -653,6 +653,14 @@ enum AgentApiContractSchemaValidator {
         }
     }
 
+    /// The finite value `z.coerce.number()` parses, or `nil` for `NaN` and
+    /// non-finite results. Typed consumers use this to read the same parsed
+    /// data the pinned middleware writes back onto the request.
+    static func finiteCoercedNumber(_ value: JSONValue) -> Double? {
+        guard case .finite(let number) = JavaScriptNumber.coerce(value) else { return nil }
+        return number
+    }
+
     /// JavaScript `Number(value)` for `z.coerce.number()`, keeping `NaN` and
     /// non-finite results distinct because zod prints them differently.
     private enum JavaScriptNumber {
@@ -673,15 +681,44 @@ enum AgentApiContractSchemaValidator {
                 return .finite(0)
             case .string(let text):
                 return parse(text)
-            case .array(let items):
-                // `Number([])` is 0 and `Number([x])` is `Number(String(x))`;
-                // two or more elements join with "," and are not numeric.
-                if items.isEmpty { return .finite(0) }
-                guard items.count == 1 else { return .notANumber }
-                return coerce(items[0])
+            case .array:
+                // `Number(array)` is always `Number(String(array))`, i.e. the
+                // array joined with "," after JavaScript `String` conversion.
+                // In particular `Number([true])` is `Number("true")` = NaN,
+                // not `Number(true)` = 1.
+                return parse(javaScriptString(value))
             case .object:
                 return .notANumber
             }
+        }
+
+        /// JavaScript `String(value)` as `Array.prototype.join` applies it:
+        /// `null`/`undefined` become the empty string, arrays join recursively,
+        /// and a plain object is `"[object Object]"`.
+        static func javaScriptString(_ value: JSONValue) -> String {
+            switch value {
+            case .string(let text):
+                return text
+            case .integer(let integer):
+                return String(integer)
+            case .number(let number):
+                return javaScriptNumberString(number)
+            case .bool(let flag):
+                return flag ? "true" : "false"
+            case .null:
+                return ""
+            case .array(let items):
+                return items.map(javaScriptString).joined(separator: ",")
+            case .object:
+                return "[object Object]"
+            }
+        }
+
+        private static func javaScriptNumberString(_ number: Double) -> String {
+            if number.isNaN { return "NaN" }
+            if number.isInfinite { return number > 0 ? "Infinity" : "-Infinity" }
+            if number == 0 { return "0" }
+            return String(number)
         }
 
         /// JavaScript `Number(string)`: ECMAScript whitespace trim, optional
@@ -1015,6 +1052,24 @@ public enum AgentApiContractPrecondition: Sendable, Equatable {
     case grant(String)
 }
 
+/// The parsed data of the `taskHistory` query.
+///
+/// Pinned `routes/internalAgentApi.ts:475-486` replaces `req.query` with the
+/// schema's `parsed.data` before the handler runs, so the task lookup consumes
+/// this trimmed `channel` and coerced `task_number` instead of the raw query
+/// text. `taskHistory` is the only route whose contract schema uses
+/// `z.coerce.number()`; the parser stays the validator's single
+/// `JavaScriptNumber` implementation.
+public struct AgentApiTaskHistoryQuery: Sendable, Equatable {
+    public let channel: String
+    public let taskNumber: Int
+
+    public init(channel: String, taskNumber: Int) {
+        self.channel = channel
+        self.taskNumber = taskNumber
+    }
+}
+
 /// The single validation entry point: one route key plus one request part.
 public enum AgentApiContractValidator {
     static func schema(
@@ -1039,6 +1094,28 @@ public enum AgentApiContractValidator {
     /// part. The transport maps them onto its own route bindings.
     public static func parameterNames(for key: AgentApiContractRouteKey) -> [String] {
         AgentApiContractSchemas.object(for: key, part: .params)?.fields.map(\.name) ?? []
+    }
+
+    /// The parsed form of the `taskHistory` query after the pinned middleware
+    /// writes the schema output back onto the request.
+    ///
+    /// The route must look the task up with the trimmed channel and the
+    /// `z.coerce.number()` result (`0b101` → 5, `0o17` → 15, `1e1` → 10), not
+    /// with `Int(raw)`, which rejects every non-decimal form and resolves
+    /// task 0. Returns `nil` when the raw value does not satisfy the taskHistory
+    /// schema, so the route keeps its own auth/404 path.
+    public static func taskHistoryQuery(_ value: JSONValue?) -> AgentApiTaskHistoryQuery? {
+        guard case .object(let fields)? = value,
+              case .string(let rawChannel)? = fields["channel"],
+              let rawTaskNumber = fields["task_number"],
+              failure(for: .taskHistory, part: .query, value: value) == nil,
+              let number = AgentApiContractSchemaValidator.finiteCoercedNumber(rawTaskNumber),
+              let taskNumber = Int(exactly: number)
+        else { return nil }
+        return AgentApiTaskHistoryQuery(
+            channel: MessageMentionRules.trimmingJavaScriptWhitespace(rawChannel),
+            taskNumber: taskNumber
+        )
     }
 
     /// The published failure for one part, or `nil` when the value matches the
