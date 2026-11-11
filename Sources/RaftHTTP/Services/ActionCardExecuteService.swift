@@ -510,7 +510,9 @@ public struct ActionCardExecuteService: Sendable {
             }
             if let channel = channels.postableChannels[channelId],
                channel.name.hasPrefix("migration-receipt-") {
-                throw AgentSendError.migrationReceiptReadOnly
+                // The published refusal names the target the caller actually
+                // asked for, exactly like `agentWritableTarget.ts:199`.
+                throw AgentSendError.migrationReceiptReadOnly(target: trimmed)
             }
 
             // Freshness gate (SMR-006).

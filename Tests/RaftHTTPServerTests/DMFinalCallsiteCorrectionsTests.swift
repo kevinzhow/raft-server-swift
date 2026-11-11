@@ -26,8 +26,17 @@ private func ambiguousBody(_ name: String) -> String {
     #"{"error":"dm:@\#(name) matches both a human and an agent named \#(name). Name the one you mean: dm:@\#(name)~agent for the agent, or dm:@\#(name)~human for the human (for example: raft message read --target \"dm:@\#(name)~agent\").","code":"DM_TARGET_AMBIGUOUS","suggestedNextAction":"retry with dm:@\#(name)~agent for the agent or dm:@\#(name)~human for the human"}"#
 }
 
+private func jsonQuoted(_ value: String) -> String {
+    let data = (try? JSONEncoder().encode(value)) ?? Data("\"\"".utf8)
+    return String(decoding: data, as: UTF8.self)
+}
+
 private func invalidKindBody(rawPeer: String, suffix: String) -> String {
-    #"{"error":"dm:@\#(rawPeer) has an unknown peer kind \"\#(suffix)\". Use dm:@<name>, dm:@<name>~agent or dm:@<name>~human.","code":"DM_TARGET_INVALID_PEER_KIND","suggestedNextAction":"retry with dm:@<name>, dm:@<name>~agent or dm:@<name>~human"}"#
+    let message = "dm:@\(rawPeer) has an unknown peer kind \"\(suffix)\". "
+        + "Use dm:@<name>, dm:@<name>~agent or dm:@<name>~human."
+    let next = "retry with dm:@<name>, dm:@<name>~agent or dm:@<name>~human"
+    return "{\"error\":\(jsonQuoted(message)),\"code\":\"DM_TARGET_INVALID_PEER_KIND\","
+        + "\"suggestedNextAction\":\(jsonQuoted(next))}"
 }
 
 private let reminderNotSendableBody = #"{"error":"dm:@reminders is your private reminder conversation; nobody else reads it. Act at the reminder's anchor instead.","code":"DM_TARGET_NOT_SENDABLE","suggestedNextAction":"send to the reminder's anchor target instead of dm:@reminders"}"#
@@ -99,6 +108,37 @@ private func machineSendRaw(
     return (response.status, response.body.string ?? "")
 }
 
+private func modernSendRaw(
+    _ client: any Client, apiKey: String, target: String, v2: Bool
+) async throws -> (status: HTTPResponse.Status, raw: String) {
+    var headers = HTTPFields()
+    headers[.authorization] = "Bearer \(apiKey)"
+    headers[.contentType] = "application/json"
+    let payload: [String: Any] = ["target": target, "content": "modern dm callsite send"]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let path = v2 ? "/internal/agent-api/v2/send" : "/internal/agent-api/send"
+    let response = try await client.send(.post, headers: headers, to: URI(string: path)) { request in
+        request.body = .init(data: data)
+    }
+    return (response.status, response.body.string ?? "")
+}
+
+private func taskClaimRaw(
+    _ client: any Client, apiKey: String, target: String
+) async throws -> (status: HTTPResponse.Status, raw: String) {
+    var headers = HTTPFields()
+    headers[.authorization] = "Bearer \(apiKey)"
+    headers[.contentType] = "application/json"
+    let payload: [String: Any] = ["channel": target, "task_numbers": [1]]
+    let data = try JSONSerialization.data(withJSONObject: payload)
+    let response = try await client.send(
+        .post, headers: headers, to: URI(string: "/internal/agent-api/tasks/claim")
+    ) { request in
+        request.body = .init(data: data)
+    }
+    return (response.status, response.body.string ?? "")
+}
+
 private func prepareRaw(
     _ client: any Client, apiKey: String, target: String, actionName: String
 ) async throws -> (status: HTTPResponse.Status, raw: String) {
@@ -141,6 +181,7 @@ private struct DMCallsiteWireFixture {
     let accounts: EmailLoginDirectory
     let serverId: String
     let graceId: String
+    let receiptId: String
     let agentKey: String
     let machineKey: String
 }
@@ -188,12 +229,24 @@ private func makeDMCallsiteWireFixture() -> DMCallsiteWireFixture {
         serverId: serverId, channelId: receipt, memberId: grace, kind: "dm", name: receiptName
     )
 
+    // Grace's private reminder surface, for the reserved-handle refusal.
+    let reminderName = "reminders"
+    let reminder = accounts.oauth.createChannel(
+        serverId: serverId, name: reminderName, creatorUserId: grace, type: "dm"
+    )
+    accounts.oauth.addChannelAgent(channelId: reminder, agentId: grace)
+    accounts.addPostableChannel(
+        serverId: serverId, channelId: reminder, memberId: grace, kind: "dm", name: reminderName
+    )
+    accounts.setAgentReminderSurfaceForTesting(agentId: grace, channelId: reminder)
+
     return DMCallsiteWireFixture(
         accounts: accounts,
         serverId: serverId,
         graceId: grace,
+        receiptId: receipt,
         agentKey: accounts.mintAgentCredential(
-            agentId: grace, scopes: ["send", "read"], name: "callsite-wire"
+            agentId: grace, scopes: ["send", "read", "tasks"], name: "callsite-wire"
         ),
         machineKey: accounts.registerMachineForAgent(serverId: serverId, agentId: grace)
     )
@@ -295,6 +348,94 @@ private func makeDMCallsiteWireFixture() -> DMCallsiteWireFixture {
             client, apiKey: f.machineKey, agentId: f.graceId, target: "dm:@Twin~agent"
         )
         #expect(pinned.status == .ok, Comment(rawValue: pinned.raw))
+    }
+}
+
+// MARK: - Modern send / task DM refusal wire
+
+@Test func modernSendPublishesTheExactDMTargetRefusalBodiesAndWritesNothing() async throws {
+    let f = makeDMCallsiteWireFixture()
+    try await configuredApp(f.accounts) { client in
+        // An arbitrary suffix can contain quotes and backslashes; the body must
+        // stay valid, ordered, escaped JSON, not raw interpolation.
+        let arbitrarySuffix = "a\"b\\c"
+        let receiptTarget = "DM:@migration-receipt-callsite"
+        let cases: [(target: String, status: HTTPResponse.Status, body: String)] = [
+            ("dm:@Twin", .conflict, ambiguousBody("Twin")),
+            ("dm:@Twin~bot", .badRequest, invalidKindBody(rawPeer: "Twin~bot", suffix: "bot")),
+            (
+                "dm:@Twin~\(arbitrarySuffix)", .badRequest,
+                invalidKindBody(
+                    rawPeer: "Twin~\(arbitrarySuffix)",
+                    suffix: arbitrarySuffix
+                )
+            ),
+            ("dm:@reminders", .forbidden, reminderNotSendableBody),
+            (receiptTarget, .conflict, migrationReceiptBody(receiptTarget)),
+        ]
+        for v2 in [false, true] {
+            for refusal in cases {
+                let channelsBefore = f.accounts.postableChannelCountForTesting
+                let messagesBefore = f.accounts.humanMessageCount
+                let tasksBefore = f.accounts.taskRecordCountForTesting
+                let cardsBefore = f.accounts.actionCardCountForTesting(agentId: f.graceId)
+                let receiptMessagesBefore = f.accounts.oauth.historyMessages(
+                    channelId: f.receiptId
+                ).count
+
+                let reply = try await modernSendRaw(
+                    client, apiKey: f.agentKey, target: refusal.target, v2: v2
+                )
+                let label = Comment(rawValue: "v2=\(v2) target=\(refusal.target)")
+                #expect(reply.status == refusal.status, label)
+                #expect(reply.raw == refusal.body, label)
+                #expect(f.accounts.postableChannelCountForTesting == channelsBefore, label)
+                #expect(f.accounts.humanMessageCount == messagesBefore, label)
+                #expect(f.accounts.taskRecordCountForTesting == tasksBefore, label)
+                #expect(f.accounts.actionCardCountForTesting(agentId: f.graceId) == cardsBefore, label)
+                #expect(
+                    f.accounts.oauth.historyMessages(channelId: f.receiptId).count
+                        == receiptMessagesBefore,
+                    label
+                )
+            }
+        }
+    }
+}
+
+@Test func taskClaimPublishesTheExactDMTargetBodiesAndWritesNothing() async throws {
+    let f = makeDMCallsiteWireFixture()
+    try await configuredApp(f.accounts) { client in
+        let arbitrarySuffix = "a\"b\\c"
+        let cases: [(target: String, status: HTTPResponse.Status, body: String)] = [
+            ("dm:@Twin", .conflict, ambiguousBody("Twin")),
+            ("dm:@Twin~bot", .badRequest, invalidKindBody(rawPeer: "Twin~bot", suffix: "bot")),
+            (
+                "dm:@Twin~\(arbitrarySuffix)", .badRequest,
+                invalidKindBody(
+                    rawPeer: "Twin~\(arbitrarySuffix)",
+                    suffix: arbitrarySuffix
+                )
+            ),
+            ("dm:@Twin~AGENT", .badRequest, invalidKindBody(rawPeer: "Twin~AGENT", suffix: "AGENT")),
+        ]
+        for refusal in cases {
+            let channelsBefore = f.accounts.postableChannelCountForTesting
+            let messagesBefore = f.accounts.humanMessageCount
+            let tasksBefore = f.accounts.taskRecordCountForTesting
+            let cardsBefore = f.accounts.actionCardCountForTesting(agentId: f.graceId)
+
+            let reply = try await taskClaimRaw(
+                client, apiKey: f.agentKey, target: refusal.target
+            )
+            let label = Comment(rawValue: "target=\(refusal.target)")
+            #expect(reply.status == refusal.status, label)
+            #expect(reply.raw == refusal.body, label)
+            #expect(f.accounts.postableChannelCountForTesting == channelsBefore, label)
+            #expect(f.accounts.humanMessageCount == messagesBefore, label)
+            #expect(f.accounts.taskRecordCountForTesting == tasksBefore, label)
+            #expect(f.accounts.actionCardCountForTesting(agentId: f.graceId) == cardsBefore, label)
+        }
     }
 }
 
