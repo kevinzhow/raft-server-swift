@@ -42,7 +42,9 @@ extension AgentExecutionDomain {
                 }
                 for agentId in runningAgentIds ?? [] where owned.contains(agentId) {
                     var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                    if !agent.processes.values.contains(where: { !$0.exited }) { agent.needsManual = "untracked_running_process" }
+                    if !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
+                        agent.needsManual = "untracked_running_process"
+                    }
                     state.execution.agents[agentId] = agent
                 }
                 for agentId in unreliableAgentIds where owned.contains(agentId) {
@@ -75,9 +77,14 @@ extension AgentExecutionDomain {
     /// lost connection or a server restore, plus the abandoned-start repair.
     /// The daemon's complete ready frame is the real fact that it still holds
     /// this machine; a same-instance live process plus the retained owner state
-    /// prove whether a delivery or turn is still unsettled. Only the two
-    /// connection-history reasons are clearable, and only from facts already
-    /// retained: no blanket reset and no other recovery reason.
+    /// prove whether a delivery or turn is still unsettled. Only the three
+    /// connection/daemon-history reasons are clearable, and only from facts
+    /// already retained: no blanket reset and no other recovery reason.
+    ///
+    /// An agent this complete ready does **not** report running has no runtime
+    /// on this daemon. Launches and processes created by an older daemon
+    /// instance can never be admitted by this one (RFC 071 §4.3 rule 4), so they
+    /// are retired as history before the same settled-facts check runs.
     func reconcileConnectionRecovery(_ state: inout AgentExecutionState, machineId: String,
                                      connectionEpochId: String, daemonInstanceId: String?,
                                      runningAgentIds: [String]) {
@@ -86,39 +93,103 @@ extension AgentExecutionDomain {
         let running = Set(runningAgentIds)
         for agentId in Array(state.agents.keys) {
             guard let agent = state.agents[agentId], agent.machineId == machineId else { continue }
-            // The daemon's report is the only reconnect fact that proves this
-            // process survived; an absent report cannot be distinguished from
-            // a process that the daemon lost track of. The same report proves
-            // that a current launch the process does not carry can never be
-            // admitted: retire it and adopt the launch the process really runs.
-            guard running.contains(agentId) else { continue }
-            _ = retireAbandonedStartAndAdoptResident(&state, agentId: agentId,
-                                                     daemonInstanceId: daemonInstanceId)
-            clearConnectionRecoveryIfSettled(&state, agentId: agentId,
-                                             connectionEpochId: connectionEpochId,
-                                             daemonInstanceId: daemonInstanceId)
+            if running.contains(agentId) {
+                // The daemon's report is the only reconnect fact that proves this
+                // process survived; an absent report cannot be distinguished from
+                // a process that the daemon lost track of. The same report proves
+                // that a current launch the process does not carry can never be
+                // admitted: retire it and adopt the launch the process really runs.
+                _ = retireAbandonedStartAndAdoptResident(&state, agentId: agentId,
+                                                         daemonInstanceId: daemonInstanceId)
+                clearConnectionRecoveryIfSettled(&state, agentId: agentId,
+                                                 connectionEpochId: connectionEpochId,
+                                                 daemonInstanceId: daemonInstanceId)
+            } else if retireExecutionsFromOlderDaemon(&state, agentId: agentId,
+                                                      daemonInstanceId: daemonInstanceId) {
+                clearConnectionRecoveryIfSettled(&state, agentId: agentId,
+                                                 connectionEpochId: connectionEpochId,
+                                                 daemonInstanceId: daemonInstanceId,
+                                                 allowRetiredWithoutLiveProcess: true)
+            }
         }
     }
 
-    /// Clear only the two connection-history recovery reasons when the retained
-    /// facts prove that nothing is still unsettled: the current launch is real
-    /// (completed, retired or admitted), the daemon still tracks a live process
-    /// for it, and no delivery write or accepted turn awaits an outcome. The
-    /// caller supplies the daemon's running report (ready) or its session frame.
-    /// Breaker/terminal reasons and every other recovery reason are untouched.
+    /// RFC 071 §4.3 rule 4: a complete `ready` that reports this agent not
+    /// running is the fact that no process of the previous daemon instance is
+    /// live. A launch created by that instance can never be admitted again, so
+    /// it becomes history: not completed, not a spawn failure, and never a
+    /// reason to re-write a delivery. An unattempted command from that launch is
+    /// superseded so the durable queued obligation can be staged on the new
+    /// instance. A delivery write that already reached the wire keeps its
+    /// dispatch row and therefore keeps manual recovery.
+    ///
+    /// Returns true when an older-instance launch was found (changed or already
+    /// retired), which is the precondition for clearing without a live process.
+    @discardableResult
+    func retireExecutionsFromOlderDaemon(_ state: inout AgentExecutionState, agentId: String,
+                                         daemonInstanceId: String) -> Bool {
+        guard var agent = state.agents[agentId] else { return false }
+        let olderLaunchIds = agent.launches.filter { $0.value.daemonInstanceId != daemonInstanceId }.map(\.key)
+        guard !olderLaunchIds.isEmpty else { return false }
+        for launchId in olderLaunchIds {
+            guard var launch = agent.launches[launchId] else { continue }
+            if launch.retiredAfterDaemonRestart != true {
+                launch.retiredAfterDaemonRestart = true
+                agent.launches[launchId] = launch
+            }
+            for key in Array(state.commands.keys) {
+                guard let command = state.commands[key], command.agentId == agentId,
+                      command.launchId == launchId,
+                      command.status == .pending || command.status == .dispatched,
+                      state.dispatches?[key] == nil,
+                      command.kind == .start || command.kind == .delivery || command.kind == .notice else { continue }
+                state.commands[key]?.status = .superseded
+            }
+        }
+        // The daemon's complete inventory is authoritative for its machine: a
+        // process of an instance it replaced is not running and can never send
+        // an exit frame.
+        for processId in Array(agent.processes.keys) {
+            guard var process = agent.processes[processId], process.daemonInstanceId != daemonInstanceId else { continue }
+            if !process.exited {
+                process.exited = true
+                agent.processes[processId] = process
+            }
+        }
+        state.agents[agentId] = agent
+        return true
+    }
+
+    /// Clear only the three connection/daemon-history recovery reasons when the
+    /// retained facts prove that nothing is still unsettled: the current launch
+    /// is real (completed, retired, not-spawned, admitted or process-backed),
+    /// nothing awaits a delivery ACK or a turn outcome, and either the daemon
+    /// still tracks a live process for it or a retired launch proves the old
+    /// process is gone. The caller supplies the daemon's running report (ready)
+    /// or its session frame. Breaker/terminal reasons and every other recovery
+    /// reason are untouched.
     func clearConnectionRecoveryIfSettled(_ state: inout AgentExecutionState, agentId: String,
-                                          connectionEpochId: String, daemonInstanceId: String) {
+                                          connectionEpochId: String, daemonInstanceId: String,
+                                          allowRetiredWithoutLiveProcess: Bool = false) {
         guard var settled = state.agents[agentId],
               settled.needsManual == "connection_lost_with_unsettled_execution"
-                || settled.needsManual == "server_restarted_with_unsettled_execution",
+                || settled.needsManual == "server_restarted_with_unsettled_execution"
+                || settled.needsManual == "daemon_restarted_with_unsettled_execution",
               let currentId = settled.currentLaunchId, let current = settled.launches[currentId] else { return }
         // The current launch must be usable for the next delivery: a resident
-        // process keeps carrying it after a completed turn, and an incomplete
-        // one must have been admitted by the daemon.
-        guard current.completed || current.notSpawned || current.terminalFailure
-                || current.startAccepted || current.processInstanceId != nil,
-              settled.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }),
+        // process keeps carrying it after a completed turn, an incomplete one
+        // must have been admitted by the daemon, and a daemon-retired one can
+        // never be admitted again.
+        let currentIsSettled = current.completed || current.notSpawned || current.terminalFailure
+            || current.retiredAfterDaemonRestart == true
+            || current.startAccepted || current.processInstanceId != nil
+        let liveProcess = settled.processes.values.contains {
+            !$0.exited && $0.daemonInstanceId == daemonInstanceId
+        }
+        guard currentIsSettled,
+              liveProcess || (allowRetiredWithoutLiveProcess && current.retiredAfterDaemonRestart == true),
               !state.hasUnsettledDeliveryWrite(agentId: agentId),
+              !state.hasUnsettledWakeStart(agentId: agentId),
               !state.hasAcceptedTurnWithoutCompletion(agentId: agentId) else { return }
         // A pending delivery with no dispatch record was never written:
         // upstream re-sends it on the new connection. Re-fence the command to

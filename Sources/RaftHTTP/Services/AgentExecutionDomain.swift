@@ -56,10 +56,15 @@ struct AgentExecutionDomain: Sendable {
     func hasBlockingUnexitedExecution(agentId: String, agent: AgentExecutionAgent, state: AgentExecutionState) -> Bool {
         let current = agent.currentLaunchId.flatMap { agent.launches[$0] }
         let healthyCurrent = current.map {
-            $0.generation == agent.generation && !$0.terminalFailure && !$0.notSpawned
+            $0.retiredAfterDaemonRestart != true && $0.generation == agent.generation && !$0.terminalFailure && !$0.notSpawned
                 && agent.blockedUntil == nil && agent.probeLaunchId == nil
         } ?? false
+        let currentDaemonInstanceId = state.connections[agent.machineId]?.daemonInstanceId
         for process in agent.processes.values where !process.exited {
+            // An instance the current complete ready replaced can no longer
+            // report an exit, and its child cannot be adopted by this daemon;
+            // `ready` is the authoritative inventory for this machine.
+            if let currentDaemonInstanceId, process.daemonInstanceId != currentDaemonInstanceId { continue }
             let currentEpoch = process.launchIds.contains { agent.launches[$0]?.takeoverEpoch == agent.takeoverEpoch }
             if !currentEpoch { continue }
             if healthyCurrent, let current, process.launchIds.contains(current.launchId) { continue }
@@ -71,7 +76,8 @@ struct AgentExecutionDomain: Sendable {
                     || state.dispatches?[command.commandId.uuidString] != nil else { return nil }
             return command.launchId
         })
-        for launch in agent.launches.values where launch.takeoverEpoch == agent.takeoverEpoch && !launch.notSpawned {
+        for launch in agent.launches.values where launch.takeoverEpoch == agent.takeoverEpoch
+            && !launch.notSpawned && launch.retiredAfterDaemonRestart != true {
             if let processId = launch.processInstanceId {
                 if agent.processes[processId] == nil { return true }
             } else if launch.startAccepted || sentLaunches.contains(launch.launchId) {
@@ -138,7 +144,8 @@ struct AgentExecutionDomain: Sendable {
                     state.agents[request.agentId] = agent
                     throw AgentExecutionError.manualRecoveryRequired
                 }
-                if let current = agent.currentLaunchId, let launch = agent.launches[current] {
+                if let current = agent.currentLaunchId, let launch = agent.launches[current],
+                   launch.retiredAfterDaemonRestart != true {
                     if !launch.completed && !launch.notSpawned && !launch.terminalFailure {
                         throw AgentExecutionError.launchInProgress
                     }
@@ -233,6 +240,7 @@ struct AgentExecutionDomain: Sendable {
                   agent.blockedUntil.map({ now >= $0 }) ?? true,
                   agent.probeExpiresAt.map({ now < $0 }) ?? true else { return nil }
             if let id = agent.currentLaunchId, let launch = agent.launches[id],
+               launch.retiredAfterDaemonRestart != true,
                (!launch.completed && !launch.notSpawned && !launch.terminalFailure
                 || launch.terminalFailure && agent.processes.values.contains(where: { !$0.exited && $0.launchIds.contains(id) })) { return nil }
         }
@@ -388,16 +396,18 @@ struct AgentExecutionDomain: Sendable {
     }
 
     /// A launch the daemon admitted or still carries a process for. A stopped,
-    /// refused or terminally failed launch carries no delivery.
+    /// refused, terminally failed or daemon-restart-retired launch carries no
+    /// delivery.
     func launchIsUsableForDelivery(_ launch: AgentExecutionLaunch) -> Bool {
-        !launch.notSpawned && !launch.terminalFailure && !launch.stopRequested
+        launch.retiredAfterDaemonRestart != true && !launch.notSpawned && !launch.terminalFailure && !launch.stopRequested
     }
 
     /// A launch whose turn has not completed (or whose start result is still
     /// unknown): a delivery may be staged on it because the daemon buffers it
-    /// during startup and queues it while the runtime is busy.
+    /// during startup and queues it while the runtime is busy. A retired launch
+    /// belongs to a daemon instance that no longer exists.
     func launchIsInFlight(_ launch: AgentExecutionLaunch) -> Bool {
-        !launch.completed && !launch.notSpawned && !launch.terminalFailure
+        launch.retiredAfterDaemonRestart != true && !launch.completed && !launch.notSpawned && !launch.terminalFailure
     }
 
     /// The launch a delivery command must name. The current launch is used when

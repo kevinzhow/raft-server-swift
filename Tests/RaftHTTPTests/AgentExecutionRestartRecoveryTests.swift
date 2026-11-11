@@ -126,8 +126,9 @@ import Testing
     /// acknowledge it without a turn outcome: an in-flight turn whose result the
     /// server cannot observe. Upstream sends no second start for a running
     /// process, so the acknowledged delivery itself is the in-flight fact.
+    @discardableResult
     private func startInFlightTurn(_ domain: AgentExecutionDomain, context: AgentExecutionMachineContext,
-                                   _ f: Fixture) async throws {
+                                   _ f: Fixture) async throws -> AgentExecutionAdmission {
         let (channel, message) = conversation(domain, f, content: "In flight at disconnect")
         let admitted = try #require(try await commit {
             try domain.requestDelivery(.init(serverId: f.server, agentId: f.agent, channelId: channel, messageId: message))
@@ -148,6 +149,7 @@ import Testing
         let launch = try #require(f.agents.state.execution.agents[f.agent]?.launches[admitted.launchId])
         #expect(launch.inFlightDeliveryCommandIds?.contains(admitted.commandId) == true)
         #expect(f.agents.state.execution.agents[f.agent]?.hasUnsettledExecution == true)
+        return admitted
     }
 
     @Test func idleLiveProcessWithCompletedTurnIsSettledWhenTheConnectionCloses() async throws {
@@ -599,6 +601,181 @@ import Testing
         #expect(f.agents.state.execution.pendingHumanDeliveries?.count == 1)
         #expect(f.agents.state.execution.commands.values.contains {
             $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false)
+    }
+
+    /// RFC 071 §4.3 rule 4 / upstream `planWakeAction`: a complete ready from a
+    /// new daemon instance is the fact that the previous Computer process is
+    /// gone, and its empty `runningAgents` says this agent is not running. The
+    /// previous instance's launches and processes cannot be admitted by the new
+    /// one, so an accepted delivery that never reported `turn_completed` is
+    /// history (its message is never re-written), not a live turn. The
+    /// connection-derived flag clears, and the message accepted while the
+    /// Computer was offline wakes the runtime on a start that resumes the
+    /// retained session and carries it exactly once.
+    @Test func newDaemonWithoutTheRunningAgentReleasesQueuedDeliveryAfterComputerRestart() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1")
+        let completed = try await residentProcessWithCompletedLaunches(domain, context: old, f)
+        let resident = try #require(completed.last)
+        // The retained session the restarted runtime resumes.
+        let session = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:session", "agentId": f.agent, "launchId": resident.launchId,
+            "sessionId": "codex-session",
+        ])
+        _ = try await commit { try domain.stageIngress(context: old, type: "agent:session", payload: session) }
+        #expect(f.agents.state.execution.agents[f.agent]?.sessionId == "codex-session")
+        // An accepted delivery whose turn never completed. The daemon reported
+        // it as routed but the message was already consumed, so no turn
+        // followed; the retained in-flight set is exactly the production row.
+        let inFlight = try await startInFlightTurn(domain, context: old, f)
+
+        try await commit { try domain.connectionClosed(old) }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == "connection_lost_with_unsettled_execution")
+
+        let (channel, message) = conversation(domain, f, content: "Sent while the Computer restarted")
+        let queued = try await commit {
+            try domain.requestHumanMessageDelivery(.init(serverId: f.server, agentId: f.agent,
+                                                         channelId: channel, messageId: message))
+        }
+        if case .readableOnly(.offline) = queued {} else {
+            Issue.record("a message accepted while the Computer is offline must queue, got \(queued)")
+        }
+        #expect(f.agents.state.execution.pendingHumanDeliveries?.count == 1)
+
+        // A new Computer process, new daemon instance, and a complete inventory
+        // with no running agents: nothing from the old instance is live.
+        let restarted = try await open(domain, f, epoch: "connection-2", daemon: "daemon-2", running: [])
+        let agent = try #require(f.agents.state.execution.agents[f.agent])
+        #expect(agent.needsManual == nil,
+                "a new daemon's complete inventory settles an old-instance delivery the new process cannot be running")
+        #expect(agent.launches[resident.launchId]?.retiredAfterDaemonRestart == true,
+                "an old-instance launch is history, never a completed turn or a spawn failure")
+        #expect(agent.processes["process-1"]?.exited == true,
+                "the new daemon's inventory proves the old instance's process is not running")
+        #expect(agent.launches[resident.launchId]?.completed == true)
+        let restored = AgentsRuntimeStore()
+        try restored.restorePersistenceData(f.agents.exportPersistenceData())
+        #expect(restored.state.execution.agents[f.agent]?.launches[resident.launchId]?.retiredAfterDaemonRestart == true,
+                "the retirement fact survives a persistence round trip")
+        #expect(restored.state.execution.agents[f.agent]?.needsManual == nil)
+
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+        let starts = f.agents.state.execution.commands.values.filter {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        }
+        let start = try #require(starts.first)
+        #expect(starts.count == 1, "the queued message wakes the runtime with exactly one start")
+        #expect(start.sessionId == "codex-session", "the restarted runtime resumes the retained session")
+        #expect(start.launchId != resident.launchId)
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false, "the wake message is not also written as a second agent:deliver")
+        #expect(f.agents.state.execution.commands[inFlight.commandId.uuidString]?.status == .accepted,
+                "the old accepted delivery stays historical; it is never redispatched")
+
+        // The start acknowledgement settles the carried wake. A repeated release
+        // trigger must not stage a second copy.
+        try await startAck(domain, context: restarted, launchId: start.launchId,
+                           startDispatchId: try #require(start.startDispatchId), agent: f.agent)
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+        #expect(f.agents.state.execution.commands.values.filter {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        }.count == 1)
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false)
+        #expect(f.agents.state.execution.pendingHumanDeliveries == nil)
+    }
+
+    /// The safe half of the same shape: a delivery write that reached the wire
+    /// without an acknowledgement may have been processed by the old runtime.
+    /// Retiring the dead instance's launch must not clear the recovery flag or
+    /// release anything; only a human start may resolve that ambiguity.
+    @Test func newDaemonWithoutTheRunningAgentKeepsRecoveryForAnUnacknowledgedDeliveryWrite() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1")
+        _ = try await startAndCompleteTurn(domain, context: old, f)
+        let (channel, ambiguousMessage) = conversation(domain, f, content: "Written but never acknowledged")
+        // The message rows created by `conversation` carry seq 42.
+        let admitted = try #require(try await commit {
+            try domain.requestDelivery(.init(serverId: f.server, agentId: f.agent,
+                                             channelId: channel, messageId: ambiguousMessage))
+        })
+        try await commit {
+            let grant = try domain.beginDispatch(reference: .init(commandId: admitted.commandId),
+                                                 context: old, deliverySequence: 42)
+            #expect(grant == .granted)
+            _ = try domain.noteAmbiguousDispatch(reference: .init(commandId: admitted.commandId), context: old)
+        }
+        try await commit { try domain.connectionClosed(old) }
+        // The deployed row: the flag is on the agent while the dispatch stays
+        // unresolved. Reconnect reconciliation must not wipe that evidence.
+        f.agents.withState { $0.execution.agents[f.agent]?.needsManual = "connection_lost_with_unsettled_execution" }
+
+        let (queuedChannel, queuedMessage) = conversation(domain, f, content: "Must stay queued behind ambiguity")
+        let queued = try await commit {
+            try domain.requestHumanMessageDelivery(.init(serverId: f.server, agentId: f.agent,
+                                                         channelId: queuedChannel, messageId: queuedMessage))
+        }
+        if case .readableOnly(.offline) = queued {} else {
+            Issue.record("the offline send must queue, got \(queued)")
+        }
+
+        let restarted = try await open(domain, f, epoch: "connection-2", daemon: "daemon-2", running: [])
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+
+        let agent = try #require(f.agents.state.execution.agents[f.agent])
+        #expect(agent.needsManual == "connection_lost_with_unsettled_execution",
+                "an unacknowledged delivery write may have reached the old runtime; keep manual recovery")
+        #expect(f.agents.state.execution.dispatches?[admitted.commandId.uuidString]?.phase == .ambiguous)
+        #expect(f.agents.state.execution.pendingHumanDeliveries?.count == 1)
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == queuedMessage
+        } == false)
+    }
+
+    /// A start that carried a human message and reached the wire without an
+    /// acknowledgement left the durable queue at the write. A daemon restart
+    /// cannot prove the runtime received it, so recovery must stay manual: the
+    /// start is not replayed (duplicate) and the offline message is not released
+    /// behind the unresolved first delivery.
+    @Test func newDaemonWithoutTheRunningAgentKeepsRecoveryForAnUnacknowledgedWakeStart() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1")
+        _ = try await startAndCompleteTurn(domain, context: old, f)
+        let (channel, firstMessage) = conversation(domain, f, content: "Rode an unacknowledged start")
+        let start = try await commit {
+            try domain.requestStart(.init(serverId: f.server, agentId: f.agent,
+                                          wakeMessage: .init(channelId: channel, messageId: firstMessage)))
+        }
+        try await commit {
+            let grant = try domain.beginDispatch(reference: .init(commandId: start.commandId),
+                                                 context: old, deliverySequence: nil)
+            #expect(grant == .granted)
+        }
+        try await commit { try domain.connectionClosed(old) }
+        f.agents.withState { $0.execution.agents[f.agent]?.needsManual = "connection_lost_with_unsettled_execution" }
+
+        let (queuedChannel, queuedMessage) = conversation(domain, f, content: "Behind the unacknowledged wake")
+        _ = try await commit {
+            try domain.requestHumanMessageDelivery(.init(serverId: f.server, agentId: f.agent,
+                                                         channelId: queuedChannel, messageId: queuedMessage))
+        }
+        let restarted = try await open(domain, f, epoch: "connection-2", daemon: "daemon-2", running: [])
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+
+        let agent = try #require(f.agents.state.execution.agents[f.agent])
+        #expect(agent.needsManual == "connection_lost_with_unsettled_execution")
+        #expect(agent.launches[start.launchId]?.retiredAfterDaemonRestart == true)
+        #expect(f.agents.state.execution.commands[start.commandId.uuidString]?.status != .superseded,
+                "a written wake start keeps its attempted history")
+        #expect(f.agents.state.execution.pendingHumanDeliveries?.count == 1)
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == queuedMessage
         } == false)
     }
 }

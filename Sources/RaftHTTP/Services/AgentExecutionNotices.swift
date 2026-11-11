@@ -16,6 +16,7 @@ extension AgentExecutionDomain {
     /// the notice deliverable; only a genuinely absent process drops it.
     func liveNoticeLaunch(agent: AgentExecutionAgent, state: AgentExecutionState) -> AgentExecutionLaunch? {
         guard let launchId = agent.currentLaunchId, let launch = agent.launches[launchId],
+              launch.retiredAfterDaemonRestart != true,
               !launch.notSpawned, !launch.terminalFailure, !launch.stopRequested,
               launch.startAccepted || launch.processInstanceId != nil else { return nil }
         if launch.completed, liveRuntimeProcess(agent, in: state) == nil { return nil }
