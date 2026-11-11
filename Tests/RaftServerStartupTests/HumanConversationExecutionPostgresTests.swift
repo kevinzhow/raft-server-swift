@@ -44,6 +44,13 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         #expect(try await f.http("POST", "/api/agents/\(aId)/start", token: owner).status == 200)
         let start = try await peer.socket.nextObject(since: startBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == aId }
         try await peer.acknowledgeControlledStart(start)
+        // The launch must name its process and session before it can receive
+        // deliveries: a start window buffers deliveries without acknowledging
+        // them, so the port queues instead of writing into that window.
+        let conversationLaunch = try start.requireString("launchId")
+        try await peer.sendProcessSpawned(agentId: aId, launchId: conversationLaunch,
+                                          processInstanceId: "conversation-process")
+        try await peer.sendSession(agentId: aId, launchId: conversationLaunch, sessionId: "conversation-session")
 
         // RED on the old producer: HTTP200/message exists but no durable delivery.
         let dmBoundary = peer.socket.count
@@ -175,12 +182,16 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         #expect(try selfReplay.object().string("messageId") == selfId)
         let replayBlocked = try await conversationSend(f, owner: owner, channel: thread, content: "Agent receipt replay cannot reactivate a removed follow")
         try await conversationAssertNoDelivery(f, messageId: replayBlocked)
-        // B needs a real admitted start for its actual runner credential. Start
-        // ACK is protocol evidence; it does not assert a spawned/model process.
+        // B needs a real admitted start for its actual runner credential. The
+        // controlled daemon then reports the process and session that carry
+        // later deliveries (a start ACK alone is not a process).
         let bStartBoundary = peer.socket.count
         #expect(try await f.http("POST", "/api/agents/\(bId)/start", token: owner).status == 200)
         let bStart = try await peer.socket.nextObject(since: bStartBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == bId }
         try await peer.acknowledgeControlledStart(bStart)
+        let bLaunch = try bStart.requireString("launchId")
+        try await peer.sendProcessSpawned(agentId: bId, launchId: bLaunch, processInstanceId: "conversation-b-process")
+        try await peer.sendSession(agentId: bId, launchId: bLaunch, sessionId: "conversation-b-session")
         let bRunner = try #require(bStart.object("config")).requireString("agentCredentialKey")
         let agentMention = try await f.http("POST", "/internal/agent-api/v2/send", token: bRunner,
             body: .init(["target": .string("#conversation-parent:\(parentMessage.prefix(8))"),
@@ -244,13 +255,15 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         // Runtime completion is its own durable ingress fact, never a chat reply.
         let beforeOutcome = try await f.audit()
         let outcomeBoundary = peer.socket.count
+        // The same daemon instance keeps one monotonic client sequence.
+        let outcomeSeq = peer.sequence.next()
         try await peer.socket.send(.init(["type": .string("agent:runtime:outcome"), "v": .integer(1), "agentId": .string(aId),
-            "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(0), "launchId": .string(try start.requireString("launchId")),
+            "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(outcomeSeq), "launchId": .string(try start.requireString("launchId")),
             "sessionId": .null, "outcome": .object(["kind": .string("turn_completed")])]))
         do {
             _ = try await peer.socket.nextObject(since: outcomeBoundary) {
                 $0.string("type") == "agent:outcome:ack" && $0.string("agentId") == aId
-                    && $0.string("daemonInstanceId") == peer.daemonId && $0.integer("clientSeq") == 0
+                    && $0.string("daemonInstanceId") == peer.daemonId && $0.integer("clientSeq") == outcomeSeq
             }
         } catch {
             let failed = try await f.audit()
@@ -347,8 +360,9 @@ private func conversationAssertCommittedDelivery(_ f: AgentExecutionPostgresFixt
     let audit = try await f.audit()
     #expect(audit.messages.filter { $0.string("id") == messageId && $0.string("channelId") == channelId }.count == 1)
     let commands = audit.execution.commands.values.filter { $0.kind == .delivery && $0.messageId == messageId }
-    #expect(commands.count == agentIds.count)
-    try #require(Set(commands.map(\.agentId)) == agentIds)
+    let starts = audit.execution.commands.values.filter { $0.kind == .start && $0.wakeMessage?.messageId == messageId }
+    #expect(commands.count == agentIds.count, "message \(messageId) starts=\(starts.count) deliveries=\(commands.count)")
+    try #require(Set(commands.map(\.agentId)) == agentIds, "message \(messageId)")
     for command in commands {
         #expect(command.serverId == f.serverId && command.channelId == channelId)
         let effect = try #require(try await f.outbox(command.commandId))

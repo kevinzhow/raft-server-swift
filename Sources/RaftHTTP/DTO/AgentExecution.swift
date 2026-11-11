@@ -50,13 +50,32 @@ public struct AgentExecutionStartRequest: Codable, Sendable, Equatable {
     public let agentId: String
     public let control: AgentExecutionStartControl
     public let resumePrompt: String?
+    /// Upstream `attempt-wake`: the message that caused this start is embedded
+    /// in `agent:start` as its first input. The daemon runs that message as the
+    /// spawn turn, so the server never sends it as a separate `agent:deliver`
+    /// and never depends on a delivery ACK for it.
+    public var wakeMessage: AgentExecutionWakeMessage?
     public init(commandId: UUID = UUID(), serverId: String, agentId: String,
-                control: AgentExecutionStartControl = .automatic, resumePrompt: String? = nil) {
+                control: AgentExecutionStartControl = .automatic, resumePrompt: String? = nil,
+                wakeMessage: AgentExecutionWakeMessage? = nil) {
         self.commandId = commandId
         self.serverId = serverId
         self.agentId = agentId
         self.control = control
         self.resumePrompt = resumePrompt
+        self.wakeMessage = wakeMessage
+    }
+}
+
+/// The canonical message a start carries as its wake input. The wire payload is
+/// materialized from the same retained row as an `agent:deliver`, so the daemon
+/// receives the exact upstream `AgentMessage` body.
+public struct AgentExecutionWakeMessage: Codable, Sendable, Equatable {
+    public let channelId: String
+    public let messageId: String
+    public init(channelId: String, messageId: String) {
+        self.channelId = channelId
+        self.messageId = messageId
     }
 }
 
@@ -243,6 +262,10 @@ public struct AgentExecutionCommand: Codable, Sendable, Equatable {
     public var mentionDeliveryOccurrenceId: String? = nil
     public var status: Status
     public let createdAt: Date
+    /// The message this start carries as its first input (upstream
+    /// `agent:start.wakeMessage`). Absent for every other command and every
+    /// snapshot written before wake carry.
+    public var wakeMessage: AgentExecutionWakeMessage? = nil
 
     public var admission: AgentExecutionAdmission {
         AgentExecutionAdmission(commandId: commandId, launchId: launchId,

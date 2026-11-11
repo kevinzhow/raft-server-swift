@@ -70,8 +70,8 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let first, _, _) = try service.materializeInTransaction(command: command),
-              case .start(let retry, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected start configuration"); return }
+        guard case .start(let first, _, _, _) = try service.materializeInTransaction(command: command),
+              case .start(let retry, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected start configuration"); return }
         let body = try materializationObject(first)
         let again = try materializationObject(retry)
         let key = try #require(body["agentCredentialKey"] as? String)
@@ -122,7 +122,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let credentialId = try #require(try materializationObject(config)["agentCredentialId"] as? String)
         #expect(fixture.accounts.agentsRuntimeStore.revokeCredential(agentId: fixture.agentId, credentialId: credentialId, now: Date()))
         #expect(throws: AgentExecutionMaterializationError.credentialUnavailable) {
@@ -192,6 +192,42 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     #expect(fixture.accounts.messagesAndThreadsStore.humanMessageRows.isEmpty)
 }
 
+@Test func agentStartCarriesTheWakeMessageBodyAndSkipsTheResumeCatchup() async throws {
+    let fixture = try MaterializationFixture()
+    let service = fixture.materializer()
+    let context = TransactionContext()
+    try await withTransactionContext(context) {
+        defer { context.discard() }
+        _ = try fixture.stageStart()
+        // A sessioned agent would normally receive a resume catch-up. Upstream
+        // skips it when the start already carries the message that caused it.
+        fixture.accounts.agentsRuntimeStore.withState {
+            $0.execution.agents[fixture.agentId]?.sessionId = "wake-session"
+        }
+        let message = fixture.accounts.oauth.createMessageRecord(
+            channelId: fixture.channelId, content: "The wake body", senderId: fixture.userId, seq: 7)
+        fixture.accounts.messagesAndThreadsStore.withState {
+            $0.humanMessageRows.append(StoredHumanMessage(id: message.id, channelId: fixture.channelId,
+                                                          senderId: fixture.userId, content: "The wake body", seq: 7))
+        }
+        let admission = try fixture.domain.requestStart(.init(
+            serverId: fixture.serverId, agentId: fixture.agentId, control: .humanStart,
+            wakeMessage: .init(channelId: fixture.channelId, messageId: message.id)))
+        let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands[admission.commandId.uuidString])
+        guard case .start(_, let wake, let resumeMessages, let unreadSummary) = try service.materializeInTransaction(command: command),
+              case .object(let wakeBody)? = wake else {
+            Issue.record("a wake start must materialize its message body")
+            return
+        }
+        #expect(wakeBody["message_id"] == .string(message.id))
+        #expect(wakeBody["channel_id"] == .string(fixture.channelId))
+        #expect(wakeBody["content"] == .string("The wake body"))
+        #expect(wakeBody["sender_id"] == .string(fixture.userId))
+        #expect(resumeMessages.isEmpty, "a wake message replaces the resume catch-up")
+        #expect(unreadSummary != nil, "the unread summary is still published with a wake message")
+    }
+}
+
 @Test func agentExecutionMaterializationRequiresTransactionAndExplicitValidServerURL() async throws {
     let fixture = try MaterializationFixture()
     let service = fixture.materializer()
@@ -254,7 +290,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let key = try #require(try materializationObject(config)["agentCredentialKey"] as? String)
         let machine = AgentExecutionMachineContext(machineId: fixture.machineId, serverId: fixture.serverId, connectionEpochId: command.connectionEpochId)
         func ingress(_ type: String, sequence: Int64, fields: [String: JSONValue]) throws {
@@ -299,7 +335,7 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let key = try #require(try materializationObject(config)["agentCredentialKey"] as? String)
         let machine = AgentExecutionMachineContext(machineId: fixture.machineId, serverId: fixture.serverId, connectionEpochId: command.connectionEpochId)
         let reference = AgentExecutionIntentReference(commandId: command.commandId)

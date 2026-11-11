@@ -7,7 +7,11 @@ public enum AgentExecutionMaterializedPayload: Sendable {
     /// `resumeMessages` and `unreadSummary` are upstream `agent:start` resume
     /// context. Both are omitted when the agent has no session or nothing is
     /// unread, exactly as the Node producer omits undefined fields.
-    case start(configuration: Data, resumeMessages: [JSONValue], unreadSummary: [String: Int]?)
+    /// `wakeMessage` is the upstream `attempt-wake` input: the exact agent-visible
+    /// body of the message that caused this start. Upstream never sends that
+    /// message as a separate `agent:deliver`, and the daemon ignores the resume
+    /// catch-up when a wake message is present.
+    case start(configuration: Data, wakeMessage: JSONValue?, resumeMessages: [JSONValue], unreadSummary: [String: Int]?)
     /// `mentionDelivery` is present only for a tracked formal mention whose
     /// server decision was just committed with this exact payload.
     case delivery(message: Data, sequence: Int64, mentionDelivery: MentionDeliveryIdentitySnapshot?)

@@ -93,12 +93,14 @@ func postgresResidentAgentReceivesEveryLaterHumanMessageWithoutAColdStart() asyn
             $0.string("type") == "agent:start" && $0.string("agentId") == agentID
         }
         let launchID = try start.requireString("launchId")
+        // Upstream attempt-wake: the message that caused the start is its first
+        // input, so no separate agent:deliver follows for it.
+        #expect(start.object("wakeMessage")?.string("message_id") == firstMessage)
         try await peer.acknowledgeControlledRebind(start, processInstanceId: "process-1", queueState: "running")
         try await peer.sendRebound(agentId: agentID, launchId: launchID, processInstanceId: "process-1")
         // The official daemon reports the process session; tracked mentions are
         // only delivered against that concrete identity.
         try await peer.sendSession(agentId: agentID, launchId: launchID, sessionId: "codex-session")
-        _ = try await deliver(peer, since: firstBoundary, messageID: firstMessage)
         try await peer.sendTurnCompleted(agentId: agentID, launchId: launchID, sessionId: "codex-session")
         try await protocolPGEventually {
             let state = try await fixture.audit().execution.agents[agentID]
@@ -180,7 +182,7 @@ func postgresResidentAgentReceivesEveryLaterHumanMessageWithoutAColdStart() asyn
             let accepted = audit.execution.commands.values.filter {
                 $0.kind == .delivery && $0.agentId == agentID && $0.status == .accepted
             }
-            return accepted.count == 5 && (audit.execution.pendingHumanDeliveries ?? [:]).isEmpty
+            return accepted.count == 4 && (audit.execution.pendingHumanDeliveries ?? [:]).isEmpty
         }
         let final = try await fixture.audit()
         let starts = final.execution.commands.values.filter { $0.kind == .start && $0.agentId == agentID }

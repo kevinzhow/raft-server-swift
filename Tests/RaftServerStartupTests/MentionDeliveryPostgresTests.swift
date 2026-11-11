@@ -190,19 +190,19 @@ func postgresOfflineMentionIsRecordedRedrivenOnceAndAcked() async throws {
         let resumedStart = try await reconnected.socket.nextObject(since: resumeBoundary) {
             $0.string("type") == "agent:start" && $0.string("agentId") == agentID
         }
-        let resumeMessages = try #require(resumedStart.array("resumeMessages"))
-        let resumeObjects = resumeMessages.compactMap { value -> ProtocolPGObject? in
-            guard case .object(let fields) = value else { return nil }
-            return ProtocolPGObject(fields)
-        }
-        #expect(resumeObjects.contains { $0.string("message_id") == dmMessageID },
+        // Upstream attempt-wake: the message that arrived while the agent was
+        // offline is the start's first input; that wake replaces the resume
+        // catch-up rows. The unread summary is still published.
+        #expect(resumedStart.object("wakeMessage")?.string("message_id") == dmMessageID,
                 "the start carries the message that arrived while the agent was offline")
+        #expect(resumedStart.array("resumeMessages") == nil,
+                "a wake message replaces the resume catch-up rows")
         let unreadSummary = try #require(resumedStart.object("unreadSummary"))
         #expect(unreadSummary.fields.keys.contains { $0.hasPrefix("dm:@") })
         let resumedLaunch = try resumedStart.requireString("launchId")
         try await reconnected.acknowledgeControlledStart(resumedStart)
         try await reconnected.sendSession(agentId: agentID, launchId: resumedLaunch, sessionId: "mention-session-2")
-        phase("resume-context-carried")
+        phase("wake-carried")
         phase("complete")
     } catch {
         await fixture.close(machine: machine)

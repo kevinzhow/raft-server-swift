@@ -11,7 +11,7 @@ enum ProductionAgentExecutionWire {
         case invalidMessage
     }
 
-    static func start(_ command: AgentExecutionCommand, configuration: Data,
+    static func start(_ command: AgentExecutionCommand, configuration: Data, wakeMessage: JSONValue?,
                       resumeMessages: [JSONValue], unreadSummary: [String: Int]?) throws -> Data {
         guard command.kind == .start, !command.agentId.isEmpty, !command.launchId.isEmpty,
               let dispatch = command.startDispatchId, !dispatch.isEmpty, !command.connectionEpochId.isEmpty else {
@@ -32,14 +32,15 @@ enum ProductionAgentExecutionWire {
         }
         guard resumeMessages.allSatisfy({ if case .object = $0 { true } else { false } }),
               resumeMessages.count <= 20,
-              unreadSummary.map({ $0.count <= 21 && $0.values.allSatisfy { $0 >= 0 } }) ?? true else {
+              unreadSummary.map({ $0.count <= 21 && $0.values.allSatisfy { $0 >= 0 } }) ?? true,
+              wakeMessage.map({ if case .object = $0 { true } else { false } }) ?? true else {
             throw Error.invalidMessage
         }
         let envelope = StartEnvelope(agentId: command.agentId, config: .object(config), launchId: command.launchId,
                                      startDispatchId: dispatch, breakerGeneration: command.breakerGeneration,
                                      takeoverEpoch: command.takeoverEpoch, humanStart: command.humanStart,
                                      connectionEpochId: command.connectionEpochId, resumePrompt: command.resumePrompt,
-                                     resumeMessages: resumeMessages, unreadSummary: unreadSummary)
+                                     wakeMessage: wakeMessage, resumeMessages: resumeMessages, unreadSummary: unreadSummary)
         return try encode(envelope.value, failure: .invalidConfiguration)
     }
 
@@ -103,6 +104,7 @@ enum ProductionAgentExecutionWire {
         let humanStart: Bool
         let connectionEpochId: String
         let resumePrompt: String?
+        let wakeMessage: JSONValue?
         let resumeMessages: [JSONValue]
         let unreadSummary: [String: Int]?
 
@@ -114,6 +116,9 @@ enum ProductionAgentExecutionWire {
                 "humanStart": .bool(humanStart), "connectionEpochId": .string(connectionEpochId)
             ]
             if let resumePrompt { members["resumePrompt"] = .string(resumePrompt) }
+            // Upstream `attempt-wake` member order is producer-owned; the daemon
+            // reads it by name and runs it as the spawn turn.
+            if let wakeMessage { members["wakeMessage"] = wakeMessage }
             if !resumeMessages.isEmpty { members["resumeMessages"] = .array(resumeMessages) }
             if let unreadSummary, !unreadSummary.isEmpty {
                 members["unreadSummary"] = .object(unreadSummary.mapValues { .integer(Int64($0)) })

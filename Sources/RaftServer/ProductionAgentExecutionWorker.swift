@@ -84,10 +84,10 @@ struct ProductionAgentExecutionDispatcher: Sendable {
                 let body = try await materializer.materialize(command: command)
                 let data: Data
                 switch (command.kind, body) {
-                case (.start, .start(let configuration, let resumeMessages, let unreadSummary)):
+                case (.start, .start(let configuration, let wakeMessage, let resumeMessages, let unreadSummary)):
                     data = try ProductionAgentExecutionWire.start(
-                        command, configuration: configuration, resumeMessages: resumeMessages,
-                        unreadSummary: unreadSummary)
+                        command, configuration: configuration, wakeMessage: wakeMessage,
+                        resumeMessages: resumeMessages, unreadSummary: unreadSummary)
                     sequence = nil
                 case (.delivery, .delivery(let message, let actualSequence, let mentionDelivery)):
                     data = try ProductionAgentExecutionWire.delivery(

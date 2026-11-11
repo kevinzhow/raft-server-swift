@@ -254,6 +254,7 @@ extension AgentExecutionDomain {
                     dispatches[key] = dispatch
                     state.dispatches = dispatches
                 }
+                state.settleCarriedWakeMessage(command)
             }
             return .committed(ack: frame.acknowledgement)
         }
@@ -848,6 +849,9 @@ extension AgentExecutionDomain {
                         dispatches[key] = dispatch
                         state.dispatches = dispatches
                     }
+                    // The daemon acknowledged the start; the wake message rode
+                    // that same frame, so its queued fact is settled with it.
+                    if let command = state.commands[key] { state.settleCarriedWakeMessage(command) }
                 }
             }
             agent.launches[launchId] = launch
