@@ -126,6 +126,15 @@ extension AgentExecutionDomain {
         // not execution outcomes: they carry no durable ACK.
         if type == "agent:status" { return try stageReportedStatus(context: context, payload: payload) }
         if type == "agent:activity" { return try stageReportedActivity(context: context, payload: payload) }
+        // Tracked mention receipts. They are not sequenced outcome frames and
+        // carry no acknowledgement of their own; the daemon sends the final
+        // `agent:deliver:ack` after `daemon_drained`.
+        if type == "agent:delivery:transition" {
+            return try stageMentionDeliveryTransition(context: context, payload: payload)
+        }
+        if type == "agent:delivery:terminal_error" {
+            return try stageMentionDeliveryTerminalError(context: context, payload: payload)
+        }
         if type == "agent:session" || type == "agent:start:ack" {
             return try stageControl(context: context, type: type, payload: payload)
         }
@@ -522,6 +531,41 @@ extension AgentExecutionDomain {
               (try? boundMachine(serverId: context.serverId, agentId: agentId)) == context.machineId else {
             return .hold(reason: "malformed_delivery_ack")
         }
+        let mentionDelivery: MentionDeliveryIdentitySnapshot?
+        if body["mentionDelivery"] == nil || body["mentionDelivery"] == .null {
+            mentionDelivery = nil
+        } else {
+            guard let parsed = Self.mentionDeliveryIdentity(body["mentionDelivery"]),
+                  parsed.machineId == context.machineId else { return .hold(reason: "malformed_delivery_ack") }
+            mentionDelivery = parsed
+        }
+        if let mentionDelivery {
+            // Upstream records the durable ACK before clearing its in-flight
+            // dispatch bookkeeping. An identity mismatch is a terminal drift,
+            // never an ordinary ACK, and the command is not settled. The ACK
+            // must name the command that owns this occurrence.
+            guard agents.state.execution.commands.values.contains(where: {
+                ($0.kind == .delivery || $0.kind == .notice) && $0.agentId == agentId
+                    && $0.deliveryId == deliveryId
+                    && $0.mentionDeliveryOccurrenceId == mentionDelivery.occurrenceId
+            }) else { return .hold(reason: "unowned_delivery_ack") }
+            let snapshot = agents.state.execution
+            guard let agent = snapshot.agents[agentId],
+                  let currentSession = agent.sessionId, agent.currentLaunchId == mentionDelivery.launchId,
+                  mentionDelivery.sessionId == currentSession else {
+                try recordMentionDeliveryIdentityDrift(
+                    context: context, agentId: agentId, identity: mentionDelivery,
+                    stage: "ack_receipt", originalDaemonCode: nil)
+                return .committed(ack: nil)
+            }
+            guard messages.recordMentionDeliveryAck(
+                occurrenceId: mentionDelivery.occurrenceId, messageId: mentionDelivery.messageId,
+                agentId: agentId,
+                identity: .init(machineId: mentionDelivery.machineId, launchId: mentionDelivery.launchId,
+                                sessionId: mentionDelivery.sessionId)) != nil else {
+                return .hold(reason: "mention_ack_not_joinable")
+            }
+        }
         return try mutate { state in
             guard let connection = state.connections[context.machineId], connection.online,
                   connection.serverId == context.serverId, connection.connectionEpochId == context.connectionEpochId else {
@@ -556,14 +600,115 @@ extension AgentExecutionDomain {
                 state.agents[agentId]?.launches[launch.launchId] = launch
             }
             // The accepted delivery settles its queued offline send; the
-            // canonical message row keeps the history.
+            // canonical message row keeps the history. A tracked mention may
+            // have been released by the occurrence recovery step instead, so
+            // the same message identity is cleared as well.
             if var pending = state.pendingHumanDeliveries {
                 let commandId = match.value.commandId
-                pending = pending.filter { $0.value.releasedCommandId != commandId }
+                let messageId = match.value.messageId
+                pending = pending.filter {
+                    $0.value.releasedCommandId != commandId
+                        && !(messageId != nil && $0.value.agentId == agentId && $0.value.messageId == messageId)
+                }
                 state.pendingHumanDeliveries = pending.isEmpty ? nil : pending
             }
             return .committed(ack: nil)
         }
+    }
+
+    static func mentionDeliveryIdentity(_ value: JSONValue?) -> MentionDeliveryIdentitySnapshot? {
+        guard case .object(let members)? = value,
+              let occurrenceId = AgentExecutionOutcomeFrame.id(members["occurrenceId"]),
+              let messageId = AgentExecutionOutcomeFrame.id(members["messageId"]),
+              let machineId = AgentExecutionOutcomeFrame.id(members["machineId"]),
+              let launchId = AgentExecutionOutcomeFrame.id(members["launchId"]),
+              let sessionId = AgentExecutionOutcomeFrame.id(members["sessionId"]) else { return nil }
+        return MentionDeliveryIdentitySnapshot(occurrenceId: occurrenceId, messageId: messageId,
+                                               machineId: machineId, launchId: launchId, sessionId: sessionId)
+    }
+
+    /// One daemon transition (`agent:delivery:transition`). The daemon identity
+    /// must still be the server's frozen expectation; a stale socket's receipt
+    /// terminalises the occurrence as `IDENTITY_DRIFT` instead of advancing it.
+    private func stageMentionDeliveryTransition(context: AgentExecutionMachineContext,
+                                                payload: Data) throws -> AgentExecutionIngressResult {
+        guard let body = AgentExecutionOutcomeFrame.object(payload),
+              AgentExecutionOutcomeFrame.string(body["type"]) == "agent:delivery:transition",
+              let agentId = AgentExecutionOutcomeFrame.id(body["agentId"]),
+              let stage = AgentExecutionOutcomeFrame.string(body["stage"]),
+              ["daemon_received", "daemon_pending", "daemon_drained"].contains(stage),
+              let identity = Self.mentionDeliveryIdentity(body["mentionDelivery"]),
+              identity.machineId == context.machineId, ownsMachine(context),
+              (try? boundMachine(serverId: context.serverId, agentId: agentId)) == context.machineId else {
+            return .hold(reason: "malformed_delivery_transition")
+        }
+        let outcome = AgentExecutionOutcomeFrame.string(body["outcome"])
+        if outcome != nil, outcome != "accepted", outcome != "coalesced" {
+            return .hold(reason: "malformed_delivery_transition")
+        }
+        let snapshot = agents.state.execution
+        guard let agent = snapshot.agents[agentId],
+              let session = agent.sessionId, agent.currentLaunchId == identity.launchId,
+              identity.sessionId == session else {
+            try recordMentionDeliveryIdentityDrift(
+                context: context, agentId: agentId, identity: identity,
+                stage: "stage_receipt", originalDaemonCode: nil)
+            return .committed(ack: nil)
+        }
+        _ = messages.recordMentionDeliveryDaemonTransition(
+            occurrenceId: identity.occurrenceId, messageId: identity.messageId, agentId: agentId,
+            identity: .init(machineId: identity.machineId, launchId: identity.launchId, sessionId: identity.sessionId),
+            stage: stage, outcome: outcome)
+        return .committed(ack: nil)
+    }
+
+    /// `agent:delivery:terminal_error`: the daemon's closed permanent refusal.
+    private func stageMentionDeliveryTerminalError(context: AgentExecutionMachineContext,
+                                                   payload: Data) throws -> AgentExecutionIngressResult {
+        guard let body = AgentExecutionOutcomeFrame.object(payload),
+              AgentExecutionOutcomeFrame.string(body["type"]) == "agent:delivery:terminal_error",
+              let agentId = AgentExecutionOutcomeFrame.id(body["agentId"]),
+              let code = AgentExecutionOutcomeFrame.string(body["code"]),
+              MentionDeliveryTerminalCodes.all.contains(code),
+              let identity = Self.mentionDeliveryIdentity(body["mentionDelivery"]),
+              identity.machineId == context.machineId, ownsMachine(context),
+              (try? boundMachine(serverId: context.serverId, agentId: agentId)) == context.machineId else {
+            return .hold(reason: "malformed_delivery_terminal")
+        }
+        let snapshot = agents.state.execution
+        guard let agent = snapshot.agents[agentId],
+              let session = agent.sessionId, agent.currentLaunchId == identity.launchId,
+              identity.sessionId == session else {
+            try recordMentionDeliveryIdentityDrift(
+                context: context, agentId: agentId, identity: identity,
+                stage: "terminal_receipt", originalDaemonCode: code)
+            return .committed(ack: nil)
+        }
+        _ = messages.recordMentionDeliveryTerminalError(
+            occurrenceId: identity.occurrenceId, messageId: identity.messageId, agentId: agentId,
+            identity: .init(machineId: identity.machineId, launchId: identity.launchId, sessionId: identity.sessionId),
+            code: code,
+            decision: MentionDeliveryTerminalDecision(layer: "daemon", stage: "terminal_receipt",
+                                                      originalDaemonCode: code),
+            requireIdentity: true)
+        return .committed(ack: nil)
+    }
+
+    /// A receipt from a socket whose launch/session is no longer the server's
+    /// expectation still terminalises the occurrence it names, but never an
+    /// unrelated one: the frozen identity must match the row.
+    private func recordMentionDeliveryIdentityDrift(
+        context: AgentExecutionMachineContext, agentId: String,
+        identity: MentionDeliveryIdentitySnapshot, stage: String, originalDaemonCode: String?
+    ) throws {
+        _ = messages.recordMentionDeliveryTerminalError(
+            occurrenceId: identity.occurrenceId, messageId: identity.messageId, agentId: agentId,
+            identity: .init(machineId: identity.machineId, launchId: identity.launchId,
+                            sessionId: identity.sessionId),
+            code: "IDENTITY_DRIFT",
+            decision: MentionDeliveryTerminalDecision(layer: "server", stage: stage,
+                                                      originalDaemonCode: originalDaemonCode),
+            requireIdentity: true)
     }
 
     private func stageControl(context: AgentExecutionMachineContext, type: String, payload: Data) throws -> AgentExecutionIngressResult {

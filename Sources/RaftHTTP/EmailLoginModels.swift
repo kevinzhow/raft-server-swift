@@ -472,7 +472,14 @@ struct StoredMention: Sendable {
         var notifiedByType: String?
         var notifiedById: String?
         var notifiedAction: String?
+        /// Legacy pre-occurrence terminal code. Never written by this port's
+        /// send path; retained so an older snapshot and the legacy test seam
+        /// still restore. The sender projection reads the occurrence below.
         var terminalCode: String? = nil
+        /// Upstream durable mention-delivery occurrence. Optional on purpose:
+        /// a snapshot written before the occurrence spine restores with none,
+        /// and an older build restores a snapshot that carries one.
+        var mentionDeliveryOccurrence: MentionDeliveryOccurrence? = nil
     }
 
 struct PostableChannel: Sendable {

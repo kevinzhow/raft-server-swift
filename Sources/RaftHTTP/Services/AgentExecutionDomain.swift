@@ -213,8 +213,26 @@ struct AgentExecutionDomain: Sendable {
         return try requestStart(request)
     }
 
+    /// The staging result of one delivery request. `deferred` is not a refusal:
+    /// the canonical message and the durable mention occurrence keep the
+    /// obligation, and the daemon's next `agent:session` recovers it once the
+    /// concrete session identity exists (upstream never embeds a tracked mention
+    /// in `agent:start`).
+    enum DeliveryStaging: Sendable {
+        case staged(AgentExecutionAdmission)
+        case held
+        case deferred
+    }
+
     /// nil is a durable held delivery, not a failed user message or task write.
     func requestDelivery(_ request: AgentExecutionDeliveryRequest) throws -> AgentExecutionAdmission? {
+        switch try stageDelivery(request) {
+        case .staged(let admission): return admission
+        case .held, .deferred: return nil
+        }
+    }
+
+    func stageDelivery(_ request: AgentExecutionDeliveryRequest) throws -> DeliveryStaging {
         try requireTransaction()
         _ = try ownedAgent(serverId: request.serverId, agentId: request.agentId)
         guard deliveryIsAuthorized(serverId: request.serverId, agentId: request.agentId,
@@ -224,7 +242,10 @@ struct AgentExecutionDomain: Sendable {
         if let held = agents.state.execution.heldDeliveries?[request.commandId.uuidString] {
             guard held.serverId == request.serverId, held.agentId == request.agentId,
                   held.channelId == request.channelId, held.messageId == request.messageId else { throw AgentExecutionError.conflictingCommand }
-            return held.releasedCommandId.flatMap { agents.state.execution.commands[$0.uuidString]?.admission }
+            guard let admission = held.releasedCommandId.flatMap({ agents.state.execution.commands[$0.uuidString]?.admission }) else {
+                return .held
+            }
+            return .staged(admission)
         }
         guard agents.state.execution.stopIntents?[request.commandId.uuidString] == nil else { throw AgentExecutionError.conflictingCommand }
         if let previous = agents.state.execution.commands[request.commandId.uuidString] {
@@ -232,13 +253,20 @@ struct AgentExecutionDomain: Sendable {
                   previous.channelId == request.channelId, previous.messageId == request.messageId else {
                 throw AgentExecutionError.conflictingCommand
             }
-            return previous.admission
+            return .staged(previous.admission)
         }
         if manuallyStopped(serverId: request.serverId, agentId: request.agentId) || hasActiveReset(serverId: request.serverId, agentId: request.agentId) {
             try holdDelivery(request)
-            return nil
+            return .held
         }
         let machineId = try boundMachine(serverId: request.serverId, agentId: request.agentId)
+        // A formal notifiable mention carries a durable occurrence from the send
+        // transaction; a mention resolved later (the sender's notify/add action)
+        // gains it here, before any delivery is prepared.
+        let occurrence = messages.ensureMentionDeliveryOccurrence(
+            messageId: request.messageId, agentId: request.agentId).flatMap {
+                messages.mentionDeliveryOccurrence(occurrenceId: $0)
+            }
         let snapshot = agents.state.execution
         let current = snapshot.agents[request.agentId].flatMap { agent in
             agent.currentLaunchId.flatMap { agent.launches[$0] }
@@ -249,9 +277,18 @@ struct AgentExecutionDomain: Sendable {
         // launch still starting buffers it. Neither case starts a new launch:
         // that start is what used to be refused for the unexited process and
         // silently wedged every message after the first turn.
-        if live == nil, current.map(launchIsInFlight) != true {
+        let startsRuntime = live == nil && current.map(launchIsInFlight) != true
+        if startsRuntime {
             _ = try requestStart(.init(serverId: request.serverId, agentId: request.agentId))
         }
+        // Upstream `applyWakeAction`: a tracked mention is not embedded in
+        // `agent:start` because the concrete session identity does not exist
+        // yet. Start the runtime, then `agent:session` rebuilds the acknowledgement
+        // obligation from the durable occurrence.
+        if occurrence != nil, startsRuntime { return .deferred }
+        // `applyDirectDelivery`'s identity gate: without the daemon's current
+        // session there is nothing to track against.
+        if occurrence != nil, agents.state.execution.agents[request.agentId]?.sessionId == nil { return .deferred }
         do {
             let command = try mutate { state -> AgentExecutionCommand in
                 guard let connection = state.connections[machineId], connection.online, connection.ready,
@@ -269,15 +306,18 @@ struct AgentExecutionDomain: Sendable {
                 }
                 let command = AgentExecutionCommand(
                     commandId: request.commandId, kind: .delivery, serverId: request.serverId, machineId: machineId,
-                    agentId: request.agentId, launchId: launchId, startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
+                    agentId: request.agentId, launchId: launchId, startDispatchId: nil,
+                    deliveryId: occurrence?.occurrenceId ?? UUID().uuidString.lowercased(),
                     connectionEpochId: connection.connectionEpochId, takeoverEpoch: agent.takeoverEpoch,
                     breakerGeneration: agent.generation, humanStart: false, sessionId: agent.sessionId,
-                    resumePrompt: nil, channelId: request.channelId, messageId: request.messageId, notice: nil, status: .pending, createdAt: Date())
+                    resumePrompt: nil, channelId: request.channelId, messageId: request.messageId, notice: nil,
+                    mentionDeliveryOccurrenceId: occurrence?.occurrenceId,
+                    status: .pending, createdAt: Date())
                 state.commands[request.commandId.uuidString] = command
                 return command
             }
             try stage(command)
-            return command.admission
+            return .staged(command.admission)
         } catch {
             // A cold start may already be staged. Never commit half the producer
             // request if the caller converts this error to an HTTP response.

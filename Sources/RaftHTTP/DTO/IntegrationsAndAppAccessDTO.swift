@@ -906,41 +906,35 @@ public enum AgentIntegrationLoginResponse: Sendable, Equatable, JSONBodyConverti
 // MARK: - Agent message lookups
 
 /// `GET /internal/agent-api/messages/:messageId/mention-deliveries` reply.
+///
+/// Upstream lists the message's occurrence rows and publishes only the authored
+/// handle plus the coarse outcome. `targetId` is deliberately absent: the agent
+/// surface addresses targets by the handle the author typed, and the pinned CLI
+/// schema (`agentApiSenderMentionDeliveryRowSchema`) is a strict object with
+/// exactly these members.
 public struct AgentMentionDeliveriesResponse: Sendable, Equatable, JSONBodyConvertible {
     public struct Delivery: Sendable, Equatable {
-        public var targetId: String
-        public var handle: String
-        public var terminalCode: String?
+        public var targetHandle: String
+        public var outcome: MentionDeliveryOutcome
 
-        public init(targetId: String, handle: String, terminalCode: String?) {
-            self.targetId = targetId
-            self.handle = handle
-            self.terminalCode = terminalCode
+        public init(targetHandle: String, outcome: MentionDeliveryOutcome) {
+            self.targetHandle = targetHandle
+            self.outcome = outcome
         }
 
-        /// A delivery with no terminal code (or an instrumentation failure)
-        /// is `unknown`; any other terminal code is `lost` with a coarse
-        /// reason category.
         fileprivate var fields: [OrderedJSONField] {
-            var fields = [
-                OrderedJSONField("targetId", targetId),
-                OrderedJSONField("targetHandle", handle),
-            ]
-            guard let terminalCode, terminalCode != "INSTRUMENT_FAILED" else {
+            var fields = [OrderedJSONField("targetHandle", targetHandle)]
+            switch outcome {
+            case .delivered:
+                fields.append(OrderedJSONField("outcome", "delivered"))
+            case .pending:
+                fields.append(OrderedJSONField("outcome", "pending"))
+            case .lost(let category):
+                fields.append(OrderedJSONField("outcome", "lost"))
+                fields.append(OrderedJSONField("reasonCategory", category))
+            case .unknown:
                 fields.append(OrderedJSONField("outcome", "unknown"))
-                return fields
             }
-            let category: String
-            switch terminalCode {
-            case "QUOTA_LIMITED":
-                category = "quota"
-            case "DELIVERY_REJECTED":
-                category = "runtime_error"
-            default:
-                category = "unclassified"
-            }
-            fields.append(OrderedJSONField("outcome", "lost"))
-            fields.append(OrderedJSONField("reasonCategory", category))
             return fields
         }
     }

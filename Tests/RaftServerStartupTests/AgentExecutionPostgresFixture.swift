@@ -28,6 +28,9 @@ struct ProtocolPGAudit: Sendable, CustomStringConvertible {
     let execution: AgentExecutionState
     let canonicalAgents: ProtocolPGObject
     let messages: [ProtocolPGObject]
+    /// Formal mention rows, including the optional occurrence group. The
+    /// acceptance asserts the durable occurrence without opening the database.
+    let mentions: [ProtocolPGObject]
     let tasks: [ProtocolPGObject]
     var description: String { "ProtocolPGAudit(redacted)" }
     func status(agent: String) -> String? { canonicalAgents.object(agent)?.string("status") }
@@ -258,12 +261,14 @@ final class AgentExecutionPostgresFixture: Sendable {
                   let canonical = oauth.object("businessState")?.object("agents"),
                   messaging.string("owner") == "messages-and-threads", messaging.integer("version") == 1,
                   let messages = messaging.object("payload")?.array("humanMessageRows"),
+                  let mentions = messaging.object("payload")?.array("storedMentions"),
                   collaboration.string("format") == "raft.tasks-and-reminders", collaboration.integer("version") == 1,
                   let tasks = collaboration.object("business")?.array("taskRecords") else { throw ProtocolPGFailure.invalidSnapshot }
             func rows(_ values: [JSONValue]) throws -> [ProtocolPGObject] {
                 try values.map { value in guard case .object(let row) = value else { throw ProtocolPGFailure.invalidSnapshot }; return .init(row) }
             }
-            return try .init(execution: execution, canonicalAgents: canonical, messages: rows(messages), tasks: rows(tasks))
+            return try .init(execution: execution, canonicalAgents: canonical, messages: rows(messages),
+                             mentions: rows(mentions), tasks: rows(tasks))
         } catch { throw ProtocolPGFailure.invalidSnapshot }
     }
     func outbox(_ commandId: UUID) async throws -> DurableOutboxEntry? { try await observer.outboxEffect(effectID: commandId) }

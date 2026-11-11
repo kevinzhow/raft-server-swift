@@ -76,7 +76,11 @@ func postgresResidentAgentReceivesEveryLaterHumanMessageWithoutAColdStart() asyn
                 $0.string("type") == "agent:deliver" && $0.string("agentId") == agentID
                     && $0.object("message")?.string("message_id") == messageID
             }
-            try await peer.acknowledgeControlledDelivery(delivery)
+            if delivery.object("mentionDelivery") != nil {
+                try await peer.acknowledgeControlledMentionDelivery(delivery)
+            } else {
+                try await peer.acknowledgeControlledDelivery(delivery)
+            }
             return peer.socket.count
         }
 
@@ -91,6 +95,9 @@ func postgresResidentAgentReceivesEveryLaterHumanMessageWithoutAColdStart() asyn
         let launchID = try start.requireString("launchId")
         try await peer.acknowledgeControlledRebind(start, processInstanceId: "process-1", queueState: "running")
         try await peer.sendRebound(agentId: agentID, launchId: launchID, processInstanceId: "process-1")
+        // The official daemon reports the process session; tracked mentions are
+        // only delivered against that concrete identity.
+        try await peer.sendSession(agentId: agentID, launchId: launchID, sessionId: "codex-session")
         _ = try await deliver(peer, since: firstBoundary, messageID: firstMessage)
         try await peer.sendTurnCompleted(agentId: agentID, launchId: launchID, sessionId: "codex-session")
         try await protocolPGEventually {
@@ -237,6 +244,8 @@ func postgresResidentAgentReceivesEveryLaterHumanMessageWithoutAColdStart() asyn
         // queued delivery through the ordinary strict path, without a start.
         try await reconnected.sendProcessSpawned(agentId: queuedAgent, launchId: queuedLaunch,
                                                  processInstanceId: "process-queued")
+        try await reconnected.sendSession(agentId: queuedAgent, launchId: queuedLaunch,
+                                          sessionId: "codex-session-2")
         let queuedDelivery = try await reconnected.socket.nextObject(since: queuedBoundary) {
             $0.string("type") == "agent:deliver" && $0.string("agentId") == queuedAgent
                 && $0.object("message")?.string("message_id") == queuedMessageID

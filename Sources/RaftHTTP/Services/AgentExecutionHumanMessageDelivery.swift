@@ -41,8 +41,19 @@ extension AgentExecutionDomain {
             try queuePendingHumanDelivery(request)
             return .readableOnly(refusal)
         }
-        if let admission = try requestDelivery(request) { return .staged(admission) }
-        return .held
+        switch try stageDelivery(request) {
+        case .staged(let admission):
+            return .staged(admission)
+        case .held:
+            return .held
+        case .deferred:
+            // The wake start (or an already admitted launch) plus the durable
+            // occurrence own the obligation; `agent:session` delivers it once
+            // the concrete session identity exists. The canonical message stays
+            // readable and a pending fact keeps a later ready retrying.
+            try queuePendingHumanDelivery(request)
+            return .readableOnly(.launchInProgress)
+        }
     }
 
     /// The read-only half of the wake decision: nil means the ordinary strict

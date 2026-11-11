@@ -365,15 +365,17 @@ public struct InboxAndWakeService: Sendable {
         else {
             throw InboxAndWakeError.notJoinable
         }
-        let deliveryFacts = MentionDeliveryOutcomeProjection(execution: flags.state.execution)
+        // Upstream joins the message's formal notifiable agent mentions to their
+        // occurrence rows by `occurrenceId == messageMentions.id`. A mention with
+        // no occurrence is the same `NOT_JOINABLE` join miss upstream publishes
+        // as `unknown`; nothing is inferred from delivery commands or queues.
         let deliveries = messageState.storedMentions.filter {
             $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
         }.map { mention in
             MentionDeliveryRowDTO(
                 targetId: mention.targetId,
                 handle: mention.handle,
-                outcome: deliveryFacts.outcome(agentId: mention.targetId, messageId: mention.messageId,
-                                               terminalCode: mention.terminalCode)
+                outcome: MentionDeliverySenderProjection.outcome(occurrence: mention.mentionDeliveryOccurrence)
             )
         }
         return MentionDeliveriesResponseDTO(messageId: message.id, deliveries: deliveries)

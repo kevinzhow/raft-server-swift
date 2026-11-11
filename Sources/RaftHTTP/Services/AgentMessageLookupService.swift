@@ -148,13 +148,18 @@ public struct AgentMessageLookupService: Sendable {
         else {
             throw AgentMessageLookupError.notJoinable
         }
-        let deliveries = state.storedMentions.filter {
-            $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
-        }.map {
-            AgentMentionDeliveriesResponse.Delivery(
-                targetId: $0.targetId, handle: $0.handle, terminalCode: $0.terminalCode
-            )
-        }
+        // Upstream lists the occurrence rows themselves, so a row whose mention
+        // has since been deleted from the projection is still reported; the
+        // authored handle comes from the mention record (`handleAtSendTime`).
+        let deliveries = state.storedMentions
+            .filter { $0.messageId == message.id && $0.mentionDeliveryOccurrence != nil }
+            .sorted { $0.id < $1.id }
+            .map { mention in
+                AgentMentionDeliveriesResponse.Delivery(
+                    targetHandle: mention.handle,
+                    outcome: MentionDeliverySenderProjection.outcome(
+                        occurrence: mention.mentionDeliveryOccurrence))
+            }
         return AgentMentionDeliveriesResponse(messageId: message.id, deliveries: deliveries)
     }
 

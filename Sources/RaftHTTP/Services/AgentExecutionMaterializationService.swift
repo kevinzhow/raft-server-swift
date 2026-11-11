@@ -62,7 +62,22 @@ public struct AgentExecutionMaterializationService: Sendable {
                 throw AgentExecutionMaterializationError.commandUnavailable
             }
             switch command.kind {
-            case .start: return .start(configuration: try start(command: command, agent: agent))
+            case .start:
+                let configuration = try start(command: command, agent: agent)
+                // Upstream computes the resume catch-up only when the agent has
+                // a session (a fresh session has no history to resume) and no
+                // resume prompt already gives the start something to act on.
+                var resumeMessages: [JSONValue] = []
+                var unreadSummary: [String: Int]?
+                if command.resumePrompt == nil, command.sessionId != nil {
+                    let context = AgentResumeContext(messages: messages, channels: channels, oauth: oauth,
+                                                     tasks: tasks, profiles: profiles)
+                    let built = context.build(serverId: command.serverId, agentId: command.agentId)
+                    resumeMessages = built.resumeMessages
+                    unreadSummary = built.unreadSummary
+                }
+                return .start(configuration: configuration, resumeMessages: resumeMessages,
+                              unreadSummary: unreadSummary)
             case .delivery: return try delivery(command: command, domain: domain)
             case .notice: return .notice(message: try bounded(notice(command: command)))
             case .stop: throw AgentExecutionMaterializationError.commandUnavailable
@@ -188,7 +203,44 @@ public struct AgentExecutionMaterializationService: Sendable {
             channelName: oauth.channelInfo(id: localId)?.name ?? local.name, channelType: local.kind,
             senderName: sender.name, senderDescription: sender.description, recipientId: command.agentId,
             task: task, taskAssigneeName: assigneeName, attachments: attachments, parent: parent)
-        return .delivery(message: try bounded(projected.encoded()), sequence: sequence)
+        let data = try bounded(projected.encoded())
+        return .delivery(message: data, sequence: sequence,
+                         mentionDelivery: try trackMentionDelivery(command: command, message: message,
+                                                                   payloadJSON: String(decoding: data, as: UTF8.self)))
+    }
+
+    /// Upstream `applyDirectDelivery`'s tracked-mention spine, executed in the
+    /// same business transaction that materializes the frame:
+    ///
+    /// 1. persist the exact payload on the occurrence (recovery requires it);
+    /// 2. freeze the daemon identity (machine/launch/session) on a server
+    ///    decision — only a decision that wins the CAS may send;
+    /// 3. when the session identity is unavailable, abandon the occurrence
+    ///    one-shot and fall back to the ordinary untracked delivery, so the
+    ///    mention is delayed, never lost and never doubled.
+    ///
+    /// A nil return is the untracked frame; a thrown error means another path
+    /// already owns the occurrence, so no second copy may be emitted.
+    private func trackMentionDelivery(command: AgentExecutionCommand, message: StoredHumanMessage,
+                                      payloadJSON: String) throws -> MentionDeliveryIdentitySnapshot? {
+        guard let occurrenceId = command.mentionDeliveryOccurrenceId else { return nil }
+        guard let sessionId = agents.state.execution.agents[command.agentId]?.sessionId else {
+            guard messages.abandonMentionDeliveryWithoutInstrumentation(occurrenceId: occurrenceId) != nil else {
+                throw AgentExecutionMaterializationError.messageUnavailable
+            }
+            return nil
+        }
+        let identity = MentionDeliveryOccurrenceEvaluation.Identity(
+            machineId: command.machineId, launchId: command.launchId, sessionId: sessionId)
+        guard messages.attachMentionDeliveryPayload(occurrenceId: occurrenceId, payloadJSON: payloadJSON),
+              messages.recordMentionDeliveryServerDecision(
+                occurrenceId: occurrenceId, payloadJSON: payloadJSON, messageId: message.id,
+                identity: identity) != nil else {
+            throw AgentExecutionMaterializationError.messageUnavailable
+        }
+        return MentionDeliveryIdentitySnapshot(
+            occurrenceId: occurrenceId, messageId: command.messageId ?? message.id,
+            machineId: identity.machineId, launchId: identity.launchId, sessionId: identity.sessionId)
     }
 
     /// A notice is materialized only from its own admitted command: no
