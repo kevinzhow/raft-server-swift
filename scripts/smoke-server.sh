@@ -433,7 +433,7 @@ def check_register():
     body = {
         "email": email,
         "password": "password123",
-        "name": "Smoke Owner",
+        "name": "smoke-owner",
         "acceptTerms": True,
         "termsVersion": "2026-05-12",
         "privacyVersion": "2026-05-12",
@@ -579,7 +579,7 @@ def check_human_send_gate():
     # registration with an explicit false request opt-in under the same test env.
     email = f"smoke-unverified-{uuid.uuid4().hex[:12]}@slock.test"
     status, raw, parsed = http_json("POST", "/api/auth/register", body={
-        "email": email, "password": "password123", "name": "Unverified Human",
+        "email": email, "password": "password123", "name": "unverified-human",
         "acceptTerms": True, "termsVersion": "2026-05-12", "privacyVersion": "2026-05-12",
         "__e2eAutoVerify": False,
     })
@@ -626,7 +626,7 @@ def check_verified_human_roundtrip():
     register_body = {
         "email": email,
         "password": "password123",
-        "name": "Verified Human",
+        "name": "verified-human",
         "acceptTerms": True,
         "termsVersion": "2026-05-12",
         "privacyVersion": "2026-05-12",

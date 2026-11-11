@@ -151,7 +151,7 @@ private func runOneIteration(
     try await truncateOutbox(databaseURL: databaseURL)
 
     let email = "email-shutdown-\(UUID().uuidString.lowercased())@example.invalid"
-    let registration = "{\"email\":\"\(email)\",\"password\":\"password123\",\"name\":\"Shutdown Probe\","
+    let registration = "{\"email\":\"\(email)\",\"password\":\"password123\",\"name\":\"shutdown-probe\","
         + "\"acceptTerms\":true,\"termsVersion\":\"2026-05-12\",\"privacyVersion\":\"2026-05-12\"}"
     let registered = try await shutdownAcceptanceHTTP(
         port: httpPort, method: "POST", path: "/api/auth/register", body: registration

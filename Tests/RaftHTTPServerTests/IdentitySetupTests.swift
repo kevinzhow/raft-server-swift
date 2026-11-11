@@ -294,3 +294,133 @@ private func identityPost(_ client: any Client, path: String, token: String, bod
         }
     }
 }
+
+@Test func completeProfilePublishesThePublishedBodyAndNameValidationRefusals() async throws {
+    let accounts = EmailLoginDirectory()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            let registered = try await identityRegister(client, email: "identity-validation@slock.test")
+            accounts.markEmailVerified(userId: registered.userId)
+            let token = registered.token
+
+            func complete(_ body: String) async throws -> ClientResponse {
+                try await identityPost(
+                    client,
+                    path: "/api/auth/me/complete-profile",
+                    token: token,
+                    body: body
+                )
+            }
+
+            func expectRefused(_ body: String, _ expected: String) async throws {
+                let response = try await complete(body)
+                #expect(response.status == .badRequest)
+                #expect(response.body.string == expected)
+            }
+
+            // The route's `validateName(name, "Name", 5)` refusal: no `issues`
+            // array, and the code follows the message.
+            try await expectRefused(
+                #"{"name":"abcd","displayName":"Valid User"}"#,
+                #"{"error":"Name must be at least 5 characters","code":"PROFILE_SETUP_NAME_INVALID"}"#
+            )
+            try await expectRefused(
+                #"{"name":"abcdefghijklmnopqrstuvwxyzabcdefg","displayName":"Valid User"}"#,
+                #"{"error":"Name must be at most 32 characters","code":"PROFILE_SETUP_NAME_INVALID"}"#
+            )
+            try await expectRefused(
+                #"{"name":"1invalid","displayName":"Valid User"}"#,
+                #"{"error":"Name must start with a letter and can only contain letters, numbers, hyphens, and underscores","code":"PROFILE_SETUP_NAME_INVALID"}"#
+            )
+            try await expectRefused(
+                #"{"name":"   ","displayName":"Valid User"}"#,
+                #"{"error":"Name is required","code":"PROFILE_SETUP_NAME_INVALID"}"#
+            )
+
+            // The complete-profile body schema is strict: an 80-char cap on the
+            // trimmed displayName, one-character minimum, typed members and no
+            // unknown keys. The issue messages are the pinned zod 4 locale.
+            let tooLongDisplayName = String(repeating: "x", count: 81)
+            try await expectRefused(
+                #"{"name":"valid-handle","displayName":"\#(tooLongDisplayName)"}"#,
+                #"{"error":"Invalid profile setup body","code":"PROFILE_SETUP_BODY_INVALID","issues":[{"path":"displayName","message":"Too big: expected string to have <=80 characters"}]}"#
+            )
+            try await expectRefused(
+                #"{"name":"valid-handle","displayName":""}"#,
+                #"{"error":"Invalid profile setup body","code":"PROFILE_SETUP_BODY_INVALID","issues":[{"path":"displayName","message":"Too small: expected string to have >=1 characters"}]}"#
+            )
+            try await expectRefused(
+                #"{"name":"valid-handle"}"#,
+                #"{"error":"Invalid profile setup body","code":"PROFILE_SETUP_BODY_INVALID","issues":[{"path":"displayName","message":"Invalid input: expected string, received undefined"}]}"#
+            )
+            try await expectRefused(
+                #"{"name":123,"displayName":"Valid User"}"#,
+                #"{"error":"Invalid profile setup body","code":"PROFILE_SETUP_BODY_INVALID","issues":[{"path":"name","message":"Invalid input: expected string, received number"}]}"#
+            )
+            try await expectRefused(
+                #"{"name":"valid-handle","displayName":"Valid User","extra":1}"#,
+                #"{"error":"Invalid profile setup body","code":"PROFILE_SETUP_BODY_INVALID","issues":[{"path":"","message":"Unrecognized key: \"extra\""}]}"#
+            )
+            // A JSON array passes the upstream body parser (strict JSON accepts
+            // arrays) and then fails the object shape, so it reaches the route.
+            try await expectRefused(
+                "[]",
+                #"{"error":"Invalid profile setup body","code":"PROFILE_SETUP_BODY_INVALID","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#
+            )
+
+            // None of the refusals completed or renamed the pending account.
+            var meHeaders = HTTPFields()
+            meHeaders[.authorization] = "Bearer \(token)"
+            let me = try await client.get("/api/auth/me", headers: meHeaders)
+            let meBody = try #require(try JSONSerialization.jsonObject(with: Data((me.body.string ?? "").utf8)) as? [String: Any])
+            #expect(meBody["profileSetupCompletedAt"] is NSNull)
+            #expect(meBody["name"] as? String != "valid-handle")
+        }
+    }
+}
+
+@Test func emailRegisterValidatesTheChosenNameBeforeCreatingTheAccount() async throws {
+    let accounts = EmailLoginDirectory()
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: accounts
+        ))
+        try await app.testing { client in
+            func register(email: String, name: String) async throws -> ClientResponse {
+                var headers = HTTPFields()
+                headers[.contentType] = "application/json"
+                return try await client.send(.post, headers: headers, to: "/api/auth/register") { request in
+                    request.body = .init(string: "{\"email\":\"\(email)\",\"password\":\"password123\",\"name\":\"\(name)\",\"acceptTerms\":true,\"termsVersion\":\"\(identityTermsVersion)\",\"privacyVersion\":\"\(identityTermsVersion)\"}")
+                }
+            }
+
+            let cases: [(name: String, error: String)] = [
+                ("abcd", "Name must be at least 5 characters"),
+                ("abcdefghijklmnopqrstuvwxyzabcdefg", "Name must be at most 32 characters"),
+                ("1invalid", "Name must start with a letter and can only contain letters, numbers, hyphens, and underscores"),
+                ("   ", "Name is required"),
+                ("Reminders", "This username is reserved. Choose another name."),
+            ]
+            let email = "identity-register-name@slock.test"
+            for item in cases {
+                let response = try await register(email: email, name: item.name)
+                #expect(response.status == .badRequest)
+                #expect(response.body.string == "{\"error\":\"\(item.error)\"}")
+            }
+
+            // Every refusal left the email unclaimed: the same address still
+            // registers once the handle is valid.
+            let accepted = try await register(email: email, name: "chosen-handle")
+            #expect(accepted.status == .ok)
+        }
+    }
+}

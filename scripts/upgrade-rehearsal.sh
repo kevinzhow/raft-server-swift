@@ -317,7 +317,7 @@ pass "old release binary started on throwaway PostgreSQL"
 
 OWNER_EMAIL="upgrade-owner-$STAMP@example.invalid"
 OWNER_NAME="upgrade-owner-$STAMP"
-register_user "$OWNER_EMAIL" "Upgrade Owner" "$RUN_DIR/register-owner.json"
+register_user "$OWNER_EMAIL" "upgrade-owner" "$RUN_DIR/register-owner.json"
 http POST /api/auth/register "" "" "$RUN_DIR/register-owner.json"
 [[ "$HTTP_STATUS" == "200" ]] || fail "old-binary register returned $HTTP_STATUS"
 cp "$HTTP_BODY" "$RUN_DIR/owner-register-response.json"
@@ -348,7 +348,7 @@ pass "old binary registered/verified an owner, completed profile, created server
 
 # A second old-binary user with no server is the canonical empty-collection case.
 NOSERVER_EMAIL="upgrade-noserver-$STAMP@example.invalid"
-register_user "$NOSERVER_EMAIL" "Upgrade No Server" "$RUN_DIR/register-noserver.json"
+register_user "$NOSERVER_EMAIL" "upgrade-noserver" "$RUN_DIR/register-noserver.json"
 http POST /api/auth/register "" "" "$RUN_DIR/register-noserver.json"
 [[ "$HTTP_STATUS" == "200" ]] || fail "old-binary second register returned $HTTP_STATUS"
 cp "$HTTP_BODY" "$RUN_DIR/noserver-register-response.json"

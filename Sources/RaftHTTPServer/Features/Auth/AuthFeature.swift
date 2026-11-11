@@ -338,7 +338,11 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         me.post("complete-profile") { request async throws -> Response in
-            let body = try await decodeJSONRequestBody(LenientJSONObjectRequest.self, request, decoding: .json)
+            // The strict upstream schema reports every issue (wrong member type,
+            // empty or too-long displayName, unknown key, non-object root), so
+            // the decoder keeps the raw JSON value and the service publishes
+            // PROFILE_SETUP_BODY_INVALID with that issue list.
+            let body = try await decodeJSONRequestBody(CompleteProfileRequest.self, request, decoding: .json)
             return try await respond {
                 try self.managedLifecycle.completeProfile(
                     authorization: request.headers[.authorization],
