@@ -868,7 +868,7 @@ struct LegacyAttestedSendTests {
                 // no such ledger for ordinary human messages and evaluates
                 // mute prefs dynamically; the reviewed boundary here is the
                 // muted tail, which keeps the response scenario identical. The
-                // history half is adjudicated in docs/BEHAVIOR.md.
+                // history half is adjudicated in docs/DEVIATIONS.md (D7).
                 let held = try await legacySend(
                     client, key: fixture.machineKey, agentId: fixture.agentId,
                     body: legacySendBody(

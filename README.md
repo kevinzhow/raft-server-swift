@@ -13,7 +13,7 @@ This is an active reimplementation undergoing production delivery validation; pr
 - The HTTP surface uses **16 `RouteCollection` modules**, Vapor-free services, domain stores, and typed request/response contracts. The old directory owner root is **28 lines**; its global lock and all field forwarding accessors are deleted. Remaining factory extensions, broad constructors and Feature ledger calls still need explicit composition. The complete non-daemon source closure, including Generated, has no explicit unchecked conformance; daemon-only boundaries remain under review. Current counts and scanner limits live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
-- The locked behavioral reference lives in [docs/BEHAVIOR.md](docs/BEHAVIOR.md). It is the historical behavior log, not the project introduction.
+- Deliberate differences from upstream and adjudicated exclusions live in [docs/DEVIATIONS.md](docs/DEVIATIONS.md). Per-slice locked behavior is recorded in the commit message body, not in a separate append-only log.
 - Work is organized in domain architecture slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the target layering is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the working contract is [AGENTS.md](AGENTS.md).
 
 ## Architecture & Current Focus
@@ -61,24 +61,57 @@ Development mode retains business state in memory. Production mode restores the 
 Message Markdown uses the pinned mdast/GFM grammar through the in-process `CRaftMarkdown` bridge. The source entry is [Tools/MarkdownParser/entry.mjs](Tools/MarkdownParser/entry.mjs); [the resource provenance](Sources/RaftHTTP/Resources/raft-markdown-parser.provenance.json) records the exact packages, source hashes and build options. Distribute `raft-server-swift_RaftHTTP.bundle` beside the Linux `RaftServer` executable, including the parser, provenance and licenses. Startup loads and executes the packaged parser before opening listeners.
 
 ```bash
-make test                                                    # full suite with the pinned toolchain
+make check FILTER=<regex>                                    # incremental build + only matching tests (fast loop)
+make test-sharded SHARDS=6                                   # full suite as parallel test-runner shards
+make gate                                                    # trunk gate: sharded, e2e, smoke, architecture, parity
+make test-pg                                                 # throwaway PostgreSQL 17 + Redis acceptance
+make test                                                    # full suite, single serialized process (legacy)
 make test-e2e                                                # real RaftServer + RaftDaemon processes
-make pg-up                                                   # local Postgres for /health 200
-make test-pg                                                 # pg-up + real SELECT 1 test
+make pg-up / pg-down / pg-url                                # local Postgres for /health 200
 make parity                                                  # upstream coverage ledger (docs/PARITY.tsv)
 make parity-check                                            # validate parity status and case accounting
 make architecture                                            # enforced layering, file-size, and test-seam rules
+make deploy COMMIT=<sha>                                     # build -> stage -> verify -> upgrade
 ./scripts/smoke-server.sh                                    # 26-check real-process end-to-end smoke
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift test --filter <TestName>
-/mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build
-/mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift build -c release
 ```
 
-`make parity` reads `docs/PARITY.tsv` and prints upstream route/frame status and weighted case coverage. `make parity-check` validates that ledger and its case accounting. The declared partial legacy module retains its documented qualification; a passing ledger check does not make it locked or establish production readiness.
+`make check FILTER=...` is the development loop; `make test-sharded` runs the same suite as parallel `<Target>-test-runner` processes (each with its own `TMPDIR`) after one `swift build --build-tests`, avoiding SwiftPM's `.build` lock, and retries a failed test once in isolation. `make gate` runs the sharded suite, real-process e2e, smoke, architecture and parity-check fail-fast, with one log directory. `make test-pg` starts one throwaway PostgreSQL 17 + Redis container pair on free loopback ports, runs every env-gated real-PG acceptance suite, and removes the containers.
+
+`make parity` reads `docs/PARITY.tsv` and prints upstream route/frame status and weighted case coverage. The ledger's sixth column names the Swift test file(s) that lock each module (derived from the locking commit; blank means unknown). `make parity-check` validates the ledger, its case accounting and the named test files. A passing ledger check does not establish production readiness.
 
 `make architecture` runs `scripts/check_architecture.py`, which enforces the `Feature -> Service -> Store` layering, rejects forbidden Vapor imports in `RaftHTTP`, guards against mega-files, and ratchets down test-only entry points. `./scripts/smoke-server.sh` builds the debug server and asserts the 26 published behaviors over real loopback ports.
 
-Run the full test and startup gates for a stable change. The current delivery results and remaining gates are recorded in [docs/PLAN.md](docs/PLAN.md).
+Run the tiered gates for a stable change. The current delivery results and remaining gates are recorded in [docs/PLAN.md](docs/PLAN.md).
+
+## Deploy
+
+Production build, staging, verification and maintenance-ordered upgrade live in
+[deploy/swift-production/](deploy/swift-production/). Environment-specific
+paths, hosts and ports come from a git-ignored `local.env`; copy
+`local.env.example` and fill in this machine's values. No secret, domain or IP
+address is committed.
+
+```bash
+make deploy COMMIT=<sha>
+```
+
+The upgrade takes the quick `pg_dump` backup, closes the public gateway, swaps
+the release manifest and launch spec (keeping the previous release for
+rollback), starts the user unit, verifies private health/version/PID mappings
+and restores the gateway. Staged verification must pass first.
+
+## Scripted acceptance
+
+`scripts/acceptance/acceptance.py` is the fast acceptance path against the
+running environment. It reads the base URL, Socket.IO URL and owner credential
+file path from `local.env` (or `ACCEPTANCE_*` environment variables), checks
+health/version, owner login/refresh, the server collection and a read-only DB
+revision sweep, then in `--full` mode a DM reply, channel mention reply, Task
+board/history, attachment upload/download/preview and thread `thread:updated`.
+It writes JSON plus a human summary and exits non-zero on failure. Use
+`--dry-run` to print the plan and `--read-only` while other campaigns are
+active.
 
 ### Test suites
 
@@ -191,12 +224,16 @@ Tests/
   RaftRealtimeTests/     socket.io frames and room targeting
   RaftServerStartupTests/ real process startup and daemon handshake
 docs/
-  BEHAVIOR.md            locked behavior reference (historical log)
-  PLAN.md                current plan, phases, and coverage metric
+  PLAN.md                current status: objective, stage, gaps, completion conditions
+  DEVIATIONS.md          deliberate upstream differences and adjudicated exclusions
   ARCHITECTURE.md        target layering and architecture guardrails
 scripts/
   smoke-server.sh        real-process end-to-end smoke suite
-  check_architecture.py  layering, file-size, and test-seam gate
+  test-sharded.py        parallel test-runner shard runner
+  gate.sh                trunk gate (sharded, e2e, smoke, architecture, parity)
+  test-pg.sh             throwaway PostgreSQL 17 + Redis acceptance
+  acceptance/             scripted API acceptance (stdlib only)
+deploy/swift-production/  release build/stage/verify/upgrade tools
 AGENTS.md                working contract and hard constraints
 ```
 
