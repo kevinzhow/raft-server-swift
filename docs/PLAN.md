@@ -45,10 +45,13 @@ A direct Computer-stop acceptance fails on the deployed release: with the
 official Computer service stopped, a DM sent while it was offline got no
 correlated reply within 180 s after the service started again. The connection
 reported online and ready, but recovery was left in
-`connection_lost_with_unsettled_execution` with one pending human delivery. The
-services stay up and the live failure state is retained deliberately; the owner
-account and Codex login are untouched. A recovery worker is active in the
-restart-recovery tree; nothing is published until its fix is gated and
+`connection_lost_with_unsettled_execution`. The services remain active; the one
+pending DM and its failure state are preserved deliberately, with `needsManual`
+showing the connection-lost recovery and no manual reset applied, and the owner
+account and Codex login are untouched. A recovery worker is implementing
+retirement of the previous daemon execution on a complete empty ready with
+ambiguity guards, and a read-only review of that change is active. The defect is
+not fixed or verified yet, and nothing is published until its fix is gated and
 accepted.
 
 The authenticated Web pages for a channel, Tasks, Members and Computers render
@@ -58,20 +61,33 @@ not ported (DEVIATIONS D5), so the console is not zero-error and the
 zero-console condition stays open. The full-static public profile is still
 unpublished.
 
-The `integrate-4` branch is at `6445789` and is seven commits ahead of the
-deployed trunk; it carries the merged process-refactor docs. It adds zod-4
-issues for legacy send and agent queries, the pinned agent-api request-contract
-schemas and validator, and one capability/per-agent-grant/params-query/body
-gate over the routes upstream wires. A contract review of `ccf4137` found four
-defects: object-refinement schemas suppress check errors,
-`integration:register_app` accepts a body without the required `name` and with a
-duplicate `returnUrl`, provider-complete validation runs with the wrong
-precedence, and binary/octal plus `Infinity` coercion is wrong. The fixes are in
-flight. The recorded gate (3144 tests, one isolated retry) and 46/46
-fresh-database persistence run cover only the `ccf4137` source, and the
-candidate build for `ccf4137` was stopped, so there is no release artifact,
-upgrade record or scripted acceptance for it. Do not report it as deployed or
-complete.
+The integration tree carries the merged process-refactor docs plus the agent-api
+contract and OAuth slices. The validator slice (`b05e0fb`, merged as `8cbf1d5`)
+passes 32/32 `LegacyAttestedSendTests` on the integrated source and adds zod-4
+issues for legacy send and agent queries, the pinned request-contract schemas and
+validator, and one capability/per-agent-grant/params-query/body gate over the
+routes upstream wires. The auth slice (`01ce15a`, `d355cbd`, merged as `37607c5`)
+passes 14 AuthCore plus 17 targeted auth tests and locks raw-JavaScript
+completion-code truthiness before the pending-link token, the unknown-provider
+404, mobile token-first order, and a truthy non-string code's generic 500 whose
+body `correlationId` matches the `X-Slock-Error-Id` header. `make architecture`
+(22/0) and `make parity-check` pass on the integrated source. The four original
+`ccf4137` review findings are fixed in this tree, but no `make gate` or
+`make test-pg` has run on the merged source: the recorded gate (3144 tests, one
+isolated retry) and 46/46 fresh-database persistence run cover only `ccf4137`.
+The integration is therefore not qualified and must not be called deployable or
+deployed. A follow-up remains for task-history query consumption (G13). The
+candidate build for `ccf4137` was canceled, so there is no release artifact,
+upgrade record or scripted acceptance for the integration.
+
+The correlated attachment-read acceptance (`a94b05e`, `0568eb2`) adds a two-round
+hidden-nonce proof for the resident agent and keeps the downloaded output inside
+the agent workspace. Its 11 network-free tests and the
+12-check `--full --restart-main --dry-run` plan pass, but the real attachment
+read has not run because the Computer-stop scenario still fails G11. A worker is
+adding opt-in Computer-stop/offline-DM/start and agent keep-session restart
+scripts that assert correlated first and second replies; it changes no
+production source.
 
 ## What works
 
@@ -80,7 +96,7 @@ complete.
   `docs/PARITY.tsv`. `make parity-check` validates status, commits, case
   accounting and the new locking-test column.
 - **Real-process gates.** `make test-sharded` runs the full suite as parallel
-  test-runner shards (3144 tests in the latest integration gate, with one
+  test-runner shards (3144 tests in the last recorded integration gate, with one
   isolated retry); `make test-e2e` starts two isolated `RaftServer` processes
   plus `RaftDaemon`; `scripts/smoke-server.sh` passes 26 live checks;
   `make architecture` passes its layering/size/seam guardrails.
@@ -109,7 +125,7 @@ complete.
   `/api/avatars` and `/api/integration-logos`, and account (forgot-password,
   username-available), billing, push and raftbench routes. The shared
   `/internal/agent-api` request-contract validator and the legacy-send/
-  agent-query zod-4 issue bodies are on `integrate-4` only and are not
+  agent-query zod-4 issue bodies are in the integration tree only and are not
   deployed.
 - **Route inventory.** `make route-inventory` dumps the booted Vapor router and
   diffs it against the pinned Express registrations into
@@ -137,36 +153,41 @@ complete.
 | G4 | Legacy opener instruction text when the opener flag is explicitly off | Deliberately out of scope (see DEVIATIONS D11) | Re-open only if the flag is turned off in production |
 | G5 | Full-static public profile not yet published | Restricted profile verified; public entry still limited | Publish only after full Web/console and provider acceptance |
 | G6 | Official Computer/Codex/provider acceptance after the deployed release | Partially run on `15219ef`: the Web pages render and a Main restart produced a real Codex reply, but the direct Computer-stop/offline-DM/restart scenario fails (G11) | Fix and gate G11, then rerun the full Computer acceptance and record the result with the deployment record |
-| G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; the sharded runner isolates and retries, and the latest integration gate passed its one isolated Kimi token-refresh retry | Re-open only if a failure survives the isolated retry; keep the shard log |
+| G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; the sharded runner isolates and retries, and the last recorded integration gate passed its one isolated Kimi token-refresh retry | Re-open only if a failure survives the isolated retry; keep the shard log |
 | G8 | Activity trajectory entries and gap recovery are not stored | Deliberate (see DEVIATIONS D10) | Re-open only if the pinned Web consumes them |
-| G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. The keep-session wake integration added three more: a tracked mention action was dropped instead of queued for an admitted launch, and two gated suites waited for `agent:deliver` without reporting the process identity, or assumed a trigger message never rides the start. | Fixed and merged; the fresh-database run passes 46/46 gated startup suites plus database-health and infrastructure-check for the deployed trunk and the integration tree | Keep the fresh-database run in the deploy checklist; re-open if a fixture depends on warm state again |
+| G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. The keep-session wake integration added three more: a tracked mention action was dropped instead of queued for an admitted launch, and two gated suites waited for `agent:deliver` without reporting the process identity, or assumed a trigger message never rides the start. | Fixed and merged; the last recorded fresh-database run passes 46/46 gated startup suites plus database-health and infrastructure-check for the deployed trunk and the `ccf4137` integration tree | Keep the fresh-database run in the deploy checklist; re-open if a fixture depends on warm state again |
 | G10 | Route inventory still lists 57 upstream Express registrations without a Swift counterpart and 27 Swift-only routes; the largest remaining families are `internal*.ts` (28, mostly agent-side labs/machine/profile variants and trace ingest), other/top-level (8), slack-bridge (6), public search index/detail (4) and integrations (3). | Tracked by `docs/route-inventory.md`; most missing families are unported external services covered by D5/D12/D19/D21 or not referenced by the pinned Web/CLI | Re-run `make route-inventory` after each slice; register the reachable gaps and record every remaining exclusion in `docs/DEVIATIONS.md` |
-| G11 | A DM sent while the official Computer is stopped gets no reply after the Computer restarts | Open on `15219ef`: no correlated reply within 180 s; the connection is online and ready but recovery stays in `connection_lost_with_unsettled_execution` with one pending human delivery. The services and the live failure state are retained deliberately | Recovery worker in the restart-recovery tree; publish only after a gated, accepted fix; rerun the direct stop/offline/restart scenario |
-| G12 | Contract review of `ccf4137` found four defects: object-refinement schemas suppress check errors; `integration:register_app` accepts a body without the required `name` and with a duplicate `returnUrl`; provider-complete validation precedence is wrong; binary/octal and `Infinity` coercion is wrong | Open; the recorded gate and 46/46 persistence run cover only the `ccf4137` source | Land the fixes, rebuild and rerun `make gate` on the changed source before any release candidate |
+| G11 | A DM sent while the official Computer is stopped gets no reply after the Computer restarts | Open on `15219ef`: no correlated reply within 180 s; the connection is online and ready but recovery stays in `connection_lost_with_unsettled_execution` with one pending human delivery. The services and the live failure state are retained deliberately | Recovery worker is implementing retirement of the previous daemon execution on a complete empty ready with ambiguity guards; a read-only review is active. Not fixed or verified; publish only after a gated, accepted fix and a rerun of the direct stop/offline/restart scenario |
+| G12 | Contract review of `ccf4137` found four defects: object-refinement schemas suppress check errors; `integration:register_app` accepts a body without the required `name` and with a duplicate `returnUrl`; provider-complete validation precedence is wrong; binary/octal and `Infinity` coercion is wrong | The four findings are fixed in the integration tree (`8cbf1d5`, `37607c5`); 32/32 contract tests and 14 + 17 targeted auth tests pass on the integrated source, with `make architecture` and `make parity-check` green. No full gate has run on the merged source | Rerun `make gate` and `make test-pg` on the integration commit after G13 lands; only then may the integration be called qualified |
+| G13 | Task-history validation accepts JavaScript-coerced numerics such as `0b101`, but the route still converts the raw `task_number` with `Int(...)`, so the service receives 0 instead of the accepted number | Open; a worker is normalizing actual task-history consumption | Land the consumption fix with byte-level tests, then include it in the integration gate |
 
 ## Next steps
 
 1. Confirm the remaining deployed `15219ef` behaviors: live agent presence (G3)
    and `GET /api/servers` = 200 `[]` for a verified owner with no membership
    (G1). The opener stamp (G2) is confirmed.
-2. Fix the Computer offline-delivery recovery defect (G11) in the
-   restart-recovery tree; gate and accept it before publishing.
-3. Land the four contract-review fixes (G12), rebuild and rerun `make gate` on
-   the changed source, then promote `integrate-4` to trunk with a real merge,
-   build, stage, verify and `make deploy COMMIT=<sha>`. Keep `15219ef` and the
-   pre-upgrade dump as the rollback pair; do not deploy the stopped `ccf4137`
+2. Fix the Computer offline-delivery recovery defect (G11) and complete the
+   read-only review; gate and accept the fix, then rerun the direct
+   stop/offline/restart scenario. Do not treat it as fixed before that run.
+3. Land the task-history consumption fix (G13) and the in-flight opt-in
+   Computer-stop/keep-session acceptance scripts. Then run `make gate` and
+   `make test-pg` on the integration commit; the integration is not qualified
+   until both pass.
+4. Run the real two-round attachment-read acceptance once the Computer-stop
+   path is unblocked, and record it with the release evidence.
+5. Promote the gated integration to trunk with a real merge, then build, stage,
+   verify and `make deploy COMMIT=<sha>`. Keep `15219ef` and the pre-upgrade
+   `pg_dump` as the rollback pair; do not deploy the canceled `ccf4137`
    candidate.
-4. Finish the in-flight attachment nonce proof and record its result with the
-   release evidence.
-5. Run the read-only scripted acceptance, then the full scripted acceptance
+6. Run the read-only scripted acceptance, then the full scripted acceptance
    (including the Main restart) on the new release in a quiet window.
-6. Run official Computer enrollment, model execution, workspace and cold-read
+7. Run official Computer enrollment, model execution, workspace and cold-read
    checks, the direct stop/offline/restart recovery and the browser console
    audit on the deployed release.
-7. Publish the full-static public profile and run the public canary only after
-   the Web/console and provider checks pass; keep the D5
-   `/api/product-feedback/tickets` 404 documented.
-8. Re-run `make route-inventory` and either implement the reachable G10 gaps or
+8. Publish the full-static public profile and run the public canary only after
+   the Web/console and provider checks pass; clean up the release stage and keep
+   the D5 `/api/product-feedback/tickets` 404 documented. These remain pending.
+9. Re-run `make route-inventory` and either implement the reachable G10 gaps or
    record each remaining exclusion in `docs/DEVIATIONS.md`.
 
 ## Completion conditions
