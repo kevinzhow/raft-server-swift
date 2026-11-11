@@ -1,45 +1,6 @@
 import Foundation
 import RaftShared
 
-/// The published `DmTargetResolutionError` projection.
-///
-/// The pinned `packages/server/src/services/dmTargetResolutionError.ts` owns
-/// the exact `{ error, code, suggestedNextAction }` bytes for a caller-fixable
-/// DM target. Both the task and the send surfaces reuse this one projection
-/// instead of carrying two almost-same strings.
-enum DmTargetResolutionProjection {
-    static func peerRef(_ name: String, kind: String) -> String {
-        "\(name)~\(kind)"
-    }
-
-    static func ambiguousMessage(peerName: String) -> String {
-        let agentRef = "dm:@\(peerRef(peerName, kind: "agent"))"
-        let humanRef = "dm:@\(peerRef(peerName, kind: "human"))"
-        return "dm:@\(peerName) matches both a human and an agent named \(peerName). "
-            + "Name the one you mean: \(agentRef) for the agent, or \(humanRef) for the human "
-            + "(for example: raft message read --target \"\(agentRef)\")."
-    }
-
-    static func ambiguousNextAction(peerName: String) -> String {
-        let agentRef = "dm:@\(peerRef(peerName, kind: "agent"))"
-        let humanRef = "dm:@\(peerRef(peerName, kind: "human"))"
-        return "retry with \(agentRef) for the agent or \(humanRef) for the human"
-    }
-
-    static func invalidPeerKindMessage(rawPeer: String, suffix: String?) -> String {
-        "dm:@\(rawPeer) has an unknown peer kind\(suffix.map { " \"\($0)\"" } ?? ""). "
-            + "Use dm:@<name>, dm:@<name>~agent or dm:@<name>~human."
-    }
-
-    static let invalidPeerKindNextAction =
-        "retry with dm:@<name>, dm:@<name>~agent or dm:@<name>~human"
-
-    static let reminderMessage =
-        "dm:@reminders is your private reminder conversation; nobody else reads it. Act at the reminder's anchor instead."
-    static let reminderNextAction =
-        "send to the reminder's anchor target instead of dm:@reminders"
-}
-
 /// Domain failure for the migrated agent task routes.
 ///
 /// Every case publishes the legacy `{"error": …}` body; the shared
@@ -91,9 +52,9 @@ public enum ActionCardExecuteError: DomainError, Equatable {
         case .threadTaskClaim:
             "Thread messages cannot be claimed as tasks"
         case .dmTargetAmbiguous(let peerName):
-            DmTargetResolutionProjection.ambiguousMessage(peerName: peerName)
+            DMTargetResolutionWire.ambiguous(peerName).message
         case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
-            DmTargetResolutionProjection.invalidPeerKindMessage(rawPeer: rawPeer, suffix: suffix)
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
         }
     }
 
@@ -112,20 +73,9 @@ public enum ActionCardExecuteError: DomainError, Equatable {
     public var errorBody: OrderedJSON? {
         switch self {
         case .dmTargetAmbiguous(let peerName):
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "DM_TARGET_AMBIGUOUS")
-            body.append(
-                "suggestedNextAction",
-                DmTargetResolutionProjection.ambiguousNextAction(peerName: peerName)
-            )
-            return body.json
-        case .dmTargetInvalidPeerKind:
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "DM_TARGET_INVALID_PEER_KIND")
-            body.append("suggestedNextAction", DmTargetResolutionProjection.invalidPeerKindNextAction)
-            return body.json
+            return DMTargetResolutionWire.ambiguous(peerName).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
         case .threadTaskClaim, .invalidTaskClaim, .invalidTaskStatus, .channelNotFound,
              .taskNotFound, .inProgressToTodo, .todoToTerminal, .resourceReceiptRequired:
             return nil
@@ -149,13 +99,12 @@ public enum AgentSendError: DomainError, Equatable {
     case threadTargetNotFound(detail: String)
     case agentNotParentMember
     case dmTargetAmbiguous(name: String)
-    /// The legacy machine-send projection only carries the suffix.
-    case dmTargetInvalidKind(kind: String)
     /// The exact pinned projection for the agent send surface.
     case dmTargetInvalidPeerKind(rawPeer: String, suffix: String?)
     /// A plain DM target whose peer does not exist.
     case dmTargetNotFound(peer: String)
-    case migrationReceiptReadOnly
+    /// A one-way migration receipt named by the caller's actual target.
+    case migrationReceiptReadOnly(target: String)
     case freshnessInterfaceDisabled
     case idempotencyKeyReused(mismatch: String)
     case mentionBindingConflict
@@ -164,7 +113,7 @@ public enum AgentSendError: DomainError, Equatable {
         switch self {
         case .invalidSendRequest, .continueUnsupported, .continueAnywayRequiresDraft,
              .contentRequired, .attachmentIdInvalid, .attachmentDuplicate, .attachmentNotFound,
-             .attachmentAlreadyLinked, .dmTargetInvalidKind, .dmTargetInvalidPeerKind,
+             .attachmentAlreadyLinked, .dmTargetInvalidPeerKind,
              .mentionBindingConflict:
             400
         case .reminderTargetNotSendable, .assistantChannelForbidden, .agentNotParentMember,
@@ -182,7 +131,7 @@ public enum AgentSendError: DomainError, Equatable {
         case .invalidSendRequest:
             "Invalid send request"
         case .reminderTargetNotSendable:
-            DmTargetResolutionProjection.reminderMessage
+            DMTargetResolutionWire.privateReminderSurface().message
         case .continueUnsupported:
             "--continue is no longer supported. Use normal message send to update a draft, or --send-draft to send the current saved draft."
         case .continueAnywayRequiresDraft:
@@ -206,15 +155,13 @@ public enum AgentSendError: DomainError, Equatable {
         case .agentNotParentMember:
             "Agent is not a member of the parent channel"
         case .dmTargetAmbiguous(let name):
-            DmTargetResolutionProjection.ambiguousMessage(peerName: name)
-        case .dmTargetInvalidKind(let kind):
-            "Unknown DM peer kind \(kind)."
+            DMTargetResolutionWire.ambiguous(name).message
         case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
-            DmTargetResolutionProjection.invalidPeerKindMessage(rawPeer: rawPeer, suffix: suffix)
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
         case .dmTargetNotFound(let peer):
             "User or agent not found: @\(peer)"
-        case .migrationReceiptReadOnly:
-            "This migration receipt DM is a one-way notice; it cannot be replied to. Message your owner's DM instead."
+        case .migrationReceiptReadOnly(let target):
+            DMTargetResolutionWire.migrationReceiptReadOnly(target: target).message
         case .freshnessInterfaceDisabled:
             "Send freshness interface is not enabled for this agent."
         case .idempotencyKeyReused:
@@ -238,7 +185,7 @@ public enum AgentSendError: DomainError, Equatable {
             "attachment_already_linked"
         case .dmTargetAmbiguous:
             "DM_TARGET_AMBIGUOUS"
-        case .dmTargetInvalidKind, .dmTargetInvalidPeerKind:
+        case .dmTargetInvalidPeerKind:
             "DM_TARGET_INVALID_PEER_KIND"
         case .migrationReceiptReadOnly:
             "MIGRATION_RECEIPT_READ_ONLY"
@@ -262,38 +209,13 @@ public enum AgentSendError: DomainError, Equatable {
                 OrderedJSONField("error", errorMessage),
             ])
         case .dmTargetAmbiguous(let name):
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "DM_TARGET_AMBIGUOUS")
-            body.append(
-                "suggestedNextAction",
-                DmTargetResolutionProjection.ambiguousNextAction(peerName: name)
-            )
-            return body.json
-        case .dmTargetInvalidKind:
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "DM_TARGET_INVALID_PEER_KIND")
-            body.append("suggestedNextAction", "Use dm:@<name>~human or dm:@<name>~agent.")
-            return body.json
-        case .dmTargetInvalidPeerKind:
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "DM_TARGET_INVALID_PEER_KIND")
-            body.append("suggestedNextAction", DmTargetResolutionProjection.invalidPeerKindNextAction)
-            return body.json
+            return DMTargetResolutionWire.ambiguous(name).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
         case .reminderTargetNotSendable:
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "DM_TARGET_NOT_SENDABLE")
-            body.append("suggestedNextAction", DmTargetResolutionProjection.reminderNextAction)
-            return body.json
-        case .migrationReceiptReadOnly:
-            var body = OrderedJSONObject()
-            body.append("error", errorMessage)
-            body.append("code", "MIGRATION_RECEIPT_READ_ONLY")
-            body.append("suggestedNextAction", "Read the receipt, then continue in your owner's DM.")
-            return body.json
+            return DMTargetResolutionWire.privateReminderSurface().body
+        case .migrationReceiptReadOnly(let target):
+            return DMTargetResolutionWire.migrationReceiptReadOnly(target: target).body
         case .idempotencyKeyReused(let mismatch):
             var body = OrderedJSONObject()
             body.append("error", errorMessage)

@@ -989,6 +989,11 @@ public struct AgentSendDeliveryService: Sendable {
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        // One directory snapshot per reply: the twin rule is a directory fact,
+        // so every row labels a peer the same way even before the second DM of
+        // a cross-kind twin pair exists.
+        let dmLabels = prepare.dmPeerResolver.directory(serverId: agent.serverId)
+        let reminderSurfaceId = prepare.reminderSurfaceId(agentId: agent.id)
         let rows = threadFollows.all()
             .filter { $0.serverId == agent.serverId && $0.agentId == agent.id && $0.unfollowedAt == nil }
             .filter {
@@ -1000,11 +1005,33 @@ public struct AgentSendDeliveryService: Sendable {
                       let parentChannelId = thread.parentChannelId,
                       let parent = channels.postableChannel(id: parentChannelId)
                 else { return nil }
-                let short = String(follow.parentMessageId.prefix(8))
+                // `listAgentFollowedThreads` publishes the parent through
+                // `resolveAgentFacingChannelRef`: a DM parent reads as its
+                // canonical `dm:@peer[~kind]` ref, never as a `#dm` channel.
+                let parentChannelRef: String
+                switch parent.kind {
+                case "dm":
+                    guard let dmRef = prepare.dmPeerResolver.canonicalRef(
+                        serverId: agent.serverId,
+                        agentId: agent.id,
+                        channelId: parentChannelId,
+                        channel: parent,
+                        reminderSurfaceId: reminderSurfaceId,
+                        labels: dmLabels
+                    ) else { return nil }
+                    parentChannelRef = dmRef
+                case "thread":
+                    // `resolveAgentFacingChannelRef` refuses to manufacture a
+                    // target for a thread parent; skip the invalid row.
+                    return nil
+                default:
+                    parentChannelRef = "#\(parent.name)"
+                }
+                let short = String(follow.parentMessageId.prefix(8)).lowercased()
                 return AgentThreadListEntry(
-                    target: "#\(parent.name):\(short)",
+                    target: "\(parentChannelRef):\(short)",
                     threadChannelId: follow.threadChannelId,
-                    parentChannelRef: "#\(parent.name)",
+                    parentChannelRef: parentChannelRef,
                     parentMessageId: follow.parentMessageId,
                     parentMessageShortId: short,
                     followedAt: formatter.string(from: follow.followedAt),

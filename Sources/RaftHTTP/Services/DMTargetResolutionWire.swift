@@ -16,9 +16,10 @@ struct DMTargetWireRefusal: Sendable, Equatable {
 /// `parseDmPeerRef` owns the target grammar, not the wire prose: every
 /// agent-facing route reports a malformed or ambiguous DM target through
 /// `DmTargetResolutionError` and its `toResponseBody()`. History, search, the
-/// legacy machine send and action-card prepare all render these bytes through
-/// this one helper so the prose, code and member order cannot drift between
-/// routes that resolve the same target.
+/// legacy machine send, the modern send routes, the task-claim resolver and
+/// action-card prepare all render these bytes through this one helper so the
+/// prose, code and member order cannot drift between routes that resolve the
+/// same target.
 enum DMTargetResolutionWire {
     static func ambiguous(_ peerName: String) -> DMTargetWireRefusal {
         let agentRef = "dm:@\(peerName)~agent"

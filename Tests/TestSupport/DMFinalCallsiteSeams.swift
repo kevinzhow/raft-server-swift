@@ -7,4 +7,10 @@ extension EmailLoginDirectory {
     public var postableChannelCountForTesting: Int {
         serversAndChannelsStore.state.postableChannels.count
     }
+
+    /// Number of task rows across the store, for the DM-refusal zero-write
+    /// checks that must not depend on a particular channel.
+    public var taskRecordCountForTesting: Int {
+        tasksAndRemindersStore.taskRecords.count
+    }
 }

@@ -507,6 +507,13 @@ public struct ActionCardPrepareService: Sendable {
         AgentDMPeerResolver(oauth: oauth, channels: channels, accounts: accounts)
     }
 
+    /// The agent's durable reminders surface. `resolveAgentFacingChannelRef`
+    /// labels a thread parented on it `dm:@reminders`, so the thread-list
+    /// projection needs the same fact the history surface reads.
+    func reminderSurfaceId(agentId: String) -> String? {
+        feedback.agentReminderSurfaceChannelId(agentId: agentId)
+    }
+
     /// The peer card exists only when the peer has a profile description or a
     /// timezone on their latest message.
     func peerCardJSON(channelId: String, agentId: String) -> String? {
