@@ -582,6 +582,22 @@ enum AgentApiContractSchemas {
         .field("setupDescription", .text(trim: true, max: 500)),
     ]
 
+    /// `integrationRegisterAppOperationSchema` (`shared/src/actionCards.ts:195`)
+    /// is `integrationAppDraftFieldsSchema.extend({...})`. `.extend` replaces
+    /// the existing `name` and `returnUrl` entries in place: both become
+    /// required and `returnUrl` gains `min(1)`, while the reported shape order
+    /// keeps the base positions instead of appending a second `returnUrl`.
+    private static let integrationAppRegisterFields: [F] = integrationAppDraftFields.map { field in
+        switch field.name {
+        case "name":
+            return .field("name", .text(trim: true, min: 1, max: 120), required: true)
+        case "returnUrl":
+            return .field("returnUrl", .text(trim: true, min: 1, max: 2_000), required: true)
+        default:
+            return field
+        }
+    }
+
     private static let actionCardMembers: [S] = [
         .object(O([
             .field("type", .literal("channel:create"), required: true),
@@ -634,10 +650,9 @@ enum AgentApiContractSchemas {
             .field("scopes", scopedStringArray, required: true),
             .field("draftHint", draftHint),
         ])),
-        .object(O(integrationAppDraftFields + [
+        .object(O(integrationAppRegisterFields + [
             .field("type", .literal("integration:register_app"), required: true),
             .field("clientKey", .text(trim: true, min: 1, max: 120)),
-            .field("returnUrl", .text(trim: true, min: 1, max: 2_000), required: true),
             .field("scopes", scopedStringArray),
             .field("unsafeDemoUrlOverride", .boolean),
             .field("draftHint", draftHint),
