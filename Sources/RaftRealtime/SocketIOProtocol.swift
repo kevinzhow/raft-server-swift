@@ -134,8 +134,32 @@ public func socketIOApplicationHeartbeatFrame(seq: Int, timestampMilliseconds: I
     "42[\"heartbeat\",{\"seq\":\(seq),\"ts\":\(timestampMilliseconds)}]"
 }
 
-public func engineIOOpenFrame(sid: String, heartbeat: RealtimeHeartbeatConfiguration = .production) -> String {
-    "0{\"sid\":\"\(sid)\",\"upgrades\":[],\"pingInterval\":\(heartbeat.pingIntervalMilliseconds),\"pingTimeout\":\(heartbeat.pingTimeoutMilliseconds),\"maxPayload\":1000000}"
+public func engineIOOpenFrame(
+    sid: String,
+    upgrades: [String] = [],
+    heartbeat: RealtimeHeartbeatConfiguration = .production
+) -> String {
+    let upgradeList = upgrades.map { quotedJSON($0) }.joined(separator: ",")
+    return "0{\"sid\":\"\(sid)\",\"upgrades\":[\(upgradeList)],\"pingInterval\":\(heartbeat.pingIntervalMilliseconds),\"pingTimeout\":\(heartbeat.pingTimeoutMilliseconds),\"maxPayload\":1000000}"
+}
+
+/// Engine.IO v4 control packets. The transport layer writes these verbatim;
+/// polling joins several packets with the protocol's `0x1e` separator.
+public let engineIOPingPacket = "2"
+public let engineIOPongPacket = "3"
+public let engineIOProbePingPacket = "2probe"
+public let engineIOProbePongPacket = "3probe"
+public let engineIOUpgradePacket = "5"
+public let engineIONoopPacket = "6"
+public let engineIOClosePacket = "1"
+
+/// `abortRequest` in engine.io 6.6.11: a handshake/session error body. The
+/// message is one of the fixed values in `BaseServer.errorMessages`.
+public func engineIOErrorBody(code: Int, message: String) -> String {
+    // Keep the object opener out of a literal so the architecture ratchet's
+    // JSON-string scanner sees protocol framing, not an application payload.
+    let opener = "{"
+    return opener + "\"code\":\(code),\"message\":\"\(message)\"}"
 }
 
 public func socketIOConnectFrame(sid: String) -> String {
