@@ -107,6 +107,23 @@ private func makeAgentApiContractCoverageFixture() -> AgentApiContractCoverageFi
                 part: "query",
                 issues: #"[{"path":"channel","message":"Too small: expected string to have >=1 characters"},{"path":"task_number","message":"Invalid input: expected number, received NaN"}]"#
             )
+            // JavaScript `Number("Infinity")` and `Number("1e999")` are
+            // non-finite numbers; zod names the received type as `number`,
+            // while an actual parse failure names `NaN`.
+            try await expectIssue(
+                .get,
+                "/internal/agent-api/tasks/history?channel=c&task_number=Infinity",
+                key: "taskHistory",
+                part: "query",
+                issues: #"[{"path":"task_number","message":"Invalid input: expected number, received number"}]"#
+            )
+            try await expectIssue(
+                .get,
+                "/internal/agent-api/tasks/history?channel=c&task_number=1e999",
+                key: "taskHistory",
+                part: "query",
+                issues: #"[{"path":"task_number","message":"Invalid input: expected number, received number"}]"#
+            )
 
             // taskUnclaim: both required members, in shape order.
             try await expectIssue(

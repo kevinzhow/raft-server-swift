@@ -200,6 +200,42 @@ import VaporTesting
                 issues: #"[{"path":"","message":"At least one of title or description is required"}]"#
             )
 
+            // Continuable member checks (trim/min/positive) do not abort the
+            // object's own `.superRefine`: zod appends the root issue after
+            // every member issue it already collected.
+            try await expect(
+                .get,
+                "/internal/agent-api/tasks?channel=%20&mine=true",
+                key: "taskList",
+                part: "query",
+                issues: #"[{"path":"channel","message":"Too small: expected string to have >=1 characters"},{"path":"","message":"exactly one of channel or mine=true is required"}]"#
+            )
+            try await expect(
+                .post,
+                "/internal/agent-api/tasks/amend",
+                body: ##"{"channel":"c","task_number":0}"##,
+                key: "taskAmend",
+                part: "body",
+                issues: #"[{"path":"task_number","message":"Too small: expected number to be >0"},{"path":"","message":"At least one of title or description is required"}]"#
+            )
+            // Aborting parse failures (missing/int) stop the object checks.
+            try await expect(
+                .post,
+                "/internal/agent-api/tasks/amend",
+                body: "{}",
+                key: "taskAmend",
+                part: "body",
+                issues: #"[{"path":"channel","message":"Invalid input: expected string, received undefined"},{"path":"task_number","message":"Invalid input: expected number, received undefined"}]"#
+            )
+            try await expect(
+                .post,
+                "/internal/agent-api/tasks/amend",
+                body: ##"{"channel":"c","task_number":1.5}"##,
+                key: "taskAmend",
+                part: "body",
+                issues: #"[{"path":"task_number","message":"Invalid input: expected int, received number"}]"#
+            )
+
             // Params: trimmed min before the body is read.
             try await expect(
                 .post,
@@ -243,6 +279,35 @@ import VaporTesting
                 key: "actionPrepare",
                 part: "body",
                 issues: #"[{"path":"action.type","message":"Invalid input"}]"#
+            )
+
+            // `integration:register_app` extends the shared draft shape and
+            // overrides `name`/`returnUrl` in place: name becomes required,
+            // returnUrl becomes required min 1 exactly once at its original
+            // field position (not a second appended member).
+            try await expect(
+                .post,
+                "/internal/agent-api/prepare-action",
+                body: #"{"target":"t","action":{"type":"integration:register_app","returnUrl":"https://x"}}"#,
+                key: "actionPrepare",
+                part: "body",
+                issues: #"[{"path":"action.name","message":"Invalid input: expected string, received undefined"}]"#
+            )
+            try await expect(
+                .post,
+                "/internal/agent-api/prepare-action",
+                body: #"{"target":"t","action":{"type":"integration:register_app"}}"#,
+                key: "actionPrepare",
+                part: "body",
+                issues: #"[{"path":"action.name","message":"Invalid input: expected string, received undefined"},{"path":"action.returnUrl","message":"Invalid input: expected string, received undefined"}]"#
+            )
+            try await expect(
+                .post,
+                "/internal/agent-api/prepare-action",
+                body: #"{"target":"t","action":{"type":"integration:register_app","name":"n","returnUrl":123}}"#,
+                key: "actionPrepare",
+                part: "body",
+                issues: #"[{"path":"action.returnUrl","message":"Invalid input: expected string, received number"}]"#
             )
 
             // The body schema itself is a discriminated union here, so the
@@ -334,10 +399,71 @@ import VaporTesting
     let prepare = #"{"mode":"update","target":"room","clientKey":" key ","name":"N"}"#
     #expect(try failure(.integrationAppPrepare, .body, prepare) == nil)
 
+    // `integration:update_app_registration` keeps the shared draft members
+    // optional; only `integration:register_app` overrides name/returnUrl.
+    let updateApp = #"{"target":"t","action":{"type":"integration:update_app_registration","clientKey":"k"}}"#
+    #expect(try failure(.actionPrepare, .body, updateApp) == nil)
+    let registerApp = #"{"target":"t","action":{"type":"integration:register_app","name":"n","returnUrl":"https://x"}}"#
+    #expect(try failure(.actionPrepare, .body, registerApp) == nil)
+
+    // `z.coerce.number()` is JavaScript `Number(string)`: binary and octal
+    // literals are finite, while "Infinity"/"1e999" are non-finite.
+    for taskNumber in ["0b101", "0B101", "0o17", "0O17", "0x1f", " 5 "] {
+        let query = try JSONDecoder().decode(
+            JSONValue.self,
+            from: Data(#"{"channel":"c","task_number":"\#(taskNumber)"}"#.utf8)
+        )
+        #expect(
+            AgentApiContractValidator.failure(for: .taskHistory, part: .query, value: query) == nil,
+            "task_number=\(taskNumber)"
+        )
+    }
+
     let v2 = #"{"target":"c","content":"hi","mentions":[{"type":"agent","id":"11111111-1111-4111-8111-111111111111","name":" bot "}]}"#
     #expect(try failure(.messageSendV2, .body, v2) == nil)
 
     // Query values are strings; trim makes the padded forms valid.
     let page = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"limit":" 200 ","offset":" 0 "}"#.utf8))
     #expect(AgentApiContractValidator.failure(for: .userChannels, part: .query, value: page) == nil)
+}
+
+/// `z.coerce.number()` is JavaScript `Number(value)`, and for an array that is
+/// `Number(String(array))`: a single element joins with `,` after JavaScript
+/// `String` conversion. Booleans become `"true"`/`"false"` (NaN), `null`
+/// becomes `""` (0), nested arrays join recursively, and an object becomes
+/// `"[object Object]"` (NaN). Express only reaches this through repeated query
+/// keys, but the shared helper keeps the language semantics exact.
+@Test func agentApiContractCoercedNumberFollowsJavaScriptArrayStringConversion() {
+    func failure(_ taskNumber: JSONValue) -> AgentApiContractFailure? {
+        AgentApiContractValidator.failure(
+            for: .taskHistory,
+            part: .query,
+            value: .object(["channel": .string("c"), "task_number": taskNumber])
+        )
+    }
+
+    func messages(_ taskNumber: JSONValue) -> [String] {
+        failure(taskNumber)?.issues.map(\.message) ?? []
+    }
+
+    // Accepted: single-element arrays whose String conversion is numeric.
+    #expect(failure(.array([.string("0b101")])) == nil)
+    #expect(failure(.array([.integer(16)])) == nil)
+    #expect(failure(.array([.array([.string("5")])])) == nil)
+
+    // Number([true]) is Number("true") = NaN, not Number(true) = 1.
+    #expect(messages(.array([.bool(true)])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.bool(false)])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.array([.bool(true)])])) == ["Invalid input: expected number, received NaN"])
+
+    // Number([]) and Number([null]) are Number("") = 0, so the positive check
+    // rejects them instead of reporting a parse failure.
+    #expect(messages(.array([])) == ["Too small: expected number to be >0"])
+    #expect(messages(.array([.null])) == ["Too small: expected number to be >0"])
+    #expect(messages(.array([.array([])])) == ["Too small: expected number to be >0"])
+
+    // Two elements join with "," and are not numeric; a nested pair does too.
+    #expect(messages(.array([.integer(5), .integer(6)])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.array([.integer(5), .integer(6)])])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.object([:])])) == ["Invalid input: expected number, received NaN"])
 }
