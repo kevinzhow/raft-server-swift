@@ -77,9 +77,27 @@ public struct AuthCoreService: Sendable {
     }
 
     private func socialPlaceholderNeeded(provider: String, body: SocialCompleteRequest) throws -> Bool {
-        guard AuthRedirects.socialProviders.contains(provider) else { throw AuthCoreError.notFound }
-        guard let code = body.code, !code.isEmpty else { throw AuthCoreError.socialCompletionCodeRequired }
+        let code = try socialCode(provider: provider, body: body)
         return store.socialPasswordPlaceholderNeeded(provider: provider, code: code)
+    }
+
+    /// The code the completion lookup hashes. Provider resolution and the raw
+    /// JavaScript `!code` check share the pinned order
+    /// (`routes/auth.ts:1125-1136`). A truthy non-string passes that check and
+    /// then reaches `socialAuthService.ts:203`'s
+    /// `createHash("sha256").update(value)`, which Node rejects with a
+    /// `TypeError`; the route catch (`routes/auth.ts:1228-1241`) does not match
+    /// its 400 branch and answers the generic 500.
+    private func socialCode(provider: String, body: SocialCompleteRequest) throws -> String {
+        guard AuthRedirects.socialProviders.contains(provider) else { throw AuthCoreError.notFound }
+        switch body.completionCode {
+        case .absent:
+            throw AuthCoreError.socialCompletionCodeRequired
+        case .nonString:
+            throw AuthCoreError.socialCompletionServerError(correlationId: UUID().uuidString.lowercased())
+        case .text(let code):
+            return code
+        }
     }
 
     private func finishSocial(
@@ -90,12 +108,7 @@ public struct AuthCoreService: Sendable {
         authorization: String?,
         passwordPlaceholder: String?
     ) throws -> SocialCompleteResponse {
-        guard AuthRedirects.socialProviders.contains(provider) else {
-            throw AuthCoreError.notFound
-        }
-        guard let code = body.code, !code.isEmpty else {
-            throw AuthCoreError.socialCompletionCodeRequired
-        }
+        let code = try socialCode(provider: provider, body: body)
         let moment = now()
         let outcome = store.completeSocial(SocialCompletionAttempt(
             provider: provider,

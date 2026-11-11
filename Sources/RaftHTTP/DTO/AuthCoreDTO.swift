@@ -8,9 +8,12 @@ import RaftShared
 // and per-field `as? String` / `as? Bool` casts. The request decoders keep that
 // tolerance: a value of the wrong JSON type reads as absent (or as the
 // field-specific state the old validation order reported), so a request the old
-// routes accepted cannot become a different status. A body that is not a JSON
-// object fails to decode; the feature maps it to an empty request and the
-// service publishes the reply the old non-object cast produced.
+// routes accepted cannot become a different status. `code` on provider
+// completion is the exception: the pinned route tests raw JavaScript truthiness
+// before the token parse, so it keeps the value's truthiness state instead of
+// collapsing every non-string to absent. A body that is not a JSON object fails
+// to decode; the feature maps it to an empty request and the service publishes
+// the reply the old non-object cast produced.
 
 private extension KeyedDecodingContainer {
     /// `as? String`: anything else (including `null`) reads as absent.
@@ -31,9 +34,55 @@ private extension KeyedDecodingContainer {
 
 // MARK: - Requests
 
+/// The `code` member under the pinned route's raw JavaScript truthiness.
+///
+/// `routes/auth.ts:1131-1136` runs `if (!code)` on the parsed JSON value before
+/// `parsePendingLinkToken` (`routes/auth.ts:1138`). A non-empty string and every
+/// truthy non-string (`5`, `true`, `[]`, `{}`) pass that check; a missing
+/// member, `null`, `""`, `0`/`-0` and `false` do not. The later completion
+/// lookup hashes the value (`socialAuthService.ts:203,1422-1436`), and Node's
+/// `createHash(...).update(value)` accepts a string only.
+public enum SocialCompletionCode: Sendable, Equatable {
+    /// Falsy in JavaScript: the "code is required" 400.
+    case absent
+    /// A non-empty string: hashed by the completion lookup.
+    case text(String)
+    /// A truthy non-string: passes the route check, then the hash throws.
+    case nonString
+
+    public init(_ value: JSONValue?) {
+        guard let value else {
+            self = .absent
+            return
+        }
+        switch value {
+        case .string(let text):
+            self = text.isEmpty ? .absent : .text(text)
+        case .null:
+            self = .absent
+        case .bool(let flag):
+            self = flag ? .nonString : .absent
+        case .integer(let number):
+            self = number == 0 ? .absent : .nonString
+        case .number(let number):
+            self = number == 0 ? .absent : .nonString
+        case .array, .object:
+            self = .nonString
+        }
+    }
+
+    /// The hashed value for a string code; `nil` for every other state.
+    public var textValue: String? {
+        if case .text(let text) = self { return text }
+        return nil
+    }
+}
+
 /// `POST /api/auth/:provider/complete` request body.
 public struct SocialCompleteRequest: Decodable, Sendable, Equatable {
-    public var code: String?
+    public var completionCode: SocialCompletionCode
+    /// The string code, when the member is a non-empty string.
+    public var code: String? { completionCode.textValue }
     public var pendingLinkToken: String?
     /// `acceptTerms as? Bool == true`.
     public var acceptTerms: Bool
@@ -49,7 +98,7 @@ public struct SocialCompleteRequest: Decodable, Sendable, Equatable {
         privacyVersion: String? = nil,
         legalAcceptanceSource: String? = nil
     ) {
-        self.code = code
+        self.completionCode = code.map { $0.isEmpty ? .absent : .text($0) } ?? .absent
         self.pendingLinkToken = pendingLinkToken
         self.acceptTerms = acceptTerms
         self.termsVersion = termsVersion
@@ -63,7 +112,9 @@ public struct SocialCompleteRequest: Decodable, Sendable, Equatable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        code = container.lenientString(.code)
+        // `code` keeps the raw JSON value: the pinned route tests its
+        // JavaScript truthiness, not whether it is a string.
+        completionCode = SocialCompletionCode((try? container.decodeIfPresent(JSONValue.self, forKey: .code)) ?? nil)
         pendingLinkToken = container.lenientString(.pendingLinkToken)
         acceptTerms = container.lenientBool(.acceptTerms) == true
         termsVersion = container.lenientString(.termsVersion)
