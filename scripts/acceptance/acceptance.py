@@ -16,8 +16,21 @@ Checks, in order:
   7. channel @mention reply                message with a mention, wait
   8. task create (asTask), board, history  message asTask, board, task history
   9. attachment upload/download/preview     multipart upload, bytes, preview URL
- 10. thread reply + thread:updated         Socket.IO frame assertion
- 11. optional --restart-main               unit restart, reconnect, delivery
+ 10. attachment read by the real agent     upload a nonce text file, send it to
+                                           the DM agent, require the exact nonce
+                                           in two consecutive replies
+ 11. thread reply + thread:updated         Socket.IO frame assertion
+ 12. optional --restart-main                Main unit restart, reconnect, delivery
+ 13. optional --restart-computer            stop the official Computer unit,
+                                           send a queued DM while it is offline,
+                                           start it again (always in finally),
+                                           then require two correlated resident
+                                           replies; Main stays running
+ 14. optional --restart-agent [keep-session]
+                                           POST /api/agents/:id/reset with
+                                           {"mode":"restart"} (HTTP 202), then
+                                           two correlated DM replies; the
+                                           session is not cleared
 
 Failure policy (replaces "stop at first defect"): stop only for an outage
 (/health unavailable or 503), a possible data corruption (read-only sweep moved
@@ -32,6 +45,8 @@ Configuration comes from the local deployment env file (git-ignored):
   ACCEPTANCE_PG_CONTAINER        optional, for the revision sweep
   ACCEPTANCE_DATABASE            optional, for the revision sweep
   ACCEPTANCE_SERVICE_UNIT        optional, for --restart-main
+  ACCEPTANCE_COMPUTER_SERVICE_UNIT
+                                 optional, for --restart-computer
 
 Run ``--dry-run`` to print every check without touching the network. The
 default mode is read-only: message-sending checks require ``--full``.
@@ -46,6 +61,7 @@ import datetime
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -54,6 +70,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from client import HTTPClient, HTTPResult, WebSocketClient, multipart  # noqa: E402
+from recovery import (  # noqa: E402
+    RecoveryBlocked,
+    RecoveryError,
+    UnitControl,
+    run_agent_keep_session_restart,
+    run_computer_restart,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPO_ROOT / "deploy" / "swift-production" / "local.env"
@@ -78,6 +101,75 @@ class Corruption(Exception):
 
 def utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+ATTACHMENT_READ_INSTRUCTION = (
+    "Read the attached text file and reply with the exact token it contains. "
+    "The token is the file's only content; do not guess or invent one. "
+    "The attachment id is {attachment_id}. Download it with "
+    "`raft attachment view --id {attachment_id} --output ./{filename}` "
+    "(or your attachment viewer), then read that file. "
+    "Write the output inside your current workspace using that relative path; "
+    "do not write it to /tmp or anywhere outside the workspace."
+)
+
+
+def new_nonce() -> str:
+    """A random marker the agent can only learn by reading the attachment.
+
+    The marker is independent of the filename and the instruction, so neither
+    the human prompt nor the filename can leak it.
+    """
+    return "acceptance-read-" + secrets.token_hex(8)
+
+
+def make_attachment_read_case(index: int) -> dict[str, str]:
+    """One round of the agent attachment-read proof.
+
+    ``instruction`` is a template; the caller fills in the attachment id after
+    the upload. The random nonce is never part of it.
+    """
+    nonce = new_nonce()
+    filename = f"acceptance-read-{int(time.time())}-{index}-{secrets.token_hex(3)}.txt"
+    instruction = ATTACHMENT_READ_INSTRUCTION
+    content = nonce + "\n"
+    if nonce in instruction or nonce in filename or nonce not in content:
+        raise RuntimeError("attachment-read case leaked or lost its hidden nonce")
+    return {
+        "nonce": nonce,
+        "filename": filename,
+        "content": content,
+        "instruction": instruction,
+    }
+
+
+def find_correlated_reply(
+    rows: list[dict],
+    agent_id: str,
+    after_seq: int,
+    expect_text: str | None = None,
+) -> dict | None:
+    """Return the first agent reply newer than ``after_seq``.
+
+    ``expect_text`` turns the reply into a correlation check: an unrelated
+    agent message, a reply to an earlier prompt, or a replay of the previous
+    round's token cannot satisfy the wait.
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        seq = row.get("seq")
+        if not isinstance(seq, int) or seq <= after_seq:
+            continue
+        if row.get("senderId") != agent_id:
+            continue
+        content = row.get("content")
+        if not isinstance(content, str):
+            continue
+        if expect_text is not None and expect_text not in content:
+            continue
+        return row
+    return None
 
 
 SECRET_KEYS = ("token", "password", "secret", "authorization", "apikey", "api_key", "credential")
@@ -356,7 +448,15 @@ class Acceptance:
         rows = body.get("messages", []) if isinstance(body, dict) else body
         return rows if isinstance(rows, list) else []
 
-    def wait_for_agent_reply(self, channel_id: str, agent_id: str, after_seq: int, label: str) -> dict:
+    def wait_for_agent_reply(
+        self,
+        channel_id: str,
+        agent_id: str,
+        after_seq: int,
+        label: str,
+        *,
+        expect_text: str | None = None,
+    ) -> dict:
         deadline = time.monotonic() + self.options.reply_timeout
         last_error = None
         while time.monotonic() < deadline:
@@ -366,13 +466,15 @@ class Acceptance:
                 last_error = error
                 time.sleep(2)
                 continue
-            for row in rows:
-                seq = row.get("seq")
-                if isinstance(seq, int) and seq > after_seq and row.get("senderId") == agent_id:
-                    return row
+            match = find_correlated_reply(rows, agent_id, after_seq, expect_text)
+            if match is not None:
+                return match
             time.sleep(3)
         suffix = f" (last error: {last_error})" if last_error else ""
-        raise Failure(f"{label}: no agent reply within {self.options.reply_timeout:.0f}s{suffix}")
+        correlation = f" carrying {expect_text!r}" if expect_text is not None else ""
+        raise Failure(
+            f"{label}: no agent reply{correlation} within {self.options.reply_timeout:.0f}s{suffix}"
+        )
 
     def send_message(self, channel_id: str, content: str, **extra) -> dict:
         body = {"channelId": channel_id, "content": content}
@@ -477,15 +579,11 @@ class Acceptance:
             "task_channel_id": channel_id,
         }
 
-    def check_attachment(self) -> dict:
-        channel_id = self.context.get("task_channel_id") or self.context.get("mention_channel_id")
-        if not channel_id:
-            raise Failure("no channel available for the attachment check")
-        html = b"<!doctype html><html><body><h1>acceptance</h1></body></html>"
+    def upload_attachment(self, channel_id: str, content: bytes, filename: str) -> dict:
         body, content_type = multipart(
             [
                 ("channelId", channel_id.encode(), None),
-                ("files", html, "acceptance.html"),
+                ("files", content, filename),
             ]
         )
         uploaded = self.http.request(
@@ -497,9 +595,17 @@ class Acceptance:
         )
         parsed = expect_json(uploaded, "POST /api/attachments/upload")
         rows = parsed.get("attachments", []) if isinstance(parsed, dict) else []
-        if not rows or not rows[0].get("id"):
+        if not rows or not isinstance(rows[0], dict) or not rows[0].get("id"):
             raise Failure(f"upload response has no attachment id: {uploaded.text[:300]}")
-        attachment_id = rows[0]["id"]
+        return rows[0]
+
+    def check_attachment(self) -> dict:
+        channel_id = self.context.get("task_channel_id") or self.context.get("mention_channel_id")
+        if not channel_id:
+            raise Failure("no channel available for the attachment check")
+        html = b"<!doctype html><html><body><h1>acceptance</h1></body></html>"
+        attachment = self.upload_attachment(channel_id, html, "acceptance.html")
+        attachment_id = attachment["id"]
         download = self.http.request(
             "GET",
             f"/api/attachments/{attachment_id}",
@@ -524,6 +630,75 @@ class Acceptance:
         return {
             "detail": f"attachment {attachment_id[:8]} download and HTML preview ok",
             "attachment_id": attachment_id,
+        }
+
+    def check_attachment_read(self) -> dict:
+        """Prove the real resident agent reads an attachment, twice in a row.
+
+        The token lives only in the uploaded bytes: it is absent from the
+        human prompt and from the filename. Each round waits for a reply that
+        both comes from the DM agent and contains that round's token, so an
+        unrelated message or the previous round's reply cannot satisfy it.
+        The second message is sent on the same DM without a reset after the
+        first reply.
+        """
+        channel_id = self.context.get("dm_channel_id")
+        agent_id = self.context.get("dm_agent_id")
+        if not channel_id or not agent_id:
+            raise Failure("attachment read needs the DM check to pass first")
+        rounds: list[dict] = []
+        for index in (1, 2):
+            case = make_attachment_read_case(index)
+            attachment = self.upload_attachment(
+                channel_id, case["content"].encode("utf-8"), case["filename"]
+            )
+            instruction = case["instruction"].format(
+                attachment_id=attachment["id"], filename=case["filename"]
+            )
+            if case["nonce"] in instruction:
+                raise Failure(f"attachment read round {index}: prompt leaked the hidden token")
+            sent = self.send_message(
+                channel_id,
+                instruction,
+                attachmentIds=[attachment["id"]],
+            )
+            sent_seq = sent.get("seq")
+            if not isinstance(sent_seq, int):
+                rows = self.messages(channel_id)
+                sent_seq = max(
+                    [row.get("seq", 0) for row in rows if isinstance(row.get("seq"), int)] or [0]
+                )
+            reply = self.wait_for_agent_reply(
+                channel_id,
+                agent_id,
+                sent_seq,
+                f"attachment read round {index}",
+                expect_text=case["nonce"],
+            )
+            reply_seq = reply.get("seq")
+            reply_content = reply.get("content") if isinstance(reply.get("content"), str) else ""
+            if not isinstance(reply_seq, int) or reply_seq <= sent_seq:
+                raise Failure(f"attachment read round {index}: reply seq {reply_seq!r} is not after {sent_seq}")
+            if case["nonce"] not in reply_content:
+                raise Failure(f"attachment read round {index}: reply does not contain the hidden token")
+            rounds.append(
+                {
+                    "round": index,
+                    "nonce": case["nonce"],
+                    "filename": case["filename"],
+                    "attachment_id": attachment["id"],
+                    "sent_seq": sent_seq,
+                    "reply_seq": reply_seq,
+                }
+            )
+        if rounds[1]["reply_seq"] <= rounds[0]["reply_seq"]:
+            raise Failure("attachment read replies are not consecutive")
+        return {
+            "detail": (
+                "agent read the attachment and echoed hidden tokens in two "
+                f"consecutive replies (seq {rounds[0]['reply_seq']}, {rounds[1]['reply_seq']})"
+            ),
+            "attachment_read_rounds": rounds,
         }
 
     def check_thread(self) -> dict:
@@ -584,18 +759,23 @@ class Acceptance:
         if not channel_id or not agent_id:
             raise Failure("restart delivery needs the DM check to pass first")
         old_socket = self.open_socket()
-        subprocess.run(["systemctl", "--user", "restart", unit], check=True, timeout=120)
+        try:
+            UnitControl(timeout=120).restart(unit)
+        except RecoveryError as error:
+            raise Failure(f"Main restart command failed: {error}") from None
         closed = False
         deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            try:
-                if old_socket.recv_text(timeout=2) is None:
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    if old_socket.recv_text(timeout=2) is None:
+                        closed = True
+                        break
+                except (TimeoutError, ConnectionError, OSError):
                     closed = True
                     break
-            except (TimeoutError, ConnectionError, OSError):
-                closed = True
-                break
-        old_socket.close()
+        finally:
+            old_socket.close()
         if not closed:
             raise Failure("socket did not observe the Main restart")
         last_status = None
@@ -626,6 +806,37 @@ class Acceptance:
             "restart_reply_seq": reply.get("seq"),
         }
 
+    def check_restart_computer(self) -> dict:
+        if not self.options.restart_computer:
+            raise Skip("--restart-computer not requested")
+        unit = self.options.computer_service_unit
+        if not unit:
+            raise Skip("no ACCEPTANCE_COMPUTER_SERVICE_UNIT configured")
+        channel_id = self.context.get("dm_channel_id")
+        agent_id = self.context.get("dm_agent_id")
+        if not channel_id or not agent_id:
+            raise Failure("Computer restart needs the DM check to pass first")
+        try:
+            return run_computer_restart(self, unit, UnitControl(), channel_id, agent_id)
+        except RecoveryBlocked as error:
+            raise Skip(str(error)) from None
+        except RecoveryError as error:
+            raise Failure(str(error)) from None
+
+    def check_restart_agent(self) -> dict:
+        if not self.options.restart_agent:
+            raise Skip("--restart-agent not requested")
+        channel_id = self.context.get("dm_channel_id")
+        agent_id = self.context.get("dm_agent_id")
+        if not channel_id or not agent_id:
+            raise Failure("agent keep-session restart needs the DM check to pass first")
+        try:
+            return run_agent_keep_session_restart(self, channel_id, agent_id)
+        except RecoveryBlocked as error:
+            raise Skip(str(error)) from None
+        except RecoveryError as error:
+            raise Failure(str(error)) from None
+
     def plan(self) -> list[tuple[str, str]]:
         checks = [
             ("health-version", "GET /health, GET /api/version"),
@@ -640,10 +851,32 @@ class Acceptance:
                 ("mention-reply", "POST /api/messages with an agent mention, poll the reply"),
                 ("task", "POST /api/messages asTask, GET board, GET task history"),
                 ("attachment", "POST /api/attachments/upload, download bytes, HTML preview"),
+                (
+                    "attachment-read",
+                    "upload a hidden-nonce text file, send it to the DM agent, require the "
+                    "exact nonce in two consecutive replies",
+                ),
                 ("thread", "POST /api/channels/:id/threads and wait for thread:updated"),
             ]
             if self.options.restart_main:
                 checks.append(("restart-main", "systemctl --user restart, reconnect, deliver"))
+            if self.options.restart_computer:
+                checks.append(
+                    (
+                        "restart-computer",
+                        "stop ACCEPTANCE_COMPUTER_SERVICE_UNIT, send a DM while it is offline, "
+                        "always start it again, verify a new active instance, then require two "
+                        "correlated replies (offline-queued and resident)",
+                    )
+                )
+            if self.options.restart_agent:
+                checks.append(
+                    (
+                        "restart-agent",
+                        "POST /api/agents/:id/reset {mode:restart} (HTTP 202), then require two "
+                        "correlated replies; the session is kept",
+                    )
+                )
         return checks
 
     def write_report(self) -> dict:
@@ -679,10 +912,30 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pg-container", help="override ACCEPTANCE_PG_CONTAINER")
     parser.add_argument("--database", help="override ACCEPTANCE_DATABASE")
     parser.add_argument("--service-unit", help="override ACCEPTANCE_SERVICE_UNIT")
-    parser.add_argument("--full", action="store_true", help="enable message-sending checks")
+    parser.add_argument(
+        "--computer-service-unit",
+        help="override ACCEPTANCE_COMPUTER_SERVICE_UNIT (official Computer unit)",
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="enable message-sending checks (DM, mention, task, attachment read, thread)",
+    )
     parser.add_argument("--read-only", action="store_true", help="GET/login/refresh checks only (default)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan without touching the network")
-    parser.add_argument("--restart-main", action="store_true", help="include the unit restart scenario")
+    parser.add_argument("--restart-main", action="store_true", help="include the Main unit restart scenario")
+    parser.add_argument(
+        "--restart-computer",
+        action="store_true",
+        help="stop the official Computer unit, prove queued delivery on restart, then prove a resident reply",
+    )
+    parser.add_argument(
+        "--restart-agent",
+        nargs="?",
+        const="keep-session",
+        choices=["keep-session"],
+        help="reset the DM agent with mode=restart (keeps its session), then prove two replies",
+    )
     parser.add_argument("--expect-sha", help="require /api/version sha to start with this value")
     parser.add_argument("--reply-timeout", type=float, default=DEFAULT_REPLY_TIMEOUT)
     parser.add_argument("--socket-timeout", type=float, default=45.0)
@@ -710,11 +963,20 @@ def main(argv: list[str]) -> int:
     options.service_unit = (
         options.service_unit or os.environ.get("ACCEPTANCE_SERVICE_UNIT") or env.get("ACCEPTANCE_SERVICE_UNIT")
     )
+    options.computer_service_unit = (
+        options.computer_service_unit
+        or os.environ.get("ACCEPTANCE_COMPUTER_SERVICE_UNIT")
+        or env.get("ACCEPTANCE_COMPUTER_SERVICE_UNIT")
+    )
     options.reply_timeout = float(env.get("ACCEPTANCE_REPLY_TIMEOUT", options.reply_timeout))
     if not options.base_url:
         parser.error(f"no base URL: set ACCEPTANCE_BASE_URL in {options.env_file} or pass --base-url")
     if options.restart_main and not options.full:
         parser.error("--restart-main requires --full")
+    if options.restart_computer and not options.full:
+        parser.error("--restart-computer requires --full")
+    if options.restart_agent and not options.full:
+        parser.error("--restart-agent requires --full")
 
     acceptance = Acceptance(options)
     if options.dry_run:
@@ -734,14 +996,39 @@ def main(argv: list[str]) -> int:
         acceptance.run("mention-reply", acceptance.check_mention, needs=("server_id",))
         acceptance.run("task", acceptance.check_task, needs=("server_id",))
         acceptance.run("attachment", acceptance.check_attachment, needs=("server_id",))
+        acceptance.run(
+            "attachment-read",
+            acceptance.check_attachment_read,
+            needs=("server_id", "dm_channel_id", "dm_agent_id"),
+        )
         acceptance.run("thread", acceptance.check_thread, needs=("server_id",))
         if options.restart_main:
             acceptance.run("restart-main", acceptance.check_restart, needs=("server_id",))
+        if options.restart_computer:
+            acceptance.run(
+                "restart-computer",
+                acceptance.check_restart_computer,
+                needs=("server_id", "dm_channel_id", "dm_agent_id"),
+            )
+        if options.restart_agent:
+            acceptance.run(
+                "restart-agent",
+                acceptance.check_restart_agent,
+                needs=("server_id", "dm_channel_id", "dm_agent_id"),
+            )
     else:
-        for name in ("dm-reply", "mention-reply", "task", "attachment", "thread"):
+        for name in (
+            "dm-reply",
+            "mention-reply",
+            "task",
+            "attachment",
+            "attachment-read",
+            "thread",
+            "restart-main",
+            "restart-computer",
+            "restart-agent",
+        ):
             acceptance.record(name, "SKIP", "read-only mode (pass --full)")
-        if options.restart_main:
-            acceptance.record("restart-main", "SKIP", "read-only mode (pass --full)")
 
     report = acceptance.write_report()
     counts = report["counts"]

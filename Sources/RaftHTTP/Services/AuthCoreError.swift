@@ -10,6 +10,7 @@ import Foundation
 public enum AuthCoreError: DomainError, Equatable {
     case notFound
     case socialCompletionCodeRequired
+    case socialCompletionServerError(correlationId: String)
     case socialCompletionInvalid
     case linkAuthRequired
     case linkUserMismatch
@@ -55,7 +56,7 @@ public enum AuthCoreError: DomainError, Equatable {
         case .pendingLinkExpired: 410
         case .accountLinkRequired, .termsChanged, .socialEmailExists, .emailAlreadyRegistered: 409
         case .legalAcceptanceRequired: 422
-        case .retirementReceiptUnavailable: 500
+        case .retirementReceiptUnavailable, .socialCompletionServerError: 500
         case .deviceLoginURLUnavailable: 503
         case .deviceUpdateFailed(_, let status), .deviceNotReady(_, let status): status
         }
@@ -65,6 +66,7 @@ public enum AuthCoreError: DomainError, Equatable {
         switch self {
         case .notFound: "Not found"
         case .socialCompletionCodeRequired: "Sign-in completion code is required"
+        case .socialCompletionServerError: "Failed to complete sign-in"
         case .socialCompletionInvalid: "Invalid or expired social auth completion"
         case .linkAuthRequired: "Authentication is required to link an account"
         case .linkUserMismatch: "Social auth link does not match the authenticated user"
@@ -116,8 +118,24 @@ public enum AuthCoreError: DomainError, Equatable {
         }
     }
 
+    public var responseHeaders: [String: String] {
+        switch self {
+        case .socialCompletionServerError(let correlationId):
+            return ["X-Slock-Error-Id": correlationId]
+        default:
+            return [:]
+        }
+    }
+
     public var errorBody: OrderedJSON? {
         switch self {
+        case .socialCompletionServerError(let correlationId):
+            // `sendJsonServerError` (`errorResponse.ts:138-197`) adds only the
+            // correlation id for a route that passes no `code`.
+            return .object([
+                OrderedJSONField("error", "Failed to complete sign-in"),
+                OrderedJSONField("correlationId", correlationId),
+            ])
         case .linkAuthRequired:
             // `code` precedes `error` in this published body.
             return .object([

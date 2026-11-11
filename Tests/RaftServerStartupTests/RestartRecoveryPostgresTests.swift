@@ -150,3 +150,179 @@ func postgresIdleProcessSurvivesMainRestartAndAcceptsHumanDelivery() async throw
     }
     await fixture.close(machine: machine)
 }
+
+/// The regression the deployed `15219ef` release exposed: the Computer process
+/// is stopped, a human DM is accepted while it is offline, and a new Computer
+/// process starts with a new daemon instance and an empty `runningAgents`.
+/// The previous instance's accepted delivery never got `turn_completed`, so the
+/// retained in-flight set marked the agent on disconnect. RFC 071 §4.3 rule 4
+/// and upstream `planWakeAction` make the new complete ready authoritative: the
+/// old launch cannot be admitted, the message is not re-written, and the queued
+/// DM starts the runtime on the retained session exactly once.
+@Test(.enabled(if: restartRecoveryPGEnabled), .serialized)
+func postgresComputerRestartWithoutRunningAgentDeliversTheQueuedDMOnce() async throws {
+    guard let databaseURL = ProcessInfo.processInfo.environment["RAFT_RESTART_RECOVERY_TEST_DATABASE_URL"],
+          !databaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        throw ProtocolPGFailure.missingDedicatedDatabase
+    }
+    func phase(_ value: String) { print("RESTART_RECOVERY_PG \(value)") }
+    let fixture = try await AgentExecutionPostgresFixture.start(databaseURL: databaseURL)
+    phase("fixture-started")
+    var machine: ControlledMachineProtocolPeer?
+    let firstDaemon = "restart-offline-daemon-\(UUID().uuidString.lowercased())"
+    let secondDaemon = "restart-offline-daemon-\(UUID().uuidString.lowercased())"
+    let sequence = ProtocolPGSequence()
+    do {
+        let owner = try await fixture.login(fixture.ownerEmail)
+        let attached = try await fixture.http("POST", "/api/computer/attach", token: owner,
+            body: .init(["serverSlug": .string(fixture.slug), "name": .string("Computer restart fixture")]))
+        guard attached.status == 201 else { throw ProtocolPGFailure.invalidResponse }
+        let computer = try attached.object()
+        let machineID = try computer.requireString("machineId")
+        let key = try computer.requireString("apiKey")
+        let config: JSONValue = .object(["version": .integer(1), "runtime": .string("codex"),
+            "model": .object(["kind": .string("preset"), "id": .string("gpt-5.3-codex")])])
+        let created = try await fixture.http("POST", "/api/agents", token: owner,
+            body: .init(["name": .string("Computer restart recipient"), "machineId": .string(machineID),
+                         "runtimeConfig": config]))
+        guard created.status == 200 else { throw ProtocolPGFailure.invalidResponse }
+        let agentID = try created.object().requireString("id")
+        let dm = try await fixture.http("POST", "/api/channels/dm", token: owner,
+            body: .init(["agentId": .string(agentID)]))
+        guard dm.status == 200 else { throw ProtocolPGFailure.invalidResponse }
+        let channelID = try dm.object().requireString("id")
+        phase("http-setup-complete")
+
+        let first = try await ControlledMachineProtocolPeer.connect(
+            port: fixture.machineServer.port, key: key, daemonId: firstDaemon, sequence: sequence)
+        machine = first
+        try await first.sendControlledReady(runningAgentIds: [])
+        let startBoundary = first.socket.count
+        let wake = try await postHumanRestart(fixture, owner: owner, channel: channelID,
+                                              content: "Wake the old Computer runtime")
+        let start = try await first.socket.nextObject(since: startBoundary) {
+            $0.string("type") == "agent:start" && $0.string("agentId") == agentID
+        }
+        let oldLaunch = try start.requireString("launchId")
+        #expect(start.object("wakeMessage")?.string("message_id") == wake.messageId)
+        try await first.acknowledgeControlledStart(start)
+        try await first.sendProcessSpawned(agentId: agentID, launchId: oldLaunch, processInstanceId: "old-process")
+        try await first.sendSession(agentId: agentID, launchId: oldLaunch, sessionId: "codex-session")
+        try await first.sendTurnCompleted(agentId: agentID, launchId: oldLaunch, sessionId: "codex-session")
+        try await protocolPGEventually {
+            let state = try await fixture.audit().execution.agents[agentID]
+            return state?.launches[oldLaunch]?.completed == true && state?.sessionId == "codex-session"
+        }
+        phase("old-runtime-idle")
+
+        // The delivery the old Computer acknowledged but never completed. The
+        // daemon routed it and dropped it as already consumed, so no turn ever
+        // starts; the server retains it as the launch's in-flight evidence.
+        let inFlightBoundary = first.socket.count
+        let inFlight = try await postHumanRestart(fixture, owner: owner, channel: channelID,
+                                                  content: "Acknowledged by the old Computer")
+        let inFlightFrame = try await first.socket.nextObject(since: inFlightBoundary) {
+            $0.string("type") == "agent:deliver" && $0.string("agentId") == agentID
+                && $0.object("message")?.string("message_id") == inFlight.messageId
+        }
+        try await first.acknowledgeControlledDelivery(inFlightFrame)
+        let inFlightAudit = try await fixture.audit()
+        let inFlightCommand = try #require(inFlightAudit.execution.commands.values.first {
+            $0.kind == .delivery && $0.agentId == agentID && $0.messageId == inFlight.messageId
+        })
+        try await protocolPGEventually {
+            (try await fixture.audit()).execution.agents[agentID]?
+                .launches[oldLaunch]?.inFlightDeliveryCommandIds?.contains(inFlightCommand.commandId) == true
+        }
+        phase("old-in-flight-delivery")
+
+        // The Computer service stops. Nothing was in flight for a turn that can
+        // still complete; the connection-derived flag is the production row.
+        await first.socket.close()
+        machine = nil
+        try await protocolPGEventually {
+            try await fixture.audit().execution.connections[machineID]?.online == false
+        }
+        let disconnected = try await fixture.audit()
+        #expect(disconnected.execution.agents[agentID]?.needsManual == "connection_lost_with_unsettled_execution")
+        phase("computer-stopped")
+
+        // A human DM accepted while the Computer is offline. It must remain
+        // readable and durably queued, never a fake delivery.
+        let offline = try await postHumanRestart(fixture, owner: owner, channel: channelID,
+                                                 content: "Sent while the Computer was offline")
+        try await protocolPGEventually {
+            (try await fixture.audit()).execution.pendingHumanDeliveries?.values.contains {
+                $0.agentId == agentID && $0.messageId == offline.messageId
+            } == true
+        }
+        phase("offline-message-queued")
+
+        // A new Computer process with a new daemon instance and a complete
+        // inventory that reports no running agents.
+        let second = try await ControlledMachineProtocolPeer.connect(
+            port: fixture.machineServer.port, key: key, daemonId: secondDaemon, sequence: sequence)
+        machine = second
+        let restartWire = second.socket.count
+        try await second.sendControlledReady(runningAgentIds: [])
+        let restartStart = try await second.socket.nextObject(since: restartWire) {
+            $0.string("type") == "agent:start" && $0.string("agentId") == agentID
+                && $0.object("wakeMessage")?.string("message_id") == offline.messageId
+        }
+        let newLaunch = try restartStart.requireString("launchId")
+        #expect(newLaunch != oldLaunch)
+        #expect(restartStart.object("config")?.string("sessionId") == "codex-session",
+                "the restarted runtime resumes the retained session")
+        let startWire = try await second.socket.wireFence(since: restartWire)
+        #expect(!startWire.contains {
+            $0.contains("\"agent:deliver\"") && $0.contains(offline.messageId)
+        }, "the queued DM rides the start and is not also written as agent:deliver")
+        phase("second-ready-start")
+
+        try await second.acknowledgeControlledStart(restartStart)
+        try await second.sendProcessSpawned(agentId: agentID, launchId: newLaunch, processInstanceId: "new-process")
+        try await second.sendSession(agentId: agentID, launchId: newLaunch, sessionId: "codex-session")
+        try await second.sendTurnCompleted(agentId: agentID, launchId: newLaunch, sessionId: "codex-session")
+        try await protocolPGEventually {
+            let execution = (try await fixture.audit()).execution
+            let settled = execution.agents[agentID]?.needsManual == nil
+            let noPending = !(execution.pendingHumanDeliveries ?? [:]).values.contains { $0.agentId == agentID }
+            let completed = execution.agents[agentID]?.launches[newLaunch]?.completed == true
+            return settled && noPending && completed
+        }
+        let after = try await fixture.audit()
+        let retired = try #require(after.execution.agents[agentID]?.launches[oldLaunch])
+        #expect(retired.retiredAfterDaemonRestart == true)
+        #expect(retired.completed == true, "a retired launch is never rewritten as a failed or incomplete turn")
+        #expect(after.execution.agents[agentID]?.processes["old-process"]?.exited == true)
+        #expect(after.execution.commands[inFlightCommand.commandId.uuidString]?.status == .accepted,
+                "the old accepted delivery is historical, not a second pending attempt")
+        try await second.socket.applicationFence()
+        let wire = try await second.socket.wireFence(since: restartWire)
+        #expect(wire.filter { $0.contains("\"agent:start\"") && $0.contains(offline.messageId) }.count == 1,
+                "the queued DM is started exactly once")
+        #expect(!wire.contains { $0.contains("\"agent:deliver\"") && $0.contains(offline.messageId) },
+                "the queued DM is never delivered twice")
+        #expect(!wire.contains { $0.contains(inFlight.messageId) },
+                "the old acknowledged delivery is historical and is never resent after retirement")
+        phase("complete")
+    } catch {
+        await fixture.close(machine: machine)
+        throw error
+    }
+    await fixture.close(machine: machine)
+}
+
+private func postHumanRestart(_ fixture: AgentExecutionPostgresFixture, owner: String, channel: String,
+                              content: String) async throws -> (messageId: String, seq: Int) {
+    let posted = try await fixture.http("POST", "/api/v2/messages", token: owner,
+        body: .init(["channelId": .string(channel), "content": .string(content)]))
+    guard posted.status == 200, let message = try posted.object().object("message") else {
+        throw ProtocolPGFailure.invalidResponse
+    }
+    let messageId = try message.requireString("id")
+    let audit = try await fixture.audit()
+    guard let row = audit.messages.first(where: { $0.string("id") == messageId }),
+          let seq = row.integer("seq") else { throw ProtocolPGFailure.missingField }
+    return (messageId, Int(seq))
+}
