@@ -400,7 +400,7 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
         }
         let command = try #require(
             fixture.accounts.agentsRuntimeStore.state.execution.commands[admission.commandId.uuidString])
-        guard case .delivery(let data, _) = try service.materializeInTransaction(command: command) else {
+        guard case .delivery(let data, _, _) = try service.materializeInTransaction(command: command) else {
             Issue.record("Expected delivery materialization")
             return
         }

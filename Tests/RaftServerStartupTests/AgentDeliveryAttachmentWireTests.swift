@@ -73,7 +73,7 @@ private func attachmentDeliveryCommand() throws -> AgentExecutionCommand {
             let data = try delivery.encoded()
             let wire = try MachineCommand(
                 json: String(decoding: ProductionAgentExecutionWire.delivery(
-                    command, message: data, sequence: 7), as: UTF8.self),
+                    command, message: data, sequence: 7, mentionDelivery: nil), as: UTF8.self),
                 expectedConnectionEpochId: epoch)
             let boundary = peer.socket.count
             let sent = Task {
