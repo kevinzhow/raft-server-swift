@@ -426,3 +426,44 @@ import VaporTesting
     let page = try JSONDecoder().decode(JSONValue.self, from: Data(#"{"limit":" 200 ","offset":" 0 "}"#.utf8))
     #expect(AgentApiContractValidator.failure(for: .userChannels, part: .query, value: page) == nil)
 }
+
+/// `z.coerce.number()` is JavaScript `Number(value)`, and for an array that is
+/// `Number(String(array))`: a single element joins with `,` after JavaScript
+/// `String` conversion. Booleans become `"true"`/`"false"` (NaN), `null`
+/// becomes `""` (0), nested arrays join recursively, and an object becomes
+/// `"[object Object]"` (NaN). Express only reaches this through repeated query
+/// keys, but the shared helper keeps the language semantics exact.
+@Test func agentApiContractCoercedNumberFollowsJavaScriptArrayStringConversion() {
+    func failure(_ taskNumber: JSONValue) -> AgentApiContractFailure? {
+        AgentApiContractValidator.failure(
+            for: .taskHistory,
+            part: .query,
+            value: .object(["channel": .string("c"), "task_number": taskNumber])
+        )
+    }
+
+    func messages(_ taskNumber: JSONValue) -> [String] {
+        failure(taskNumber)?.issues.map(\.message) ?? []
+    }
+
+    // Accepted: single-element arrays whose String conversion is numeric.
+    #expect(failure(.array([.string("0b101")])) == nil)
+    #expect(failure(.array([.integer(16)])) == nil)
+    #expect(failure(.array([.array([.string("5")])])) == nil)
+
+    // Number([true]) is Number("true") = NaN, not Number(true) = 1.
+    #expect(messages(.array([.bool(true)])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.bool(false)])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.array([.bool(true)])])) == ["Invalid input: expected number, received NaN"])
+
+    // Number([]) and Number([null]) are Number("") = 0, so the positive check
+    // rejects them instead of reporting a parse failure.
+    #expect(messages(.array([])) == ["Too small: expected number to be >0"])
+    #expect(messages(.array([.null])) == ["Too small: expected number to be >0"])
+    #expect(messages(.array([.array([])])) == ["Too small: expected number to be >0"])
+
+    // Two elements join with "," and are not numeric; a nested pair does too.
+    #expect(messages(.array([.integer(5), .integer(6)])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.array([.integer(5), .integer(6)])])) == ["Invalid input: expected number, received NaN"])
+    #expect(messages(.array([.object([:])])) == ["Invalid input: expected number, received NaN"])
+}

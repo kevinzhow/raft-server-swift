@@ -20,7 +20,17 @@ Checks, in order:
                                            the DM agent, require the exact nonce
                                            in two consecutive replies
  11. thread reply + thread:updated         Socket.IO frame assertion
- 12. optional --restart-main               unit restart, reconnect, delivery
+ 12. optional --restart-main                Main unit restart, reconnect, delivery
+ 13. optional --restart-computer            stop the official Computer unit,
+                                           send a queued DM while it is offline,
+                                           start it again (always in finally),
+                                           then require two correlated resident
+                                           replies; Main stays running
+ 14. optional --restart-agent [keep-session]
+                                           POST /api/agents/:id/reset with
+                                           {"mode":"restart"} (HTTP 202), then
+                                           two correlated DM replies; the
+                                           session is not cleared
 
 Failure policy (replaces "stop at first defect"): stop only for an outage
 (/health unavailable or 503), a possible data corruption (read-only sweep moved
@@ -35,6 +45,8 @@ Configuration comes from the local deployment env file (git-ignored):
   ACCEPTANCE_PG_CONTAINER        optional, for the revision sweep
   ACCEPTANCE_DATABASE            optional, for the revision sweep
   ACCEPTANCE_SERVICE_UNIT        optional, for --restart-main
+  ACCEPTANCE_COMPUTER_SERVICE_UNIT
+                                 optional, for --restart-computer
 
 Run ``--dry-run`` to print every check without touching the network. The
 default mode is read-only: message-sending checks require ``--full``.
@@ -58,6 +70,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from client import HTTPClient, HTTPResult, WebSocketClient, multipart  # noqa: E402
+from recovery import (  # noqa: E402
+    RecoveryBlocked,
+    RecoveryError,
+    UnitControl,
+    run_agent_keep_session_restart,
+    run_computer_restart,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPO_ROOT / "deploy" / "swift-production" / "local.env"
@@ -740,18 +759,23 @@ class Acceptance:
         if not channel_id or not agent_id:
             raise Failure("restart delivery needs the DM check to pass first")
         old_socket = self.open_socket()
-        subprocess.run(["systemctl", "--user", "restart", unit], check=True, timeout=120)
+        try:
+            UnitControl(timeout=120).restart(unit)
+        except RecoveryError as error:
+            raise Failure(f"Main restart command failed: {error}") from None
         closed = False
         deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            try:
-                if old_socket.recv_text(timeout=2) is None:
+        try:
+            while time.monotonic() < deadline:
+                try:
+                    if old_socket.recv_text(timeout=2) is None:
+                        closed = True
+                        break
+                except (TimeoutError, ConnectionError, OSError):
                     closed = True
                     break
-            except (TimeoutError, ConnectionError, OSError):
-                closed = True
-                break
-        old_socket.close()
+        finally:
+            old_socket.close()
         if not closed:
             raise Failure("socket did not observe the Main restart")
         last_status = None
@@ -782,6 +806,37 @@ class Acceptance:
             "restart_reply_seq": reply.get("seq"),
         }
 
+    def check_restart_computer(self) -> dict:
+        if not self.options.restart_computer:
+            raise Skip("--restart-computer not requested")
+        unit = self.options.computer_service_unit
+        if not unit:
+            raise Skip("no ACCEPTANCE_COMPUTER_SERVICE_UNIT configured")
+        channel_id = self.context.get("dm_channel_id")
+        agent_id = self.context.get("dm_agent_id")
+        if not channel_id or not agent_id:
+            raise Failure("Computer restart needs the DM check to pass first")
+        try:
+            return run_computer_restart(self, unit, UnitControl(), channel_id, agent_id)
+        except RecoveryBlocked as error:
+            raise Skip(str(error)) from None
+        except RecoveryError as error:
+            raise Failure(str(error)) from None
+
+    def check_restart_agent(self) -> dict:
+        if not self.options.restart_agent:
+            raise Skip("--restart-agent not requested")
+        channel_id = self.context.get("dm_channel_id")
+        agent_id = self.context.get("dm_agent_id")
+        if not channel_id or not agent_id:
+            raise Failure("agent keep-session restart needs the DM check to pass first")
+        try:
+            return run_agent_keep_session_restart(self, channel_id, agent_id)
+        except RecoveryBlocked as error:
+            raise Skip(str(error)) from None
+        except RecoveryError as error:
+            raise Failure(str(error)) from None
+
     def plan(self) -> list[tuple[str, str]]:
         checks = [
             ("health-version", "GET /health, GET /api/version"),
@@ -805,6 +860,23 @@ class Acceptance:
             ]
             if self.options.restart_main:
                 checks.append(("restart-main", "systemctl --user restart, reconnect, deliver"))
+            if self.options.restart_computer:
+                checks.append(
+                    (
+                        "restart-computer",
+                        "stop ACCEPTANCE_COMPUTER_SERVICE_UNIT, send a DM while it is offline, "
+                        "always start it again, verify a new active instance, then require two "
+                        "correlated replies (offline-queued and resident)",
+                    )
+                )
+            if self.options.restart_agent:
+                checks.append(
+                    (
+                        "restart-agent",
+                        "POST /api/agents/:id/reset {mode:restart} (HTTP 202), then require two "
+                        "correlated replies; the session is kept",
+                    )
+                )
         return checks
 
     def write_report(self) -> dict:
@@ -841,13 +913,29 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--database", help="override ACCEPTANCE_DATABASE")
     parser.add_argument("--service-unit", help="override ACCEPTANCE_SERVICE_UNIT")
     parser.add_argument(
+        "--computer-service-unit",
+        help="override ACCEPTANCE_COMPUTER_SERVICE_UNIT (official Computer unit)",
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="enable message-sending checks (DM, mention, task, attachment read, thread)",
     )
     parser.add_argument("--read-only", action="store_true", help="GET/login/refresh checks only (default)")
     parser.add_argument("--dry-run", action="store_true", help="print the plan without touching the network")
-    parser.add_argument("--restart-main", action="store_true", help="include the unit restart scenario")
+    parser.add_argument("--restart-main", action="store_true", help="include the Main unit restart scenario")
+    parser.add_argument(
+        "--restart-computer",
+        action="store_true",
+        help="stop the official Computer unit, prove queued delivery on restart, then prove a resident reply",
+    )
+    parser.add_argument(
+        "--restart-agent",
+        nargs="?",
+        const="keep-session",
+        choices=["keep-session"],
+        help="reset the DM agent with mode=restart (keeps its session), then prove two replies",
+    )
     parser.add_argument("--expect-sha", help="require /api/version sha to start with this value")
     parser.add_argument("--reply-timeout", type=float, default=DEFAULT_REPLY_TIMEOUT)
     parser.add_argument("--socket-timeout", type=float, default=45.0)
@@ -875,11 +963,20 @@ def main(argv: list[str]) -> int:
     options.service_unit = (
         options.service_unit or os.environ.get("ACCEPTANCE_SERVICE_UNIT") or env.get("ACCEPTANCE_SERVICE_UNIT")
     )
+    options.computer_service_unit = (
+        options.computer_service_unit
+        or os.environ.get("ACCEPTANCE_COMPUTER_SERVICE_UNIT")
+        or env.get("ACCEPTANCE_COMPUTER_SERVICE_UNIT")
+    )
     options.reply_timeout = float(env.get("ACCEPTANCE_REPLY_TIMEOUT", options.reply_timeout))
     if not options.base_url:
         parser.error(f"no base URL: set ACCEPTANCE_BASE_URL in {options.env_file} or pass --base-url")
     if options.restart_main and not options.full:
         parser.error("--restart-main requires --full")
+    if options.restart_computer and not options.full:
+        parser.error("--restart-computer requires --full")
+    if options.restart_agent and not options.full:
+        parser.error("--restart-agent requires --full")
 
     acceptance = Acceptance(options)
     if options.dry_run:
@@ -907,11 +1004,31 @@ def main(argv: list[str]) -> int:
         acceptance.run("thread", acceptance.check_thread, needs=("server_id",))
         if options.restart_main:
             acceptance.run("restart-main", acceptance.check_restart, needs=("server_id",))
+        if options.restart_computer:
+            acceptance.run(
+                "restart-computer",
+                acceptance.check_restart_computer,
+                needs=("server_id", "dm_channel_id", "dm_agent_id"),
+            )
+        if options.restart_agent:
+            acceptance.run(
+                "restart-agent",
+                acceptance.check_restart_agent,
+                needs=("server_id", "dm_channel_id", "dm_agent_id"),
+            )
     else:
-        for name in ("dm-reply", "mention-reply", "task", "attachment", "attachment-read", "thread"):
+        for name in (
+            "dm-reply",
+            "mention-reply",
+            "task",
+            "attachment",
+            "attachment-read",
+            "thread",
+            "restart-main",
+            "restart-computer",
+            "restart-agent",
+        ):
             acceptance.record(name, "SKIP", "read-only mode (pass --full)")
-        if options.restart_main:
-            acceptance.record("restart-main", "SKIP", "read-only mode (pass --full)")
 
     report = acceptance.write_report()
     counts = report["counts"]
