@@ -12,7 +12,7 @@ public struct AuthRequestIssue: Sendable, Equatable {
     }
 }
 
-/// The single builder for the `issues` entries the auth body schemas publish.
+/// The single builder for the `issues` entries the request body schemas publish.
 ///
 /// Pinned `routes/auth.ts:102-126` validates four bodies with zod 4.3.6 and
 /// `formatBodyIssues` maps every issue to `{path, message}` (a dotted path).
@@ -20,7 +20,7 @@ public struct AuthRequestIssue: Sendable, Equatable {
 /// (`Invalid input: expected string, received undefined`,
 /// `Too small: expected string to have >=1 characters`,
 /// `Unrecognized key: "k"`, `Invalid input: expected object, received array`),
-/// so every auth route builds its list here instead of spelling the text per
+/// so every request route builds its list here instead of spelling the text per
 /// route. The pinned schemas are:
 ///
 /// - `emailRegisterRequestSchema` (`routes/auth.ts:102`) — passthrough object,
@@ -36,6 +36,11 @@ public struct AuthRequestIssue: Sendable, Equatable {
 /// Every pinned route parses `req.body ?? {}`, so an absent body or JSON `null`
 /// is the empty object and reports the required members; any other non-object
 /// root is one `expected object` issue naming the received type.
+///
+/// The legacy agent send body (`packages/shared/src/agentApiMessageContract.ts`
+/// `legacyAgentSendBodySchema`, used by `routes/internal.ts:680`) is the other
+/// `formatBodyIssues`-style publisher. Its optional members and arrays use the
+/// helpers below; the numeric and enum wording is zod 4.3.6's.
 enum AuthRequestSchema {
     /// The members of `req.body ?? {}`, plus the root issue when the body is a
     /// non-object JSON value other than `null`.
@@ -107,15 +112,191 @@ enum AuthRequestSchema {
         return (text, [])
     }
 
+    /// One `z.number().finite().optional()` member: an absent key is valid.
+    ///
+    /// A JSON boolean, string, object, array or null receives zod's type
+    /// issue; a non-finite number receives the same wording zod prints for a
+    /// received non-finite number. JSON text cannot spell NaN, but the shared
+    /// `JSONValue` can, and zod names it explicitly.
+    static func optionalNumber(
+        _ value: JSONValue?,
+        path: String
+    ) -> (value: Double?, issues: [AuthRequestIssue]) {
+        guard let value else { return (nil, []) }
+        let number: Double
+        switch value {
+        case .integer(let integer):
+            number = Double(integer)
+        case .number(let double):
+            number = double
+        case .object, .array, .string, .bool, .null:
+            return (nil, [AuthRequestIssue(
+                path: path,
+                message: "Invalid input: expected number, received \(value.zodKind)"
+            )])
+        }
+        guard number.isFinite else {
+            return (nil, [AuthRequestIssue(
+                path: path,
+                message: "Invalid input: expected number, received \(number.isNaN ? "NaN" : "number")"
+            )])
+        }
+        return (number, [])
+    }
+
+    /// One `z.boolean().optional()` member: an absent key is valid.
+    static func optionalBoolean(
+        _ value: JSONValue?,
+        path: String
+    ) -> (value: Bool?, issues: [AuthRequestIssue]) {
+        guard let value else { return (nil, []) }
+        guard case .bool(let flag) = value else {
+            return (nil, [AuthRequestIssue(
+                path: path,
+                message: "Invalid input: expected boolean, received \(value.zodKind)"
+            )])
+        }
+        return (flag, [])
+    }
+
+    /// The largest integer JavaScript (and therefore zod) considers safe.
+    static let maximumSafeInteger: Int64 = 9_007_199_254_740_991
+
+    /// One `z.number().int().positive()` array element.
+    ///
+    /// zod runs the integer check before the positive check but still reports
+    /// both when an integer outside the safe range is also non-positive; a
+    /// fractional number reports only the integer failure.
+    static func integer(
+        _ value: JSONValue,
+        path: String,
+        positive: Bool
+    ) -> (value: Int?, issues: [AuthRequestIssue]) {
+        func typeIssue(_ received: String) -> (Int?, [AuthRequestIssue]) {
+            (nil, [AuthRequestIssue(
+                path: path,
+                message: "Invalid input: expected number, received \(received)"
+            )])
+        }
+        switch value {
+        case .integer(let integer):
+            var issues: [AuthRequestIssue] = []
+            if integer > maximumSafeInteger {
+                issues.append(AuthRequestIssue(
+                    path: path,
+                    message: "Too big: expected int to be <=\(maximumSafeInteger)"
+                ))
+            } else if integer < -maximumSafeInteger {
+                issues.append(AuthRequestIssue(
+                    path: path,
+                    message: "Too small: expected int to be >=\(-maximumSafeInteger)"
+                ))
+            }
+            if positive, integer <= 0 {
+                issues.append(AuthRequestIssue(
+                    path: path,
+                    message: "Too small: expected number to be >0"
+                ))
+            }
+            guard issues.isEmpty, let exact = Int(exactly: integer) else {
+                return (nil, issues)
+            }
+            return (exact, [])
+        case .number(let number):
+            guard number.isFinite else {
+                return typeIssue(number.isNaN ? "NaN" : "number")
+            }
+            guard number.rounded() == number else {
+                return (nil, [AuthRequestIssue(
+                    path: path,
+                    message: "Invalid input: expected int, received number"
+                )])
+            }
+            var issues: [AuthRequestIssue] = []
+            if number > Double(maximumSafeInteger) {
+                issues.append(AuthRequestIssue(
+                    path: path,
+                    message: "Too big: expected int to be <=\(maximumSafeInteger)"
+                ))
+            } else if number < -Double(maximumSafeInteger) {
+                issues.append(AuthRequestIssue(
+                    path: path,
+                    message: "Too small: expected int to be >=\(-maximumSafeInteger)"
+                ))
+            }
+            if positive, number <= 0 {
+                issues.append(AuthRequestIssue(
+                    path: path,
+                    message: "Too small: expected number to be >0"
+                ))
+            }
+            guard issues.isEmpty, let exact = Int(exactly: number) else {
+                return (nil, issues)
+            }
+            return (exact, [])
+        case .object, .array, .string, .bool, .null:
+            return typeIssue(value.zodKind)
+        }
+    }
+
+    /// One `z.array(…)` member: an absent key is valid; any non-array is one
+    /// type issue. Element issues and an array-level maximum stay with the
+    /// caller so their published order matches zod's.
+    static func array(
+        _ value: JSONValue?,
+        path: String
+    ) -> (items: [JSONValue]?, issues: [AuthRequestIssue]) {
+        guard let value else { return (nil, []) }
+        guard case .array(let items) = value else {
+            return (nil, [AuthRequestIssue(
+                path: path,
+                message: "Invalid input: expected array, received \(value.zodKind)"
+            )])
+        }
+        return (items, [])
+    }
+
+    /// One `z.string().min(1).nullable().optional()` member: an absent key or
+    /// JSON null is valid; a string is checked for the minimum length.
+    static func nullableString(
+        _ value: JSONValue?,
+        path: String,
+        min: Int? = nil
+    ) -> (value: String?, issues: [AuthRequestIssue]) {
+        guard let value, !value.isNull else { return (nil, []) }
+        return string(value, path: path, min: min)
+    }
+
+    /// One `z.enum([…]).optional()` member.
+    ///
+    /// zod 4 reports the same `Invalid option` sentence for an invalid string
+    /// and for every non-string type.
+    static func enumValue(
+        _ value: JSONValue?,
+        path: String,
+        options: [String]
+    ) -> (value: String?, issues: [AuthRequestIssue]) {
+        guard let value else { return (nil, []) }
+        if case .string(let text) = value, options.contains(text) {
+            return (text, [])
+        }
+        let listed = options.map { "\"\($0)\"" }.joined(separator: "|")
+        return (nil, [AuthRequestIssue(
+            path: path,
+            message: "Invalid option: expected one of \(listed)"
+        )])
+    }
+
     /// One `z.string()….optional()` member: an absent key is valid.
     static func optionalString(
         _ value: JSONValue?,
         path: String,
         min: Int? = nil,
-        max: Int? = nil
+        max: Int? = nil,
+        trim: Bool = false
     ) -> (value: String?, issues: [AuthRequestIssue]) {
         guard let value else { return (nil, []) }
-        return string(value, path: path, min: min, max: max)
+        return string(value, path: path, min: min, max: max, trim: trim)
     }
 
     /// The single issue `.strict()` reports for each member the shape does not

@@ -52,10 +52,26 @@ import VaporTesting
             let caseSensitive = try await call(key, "User-Channels-Subject")
             #expect(caseSensitive.0.status == .notFound)
 
-            for query in ["?limit=201", "?limit=0", "?limit=-1", "?offset=-1", "?offset=1.5", "?limit=abc"] {
+            // Pinned `routes/internalAgentApi.ts:418-426` runs
+            // `agentApiUserChannelsQuerySchema` and publishes its zod 4.3.6
+            // issues under `agent_api_contract_invalid`.
+            let limitIssue = #"{"error":"Invalid agent-api userChannels query","code":"agent_api_contract_invalid","issues":[{"path":"limit","message":"must be an integer from 1 to 200"}]}"#
+            let offsetIssue = #"{"error":"Invalid agent-api userChannels query","code":"agent_api_contract_invalid","issues":[{"path":"offset","message":"must be a non-negative integer"}]}"#
+            for (query, expected) in [
+                ("?limit=201", limitIssue),
+                ("?limit=0", limitIssue),
+                ("?limit=-1", limitIssue),
+                ("?offset=-1", offsetIssue),
+                ("?offset=1.5", offsetIssue),
+                ("?limit=abc", limitIssue),
+                (
+                    "?offset=-1&limit=0",
+                    #"{"error":"Invalid agent-api userChannels query","code":"agent_api_contract_invalid","issues":[{"path":"offset","message":"must be a non-negative integer"},{"path":"limit","message":"must be an integer from 1 to 200"}]}"#
+                ),
+            ] {
                 let invalid = try await call(key, "user-channels-subject", query: query)
                 #expect(invalid.0.status == .badRequest, "\(query)")
-                #expect(invalid.1["code"] as? String == "agent_api_contract_invalid", "\(query)")
+                #expect(invalid.0.body.string == expected, "\(query)")
             }
             let page = try await call(key, "@user-channels-subject", query: "?limit=200")
             #expect(page.0.status == .ok)

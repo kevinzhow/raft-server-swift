@@ -13,15 +13,10 @@ import RaftShared
 /// `legacy_agent_send_contract_invalid` 400 before any side effect.
 public struct AgentSendRequest: Sendable, Equatable {
     /// One zod issue: a dotted path and a human-readable reason.
-    public struct Issue: Sendable, Equatable {
-        public var path: String
-        public var message: String
-
-        public init(path: String, message: String) {
-            self.path = path
-            self.message = message
-        }
-    }
+    ///
+    /// The shared `AuthRequestIssue` is the only issue shape this repo
+    /// publishes for zod request bodies; the nested name stays for callers.
+    public typealias Issue = AuthRequestIssue
 
     public var target: String?
     public var channel: String?
@@ -95,177 +90,149 @@ public struct AgentSendRequest: Sendable, Equatable {
 extension AgentSendRequest: Decodable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        let raw = try container.decode(JSONValue.self)
-        guard case .object(let fields) = raw else {
-            self = AgentSendRequest(issues: [
-                AgentSendRequest.Issue(path: "", message: "Expected object, received \(raw.zodKind)")
-            ])
-            return
+        self = Self.parse(try container.decode(JSONValue.self))
+    }
+
+    /// Pinned `legacyAgentSendBodySchema` over `req.body ?? {}`.
+    ///
+    /// The schema is `agentApiSendBodySchema.extend({channel, dm_to})` with
+    /// `.passthrough()`. zod reports issues in shape order, not input order,
+    /// and an array-level `.max` issue follows every element issue. This
+    /// builder walks the shape in that same order; a JSON `null` root is the
+    /// empty object, exactly like `req.body ?? {}`.
+    static func parse(_ raw: JSONValue?) -> AgentSendRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return AgentSendRequest(issues: [rootIssue])
         }
-        self = Self.validate(fields)
+        return validate(fields)
     }
 
     private static func validate(_ fields: [String: JSONValue]) -> AgentSendRequest {
-        var issues: [AgentSendRequest.Issue] = []
+        var issues: [AuthRequestIssue] = []
         var request = AgentSendRequest()
 
-        func string(_ key: String) -> String? {
-            guard let value = fields[key] else { return nil }
-            guard case .string(let text) = value else {
-                issues.append(.init(path: key, message: "Expected string, received \(value.zodKind)"))
-                return nil
+        let target = AuthRequestSchema.optionalString(fields["target"], path: "target")
+        issues += target.issues
+        request.target = target.value
+
+        let content = AuthRequestSchema.optionalString(fields["content"], path: "content")
+        issues += content.issues
+        request.content = content.value
+
+        let attachmentIds = AuthRequestSchema.array(fields["attachmentIds"], path: "attachmentIds")
+        issues += attachmentIds.issues
+        if let entries = attachmentIds.items {
+            var ids: [String] = []
+            for (index, entry) in entries.enumerated() {
+                let element = AuthRequestSchema.string(
+                    entry,
+                    path: "attachmentIds.\(index)",
+                    min: 1,
+                    trim: true
+                )
+                issues += element.issues
+                if let id = element.value { ids.append(id) }
             }
-            return text
+            request.attachmentIds = ids
         }
 
-        func trimmedString(_ key: String) -> String? {
-            guard let value = fields[key] else { return nil }
-            guard case .string(let text) = value else {
-                issues.append(.init(path: key, message: "Expected string, received \(value.zodKind)"))
-                return nil
-            }
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        let idempotencyKey = AuthRequestSchema.optionalString(
+            fields["idempotencyKey"], path: "idempotencyKey", trim: true
+        )
+        issues += idempotencyKey.issues
+        request.idempotencyKey = idempotencyKey.value
 
-        func bool(_ key: String) -> Bool {
-            guard let value = fields[key] else { return false }
-            guard case .bool(let flag) = value else {
-                issues.append(.init(path: key, message: "Expected boolean, received \(value.zodKind)"))
-                return false
-            }
-            return flag
-        }
+        let reconcileOnly = AuthRequestSchema.optionalBoolean(fields["reconcileOnly"], path: "reconcileOnly")
+        issues += reconcileOnly.issues
+        request.reconcileOnly = reconcileOnly.value ?? false
 
-        func number(_ key: String) -> Double? {
-            guard let value = fields[key] else { return nil }
-            guard let double = value.finiteNumber else {
-                issues.append(.init(path: key, message: "Expected number, received \(value.zodKind)"))
-                return nil
-            }
-            return double
-        }
+        let continueFlag = AuthRequestSchema.optionalBoolean(fields["continue"], path: "continue")
+        issues += continueFlag.issues
+        request.continueFlag = continueFlag.value ?? false
 
-        request.target = string("target")
-        request.channel = string("channel")
-        request.dmTo = string("dm_to")
-        request.content = string("content")
-        request.idempotencyKey = trimmedString("idempotencyKey")
-        request.reconcileOnly = bool("reconcileOnly")
-        request.continueFlag = bool("continue")
-        request.sendDraft = bool("sendDraft")
-        request.continueAnyway = bool("continueAnyway")
-        request.draftReholdCount = number("draftReholdCount")
-        request.draftReplacedExisting = bool("draftReplacedExisting")
-        request.seenUpToSeq = number("seenUpToSeq")
+        let sendDraft = AuthRequestSchema.optionalBoolean(fields["sendDraft"], path: "sendDraft")
+        issues += sendDraft.issues
+        request.sendDraft = sendDraft.value ?? false
 
-        if let value = fields["attachmentIds"] {
-            if case .array(let entries) = value {
-                var ids: [String] = []
-                for (index, entry) in entries.enumerated() {
-                    guard case .string(let text) = entry else {
-                        issues.append(.init(
-                            path: "attachmentIds.\(index)",
-                            message: "Expected string, received \(entry.zodKind)"
-                        ))
-                        continue
-                    }
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed.isEmpty {
-                        issues.append(.init(
-                            path: "attachmentIds.\(index)",
-                            message: "String must contain at least 1 character(s)"
-                        ))
-                        continue
-                    }
-                    ids.append(trimmed)
-                }
-                request.attachmentIds = ids
-            } else {
-                issues.append(.init(path: "attachmentIds", message: "Expected array, received \(value.zodKind)"))
-            }
-        }
+        let continueAnyway = AuthRequestSchema.optionalBoolean(fields["continueAnyway"], path: "continueAnyway")
+        issues += continueAnyway.issues
+        request.continueAnyway = continueAnyway.value ?? false
 
-        if let value = fields["seenExactSeqs"] {
-            if case .array(let entries) = value {
-                var seqs: [Int] = []
-                for (index, entry) in entries.enumerated() {
-                    guard let double = entry.finiteNumber,
-                          double.rounded() == double,
-                          double > 0,
-                          let seq = Int(exactly: double)
-                    else {
-                        issues.append(.init(
-                            path: "seenExactSeqs.\(index)",
-                            message: "Expected number, received \(entry.zodKind)"
-                        ))
-                        continue
-                    }
-                    seqs.append(seq)
-                }
-                if seqs.count > 2500 {
-                    issues.append(.init(path: "seenExactSeqs", message: "Array must contain at most 2500 element(s)"))
-                }
-                request.seenExactSeqs = Array(seqs.prefix(2500))
-            } else {
-                issues.append(.init(path: "seenExactSeqs", message: "Expected array, received \(value.zodKind)"))
+        let draftReholdCount = AuthRequestSchema.optionalNumber(
+            fields["draftReholdCount"], path: "draftReholdCount"
+        )
+        issues += draftReholdCount.issues
+        request.draftReholdCount = draftReholdCount.value
+
+        let draftReplacedExisting = AuthRequestSchema.optionalBoolean(
+            fields["draftReplacedExisting"], path: "draftReplacedExisting"
+        )
+        issues += draftReplacedExisting.issues
+        request.draftReplacedExisting = draftReplacedExisting.value ?? false
+
+        let seenUpToSeq = AuthRequestSchema.optionalNumber(fields["seenUpToSeq"], path: "seenUpToSeq")
+        issues += seenUpToSeq.issues
+        request.seenUpToSeq = seenUpToSeq.value
+
+        let seenExactSeqs = AuthRequestSchema.array(fields["seenExactSeqs"], path: "seenExactSeqs")
+        issues += seenExactSeqs.issues
+        if let entries = seenExactSeqs.items {
+            var seqs: [Int] = []
+            for (index, entry) in entries.enumerated() {
+                let element = AuthRequestSchema.integer(
+                    entry,
+                    path: "seenExactSeqs.\(index)",
+                    positive: true
+                )
+                issues += element.issues
+                if let seq = element.value { seqs.append(seq) }
             }
+            if entries.count > 2500 {
+                issues.append(AuthRequestIssue(
+                    path: "seenExactSeqs",
+                    message: "Too big: expected array to have <=2500 items"
+                ))
+            }
+            request.seenExactSeqs = seqs
         }
 
         if let value = fields["seenCards"] {
             if case .object(let cards) = value {
                 for key in ["channel", "peer"] {
-                    guard let entry = cards[key] else { continue }
-                    if case .null = entry { continue }
-                    if case .string(let text) = entry {
-                        if text.isEmpty {
-                            issues.append(.init(
-                                path: "seenCards.\(key)",
-                                message: "String must contain at least 1 character(s)"
-                            ))
-                        }
-                        continue
-                    }
-                    issues.append(.init(
+                    let card = AuthRequestSchema.nullableString(
+                        cards[key],
                         path: "seenCards.\(key)",
-                        message: "Expected string, received \(entry.zodKind)"
-                    ))
+                        min: 1
+                    )
+                    issues += card.issues
                 }
             } else {
-                issues.append(.init(path: "seenCards", message: "Expected object, received \(value.zodKind)"))
-            }
-        }
-
-        if let value = fields["freshnessContextMode"] {
-            if case .string(let mode) = value {
-                if mode != "inline" && mode != "withheld" {
-                    issues.append(.init(
-                        path: "freshnessContextMode",
-                        message: "Invalid enum value. Expected 'inline' | 'withheld', received '\(mode)'"
-                    ))
-                } else {
-                    request.freshnessContextMode = mode
-                }
-            } else {
-                issues.append(.init(
-                    path: "freshnessContextMode",
-                    message: "Expected 'inline' | 'withheld', received \(value.zodKind)"
+                issues.append(AuthRequestIssue(
+                    path: "seenCards",
+                    message: "Invalid input: expected object, received \(value.zodKind)"
                 ))
             }
         }
 
+        let freshnessContextMode = AuthRequestSchema.enumValue(
+            fields["freshnessContextMode"],
+            path: "freshnessContextMode",
+            options: ["inline", "withheld"]
+        )
+        issues += freshnessContextMode.issues
+        request.freshnessContextMode = freshnessContextMode.value
+
+        let channel = AuthRequestSchema.optionalString(fields["channel"], path: "channel")
+        issues += channel.issues
+        request.channel = channel.value
+
+        let dmTo = AuthRequestSchema.optionalString(fields["dm_to"], path: "dm_to")
+        issues += dmTo.issues
+        request.dmTo = dmTo.value
+
         request.issues = issues
         return request
-    }
-}
-
-extension JSONValue {
-    /// A finite JSON number; `nil` for booleans, strings and non-finite values.
-    var finiteNumber: Double? {
-        switch self {
-        case .integer(let value): Double(value)
-        case .number(let value): value.isFinite ? value : nil
-        case .object, .array, .string, .bool, .null: nil
-        }
     }
 }
 

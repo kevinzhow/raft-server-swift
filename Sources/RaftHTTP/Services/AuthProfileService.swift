@@ -28,7 +28,10 @@ public enum AuthProfileError: DomainError, Equatable {
     case invalidOrExpiredResetToken
     case unauthenticated
     case invalidTimezoneObservationBody([AuthRequestIssue])
-    case invalidTimezoneObservation
+    case timezoneEmpty
+    case timezoneTooLong
+    case timezoneNotIana
+    case timezoneNotCanonical
     case observationNotStored
 
     public var status: UInt {
@@ -39,7 +42,7 @@ public enum AuthProfileError: DomainError, Equatable {
             500
         case .emailRequired, .missingResetCredentials, .resetPasswordTooShort,
              .invalidOrExpiredResetToken, .invalidTimezoneObservationBody,
-             .invalidTimezoneObservation:
+             .timezoneEmpty, .timezoneTooLong, .timezoneNotIana, .timezoneNotCanonical:
             400
         }
     }
@@ -58,8 +61,14 @@ public enum AuthProfileError: DomainError, Equatable {
             "Unauthorized"
         case .invalidTimezoneObservationBody:
             "Invalid timezone observation body"
-        case .invalidTimezoneObservation:
-            "Invalid timezone observation"
+        case .timezoneEmpty:
+            "timezone must be a non-empty IANA timezone"
+        case .timezoneTooLong:
+            "timezone must be at most 128 characters"
+        case .timezoneNotIana:
+            "timezone must be an IANA timezone"
+        case .timezoneNotCanonical:
+            "timezone must be a canonical IANA timezone"
         case .observationNotStored:
             "Timezone observation not stored"
         }
@@ -227,17 +236,28 @@ public struct AuthProfileService: Sendable {
             throw AuthProfileError.invalidTimezoneObservationBody(request.issues)
         }
         guard let raw = request.timezone else {
-            throw AuthProfileError.invalidTimezoneObservation
+            throw AuthProfileError.timezoneEmpty
         }
+        // Pinned `lib/ianaTimezone.ts` `parseCanonicalBrowserTimezone`: trim
+        // and non-empty, length, Intl validity, then the Area/Location shape
+        // and the resolved canonical shape. Each failure has its own sentence.
         let timezone = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !timezone.isEmpty,
-              timezone.utf16.count <= Self.maximumTimezoneLength,
-              timezone == "UTC" || timezone.contains("/"),
-              let zone = TimeZone(identifier: timezone)
-        else {
-            throw AuthProfileError.invalidTimezoneObservation
+        guard !timezone.isEmpty else {
+            throw AuthProfileError.timezoneEmpty
         }
-        let canonicalTimezone = AccountNaming.timezoneAliases[timezone] ?? zone.identifier
+        guard timezone.utf16.count <= Self.maximumTimezoneLength else {
+            throw AuthProfileError.timezoneTooLong
+        }
+        guard let resolved = Self.resolveBrowserTimezone(timezone) else {
+            throw AuthProfileError.timezoneNotIana
+        }
+        guard timezone == "UTC" || timezone.contains("/") else {
+            throw AuthProfileError.timezoneNotCanonical
+        }
+        guard resolved == "UTC" || resolved.contains("/") else {
+            throw AuthProfileError.timezoneNotCanonical
+        }
+        let canonicalTimezone = Self.canonicalBrowserTimezone(resolved)
         let observation = store.recordTimezoneObservation(
             userId: userId,
             timezone: canonicalTimezone,
@@ -249,6 +269,42 @@ public struct AuthProfileService: Sendable {
             lastObservedTimezone: observation.lastTimezone,
             lastObservedTimezoneAt: Self.timestamp(observation.lastAt)
         )
+    }
+
+    /// The ICU `resolvedOptions().timeZone` shape for an Intl-accepted id.
+    ///
+    /// Foundation's `TimeZone(identifier:)` also accepts strings Node's Intl
+    /// rejects (`UTC+0`), so no-slash values go through the abbreviation map
+    /// first and offset spellings are accepted explicitly. The caller applies
+    /// the raw canonical-shape check afterwards, which rejects every no-slash
+    /// value except `UTC`.
+    private static func resolveBrowserTimezone(_ timezone: String) -> String? {
+        if timezone == "UTC" { return "UTC" }
+        if timezone.contains("/") {
+            return TimeZone(identifier: timezone)?.identifier
+        }
+        if timezone.range(of: #"^[+-]\d{2}:?\d{2}$"#, options: .regularExpression) != nil {
+            return timezone
+        }
+        // Foundation accepts `UTC+0` as an identifier; Intl does not.
+        if timezone.hasPrefix("UTC") { return nil }
+        if let zone = TimeZone(abbreviation: timezone) {
+            return zone.identifier
+        }
+        return TimeZone(identifier: timezone)?.identifier
+    }
+
+    /// The zones ICU's canonical id differs from Foundation's alias.
+    private static func canonicalBrowserTimezone(_ resolved: String) -> String {
+        switch resolved {
+        case "Etc/UTC", "Etc/GMT", "Etc/UCT", "Etc/GMT+0", "Etc/GMT-0",
+             "Etc/GMT0", "Etc/Universal", "Etc/Zulu":
+            return "UTC"
+        case "Asia/Kolkata":
+            return "Asia/Calcutta"
+        default:
+            return AccountNaming.timezoneAliases[resolved] ?? resolved
+        }
     }
 
     /// The user behind a normal access token, matching the `requireAuth` check

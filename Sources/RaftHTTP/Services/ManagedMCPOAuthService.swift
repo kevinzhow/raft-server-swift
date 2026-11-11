@@ -386,7 +386,9 @@ public struct ManagedMCPOAuthService: Sendable {
     ) throws -> AgentUserChannelsResponse {
         let identity = try agentIdentity(authorization: authorization)
         guard Self.agentUserPageValues(limit: limit, offset: offset) != nil else {
-            throw ManagedMCPOAuthError.invalidPageWindow
+            throw ManagedMCPOAuthError.invalidPageWindow(
+                Self.agentUserPageIssues(limit: limit, offset: offset)
+            )
         }
         guard let payload = agentUserChannelsPayload(identity: identity, name: name, limit: limit, offset: offset) else {
             throw ManagedMCPOAuthError.userNotFound
@@ -415,13 +417,52 @@ public struct ManagedMCPOAuthService: Sendable {
         )
     }
 
+    /// Pinned `agentApiUserChannelsQuerySchema`: both members are trimmed
+    /// strings matched against a regular expression, so ` 200 ` is valid and
+    /// `01`, `0200`, `+1` and `200.0` are not.
+    private static let offsetPattern = #"^(0|[1-9][0-9]*)$"#
+    private static let limitPattern = #"^([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$"#
+
     private static func agentUserPageValues(limit: String?, offset: String?) -> (limit: Int, offset: Int)? {
-        if let limit, Int(limit) == nil { return nil }
-        if let offset, Int(offset) == nil { return nil }
-        let resolvedLimit = limit.flatMap(Int.init) ?? 50
-        let resolvedOffset = offset.flatMap(Int.init) ?? 0
-        guard (1...200).contains(resolvedLimit), resolvedOffset >= 0 else { return nil }
+        let resolvedLimit: Int
+        if let limit {
+            let trimmed = limit.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.range(of: limitPattern, options: .regularExpression) != nil,
+                  let value = Int(trimmed)
+            else { return nil }
+            resolvedLimit = value
+        } else {
+            resolvedLimit = 50
+        }
+        let resolvedOffset: Int
+        if let offset {
+            let trimmed = offset.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.range(of: offsetPattern, options: .regularExpression) != nil,
+                  let value = Int(trimmed)
+            else { return nil }
+            resolvedOffset = value
+        } else {
+            resolvedOffset = 0
+        }
         return (resolvedLimit, resolvedOffset)
+    }
+
+    /// The zod issues of the two optional query members, in shape order.
+    private static func agentUserPageIssues(limit: String?, offset: String?) -> [AuthRequestIssue] {
+        var issues: [AuthRequestIssue] = []
+        if let offset {
+            let trimmed = offset.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: offsetPattern, options: .regularExpression) == nil {
+                issues.append(AuthRequestIssue(path: "offset", message: "must be a non-negative integer"))
+            }
+        }
+        if let limit {
+            let trimmed = limit.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: limitPattern, options: .regularExpression) == nil {
+                issues.append(AuthRequestIssue(path: "limit", message: "must be an integer from 1 to 200"))
+            }
+        }
+        return issues
     }
 
     private func agentUserChannelsPayload(
