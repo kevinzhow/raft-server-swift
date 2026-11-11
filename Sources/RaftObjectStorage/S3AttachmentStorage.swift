@@ -5,7 +5,7 @@ import SotoS3
 
 /// Soto owns S3 signing and HTTP protocol handling. The application owns the
 /// encryption boundary: public object access cannot disclose attachment bytes.
-public actor S3AttachmentStorage: AttachmentObjectStoring {
+public actor S3AttachmentStorage: AttachmentObjectStoring, PublicAssetObjectStoring {
     private let configuration: S3AttachmentStorageConfiguration
     private let httpClient: HTTPClient
     private let awsClient: AWSClient
@@ -103,6 +103,90 @@ public actor S3AttachmentStorage: AttachmentObjectStoring {
             if mapped != .notFound { throw mapped }
         }
     }
+
+    // MARK: - Public profile assets
+
+    /// The upstream public-asset namespace. Uploaded avatars use
+    /// `avatars/<namespace>/<sha256-prefix>.webp`; integration logos use
+    /// `integration-logos/<clientRecordId>/<sha256-prefix>.webp`. The key is
+    /// the capability path, so serving needs no database lookup for avatars.
+    public func putPublicAsset(_ key: String, bytes: Data) async throws {
+        guard !isShutdown else { throw AttachmentStorageError.notConfigured }
+        let hash = try Self.publicAssetHash(key)
+        guard bytes.count <= Self.maximumPublicAssetBytes else { throw AttachmentStorageError.tooLarge }
+        let referenceHash = Self.sha256(bytes)
+        guard referenceHash.hasPrefix(hash) else { throw AttachmentStorageError.integrityFailure }
+        let encrypted = try sealPublicAsset(bytes, key: key)
+        do {
+            _ = try await s3.putObject(.init(
+                body: .init(bytes: encrypted), bucket: configuration.bucket, contentLength: Int64(encrypted.count),
+                contentType: "application/octet-stream", key: key
+            ))
+        } catch { throw Self.storageError(error) }
+    }
+
+    public func getPublicAsset(_ key: String) async throws -> Data {
+        guard !isShutdown else { throw AttachmentStorageError.notConfigured }
+        let hash = try Self.publicAssetHash(key)
+        let encrypted: Data
+        do {
+            let result = try await s3.getObject(.init(bucket: configuration.bucket, key: key))
+            let buffer = try await result.body.collect(upTo: Self.maximumPublicAssetBytes + 28)
+            encrypted = Data(buffer.readableBytesView)
+        } catch { throw Self.storageError(error) }
+        guard encrypted.count <= Self.maximumPublicAssetBytes + 28 else {
+            throw AttachmentStorageError.integrityFailure
+        }
+        let bytes: Data
+        do {
+            bytes = try AES.GCM.open(
+                AES.GCM.SealedBox(combined: encrypted), using: SymmetricKey(data: configuration.encryptionKey),
+                authenticating: Self.publicAssetAssociatedData(key)
+            )
+        } catch { throw AttachmentStorageError.integrityFailure }
+        guard bytes.count <= Self.maximumPublicAssetBytes, Self.sha256(bytes).hasPrefix(hash) else {
+            throw AttachmentStorageError.integrityFailure
+        }
+        return bytes
+    }
+
+    public func deletePublicAsset(_ key: String) async throws {
+        guard !isShutdown else { throw AttachmentStorageError.notConfigured }
+        _ = try Self.publicAssetHash(key)
+        do { _ = try await s3.deleteObject(.init(bucket: configuration.bucket, key: key)) }
+        catch {
+            let mapped = Self.storageError(error)
+            if mapped != .notFound { throw mapped }
+        }
+    }
+
+    private static let maximumPublicAssetBytes = 5 * 1024 * 1024
+
+    private static func publicAssetHash(_ key: String) throws -> String {
+        let segments = key.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard segments.count == 3,
+              segments[0] == "avatars" || segments[0] == "integration-logos",
+              !segments[1].isEmpty, segments[1].utf8.count <= 128,
+              segments[1].utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 46 || $0 == 95 }),
+              segments[1] != ".", segments[1] != "..",
+              let filename = segments.last,
+              let match = filename.wholeMatch(of: /^([0-9a-f]{32})\.webp$/)
+        else { throw AttachmentStorageError.invalidReference }
+        return String(match.1)
+    }
+
+    private func sealPublicAsset(_ bytes: Data, key: String) throws -> Data {
+        do {
+            let sealed = try AES.GCM.seal(
+                bytes, using: SymmetricKey(data: configuration.encryptionKey),
+                authenticating: Self.publicAssetAssociatedData(key)
+            )
+            guard let combined = sealed.combined else { throw AttachmentStorageError.integrityFailure }
+            return combined
+        } catch { throw AttachmentStorageError.integrityFailure }
+    }
+
+    private static func publicAssetAssociatedData(_ key: String) -> Data { Data(("raft-public-asset:v1:" + key).utf8) }
 
     private static func associatedData(_ key: String) -> Data { Data(("raft-attachment:v1:" + key).utf8) }
     private static func sha256(_ data: Data) -> String {

@@ -101,6 +101,34 @@ private func expectStandard(_ response: ClientResponse, length: Int) {
             #expect(empty.status == .badRequest)
             #expect(empty.body.string == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received undefined"}]}"#)
 
+            // Pinned `routes/auth.ts:169-178` validates `pendingLinkToken`
+            // after the email/password schema: undefined, null and "" are
+            // valid (no link), but a non-string or a string over 256 UTF-16
+            // units answers the code-first 400.
+            let badTokenType = try await send(
+                client, .post, "/api/auth/login",
+                body: #"{"email":"bytes@slock.test","password":"password123","pendingLinkToken":123}"#
+            )
+            #expect(badTokenType.status == .badRequest)
+            #expect(badTokenType.body.string == #"{"code":"pending_link_token_invalid","error":"pendingLinkToken must be a string"}"#)
+            let longToken = String(repeating: "t", count: 257)
+            let badTokenLength = try await send(
+                client, .post, "/api/auth/login",
+                body: #"{"email":"bytes@slock.test","password":"password123","pendingLinkToken":"\#(longToken)"}"#
+            )
+            #expect(badTokenLength.status == .badRequest)
+            #expect(badTokenLength.body.string == #"{"code":"pending_link_token_invalid","error":"pendingLinkToken must be a string"}"#)
+            let emptyToken = try await send(
+                client, .post, "/api/auth/login",
+                body: #"{"email":"bytes@slock.test","password":"password123","pendingLinkToken":""}"#
+            )
+            #expect(emptyToken.status == .ok)
+            let nullToken = try await send(
+                client, .post, "/api/auth/login",
+                body: #"{"email":"bytes@slock.test","password":"password123","pendingLinkToken":null}"#
+            )
+            #expect(nullToken.status == .ok)
+
             let rejected = try await send(client, .post, "/api/auth/login", body: #"{"email":"bytes@slock.test","password":"nope"}"#)
             #expect(rejected.status == .unauthorized)
             #expect(rejected.body.string == #"{"code":"AUTH_INVALID_CREDENTIALS","error":"Invalid email or password"}"#)

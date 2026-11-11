@@ -18,6 +18,7 @@ func configureProviderConnectionsTestApp(
         controlPlane: accounts.managedMCPControlPlane,
         identities: accounts.authIdentities,
         apps: accounts.integrationsAndAppAccess,
+        appManagement: accounts.integrationAppManagement,
         cardPrepare: accounts.actionCardPrepare,
         agentsLifecycle: accounts.agentsLifecycle,
         providerConnections: providers,

@@ -95,9 +95,10 @@ import Testing
                                          runtimes: ["codex"], runningAgentIds: [], detectionComplete: true)
             try f.domain.releasePendingHumanDeliveries(f.context)
             try context.prepareCommit()
-            // A cold start and the queued delivery are the only durable effects;
-            // the machine having no running process means one start precedes it.
-            #expect(try context.preparedDurableEffects().filter { $0.kind == "agent.execution" }.count == 2)
+            // Upstream `attempt-wake`: the queued message rides the single cold
+            // start as its wake input. No separate `agent:deliver` is staged and
+            // nothing depends on a delivery ACK for it.
+            #expect(try context.preparedDurableEffects().filter { $0.kind == "agent.execution" }.count == 1)
             context.publishCommitted()
             context.flushDeferredEffects()
         }
@@ -121,17 +122,16 @@ import Testing
         let pending = try #require(state.pendingHumanDeliveries?.values.first)
         let released = try #require(pending.releasedCommandId)
         let command = try #require(state.commands[released.uuidString])
-        #expect(command.kind == .delivery)
+        #expect(command.kind == .start)
         #expect(command.agentId == f.agent)
-        #expect(command.channelId == f.channel)
-        #expect(command.messageId == messageId)
+        #expect(command.wakeMessage == AgentExecutionWakeMessage(channelId: f.channel, messageId: messageId))
         let startCommands = state.commands.values.filter { $0.kind == .start && $0.agentId == f.agent }
         #expect(startCommands.count == 1)
-        #expect(command.launchId == startCommands.first?.launchId)
-        #expect(state.commands.values.filter { $0.kind == .delivery && $0.messageId == messageId }.count == 1)
+        #expect(state.commands.values.filter { $0.kind == .delivery && $0.messageId == messageId }.isEmpty,
+                "the wake message is not also sent as a separate delivery")
 
         // A second ready with the same pending fact does not stage a second
-        // delivery: the accepted/pending command is the dedupe authority.
+        // start: the carrying start is the dedupe authority.
         let replay = TransactionContext()
         try await withTransactionContext(replay) {
             try f.domain.releasePendingHumanDeliveries(f.context)
@@ -141,8 +141,27 @@ import Testing
             replay.flushDeferredEffects()
         }
         let replayState = f.accounts.agentsRuntimeStore.state.execution
-        #expect(replayState.commands.values.filter { $0.kind == .delivery && $0.messageId == messageId }.count == 1)
+        #expect(replayState.commands.values.filter { $0.kind == .delivery && $0.messageId == messageId }.isEmpty)
         #expect(replayState.commands.values.filter { $0.kind == .start && $0.agentId == f.agent }.count == 1)
+
+        // The daemon acknowledges the start; the carried queued fact settles
+        // with the same frame and the canonical message stays readable.
+        let start = try #require(startCommands.first)
+        let ack = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:start:ack", "agentId": f.agent, "launchId": start.launchId,
+            "startDispatchId": try #require(start.startDispatchId), "queueState": "starting",
+            "queueDepth": 0, "queueAgeMs": 0,
+        ])
+        let ackCommit = TransactionContext()
+        try await withTransactionContext(ackCommit) {
+            let result = try f.domain.stageIngress(context: f.context, type: "agent:start:ack", payload: ack)
+            #expect(result == .committed(ack: nil))
+            try ackCommit.prepareCommit()
+            ackCommit.publishCommitted()
+            ackCommit.flushDeferredEffects()
+        }
+        #expect(f.accounts.agentsRuntimeStore.state.execution.pendingHumanDeliveries?.isEmpty ?? true)
+        #expect(f.accounts.messagesAndThreadsStore.humanMessageRows.contains { $0.id == messageId })
     }
 
     @Test func nonCodexAndStoppedRecipientsAreNotQueuedForDelivery() async throws {

@@ -109,6 +109,9 @@ public struct ActionCardExecuteService: Sendable {
         legacyAgentId: String?,
         channelRef: String?
     ) throws -> AgentTasksListResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
         let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
         try requireGrant(agentId: identity.agentId, scope: "task:read")
         guard let channelRef,
@@ -177,6 +180,61 @@ public struct ActionCardExecuteService: Sendable {
             now: now()
         )
         return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/unclaim
+
+    /// The unclaim write. The route's request validator guarantees `channel` and
+    /// a positive `task_number`; the service keeps the credential, the grant, the
+    /// channel policy and the task row checks in the pinned order:
+    /// capability/grant 401/403 → channel 404 → not-joinable 403 → archived 409
+    /// → task 404 → store decision 409.
+    public func agentTaskUnclaim(
+        authorization: String?,
+        legacyAgentId: String?,
+        channel: String,
+        taskNumber: Int
+    ) throws -> AgentTaskUnclaimResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
+        guard let writer = taskWriter(authorization: authorization, legacyAgentId: legacyAgentId) else {
+            throw FeedbackLocatorError.invalidAccessToken
+        }
+        try requireGrant(agentId: writer.agentId, scope: "task:write")
+        guard let channelId = taskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channel
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard canAgentModifyTasks(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
+            throw AgentTaskApiError.agentCannotModifyTasks
+        }
+        guard !isChannelArchived(channelId) else { throw AgentTaskApiError.channelArchived }
+        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+            throw AgentTaskApiError.taskNotFound
+        }
+        switch tasks.unclaimForAgent(taskId: task.id, agentId: writer.agentId, now: now()) {
+        case .notFound: throw AgentTaskApiError.taskNotFound
+        case .done: throw AgentTaskApiError.taskDone
+        case .unassigned: throw AgentTaskApiError.taskNotAssigned
+        case .changedConcurrently: throw AgentTaskApiError.taskChangedConcurrently
+        case .unclaimed: return AgentTaskUnclaimResponse()
+        }
+    }
+
+    /// Upstream `channelService.canAgentPostToChannel`: the enabled `#all`
+    /// surface is open to every agent in the server; every other channel needs
+    /// an actual agent membership.
+    private func canAgentModifyTasks(serverId: String, agentId: String, channelId: String) -> Bool {
+        guard let channel = channels.postableChannel(id: channelId), channel.serverId == serverId else { return false }
+        if channel.kind == "channel", oauth.allChannelId(serverId: serverId) == channelId { return true }
+        return channel.memberIds.contains(agentId)
+            || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+    }
+
+    private func isChannelArchived(_ channelId: String) -> Bool {
+        channels.postableChannel(id: channelId)?.archived == true || oauth.channelArchivedAt(id: channelId) != nil
     }
 
     // MARK: - POST /internal/agent-api/tasks/update-status
@@ -764,7 +822,7 @@ public struct ActionCardExecuteService: Sendable {
     // that have not migrated yet still call, so the policy has one copy.
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
     }
 
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).

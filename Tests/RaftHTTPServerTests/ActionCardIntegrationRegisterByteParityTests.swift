@@ -215,9 +215,11 @@ private func prepareCard(
             ) { request in
                 request.body = .init(string: "{}")
             }
-            #expect(capability.status == .forbidden)
+            // The pinned route capability is `read`, so this credential passes
+            // the capability gate and the body schema answers first.
+            #expect(capability.status == .badRequest)
             #expect((capability.body.string ?? "") == """
-            {"error":"Agent credential is not authorized for this capability","code":"capability_not_authorized","requiredCapability":"send"}
+            {"error":"Invalid agent-api integrationAppPrepare body","code":"agent_api_contract_invalid","issues":[{"path":"mode","message":"Invalid input"}]}
             """)
 
             let badScope = try await client.send(

@@ -7,6 +7,10 @@ import TestSupport
 import Vapor
 import VaporTesting
 
+private func seedOccurrence(accounts: EmailLoginDirectory, message: String, target: String) -> Bool {
+    accounts.ensureMentionDeliveryOccurrenceForTesting(messageId: message, agentId: target) != nil
+}
+
 @Test func agentMentionDeliveriesRequireTheAuthorAndKeepTheAuthoredHandle() async throws {
     let accounts = EmailLoginDirectory()
     let serverId = "33333333-3333-4333-8333-000001030001"
@@ -59,12 +63,16 @@ import VaporTesting
                 (try? JSONSerialization.jsonObject(with: Data((response.body.string ?? "").utf8))) as? [String: Any] ?? [:]
             }
 
+            // A mention with no occurrence is absent from the occurrence-row
+            // listing until the notify/add path records one.
+            #expect(seedOccurrence(accounts: accounts, message: message, target: target))
             let own = try await get(authorKey, message)
             #expect(own.status == .ok)
             #expect(body(own)["messageId"] as? String == message)
             let delivery = try #require((body(own)["deliveries"] as? [[String: Any]])?.first)
-            #expect(delivery["targetId"] as? String == target)
             #expect(delivery["targetHandle"] as? String == "@OldName")
+            // The pinned agent surface has no `targetId` member.
+            #expect(delivery["targetId"] == nil)
 
             let notMine = try await get(strangerKey, message)
             let missing = try await get(strangerKey, "00000000-0000-4000-8000-000000009999")

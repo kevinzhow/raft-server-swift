@@ -268,7 +268,16 @@ struct MessageMentionActionsService: Sendable {
         do {
             let receipt = try execution.requestHumanMessageDelivery(.init(commandId: commandId, serverId: serverId,
                 agentId: mention.targetId, channelId: mention.channelId, messageId: mention.messageId))
-            guard case .staged = receipt else {
+            switch receipt {
+            case .staged:
+                break
+            case .readableOnly(.launchInProgress):
+                // Tracked mention delivery defers to the runtime's `agent:session`
+                // when its wake start has just been admitted: the durable
+                // occurrence and pending fact own the obligation, so the action
+                // is a successful queue, not a failed dispatch.
+                break
+            case .held, .readableOnly:
                 DeferredEffects.markRollbackOnly()
                 throw AgentExecutionError.dispatchUnavailable
             }

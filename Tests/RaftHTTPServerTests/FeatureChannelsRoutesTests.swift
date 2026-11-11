@@ -9,13 +9,22 @@ import VaporTesting
 
 /// Every `method path` pair the channels slice owns. This is the complete list
 /// of `app.get/post/patch/delete("api", "channels", ...)` registrations in
-/// `FallbackApplication.configure` at extraction time (54 routes).
+/// `FallbackApplication.configure` (64 routes, matching upstream channels.ts).
 private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/channels/:channelId/archive"),
     (.post, "POST /api/channels/:channelId/unarchive"),
     (.post, "POST /api/channels/:channelId/join"),
     (.post, "POST /api/channels/inbox/done"),
     (.post, "POST /api/channels/inbox/read-all"),
+    (.get, "GET /api/channels/joint-invites"),
+    (.post, "POST /api/channels/:channelId/joint-invites"),
+    (.post, "POST /api/channels/:channelId/joint-invite/resend"),
+    (.post, "POST /api/channels/:channelId/disconnect"),
+    (.post, "POST /api/channels/:channelId/stop-all-agents"),
+    (.post, "POST /api/channels/:channelId/convert-to-joint"),
+    (.get, "GET /api/channels/conversion-jobs/:jobId"),
+    (.post, "POST /api/channels/conversion-jobs/:jobId/retry"),
+    (.post, "POST /api/channels/conversion-jobs/:jobId/cancel"),
     (.get, "GET /api/channels/inbox/done"),
     (.post, "POST /api/channels/inbox/undone"),
     (.post, "POST /api/channels/threads/undone"),
@@ -36,6 +45,7 @@ private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/channels/saved/check"),
     (.post, "POST /api/channels/saved"),
     (.get, "GET /api/channels/saved"),
+    (.delete, "DELETE /api/channels/saved/:messageId"),
     (.post, "POST /api/channels/system/all/hide"),
     (.post, "POST /api/channels/system/all/restore"),
     (.post, "POST /api/channels/dm"),
@@ -79,8 +89,8 @@ private let expectedChannelsRoutes: [(HTTPRequest.Method, String)] = [
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedChannelsRoutes.count == 54)
-        #expect(expected.count == 54)
+        #expect(expectedChannelsRoutes.count == 64)
+        #expect(expected.count == 64)
 
         // One route per table entry, and no route outside `/api/channels...`.
         #expect(app.routes.all.count == expected.count)

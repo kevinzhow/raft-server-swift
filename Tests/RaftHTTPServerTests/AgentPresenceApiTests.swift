@@ -96,7 +96,16 @@ import VaporTesting
             // The Computer reconnects with its idle Codex process alive:
             // ready.runningAgents makes the agent active and online
             // (upstream planReadyReconcileAction mark-active-online), which is
-            // the production restart symptom this projection repairs.
+            // the production restart symptom this projection repairs. The
+            // reported run is attributable to a process this server tracks;
+            // an unknown process is the manual gate exercised separately.
+            accounts.agentsRuntimeStore.withState { state in
+                var executionAgent = AgentExecutionAgent(serverId: serverId, machineId: machine)
+                executionAgent.processes["process-1"] = AgentExecutionProcess(
+                    processInstanceId: "process-1", daemonInstanceId: "daemon-api",
+                    spawnLaunchId: nil, launchIds: [])
+                state.execution.agents[agent] = executionAgent
+            }
             try await commit {
                 try domain.connectionOpened(machineContext)
                 try domain.connectionReady(machineContext, daemonInstanceId: "daemon-api",

@@ -77,8 +77,10 @@ extension CompleteProfileRequest: Decodable {
 
 /// `POST /api/auth/pending-link/cancel` request body.
 ///
-/// The route decodes this and falls back to `CancelPendingLinkRequest()` on an
-/// empty or malformed body, so cancel stays idempotent and always answers 204.
+/// Pinned `routes/auth.ts:1285-1291` requires `pendingLinkToken` before the
+/// cancellation runs; the route answers its two
+/// `pending_link_token_invalid` 400s and only then calls the idempotent
+/// service.
 public struct CancelPendingLinkRequest: Codable, Sendable, Equatable {
     public var pendingLinkToken: String?
 
@@ -99,7 +101,7 @@ public struct ForgotPasswordRequest: Codable, Sendable, Equatable {
 }
 
 /// The non-revealing `POST /api/auth/forgot-password` success body.
-public struct ForgotPasswordResponse: Codable, Sendable, Equatable {
+public struct ForgotPasswordResponse: Codable, JSONBodyConvertible, Sendable, Equatable {
     public static let acceptedMessage =
         "If an account exists with that email, a reset link has been sent."
 
@@ -109,6 +111,37 @@ public struct ForgotPasswordResponse: Codable, Sendable, Equatable {
     public init(ok: Bool = true, message: String = ForgotPasswordResponse.acceptedMessage) {
         self.ok = ok
         self.message = message
+    }
+
+    /// Upstream `res.json({ ok, message })` keeps `ok` before `message`.
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", ok),
+            OrderedJSONField("message", message),
+        ])
+    }
+}
+
+/// `GET /api/auth/me/username-available` answer.
+///
+/// `reason` and `message` are absent on success (`res.json` serializes the
+/// `undefined` values away) and present for every refusal.
+public struct UsernameAvailabilityResponse: Codable, JSONBodyConvertible, Sendable, Equatable {
+    public var available: Bool
+    public var reason: String?
+    public var message: String?
+
+    public init(available: Bool, reason: String? = nil, message: String? = nil) {
+        self.available = available
+        self.reason = reason
+        self.message = message
+    }
+
+    public var jsonBody: OrderedJSON {
+        var fields = [OrderedJSONField("available", available)]
+        if let reason { fields.append(OrderedJSONField("reason", reason)) }
+        if let message { fields.append(OrderedJSONField("message", message)) }
+        return .object(fields)
     }
 }
 

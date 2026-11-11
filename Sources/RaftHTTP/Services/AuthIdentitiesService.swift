@@ -13,6 +13,7 @@ public enum AuthIdentitiesError: DomainError, Equatable {
     case passwordCredentialRequired
     case notAServerMember
     case invalidLoginBody([AuthRequestIssue])
+    case pendingLinkTokenInvalid
     case invalidCredentials
     case pendingLinkExpired
     case pendingLinkAccountMismatch
@@ -34,6 +35,8 @@ public enum AuthIdentitiesError: DomainError, Equatable {
     case wrongCurrentPassword
     case noAvatarProvided
     case avatarTooLarge(maxBytes: Int)
+    case avatarBadFormat
+    case avatarUploadFailed
 
     public var status: UInt {
         switch self {
@@ -48,10 +51,13 @@ public enum AuthIdentitiesError: DomainError, Equatable {
             409
         case .pendingLinkExpired, .requestExpired, .codeConsumed, .codeExpired:
             410
-        case .invalidLoginBody, .invalidAppLoginRequest, .returnUriNotAllowed,
-             .challengeMethodInvalid, .challengeInvalid, .invalidAppLoginCompletion, .pkceMismatch,
-             .profileUpdateFailed, .invalidProfile, .noAvatarProvided, .avatarTooLarge:
+        case .invalidLoginBody, .pendingLinkTokenInvalid, .invalidAppLoginRequest,
+             .returnUriNotAllowed, .challengeMethodInvalid, .challengeInvalid,
+             .invalidAppLoginCompletion, .pkceMismatch, .profileUpdateFailed, .invalidProfile,
+             .noAvatarProvided, .avatarTooLarge, .avatarBadFormat:
             400
+        case .avatarUploadFailed:
+            500
         }
     }
 
@@ -63,6 +69,7 @@ public enum AuthIdentitiesError: DomainError, Equatable {
         case .passwordCredentialRequired: "Set a password before disconnecting your final sign-in account."
         case .notAServerMember: "Not a member of this server"
         case .invalidLoginBody: "Invalid email login body"
+        case .pendingLinkTokenInvalid: "pendingLinkToken must be a string"
         case .invalidCredentials: "Invalid email or password"
         case .pendingLinkExpired: "This sign-in link expired. Sign in again to connect the account."
         case .pendingLinkAccountMismatch: "The pending link belongs to a different account"
@@ -84,6 +91,8 @@ public enum AuthIdentitiesError: DomainError, Equatable {
         case .wrongCurrentPassword: "Current password is incorrect"
         case .noAvatarProvided: "No avatar file provided"
         case .avatarTooLarge: "Avatar image must be 5 MB or smaller"
+        case .avatarBadFormat: "Only image files are allowed (JPEG, PNG, GIF, WebP)"
+        case .avatarUploadFailed: "Failed to upload avatar"
         }
     }
 
@@ -131,6 +140,12 @@ public enum AuthIdentitiesError: DomainError, Equatable {
                 OrderedJSONField("code", "email_login_body_invalid"),
                 OrderedJSONField("issues", .array(issues.map(\.json))),
             ])
+        case .pendingLinkTokenInvalid:
+            // Pinned `routes/auth.ts:169-178` writes `code` first.
+            .object([
+                OrderedJSONField("code", "pending_link_token_invalid"),
+                OrderedJSONField("error", errorMessage),
+            ])
         case .requestExpired(let redirectUrl):
             .object([
                 OrderedJSONField("error", errorMessage),
@@ -142,6 +157,11 @@ public enum AuthIdentitiesError: DomainError, Equatable {
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("errorCode", "PROFILE_AVATAR_TOO_LARGE"),
                 OrderedJSONField("maxBytes", maxBytes),
+            ])
+        case .avatarBadFormat:
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_BAD_FORMAT"),
             ])
         default:
             nil
@@ -271,10 +291,15 @@ public struct AuthIdentitiesService: Sendable {
         // Pinned `routes/auth.ts:147` parses `req.body ?? {}` with the zod
         // login schema; the DTO has already produced that issue list.
         let request = request ?? LoginRequest.parse(nil)
-        guard request.issues.isEmpty,
-              let email = request.email,
-              let password = request.password
-        else { throw AuthIdentitiesError.invalidLoginBody(request.issues) }
+        guard request.issues.isEmpty else {
+            throw AuthIdentitiesError.invalidLoginBody(request.issues)
+        }
+        guard !request.pendingLinkTokenInvalid else {
+            throw AuthIdentitiesError.pendingLinkTokenInvalid
+        }
+        guard let email = request.email, let password = request.password else {
+            throw AuthIdentitiesError.invalidLoginBody(request.issues)
+        }
         return (AccountNaming.normalize(email), password, request.pendingLinkToken)
     }
 
@@ -457,16 +482,26 @@ public struct AuthIdentitiesService: Sendable {
         authorization: String?,
         contentType: String?,
         body: Data
-    ) throws -> AuthProfileUserResponse {
+    ) async throws -> AuthProfileUserResponse {
         let userId = try authorizedUser(authorization)
-        guard let file = FormPayload.multipartFile(named: "avatar", contentType: contentType, body: body) else {
+        guard let current = store.account(userId: userId), current.retiredAt == nil else {
+            throw AuthIdentitiesError.invalidToken
+        }
+        guard let file = FormPayload.multipartFilePart(named: "avatar", contentType: contentType, body: body) else {
             throw AuthIdentitiesError.noAvatarProvided
         }
-        if file.count > AccountNaming.maxProfileAvatarBytes {
-            throw AuthIdentitiesError.avatarTooLarge(maxBytes: AccountNaming.maxProfileAvatarBytes)
+        let stored: AvatarStoredFile
+        do {
+            stored = try await AvatarService(storage: oauth.assets, oauth: oauth)
+                .storeUserAvatar(existingAvatarUrl: current.avatarUrl, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge(let maxBytes): throw AuthIdentitiesError.avatarTooLarge(maxBytes: maxBytes)
+            case .badFormat: throw AuthIdentitiesError.avatarBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure: throw AuthIdentitiesError.avatarUploadFailed
+            }
         }
-        let hash = String(AuthTokenCodec.sha256(file).prefix(32))
-        guard let account = store.setAvatarURL(userId: userId, url: "/api/avatars/users/\(hash).webp") else {
+        guard let account = store.setAvatarURL(userId: userId, url: stored.url) else {
             throw AuthIdentitiesError.invalidToken
         }
         return AuthProfileUserResponse(user: userDTO(account))

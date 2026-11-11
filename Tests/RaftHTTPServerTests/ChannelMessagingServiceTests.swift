@@ -129,9 +129,11 @@ private func channelMessagingHeaders(_ token: String, _ serverId: String) -> HTT
             #expect((summary["reactions"] as? [Any])?.isEmpty == true)
             #expect(summary["commentRef"] is NSNull)
             #expect(summary["externalAuthor"] is NSNull)
-            #expect(summary["causalActorType"] as? String == "user")
-            #expect(summary["causalActorId"] as? String == ownerId)
-            #expect(summary["systemSubtype"] as? String == "task.created_summary")
+            // Causal actor/subtype are storage-only: upstream
+            // `projectRichMessageSocketPayload` strips them from every frame.
+            #expect(summary["causalActorType"] == nil)
+            #expect(summary["causalActorId"] == nil)
+            #expect(summary["systemSubtype"] == nil)
             #expect(summary["conversationContext"] as? [String: String] == ["channelType": "channel"])
             #expect(try #require(summary["seq"] as? Int) > hostSeq)
             #expect(boardTasks.allSatisfy { $0["seq"] == nil })

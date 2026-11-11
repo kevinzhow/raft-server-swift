@@ -108,7 +108,7 @@ private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String
         #expect(initialFollowed.threads.isEmpty)
 
         let silentFollow = try silentThreads.setThreadFollow(named, authorization: fixture.authorization, serverId: fixture.serverId, follow: true)
-        #expect(silentFollow.jsonBody.render() == "{\"ok\":true,\"following\":true}")
+        #expect(silentFollow.jsonBody.render() == "{\"ok\":true,\"threadChannelId\":\"\(fixture.threadId)\"}")
         let followed = try publishedThreads.followedThreads(authorization: fixture.authorization, serverId: fixture.serverId)
         #expect(followed.threads.map(\.threadChannelId) == [fixture.threadId])
         let silentClaim = try silentAssignments.claimTask(authorization: fixture.authorization, serverId: fixture.serverId, taskId: fixture.taskFacts[0].id)
@@ -122,7 +122,7 @@ private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String
         socketA = socketA.reset
         socketB = socketB.reset
         let publishedUnfollow = try publishedThreads.setThreadFollow(named, authorization: fixture.authorization, serverId: fixture.serverId, follow: false)
-        #expect(publishedUnfollow.jsonBody.render() == "{\"ok\":true,\"following\":false}")
+        #expect(publishedUnfollow.jsonBody.render() == "{\"ok\":true}")
         let publishedClaim = try publishedAssignments.claimTask(authorization: fixture.authorization, serverId: fixture.serverId, taskId: fixture.taskFacts[1].id)
         let publishedJSON = try publisherBindingTaskJSON(publishedClaim, fact: fixture.taskFacts[1], fixture: fixture)
         let publishedFrame = "42[\"task:updated\",{\"channelId\":\"\(fixture.channelId)\",\"task\":\(publishedJSON)}]"
@@ -132,7 +132,7 @@ private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String
         socketA = socketA.reset
         socketB = socketB.reset
         let parentOnly = try publishedThreads.setThreadFollow(ThreadFollowMutationDTO(parentMessageId: fixture.parentMessageId), authorization: fixture.authorization, serverId: fixture.serverId, follow: true)
-        #expect(parentOnly.jsonBody.render() == "{\"ok\":true,\"following\":true}")
+        #expect(parentOnly.jsonBody.render() == "{\"ok\":true,\"threadChannelId\":\"\(fixture.threadId)\"}")
         let parentFollowed = try publishedThreads.followedThreads(authorization: fixture.authorization, serverId: fixture.serverId)
         #expect(parentFollowed.threads.map(\.threadChannelId) == [fixture.threadId])
         // `POST /channels/threads/follow` emits for the resolved thread whether
@@ -146,7 +146,7 @@ private func publisherBindingTaskRow(_ response: ServerTasksResponse, id: String
             hubB.emit(room: room, event: event, payloadJSON: payload)
         }
         let customUnfollow = try customThreads.setThreadFollow(named, authorization: fixture.authorization, serverId: fixture.serverId, follow: false)
-        #expect(customUnfollow.jsonBody.render() == "{\"ok\":true,\"following\":false}")
+        #expect(customUnfollow.jsonBody.render() == "{\"ok\":true}")
         let customClaim = try customAssignments.claimTask(authorization: fixture.authorization, serverId: fixture.serverId, taskId: fixture.taskFacts[2].id)
         #expect(customClaim.task.claimedAt == "1970-01-01T00:20:34.000Z")
         let customJSON = try publisherBindingTaskJSON(customClaim, fact: fixture.taskFacts[2], fixture: fixture)

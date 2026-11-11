@@ -248,7 +248,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         serverId: fixture.serverId,
         follow: true
     )
-    #expect(followed.jsonBody.render() == "{\"ok\":true,\"following\":true}")
+    #expect(followed.jsonBody.render() == "{\"ok\":true,\"threadChannelId\":\"\(fixture.threadA)\"}")
     #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
 
     let unfollowed = try service.setThreadFollow(
@@ -257,7 +257,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         serverId: fixture.serverId,
         follow: false
     )
-    #expect(unfollowed.jsonBody.render() == "{\"ok\":true,\"following\":false}")
+    #expect(unfollowed.jsonBody.render() == "{\"ok\":true}")
     #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] == nil)
     #expect(fixture.accounts.messagesAndThreadsStore.threadUnfollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
 }
@@ -273,7 +273,7 @@ private final class FollowerPublishCollector: @unchecked Sendable {
         serverId: fixture.serverId,
         follow: true
     )
-    #expect(byParent.jsonBody.render() == "{\"ok\":true,\"following\":true}")
+    #expect(byParent.jsonBody.render() == "{\"ok\":true,\"threadChannelId\":\"\(fixture.threadA)\"}")
     #expect(fixture.accounts.messagesAndThreadsStore.threadFollows[fixture.key(fixture.threadA, userId: fixture.ownerId)] != nil)
     // Upstream emits for the thread resolved from `parentMessageId`, not only
     // for a directly named `threadChannelId`.

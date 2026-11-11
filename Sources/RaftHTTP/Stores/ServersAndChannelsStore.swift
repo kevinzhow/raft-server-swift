@@ -62,7 +62,7 @@ final class ServersAndChannelsStore: Sendable {
         var sidebarSections: [String: (sections: [(id: String, name: String, emoji: String?, sortMode: String)], order: [String], placements: [(kind: String, id: String, sectionId: String, position: Int)], version: Int)] = [:]
         var sidebarPinnedRefs: [String: (refs: [(kind: String, id: String)], channelIds: [String], agentIds: [String], version: Int)] = [:]
         var sidebarReadAllEnabled: Bool = false
-        var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] = []
+        var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String)] = []
         var composerResourceServers: Set<String> = []
         var installedServerApps: [String: Set<String>] = [:]
     }
@@ -225,7 +225,7 @@ final class ServersAndChannelsStore: Sendable {
         set { mutex.withLock { $0.sidebarReadAllEnabled = newValue } }
     }
 
-    var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)] {
+    var jointInvites: [(id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String)] {
         get { mutex.withLock { $0.jointInvites } }
         set { mutex.withLock { $0.jointInvites = newValue } }
     }

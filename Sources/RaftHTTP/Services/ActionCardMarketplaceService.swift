@@ -860,7 +860,7 @@ public struct ActionCardMarketplaceService: Sendable {
     }
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
     }
 
     private func taskAuth(

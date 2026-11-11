@@ -175,6 +175,7 @@ private func listedTaskNumbers(_ client: any Client, _ fixture: TaskShapeFixture
         messageId: shadowMessageId
     )
     let machine = accounts.registerMachine(serverId: fixture.serverId, userId: fixture.ownerId, name: "shape-machine")
+    accounts.assignAgentMachineForTesting(agentId: agent, machineId: machine)
     let machineKey = try #require(accounts.machineAPIKey(machineId: machine))
 
     try await withApp { app in

@@ -181,6 +181,7 @@ struct FeatureReplyBytesTests {
         accounts.oauth.addOwnedServer(id: serverId, slug: "body-policy", name: "Body", ownerId: owner)
         let channel = accounts.oauth.createChannel(serverId: serverId, name: "parent", creatorUserId: owner)
         accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: owner)
+        accounts.addChannelMessageForTesting(id: messageId, channelId: channel, content: "parent", senderId: owner)
         let thread = accounts.oauth.createThreadChannel(parentChannelId: channel, parentMessageId: messageId)
         accounts.addPostableChannel(serverId: serverId, channelId: thread, memberId: owner, kind: "thread", parentChannelId: channel, parentMessageId: messageId)
         let token = accounts.mintAccessTokenForTesting(userId: owner)
@@ -212,7 +213,7 @@ struct FeatureReplyBytesTests {
                     contentType: mediaType
                 )
                 #expect(response.status == .ok)
-                #expect(response.body.string == #"{"ok":true,"following":true}"#)
+                #expect(response.body.string == "{\"ok\":true,\"threadChannelId\":\"\(thread)\"}")
             }
         }
     }

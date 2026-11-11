@@ -250,6 +250,14 @@ final class ControlledMachineProtocolPeer: Sendable {
             "result": .object(["kind": .string("rebound"), "processInstanceId": .string(processInstanceId)]),
         ])
     }
+    func sendProcessExited(agentId: String, launchId: String, processInstanceId: String,
+                           spawnLaunchId: String) async throws {
+        try await sendOutcome([
+            "type": .string("agent:process_exited"), "agentId": .string(agentId),
+            "launchId": .string(launchId), "processInstanceId": .string(processInstanceId),
+            "spawnLaunchId": .string(spawnLaunchId),
+        ])
+    }
     func sendTurnCompleted(agentId: String, launchId: String, sessionId: String?) async throws {
         try await sendOutcome([
             "type": .string("agent:runtime:outcome"), "v": .integer(1), "agentId": .string(agentId),
@@ -279,6 +287,45 @@ final class ControlledMachineProtocolPeer: Sendable {
         ]))
         try await socket.applicationFence()
     }
+    /// An `agent:session` control frame for the launch this daemon accepted.
+    func sendSession(agentId: String, launchId: String, sessionId: String) async throws {
+        try await socket.send(.init([
+            "type": .string("agent:session"), "agentId": .string(agentId),
+            "launchId": .string(launchId), "sessionId": .string(sessionId),
+        ]))
+        try await socket.applicationFence()
+    }
+
+    /// The official daemon's tracked-mention receipt chain: `daemon_received`,
+    /// `daemon_drained`, then the final ACK carrying the same identity.
+    func acknowledgeControlledMentionDelivery(_ frame: ProtocolPGObject) async throws {
+        guard let sequence = frame.integer("seq"),
+              let identity = frame.object("mentionDelivery") else { throw ProtocolPGFailure.missingField }
+        func mentionIdentity() -> [String: JSONValue] {
+            var fields: [String: JSONValue] = [:]
+            for key in ["occurrenceId", "messageId", "machineId", "launchId", "sessionId"] {
+                if let value = identity.string(key) { fields[key] = .string(value) }
+            }
+            return fields
+        }
+        try await socket.send(.init([
+            "type": .string("agent:delivery:transition"), "agentId": .string(try frame.requireString("agentId")),
+            "stage": .string("daemon_received"), "outcome": .string("accepted"),
+            "mentionDelivery": .object(mentionIdentity()),
+        ]))
+        try await socket.send(.init([
+            "type": .string("agent:delivery:transition"), "agentId": .string(try frame.requireString("agentId")),
+            "stage": .string("daemon_drained"), "outcome": .string("accepted"),
+            "mentionDelivery": .object(mentionIdentity()),
+        ]))
+        try await socket.send(.init([
+            "type": .string("agent:deliver:ack"), "agentId": .string(try frame.requireString("agentId")),
+            "deliveryId": .string(try frame.requireString("deliveryId")), "seq": .integer(sequence),
+            "mentionDelivery": .object(mentionIdentity()),
+        ]))
+        try await socket.applicationFence()
+    }
+
     func acknowledgeControlledDelivery(_ frame: ProtocolPGObject) async throws {
         guard let sequence = frame.integer("seq") else { throw ProtocolPGFailure.missingField }
         try await socket.send(.init([

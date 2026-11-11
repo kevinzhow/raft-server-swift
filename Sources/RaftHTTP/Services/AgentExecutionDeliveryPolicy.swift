@@ -78,7 +78,14 @@ extension AgentExecutionDomain {
     func mentionDeliveryDropReason(serverId: String, agentId: String) -> String? {
         guard (try? ownedAgent(serverId: serverId, agentId: agentId)) != nil else { return "delivery_unavailable" }
         do {
-            return try humanMessageWakeRefusal(serverId: serverId, agentId: agentId) == nil ? nil : "target_not_queued"
+            // An admitted launch that has not reported its process defers the
+            // tracked mention to `agent:session`; `stageDelivery` accepts that
+            // readable-only disposition as a successful queue. It is not a
+            // reason to drop the action.
+            guard let refusal = try humanMessageWakeRefusal(serverId: serverId, agentId: agentId) else {
+                return nil
+            }
+            return refusal == .launchInProgress ? nil : "target_not_queued"
         } catch {
             return "target_not_queued"
         }

@@ -18,21 +18,39 @@ public struct LoginRequest: Decodable, Sendable, Equatable {
     public var email: String?
     public var password: String?
     public var pendingLinkToken: String?
+    /// Whether `pendingLinkToken` was present but is not a string or is over
+    /// 256 UTF-16 units. Pinned `routes/auth.ts:169-178` answers that shape
+    /// with `pending_link_token_invalid` after the body schema succeeds; an
+    /// absent, null or empty token is the same "no link requested" state.
+    public var pendingLinkTokenInvalid: Bool
     /// The zod schema issues, in issue order. Empty exactly when the body is a
     /// valid object.
     public var issues: [AuthRequestIssue]
 
-    public init(email: String, password: String, pendingLinkToken: String? = nil) {
+    public init(
+        email: String,
+        password: String,
+        pendingLinkToken: String? = nil,
+        pendingLinkTokenInvalid: Bool = false
+    ) {
         self.email = email
         self.password = password
         self.pendingLinkToken = pendingLinkToken
+        self.pendingLinkTokenInvalid = pendingLinkTokenInvalid
         self.issues = []
     }
 
-    init(email: String?, password: String?, pendingLinkToken: String?, issues: [AuthRequestIssue]) {
+    init(
+        email: String?,
+        password: String?,
+        pendingLinkToken: String?,
+        pendingLinkTokenInvalid: Bool = false,
+        issues: [AuthRequestIssue]
+    ) {
         self.email = email
         self.password = password
         self.pendingLinkToken = pendingLinkToken
+        self.pendingLinkTokenInvalid = pendingLinkTokenInvalid
         self.issues = issues
     }
 
@@ -54,11 +72,25 @@ public struct LoginRequest: Decodable, Sendable, Equatable {
         let password = AuthRequestSchema.string(fields["password"], path: "password", min: 1)
         issues += password.issues
         var pendingLinkToken: String?
-        if case .string(let token)? = fields["pendingLinkToken"] { pendingLinkToken = token }
+        var pendingLinkTokenInvalid = false
+        if let rawToken = fields["pendingLinkToken"] {
+            if case .string(let token) = rawToken {
+                if token.utf16.count > 256 {
+                    pendingLinkTokenInvalid = true
+                } else {
+                    pendingLinkToken = token.isEmpty ? nil : token
+                }
+            } else if case .null = rawToken {
+                // `null` is the same "not sent" state as `undefined`.
+            } else {
+                pendingLinkTokenInvalid = true
+            }
+        }
         return LoginRequest(
             email: email.value,
             password: password.value,
             pendingLinkToken: pendingLinkToken,
+            pendingLinkTokenInvalid: pendingLinkTokenInvalid,
             issues: issues
         )
     }
@@ -537,7 +569,7 @@ public struct AppLoginCompleteResponse: JSONBodyConvertible, Equatable {
 }
 
 /// One App row of `GET /api/integrations/clients`.
-public struct IntegrationSettingsClient: Sendable, Equatable {
+public struct IntegrationSettingsClient: Sendable, Equatable, JSONBodyConvertible {
     public let id: String
     public let clientId: String
     public let name: String
@@ -545,6 +577,7 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
     public let description: String?
     public let homepageUrl: String?
     public let publishStatus: String
+    public let logoUrl: String?
 
     public init(
         id: String,
@@ -553,7 +586,8 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
         appType: String,
         description: String?,
         homepageUrl: String?,
-        publishStatus: String
+        publishStatus: String,
+        logoUrl: String? = nil
     ) {
         self.id = id
         self.clientId = clientId
@@ -562,7 +596,10 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
         self.description = description
         self.homepageUrl = homepageUrl
         self.publishStatus = publishStatus
+        self.logoUrl = logoUrl
     }
+
+    public var jsonBody: OrderedJSON { json }
 
     var json: OrderedJSON {
         .object([
@@ -573,6 +610,7 @@ public struct IntegrationSettingsClient: Sendable, Equatable {
             OrderedJSONField("description", optional: description),
             OrderedJSONField("homepageUrl", optional: homepageUrl),
             OrderedJSONField("publishStatus", publishStatus),
+            OrderedJSONField("logoUrl", optional: logoUrl),
         ])
     }
 }

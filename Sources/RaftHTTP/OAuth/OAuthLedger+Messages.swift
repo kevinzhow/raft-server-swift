@@ -177,6 +177,14 @@ extension OAuthLedger {
         }
     }
 
+    public func unsaveMessage(userId: String, messageId: String) {
+        self.state.withLock { ledgerState in
+            ledgerState.savedMessageRecords.removeAll {
+                $0.userId == userId && $0.messageId == messageId
+            }
+        }
+    }
+
     public func savedMessages(userId: String) -> [SavedMessageInfo] {
         return self.state.withLock { ledgerState in
             return ledgerState.savedMessageRecords

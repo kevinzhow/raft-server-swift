@@ -1,7 +1,9 @@
 import Foundation
 import HTTPTypes
 import RaftHTTP
+import RaftShared
 import RaftRealtime
+import Synchronization
 import Vapor
 
 /// `/api/auth/...` routes extracted from `FallbackApplication.configure`.
@@ -105,6 +107,27 @@ public struct AuthFeature: RouteCollection, Sendable {
                 )
             }
         }
+        // `app.ts:332-344` mounts a 5-per-hour-per-IP limiter before the route.
+        // The accepted answers are non-revealing: a known and an unknown
+        // address produce the same body.
+        let forgotPassword = auth.grouped(ForgotPasswordRateLimitMiddleware())
+        forgotPassword.post("forgot-password") { request async throws -> Response in
+            let body = (try? await decodeJSONRequestBody(ForgotPasswordRequest.self, request)) ?? ForgotPasswordRequest()
+            guard let email = body.email, !email.isEmpty else {
+                return try await respond { () throws -> ForgotPasswordResponse in
+                    throw AuthProfileError.emailRequired
+                }
+            }
+            do {
+                let accepted = try self.profile.forgotPassword(ForgotPasswordRequest(email: email))
+                return try await respond { accepted }
+            } catch {
+                // Upstream catches every delivery/lookup failure and keeps the
+                // same acceptance answer, so a broken mail provider never
+                // reveals whether the address exists (`auth.ts:1763-1770`).
+                return try await respond { ForgotPasswordResponse() }
+            }
+        }
 
         auth.get("invite-info") { request async throws -> Response in
             try await respond {
@@ -192,10 +215,15 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         mobileOAuth.post("complete") { request async throws -> Response in
+            if let refusal = try await pendingLinkTokenRefusal(request) { return refusal }
             let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
             return try await respond { try await self.oauthFlows.completeMobileOAuthAsync(body) }
         }
         provider.post("complete") { request async throws -> Response in
+            // Pinned `routes/auth.ts:1138` reads the pending-link token before
+            // the completion lookup; a non-string token is that 400, not a
+            // sign-in attempt.
+            if let refusal = try await pendingLinkTokenRefusal(request) { return refusal }
             // A body that is not a JSON object reads as an empty request, so the
             // service answers the published "code is required" 400.
             let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
@@ -276,11 +304,20 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
-            // An empty or malformed body still answers 204, so cancel stays
-            // idempotent for every client shape.
-            let body = (try? await decodeJSONRequestBody(CancelPendingLinkRequest.self, request, decoding: .contentOnly))
-                ?? CancelPendingLinkRequest()
-            return try await respond { self.profile.cancelPendingLink(body) }
+            // Pinned `routes/auth.ts:1285-1291`: a non-string token is the
+            // "must be a string" 400 and a missing/empty one is the "required"
+            // 400. A present token keeps the idempotent 204.
+            let raw = try await requestBodyJSON(request)
+            switch PendingLinkToken.parse(raw) {
+            case .invalid:
+                return respond(status: 400, rawJSON: PendingLinkToken.invalidBody.render())
+            case .absent:
+                return respond(status: 400, rawJSON: PendingLinkToken.requiredBody.render())
+            case .token(let token):
+                return try await respond {
+                    self.profile.cancelPendingLink(CancelPendingLinkRequest(pendingLinkToken: token))
+                }
+            }
         }
         auth.post("login") { request async throws -> Response in
             // The decoder keeps the raw JSON value so the service publishes the
@@ -332,10 +369,18 @@ public struct AuthFeature: RouteCollection, Sendable {
         me.on(.post, "avatar", maxBodySize: "6mb") { request async throws -> Response in
             let data = try await request.body.collect() ?? Data()
             return try await respond {
-                try self.identities.uploadAvatar(
+                try await self.identities.uploadAvatar(
                     authorization: request.headers[.authorization],
                     contentType: request.headers[.contentType],
                     body: data
+                )
+            }
+        }
+        me.get("username-available") { request async throws -> Response in
+            try await respond {
+                try self.profile.usernameAvailability(
+                    authorization: request.headers[.authorization],
+                    name: desktopQuery(request.url.query, "name")
                 )
             }
         }
@@ -403,4 +448,85 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
     }
+}
+
+/// In-process fixed-window limiter for `POST /api/auth/forgot-password`.
+///
+/// Node mounts `express-rate-limit` with the default memory store
+/// (`app.ts:332-344`), so a process restart clears the buckets and every
+/// replica counts separately. This keeps that shape: 5 requests per IP per
+/// rolling fixed window of one hour, keyed by the transport peer address.
+private final class ForgotPasswordRateLimiter: Sendable {
+    struct Window: Sendable {
+        var startedAt: Date
+        var count: Int
+    }
+
+    static let limit = 5
+    static let window: TimeInterval = 60 * 60
+
+    private let windows = Mutex<[String: Window]>([:])
+
+    func consume(_ key: String, now: Date) -> (allowed: Bool, remaining: Int, resetAt: Date) {
+        windows.withLock { windows in
+            var current = windows[key]
+            if current == nil || now.timeIntervalSince(current!.startedAt) >= Self.window {
+                current = Window(startedAt: now, count: 0)
+            }
+            var window = current!
+            window.count += 1
+            windows[key] = window
+            let remaining = max(0, Self.limit - window.count)
+            return (window.count <= Self.limit, remaining, window.startedAt.addingTimeInterval(Self.window))
+        }
+    }
+}
+
+private struct ForgotPasswordRateLimitMiddleware: Middleware {
+    let limiter = ForgotPasswordRateLimiter()
+
+    func respond(to request: Request, chainingTo next: any Responder) async throws -> Response {
+        let key = request.remoteAddress?.host ?? "unknown"
+        let now = Date()
+        let outcome = limiter.consume(key, now: now)
+        let resetSeconds = String(max(0, Int(outcome.resetAt.timeIntervalSince(now).rounded(.up))))
+        if !outcome.allowed {
+            var headers = HTTPFields()
+            headers[.contentType] = "application/json"
+            headers[HTTPField.Name("Cache-Control")!] = "private, no-store"
+            headers[HTTPField.Name("RateLimit-Limit")!] = String(ForgotPasswordRateLimiter.limit)
+            headers[HTTPField.Name("RateLimit-Remaining")!] = "0"
+            headers[HTTPField.Name("RateLimit-Reset")!] = resetSeconds
+            let body = OrderedJSON.object([
+                OrderedJSONField("error", "Too many password reset requests. Please try again later."),
+            ]).render()
+            return Response(status: .tooManyRequests, headers: headers, body: .init(string: body))
+        }
+        var response = try await next.respond(to: request)
+        response.headers[HTTPField.Name("RateLimit-Limit")!] = String(ForgotPasswordRateLimiter.limit)
+        response.headers[HTTPField.Name("RateLimit-Remaining")!] = String(outcome.remaining)
+        response.headers[HTTPField.Name("RateLimit-Reset")!] = resetSeconds
+        return response
+    }
+}
+
+/// The pending-link check shared by the mobile OAuth completion and the
+/// provider completion routes. A body without the member (or a JSON `null`)
+/// is "not sent"; the route continues to its own published checks.
+private func pendingLinkTokenRefusal(_ request: Request) async throws -> Response? {
+    switch PendingLinkToken.parse(try await requestBodyJSON(request)) {
+    case .absent, .token:
+        return nil
+    case .invalid:
+        return respond(status: 400, rawJSON: PendingLinkToken.invalidBody.render())
+    }
+}
+
+/// The request body as JSON; a missing, empty or unparsable body is `nil`
+/// (`req.body` without a parsed value).
+private func requestBodyJSON(_ request: Request) async throws -> JSONValue? {
+    guard let data = try await request.body.collect(), !data.isEmpty else {
+        return nil
+    }
+    return try? JSONDecoder().decode(JSONValue.self, from: data)
 }

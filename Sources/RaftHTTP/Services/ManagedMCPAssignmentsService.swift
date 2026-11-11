@@ -138,6 +138,15 @@ public struct ManagedMCPAssignmentsService: Sendable {
         }
     }
 
+    /// Human channel-read authority with the pinned thread-parent recursion.
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        if HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+            .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
+        guard channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     /// A thread's members are managed with follow/unfollow, never directly.
     private func requireNotThread(_ channelId: String) throws {
         let kind = channels.postableChannel(id: channelId)?.kind ?? oauth.channelType(id: channelId)
@@ -484,8 +493,8 @@ public struct ManagedMCPAssignmentsService: Sendable {
         if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
             throw ChannelMembershipError.channelNotFound
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
-              visibility.actorCanSee(channelId: channelId, userId: userId)
+        guard oauth.channelInfo(id: channelId)?.serverId == serverId,
+              canReadChannel(channelId: channelId, serverId: serverId, userId: userId)
         else {
             throw ChannelMembershipError.channelNotFound
         }
@@ -548,10 +557,20 @@ public struct ManagedMCPAssignmentsService: Sendable {
         if visibility.guestDeniedHiddenChannel(channelId: channelId, serverId: serverId, userId: userId) {
             throw ChannelMembershipError.channelNotFound
         }
-        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId,
-              oauth.isChannelParticipant(channelId: channelId, userId: userId)
-                  || oauth.channelType(id: channelId) == "channel"
-        else {
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw ChannelMembershipError.channelNotFound
+        }
+        // Threads inherit their parent's read policy: a thread row has no
+        // membership of its own, so testing only the thread id denied the
+        // parent channel's members (and its owner) even though GET
+        // /api/channels/:id resolves the same thread through its parent.
+        let type = oauth.channelType(id: channelId) ?? "channel"
+        let threadParentId = type == "thread" ? oauth.channelParentChannelId(id: channelId) : nil
+        let canSee = threadParentId.map { parentId in
+            oauth.channelInfo(id: parentId)?.serverId == serverId
+                && visibility.actorCanSee(channelId: parentId, userId: userId)
+        } ?? visibility.actorCanSee(channelId: channelId, userId: userId)
+        guard canSee else {
             throw ChannelMembershipError.channelNotFound
         }
         let snapshot = channels.state

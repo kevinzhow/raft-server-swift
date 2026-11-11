@@ -44,6 +44,38 @@ public struct ManagedMCPLifecycleService: Sendable {
         return userId
     }
 
+    /// A thread is visible through its parent message's channel. This mirrors
+    /// the pinned `canUserAccessChannel` recursion (`channelService.ts:4994-5016`)
+    /// for the read-state writes owned here.
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        var visited: Set<String> = []
+        func visit(_ id: String) -> Bool {
+            guard visited.count < 64, visited.insert(id).inserted,
+                  let channel = channels.postableChannels[id],
+                  channel.serverId == serverId, channel.deletedAt == nil
+            else { return false }
+            switch channel.kind {
+            case "channel":
+                return true
+            case "thread":
+                if let parentId = channel.parentChannelId, visit(parentId) { return true }
+                guard let parentMessageId = channel.parentMessageId,
+                      let parentChannelId = messages.humanMessageRows
+                          .first(where: { $0.id == parentMessageId })?.channelId
+                else { return false }
+                return visit(parentChannelId)
+            default:
+                return channel.memberIds.contains(userId)
+                    || oauth.channelHumanIds(channelId: id).contains(userId)
+                    || oauth.isChannelParticipant(channelId: id, userId: userId)
+            }
+        }
+        if visit(channelId) { return true }
+        guard channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     // MARK: - POST /api/channels/:id/conversation-read-all
 
     public func conversationReadAll(
@@ -56,10 +88,9 @@ public struct ManagedMCPLifecycleService: Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil,
               let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId
         else { throw ManagedMCPLifecycleError.channelNotFound }
-        let hasAccess = channels.isPostableMember(channelId: channelId, userId: userId)
-            || oauth.channelHumanIds(channelId: channelId).contains(userId)
-            || oauth.channelType(id: channelId) == "channel"
-        guard hasAccess else { throw ManagedMCPLifecycleError.channelNotFound }
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ManagedMCPLifecycleError.channelNotFound
+        }
         return ConversationReadAllResponse(
             serverId: serverId,
             scopes: messages.advanceConversationReadAll(userId: userId, channelId: channelId)
@@ -100,8 +131,7 @@ public struct ManagedMCPLifecycleService: Sendable {
             }
             let hasOwnedCursor = messages.hasUserReadCursor(userId: userId, scopeId: rawScope)
             let isMember = oauth.memberRole(serverId: serverId, userId: userId) != nil
-            let visible = channels.isPostableMember(channelId: rawScope, userId: userId)
-                || oauth.channelHumanIds(channelId: rawScope).contains(userId)
+            let visible = canReadChannel(channelId: rawScope, serverId: serverId, userId: userId)
                 || (channelType == "channel" && isMember)
                 || (hasOwnedCursor && isMember)
             guard visible else { throw ManagedMCPLifecycleError.channelNotFound }
@@ -178,6 +208,111 @@ public struct ManagedMCPLifecycleService: Sendable {
         oauth.addChannelHuman(channelId: invite.targetChannelId, userId: userId)
         let name = channels.acceptJointInvite(id: inviteId, userId: userId) ?? ""
         return JointInviteAcceptedResponse(channelId: invite.targetChannelId, name: name)
+    }
+
+    // MARK: - GET /api/channels/joint-invites
+
+    /// Pending, unexpired invites addressed to this user on this server.
+    public func listJointInvites(
+        authorization: String?,
+        serverId: String
+    ) throws -> JointInviteListResponse {
+        let userId = try requireUser(authorization)
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ManagedMCPLifecycleError.notAMember
+        }
+        let invites = channels.pendingJointInvites(serverId: serverId, userId: userId, now: now())
+            .compactMap { invite -> JointInviteRow? in
+                // The list joins the source server and its display channel; a
+                // deleted source row drops the invite from the read.
+                guard let server = oauth.serverDetailsValue(id: invite.hostServerId),
+                      let channel = oauth.channelInfo(id: invite.hostChannelId)
+                else { return nil }
+                return JointInviteRow(
+                    id: invite.id,
+                    jointChannelId: invite.hostChannelId,
+                    fromServerId: invite.hostServerId,
+                    fromServerName: server.name,
+                    fromServerSlug: server.slug,
+                    channelName: channel.name,
+                    channelDescription: channel.description,
+                    invitedByUserId: invite.invitedByUserId,
+                    invitedUserId: invite.targetOwnerId,
+                    expiresAt: invite.expiresAt,
+                    createdAt: invite.createdAt
+                )
+            }
+        return JointInviteListResponse(invites: invites)
+    }
+
+    // MARK: - POST /api/channels/:id/joint-invite/resend
+
+    public func resendJointInvites(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) throws -> JointInviteResendResponse {
+        let userId = try requireUser(authorization)
+        let (channel, role) = try visibleJointChannel(
+            serverId: serverId, channelId: channelId, userId: userId,
+            wrongType: .onlyJointResend, adminRefusal: .adminResend
+        )
+        _ = channel
+        _ = role
+        guard !channels.jointLinkIds(channelId: channelId).isEmpty else {
+            throw JointChannelRouteError.channelNotFound
+        }
+        let resent = channels.resendJointInvites(
+            hostChannelId: channelId,
+            hostServerId: serverId,
+            requestedByUserId: userId,
+            now: now(),
+            ttl: 14 * 24 * 60 * 60
+        )
+        guard resent > 0 else { throw JointChannelRouteError.noPendingInvites }
+        return JointInviteResendResponse(resentCount: resent)
+    }
+
+    // MARK: - POST /api/channels/:id/disconnect
+
+    public func disconnectJointChannel(
+        authorization: String?,
+        serverId: String,
+        channelId: String
+    ) throws -> OkResponse {
+        let userId = try requireUser(authorization)
+        _ = try visibleJointChannel(
+            serverId: serverId, channelId: channelId, userId: userId,
+            wrongType: .onlyJointDisconnect, adminRefusal: .adminDisconnect
+        )
+        guard channels.disconnectJointProjection(channelId: channelId, now: now()) else {
+            throw JointChannelRouteError.channelNotFound
+        }
+        return OkResponse()
+    }
+
+    /// The shared visibility/type/role funnel for resend and disconnect. The
+    /// route-level ordering is upstream's: channel/server 404, joint type 400,
+    /// visibility 404, admin 403.
+    private func visibleJointChannel(
+        serverId: String,
+        channelId: String,
+        userId: String,
+        wrongType: JointChannelRouteError,
+        adminRefusal: JointChannelRouteError
+    ) throws -> (channel: (serverId: String, name: String, description: String?), role: String) {
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw ManagedMCPLifecycleError.notAMember
+        }
+        guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
+            throw JointChannelRouteError.channelNotFound
+        }
+        guard oauth.channelType(id: channelId) == "joint" else { throw wrongType }
+        let visible = channels.isPostableMember(channelId: channelId, userId: userId)
+            || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+        guard visible else { throw JointChannelRouteError.channelNotFound }
+        guard role == "owner" || role == "admin" else { throw adminRefusal }
+        return (channel, role)
     }
 
     // MARK: - GET /api/channels

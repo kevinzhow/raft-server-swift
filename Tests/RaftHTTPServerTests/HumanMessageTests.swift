@@ -1324,8 +1324,9 @@ private func deleteJSON(
     let channelId = "22222222-2222-4222-8222-22222222223d"
     accounts.addAccount(id: ownerId, email: "agent-reaction-owner@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reaction-agent-scope", name: "Reaction Agent", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
-    accounts.addServerAgent(serverId: serverId, id: agentId, name: "reaction-agent", avatarUrl: nil)
+    accounts.addLedgerServerAgent(serverId: serverId, id: agentId, name: "reaction-agent", avatarUrl: nil)
     accounts.addChannelAgent(channelId: channelId, agentId: agentId)
     let machineKey = accounts.registerMachineForAgent(serverId: serverId, agentId: agentId)
     try await withApp { app in
@@ -1730,9 +1731,10 @@ private func deleteJSON(
     accounts.addAccount(id: memberId, email: "reaction-page-member@slock.test", password: "password123")
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: memberId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reaction-page-scope", name: "Reaction Pages", ownerId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: memberId)
-    accounts.addServerAgent(serverId: serverId, id: agentId, name: "reaction-page-agent", avatarUrl: nil)
+    accounts.addLedgerServerAgent(serverId: serverId, id: agentId, name: "reaction-page-agent", avatarUrl: nil)
     accounts.addChannelAgent(channelId: channelId, agentId: agentId)
     let machineKey = accounts.registerMachineForAgent(serverId: serverId, agentId: agentId)
     func actors(_ client: any Client, messageId: String, token: String, emoji: String, limit: Int? = nil, cursor: String? = nil) async throws -> ClientResponse {
@@ -1879,6 +1881,7 @@ private func deleteJSON(
     accounts.markEmailVerified(userId: ownerId)
     accounts.markEmailVerified(userId: memberId)
     accounts.markEmailVerified(userId: otherId)
+    accounts.oauth.addOwnedServer(id: serverId, slug: "reaction-directory-scope", name: "Reaction Directory", ownerId: ownerId)
     accounts.setServerMemberRole(serverId: serverId, userId: ownerId, role: "owner")
     accounts.setServerMemberRole(serverId: serverId, userId: memberId, role: "member")
     accounts.setServerMemberRole(serverId: serverId, userId: otherId, role: "member")
@@ -1886,7 +1889,7 @@ private func deleteJSON(
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, name: "all")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: memberId)
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: otherId)
-    accounts.addServerAgent(serverId: serverId, id: agentId, name: "reaction-directory-agent", avatarUrl: nil)
+    accounts.addLedgerServerAgent(serverId: serverId, id: agentId, name: "reaction-directory-agent", avatarUrl: nil)
     accounts.addChannelAgent(channelId: channelId, agentId: agentId)
     let machineKey = accounts.registerMachineForAgent(serverId: serverId, agentId: agentId)
     func actors(_ client: any Client, token: String, messageId: String, limit: Int? = nil, cursor: String? = nil) async throws -> ClientResponse {
@@ -2540,7 +2543,7 @@ private func deleteJSON(
     accounts.addPostableChannel(serverId: serverId, channelId: doomedId, memberId: memberId)
     accounts.addPostableChannel(serverId: serverId, channelId: archivedId, memberId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: archivedId, memberId: memberId)
-    accounts.addServerAgent(serverId: serverId, id: agentId, name: "search-deleted-agent", avatarUrl: nil)
+    accounts.addLedgerServerAgent(serverId: serverId, id: agentId, name: "search-deleted-agent", avatarUrl: nil)
     let machineKey = accounts.registerMachineForAgent(serverId: serverId, agentId: agentId)
     func searchIds(_ client: any Client, path: String, token: String, server: String?) async throws -> [String] {
         var headers = HTTPFields()

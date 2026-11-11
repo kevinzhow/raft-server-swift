@@ -16,6 +16,10 @@ struct HumanMessageCommitService: Sendable {
     let ledger: MessageLedgerPort
     let emit: @Sendable (String, String, String?) -> Void
 
+    /// Commits one human-send row. `publishes` is false only for the forward
+    /// path, whose `message:new` must carry the forwarded-bundle metadata the
+    /// post-commit forward write attaches; that path calls
+    /// `publishForwarded` after the bundle is retained.
     func store(
         channelId: String,
         senderId: String,
@@ -24,7 +28,8 @@ struct HumanMessageCommitService: Sendable {
         attachmentIds: [String],
         senderTimezone: String?,
         mentions: [MentionInput],
-        asTask: Bool
+        asTask: Bool,
+        publishes: Bool = true
     ) throws -> HumanMessageWrite {
         let channel = channels.postableChannel(id: channelId)
         let kind = channel?.kind
@@ -63,11 +68,9 @@ struct HumanMessageCommitService: Sendable {
             }
             let taskFacts = createdTask.map(CanonicalMessagePayload.TaskFacts.init)
             let body = payload(message, task: taskFacts, conversationContext: nil)
-            let realtime = MessageRealtimeService(
-                messages: messages, channels: channels, profiles: profiles, oauth: oauth
-            )
-            for frame in realtime.frames(for: message, task: taskFacts) {
-                emit(frame.room, frame.event, frame.payload)
+            // The forward path defers publication until its bundle is retained.
+            if publishes {
+                emitFrames(for: message, task: taskFacts)
             }
             // Publish the board frame after the host `message:new`, as upstream
             // does. The publication is staged in this transaction; a staging
@@ -90,11 +93,8 @@ struct HumanMessageCommitService: Sendable {
                 )?.task
             }
             let taskFacts = replayedTask.map(CanonicalMessagePayload.TaskFacts.init)
-            let realtime = MessageRealtimeService(
-                messages: messages, channels: channels, profiles: profiles, oauth: oauth
-            )
-            for frame in realtime.frames(for: message, task: taskFacts, replaying: true) {
-                emit(frame.room, frame.event, frame.payload)
+            if publishes {
+                emitFrames(for: message, task: taskFacts, replaying: true)
             }
             if let replayedTask, let channel {
                 try catalog.publishSentTask(replayedTask, channelId: channelId, serverId: channel.serverId)
@@ -119,6 +119,39 @@ struct HumanMessageCommitService: Sendable {
             case .ok:
                 preconditionFailure("A successful attachment check cannot be a commit refusal")
             }
+        }
+    }
+
+    /// The forward path's deferred publish: the bundle exists by now, so the
+    /// frame carries the same forwarded-bundle metadata the HTTP response and
+    /// the read paths project.
+    func publishForwarded(_ message: StoredHumanMessage) {
+        var metadata: OrderedJSON?
+        if let record = messages.forwardRecord(messageId: message.id) {
+            metadata = OrderedJSON.object([
+                OrderedJSONField("kind", "forwarded-bundle"),
+                OrderedJSONField("destinationTargetId", record.destinationTargetId),
+                OrderedJSONField("forwardedItems", .array(record.items.map {
+                    .raw(MessageForwardProjection.forwardItemJSON($0))
+                })),
+            ])
+        }
+        emitFrames(for: message, actionMetadata: metadata)
+    }
+
+    private func emitFrames(
+        for message: StoredHumanMessage,
+        task: CanonicalMessagePayload.TaskFacts? = nil,
+        actionMetadata: OrderedJSON? = nil,
+        replaying: Bool = false
+    ) {
+        let realtime = MessageRealtimeService(
+            messages: messages, channels: channels, profiles: profiles, oauth: oauth
+        )
+        for frame in realtime.frames(
+            for: message, task: task, actionMetadata: actionMetadata, replaying: replaying
+        ) {
+            emit(frame.room, frame.event, frame.payload)
         }
     }
 

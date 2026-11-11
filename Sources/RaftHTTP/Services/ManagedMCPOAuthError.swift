@@ -42,7 +42,7 @@ public enum ManagedMCPOAuthError: DomainError, Equatable {
     case agentAuthRequired
     case capabilityNotAuthorized
     case missingScope(String)
-    case invalidPageWindow
+    case invalidPageWindow([AuthRequestIssue])
     case userNotFound
     case userNotFoundBadRequest
     // App-installation reminders.
@@ -110,7 +110,7 @@ public enum ManagedMCPOAuthError: DomainError, Equatable {
         case .agentAuthRequired: "Missing or invalid Authorization header"
         case .capabilityNotAuthorized: "Agent credential is not authorized for this capability"
         case .missingScope: "missing required scope"
-        case .invalidPageWindow: "Invalid page window"
+        case .invalidPageWindow: "Invalid agent-api userChannels query"
         case .userNotFound, .userNotFoundBadRequest: "User not found or not visible"
         case .invalidInstallationCredential: "Invalid installation credential"
         case .reminderWriteNotAuthorized: "Agent reminder write is not authorized for this app"
@@ -138,6 +138,14 @@ public enum ManagedMCPOAuthError: DomainError, Equatable {
         switch self {
         case .avatarNotFound, .avatarStorageUnavailable:
             return .raw(errorMessage)
+        case .invalidPageWindow(let issues):
+            // Pinned `routes/internalAgentApi.ts:418-426` publishes `error`,
+            // `code`, then the zod query issues.
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("code", "agent_api_contract_invalid"),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
+            ])
         case .channelNameExists(_, let canUnarchive):
             return .object([
                 OrderedJSONField("error", errorMessage),

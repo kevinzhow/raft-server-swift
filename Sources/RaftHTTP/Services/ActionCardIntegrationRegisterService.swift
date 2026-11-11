@@ -11,34 +11,6 @@ enum ActionCardWriteDecision: Sendable, Equatable {
     case notFound
 }
 
-/// The closure dependencies of the action-card integration-register domain
-/// that still live in not-yet-migrated domains.
-///
-/// Everything else is a store or the OAuth ledger: the marketplace target
-/// resolver, the integration-card preparer and the card projections are owned
-/// by this service (`ActionCardMetadataProjection`). `appendHumanMessage` is the directory-lock message append (sequence stamp +
-/// OAuth mirror); `emitRealtime` is the realtime relay; `sessionUserId` is the
-/// human session ledger; `agentCredential` is the agent credential lookup that
-/// records `lastUsedAt`.
-struct ActionCardIntegrationRegisterDependencies: Sendable {
-    var sessionUserId: @Sendable (String?) -> String?
-    var agentCredential: @Sendable (String?) -> (agentId: String, scopes: [String])?
-    var identityResolution: @Sendable (String?, String) -> FeedbackLocatorService.IdentityResolution
-    var appendHumanMessage: @Sendable (StoredHumanMessage) -> Int
-    var addPostableChannel: @Sendable (
-        _ serverId: String,
-        _ channelId: String,
-        _ memberId: String,
-        _ kind: String,
-        _ parentChannelId: String?,
-        _ parentMessageId: String?,
-        _ name: String?
-    ) -> Void
-    var emitRealtime: @Sendable (String, String, String?) -> Void
-    var marketplaceInstallableClient: @Sendable (String) -> MarketplaceClientIdentity?
-    var publicIntegrationClient: @Sendable (String) -> MarketplaceClientIdentity?
-}
-
 /// Integration-marketplace registration, generic action-card prepare
 /// (`channel:create`, `agent:create`, the integration card types) and
 /// action-card execute.
@@ -352,20 +324,30 @@ public struct ActionCardIntegrationRegisterService: Sendable {
             throw ActionCardIntegrationRegisterError.forbidden
         }
         if let installCard = cards.marketplaceInstallCard(messageId: messageId) {
-            return try executeMarketplaceInstallCard(
+            let wasExecuted = installCard.state == "executed"
+            let response = try executeMarketplaceInstallCard(
                 installCard,
                 userId: userId,
                 serverId: serverId,
                 expectedState: body?.expectedState
             )
+            if !wasExecuted {
+                dependencies.publishMessageUpdated(messageId, response.metadataJSON)
+            }
+            return response
         }
         if let registerCard = cards.integrationRegisterCard(messageId: messageId) {
-            return try executeIntegrationRegisterCard(
+            let wasExecuted = registerCard.state == "executed"
+            let response = try executeIntegrationRegisterCard(
                 registerCard,
                 userId: userId,
                 serverId: serverId,
                 expectedState: body?.expectedState
             )
+            if !wasExecuted {
+                dependencies.publishMessageUpdated(messageId, response.metadataJSON)
+            }
+            return response
         }
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             throw ActionCardIntegrationRegisterError.notAMember
@@ -424,13 +406,6 @@ public struct ActionCardIntegrationRegisterService: Sendable {
         oauth.addChannelHuman(channelId: channelId, userId: userId)
         oauth.addChannelAgent(channelId: channelId, agentId: card.requesterAgentId)
         _ = cards.markActionCardExecuted(messageId: messageId, userId: userId)
-        postActionCardReply(
-            card: card,
-            confirmerUserId: userId,
-            success: true,
-            resultName: name,
-            failureReason: nil
-        )
         let metadata = OrderedJSON.object([
             OrderedJSONField("kind", "action-card"),
             OrderedJSONField("state", "executed"),
@@ -444,6 +419,15 @@ public struct ActionCardIntegrationRegisterService: Sendable {
                 OrderedJSONField("name", name),
             ])),
         ]).render()
+        // Upstream emits the carrier update before the deferred result reply.
+        dependencies.publishMessageUpdated(messageId, metadata)
+        postActionCardReply(
+            card: card,
+            confirmerUserId: userId,
+            success: true,
+            resultName: name,
+            failureReason: nil
+        )
         return ActionCardExecuteResponse(messageId: messageId, metadataJSON: metadata)
     }
 

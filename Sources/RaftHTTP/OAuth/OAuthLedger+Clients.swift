@@ -235,7 +235,8 @@ extension OAuthLedger {
                     appType: client.appType,
                     description: client.descriptionText,
                     homepageUrl: client.homepageUrl,
-                    publishStatus: client.publishStatus
+                    publishStatus: client.publishStatus,
+                    logoUrl: client.logoUrl
                 )
             }
         }

@@ -22,6 +22,9 @@ import VaporTesting
     accounts.addPostableChannel(serverId: serverId, channelId: parent, memberId: ownerId, name: "unfollow-parent")
     accounts.addPostableChannel(serverId: serverId, channelId: parent, memberId: followerId, name: "unfollow-parent")
     let parentMessageId = UUID().uuidString.lowercased()
+    accounts.addChannelMessageForTesting(
+        id: parentMessageId, channelId: parent, content: "unfollow parent", senderId: ownerId
+    )
     let thread = accounts.oauth.createThreadChannel(parentChannelId: parent, parentMessageId: parentMessageId)
     for id in [ownerId, followerId] {
         accounts.addPostableChannel(serverId: serverId, channelId: thread, memberId: id, kind: "thread", parentChannelId: parent, parentMessageId: parentMessageId, name: "thread")

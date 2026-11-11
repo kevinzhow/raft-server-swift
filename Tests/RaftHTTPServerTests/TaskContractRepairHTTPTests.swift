@@ -857,7 +857,7 @@ private func contractTaskWaitFrameOrClose(_ socket: SocketIOTestClient, prefix: 
                     let action = follow ? "follow" : "unfollow"
                     let response = try await client.send(.post, headers: owner, to: URI(string: "/api/channels/threads/\(action)")) { $0.body = .init(string: "{\"threadChannelId\":\"\(thread)\"}") }
                     #expect(response.status == .ok)
-                    #expect(try contractTaskObject(response)["following"] as? Bool == follow)
+                    #expect(try contractTaskObject(response)["ok"] as? Bool == true)
                 }
                 try await setFollow(true)
                 let initial = try await contractTaskResume(socket, lastSeq: cursor)

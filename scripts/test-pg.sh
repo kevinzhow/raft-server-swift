@@ -178,6 +178,8 @@ BASE_ENV=(
     "RAFT_REALTIME_ACTIVE_AUTH_PG_ACCEPTANCE=1"
     "RAFT_RESIDENT_DELIVERY_PG_ACCEPTANCE=1"
     "RAFT_RESTART_RECOVERY_PG_ACCEPTANCE=1"
+    "RAFT_MENTION_DELIVERY_PG_ACCEPTANCE=1"
+    "RAFT_OPENER_NOTICE_PG_ACCEPTANCE=1"
     "RAFT_AGENT_OFFLINE_QUEUE_PG_ACCEPTANCE=1"
     "RAFT_MACHINE_QUERY_PG_ACCEPTANCE=1"
     "RAFT_BUSINESS_PERSISTENCE_PG_ACCEPTANCE=1"
@@ -202,6 +204,8 @@ case_env() {
         "RAFT_REALTIME_ACTIVE_AUTH_TEST_DATABASE_URL=$url"
         "RAFT_RESIDENT_DELIVERY_TEST_DATABASE_URL=$url"
         "RAFT_RESTART_RECOVERY_TEST_DATABASE_URL=$url"
+        "RAFT_MENTION_DELIVERY_TEST_DATABASE_URL=$url"
+        "RAFT_OPENER_NOTICE_TEST_DATABASE_URL=$url"
         "RAFT_AGENT_OFFLINE_QUEUE_TEST_DATABASE_URL=$url"
         "RAFT_BUSINESS_PERSISTENCE_PG_ACCEPTANCE_DATABASE_URL=$url"
         "RAFT_EMAIL_SHUTDOWN_PG_ACCEPTANCE_DATABASE_URL=$url"
@@ -231,7 +235,7 @@ run_gated_startup_tests() {
             --filter "^${escaped}(/|$)" >"$log" 2>&1; then
             # A gated acceptance test must actually run: enabled(if:) skipping
             # because an environment variable is missing is a gate failure.
-            if [[ "$test_id" =~ (Postgres|Onboarding|EmailShutdown|BusinessPersistence|ProductionMachine) ]] \
+            if [[ "$test_id" =~ (Postgres|Onboarding|EmailShutdown|BusinessPersistence|ProductionMachine|Mention|OpenerLedger) ]] \
                 && ! grep -qE 'Test run with [1-9]' "$log"; then
                 failed=$((failed + 1))
                 printf 'FAIL %s (gated test did not run; log %s)\n' "$test_id" "$log"
