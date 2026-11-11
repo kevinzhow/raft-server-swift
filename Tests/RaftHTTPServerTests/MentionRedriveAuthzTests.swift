@@ -47,6 +47,7 @@ import VaporTesting
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 let target = agentId ?? agent
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(serverId)/machines/\(machine)/agents/\(target)/diagnostic/mention-delivery/\(message)/redrive") { request in
                     request.body = .init(string: body)
@@ -56,6 +57,7 @@ import VaporTesting
                 let message = message ?? messageId
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 let target = agentId ?? agent
                 return try await client.get("/api/servers/\(serverId)/machines/\(machine)/agents/\(target)/diagnostic/mention-delivery/\(message)", headers: headers)
             }

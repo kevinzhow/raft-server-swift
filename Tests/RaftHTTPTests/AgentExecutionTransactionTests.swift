@@ -38,6 +38,20 @@ import Testing
         return context
     }
 
+    /// A resident process is what carries agent:deliver. A message to an agent
+    /// without one is the start's wake input (upstream attempt-wake).
+    private func residentStart(_ domain: AgentExecutionDomain, context: AgentExecutionMachineContext,
+                               server: String, agent: String) async throws -> AgentExecutionAdmission {
+        let admission = try await commit { try domain.requestStart(.init(serverId: server, agentId: agent)) }
+        let ack = try JSONSerialization.data(withJSONObject: [
+            "type": "agent:start:ack", "agentId": agent, "launchId": admission.launchId,
+            "startDispatchId": try #require(admission.startDispatchId), "queueState": "running",
+            "queueDepth": 0, "queueAgeMs": 0, "processInstanceId": "resident-process",
+        ])
+        _ = try await commit { try domain.stageIngress(context: context, type: "agent:start:ack", payload: ack) }
+        return admission
+    }
+
     private func frame(_ type: String, agent: String, launch: String? = nil, seq: Int64 = 0, extra: [String: String] = [:]) throws -> Data {
         var body: [String: Any] = ["type": type, "agentId": agent, "daemonInstanceId": "daemon-1", "clientSeq": seq]
         if let launch { body["launchId"] = launch }
@@ -213,7 +227,8 @@ import Testing
         domain.channels.addPostableChannel(serverId: server, channelId: local, memberId: agent)
         domain.channels.addJointChannelProjection(localChannelId: local, canonicalChannelId: canonical, serverId: server)
         let message = domain.oauth.createMessageRecord(channelId: canonical, content: "Real message", senderId: "host-owner")
-        _ = try await prepare(domain, server: server, machine: machine)
+        let context = try await prepare(domain, server: server, machine: machine)
+        _ = try await residentStart(domain, context: context, server: server, agent: agent)
         let admitted = try #require(try await commit {
             try domain.requestDelivery(.init(serverId: server, agentId: agent, channelId: local, messageId: message.id))
         })
@@ -313,11 +328,9 @@ import Testing
         let message = domain.oauth.createMessageRecord(channelId: channel, content: "Stored", senderId: "owner")
         domain.messages.withState { $0.humanMessageRows.append(StoredHumanMessage(id: message.id, channelId: channel, senderId: "owner", content: "Stored", seq: 42)) }
         let context = try await prepare(domain, server: server, machine: machine)
+        _ = try await residentStart(domain, context: context, server: server, agent: agent)
         let admission = try #require(try await commit { try domain.requestDelivery(.init(serverId: server, agentId: agent, channelId: channel, messageId: message.id)) })
-        let launch = try #require(agents.state.execution.agents[agent]?.launches[admission.launchId])
-        let startAck = try JSONSerialization.data(withJSONObject: ["type": "agent:start:ack", "agentId": agent, "launchId": launch.launchId,
-                                                                 "startDispatchId": launch.startDispatchId, "queueState": "queued", "queueDepth": 0, "queueAgeMs": 0])
-        _ = try await commit { try domain.stageIngress(context: context, type: "agent:start:ack", payload: startAck) }
+        #expect(agents.state.execution.commands[admission.commandId.uuidString]?.kind == .delivery)
         let reference = AgentExecutionIntentReference(commandId: admission.commandId)
         let deliveryId = try #require(admission.deliveryId)
         let data = try JSONSerialization.data(withJSONObject: ["type": "agent:deliver:ack", "agentId": agent, "deliveryId": deliveryId, "seq": 42])

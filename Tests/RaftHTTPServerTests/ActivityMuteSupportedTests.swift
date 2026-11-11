@@ -46,7 +46,9 @@ import VaporTesting
             #expect(dm.status == .ok)
             let dmBody = try JSONSerialization.jsonObject(with: Data((dm.body.string ?? "").utf8)) as? [String: Any]
             let dmId = dmBody?["id"] as? String ?? ""
-            #expect(dmBody?["activityMuteSupported"] as? Bool == false)
+            // The create route returns the DM channel row; the capability flag
+            // is a list/detail/settings field and is withheld here.
+            #expect(dmBody?["activityMuteSupported"] == nil)
 
             func settings(_ channelId: String) async throws -> [String: Any] {
                 let response = try await client.send(.get, headers: headers, to: "/api/channels/\(channelId)/notification-settings")
@@ -79,7 +81,8 @@ import VaporTesting
             let list = try await client.send(.get, headers: headers, to: "/api/channels")
             let rows = try JSONSerialization.jsonObject(with: Data((list.body.string ?? "").utf8)) as? [[String: Any]] ?? []
             #expect(rows.first { $0["id"] as? String == channelId }?["activityMuteSupported"] as? Bool == true)
-            #expect(rows.first { $0["id"] as? String == dmId }?["activityMuteSupported"] as? Bool == false)
+            #expect(rows.first { $0["id"] as? String == dmId } == nil,
+                "upstream GET /api/channels excludes DMs; the DM directory is GET /api/channels/dm")
         }
     }
 }

@@ -353,18 +353,19 @@ public struct ChannelMessagesPageDTO: Sendable, Equatable, JSONBodyConvertible {
 
 /// One coarse delivery outcome.
 ///
-/// A missing terminal code (or `INSTRUMENT_FAILED`) publishes `unknown`; a
-/// terminal code publishes `lost` with its reason category. Member order is the
-/// legacy string.
+/// `delivered` is a daemon delivery ACK, `pending` is a staged or durably queued
+/// wake, `lost` carries the closed reason category of a terminal code, and
+/// `unknown` is the absence of any retained delivery fact (upstream's
+/// instrumentation failure). Member order is the legacy string.
 public struct MentionDeliveryRowDTO: Sendable, Equatable {
     public let targetId: String
     public let handle: String
-    public let terminalCode: String?
+    public let outcome: MentionDeliveryOutcome
 
-    public init(targetId: String, handle: String, terminalCode: String?) {
+    public init(targetId: String, handle: String, outcome: MentionDeliveryOutcome) {
         self.targetId = targetId
         self.handle = handle
-        self.terminalCode = terminalCode
+        self.outcome = outcome
     }
 
     var jsonBody: OrderedJSON {
@@ -372,21 +373,17 @@ public struct MentionDeliveryRowDTO: Sendable, Equatable {
             OrderedJSONField("targetId", targetId),
             OrderedJSONField("targetHandle", handle),
         ]
-        guard let terminalCode, terminalCode != "INSTRUMENT_FAILED" else {
+        switch outcome {
+        case .delivered:
+            fields.append(OrderedJSONField("outcome", "delivered"))
+        case .pending:
+            fields.append(OrderedJSONField("outcome", "pending"))
+        case .lost(let category):
+            fields.append(OrderedJSONField("outcome", "lost"))
+            fields.append(OrderedJSONField("reasonCategory", category))
+        case .unknown:
             fields.append(OrderedJSONField("outcome", "unknown"))
-            return .object(fields)
         }
-        let category: String
-        switch terminalCode {
-        case "QUOTA_LIMITED":
-            category = "quota"
-        case "DELIVERY_REJECTED":
-            category = "runtime_error"
-        default:
-            category = "unclassified"
-        }
-        fields.append(OrderedJSONField("outcome", "lost"))
-        fields.append(OrderedJSONField("reasonCategory", category))
         return .object(fields)
     }
 }

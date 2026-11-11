@@ -32,6 +32,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
     private let socketMembership: SocketMembershipService
     private let channelRoutes: ManagedMCPChannelRoutesService
     private let channelMessaging: ChannelMessagingService
+    private let runtimeControl: AgentMachineMigrationControlService
     private let realtime: RealtimeHub?
 
     public init(
@@ -50,6 +51,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         socketMembership: SocketMembershipService,
         channelRoutes: ManagedMCPChannelRoutesService,
         channelMessaging: ChannelMessagingService,
+        runtimeControl: AgentMachineMigrationControlService,
         realtime: RealtimeHub?
     ) {
         self.threads = threads
@@ -67,6 +69,7 @@ public struct ChannelsFeature: RouteCollection, Sendable {
         self.socketMembership = socketMembership
         self.channelRoutes = channelRoutes
         self.channelMessaging = channelMessaging
+        self.runtimeControl = runtimeControl
         self.realtime = realtime
     }
 
@@ -330,6 +333,15 @@ public struct ChannelsFeature: RouteCollection, Sendable {
             }
         }
 
+        channels.delete("saved", ":messageId") { request async throws -> Response in
+            try await respond {
+                try readState.unsaveMessage(
+                    authorization: request.headers[.authorization],
+                    messageId: request.parameters.get("messageId") ?? ""
+                )
+            }
+        }
+
         channels.get("saved") { request async throws -> Response in
             try await respond {
                 try readState.listSavedMessages(
@@ -340,6 +352,106 @@ public struct ChannelsFeature: RouteCollection, Sendable {
                     sort: desktopQuery(request.url.query, "sort"),
                     limit: Int(desktopQuery(request.url.query, "limit") ?? "") ?? 50,
                     offset: Int(desktopQuery(request.url.query, "offset") ?? "") ?? 0
+                )
+            }
+        }
+
+        channels.get("joint-invites") { request async throws -> Response in
+            try await respond {
+                try lifecycle.listJointInvites(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
+        }
+
+        channels.post(":channelId", "joint-invite", "resend") { request async throws -> Response in
+            try await respond {
+                try lifecycle.resendJointInvites(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
+        }
+
+        channels.post(":channelId", "joint-invites") { request async throws -> Response in
+            let body = await jsonRequestBody(JointChannelInviteRequest.self, request)
+            return try await respond {
+                try channelRoutes.inviteServerToJointChannel(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? "",
+                    body: body
+                )
+            }
+        }
+
+        channels.post(":channelId", "disconnect") { request async throws -> Response in
+            let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+            let channelId = request.parameters.get("channelId") ?? ""
+            let response = try await respond {
+                try lifecycle.disconnectJointChannel(
+                    authorization: request.headers[.authorization],
+                    serverId: serverId,
+                    channelId: channelId
+                )
+            }
+            if response.status == .ok {
+                let payload = OrderedJSON.object([
+                    OrderedJSONField("channelId", channelId),
+                ]).render()
+                realtime?.emit(
+                    room: "server:\(serverId)",
+                    event: "channel:updated",
+                    payloadJSON: payload
+                )
+            }
+            return response
+        }
+
+        channels.post(":channelId", "stop-all-agents") { request async throws -> Response in
+            try await respond {
+                try await runtimeControl.stopAllChannelAgents(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    channelId: request.parameters.get("channelId") ?? ""
+                )
+            }
+        }
+
+        channels.get("conversion-jobs", ":jobId") { request async throws -> Response in
+            try await respond {
+                try readState.conversionDisabled(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
+        }
+
+        channels.post("conversion-jobs", ":jobId", "retry") { request async throws -> Response in
+            try await respond {
+                try readState.conversionDisabled(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
+        }
+
+        channels.post("conversion-jobs", ":jobId", "cancel") { request async throws -> Response in
+            try await respond {
+                try readState.conversionDisabled(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
+        }
+
+        channels.post(":channelId", "convert-to-joint") { request async throws -> Response in
+            try await respond {
+                try readState.conversionDisabled(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
                 )
             }
         }

@@ -49,6 +49,10 @@ public enum ServerProfileAndOrderError: DomainError, Equatable {
     case outcomeBundleTooLarge
     case invalidScopeAttestationRequest
     case unknownScope
+    case noAvatarProvided
+    case avatarTooLarge(maxBytes: Int)
+    case avatarBadFormat
+    case avatarUploadFailed
 
     public var status: UInt {
         switch self {
@@ -71,8 +75,10 @@ public enum ServerProfileAndOrderError: DomainError, Equatable {
              .bundleContentEncodingTooLong, .feedbackReportIdNotUUID, .agentIdNotUUID,
              .deploymentEnvironmentNotAllowed, .deploymentEnvironmentInconsistent,
              .evidenceBundleTooLarge, .outcomeBundleTooLarge, .invalidScopeAttestationRequest,
-             .unknownScope:
+             .unknownScope, .noAvatarProvided, .avatarTooLarge, .avatarBadFormat:
             400
+        case .avatarUploadFailed:
+            500
         }
     }
 
@@ -154,6 +160,14 @@ public enum ServerProfileAndOrderError: DomainError, Equatable {
             "Invalid scope attestation request"
         case .unknownScope:
             "Unknown scope"
+        case .noAvatarProvided:
+            "No avatar file provided"
+        case .avatarTooLarge:
+            "Avatar image must be 5 MB or smaller"
+        case .avatarBadFormat:
+            "Only image files are allowed (JPEG, PNG, GIF, WebP)"
+        case .avatarUploadFailed:
+            "Failed to upload avatar"
         }
     }
 
@@ -177,7 +191,8 @@ public enum ServerProfileAndOrderError: DomainError, Equatable {
              .resourceDerived, .unsupportedScope, .bundleContentTypeTooLong,
              .bundleContentEncodingTooLong, .feedbackReportIdNotUUID, .agentIdNotUUID,
              .deploymentEnvironmentNotAllowed, .deploymentEnvironmentInconsistent,
-             .invalidScopeAttestationRequest, .unknownScope:
+             .invalidScopeAttestationRequest, .unknownScope, .noAvatarProvided,
+             .avatarTooLarge, .avatarBadFormat, .avatarUploadFailed:
             nil
         }
     }
@@ -201,8 +216,20 @@ public enum ServerProfileAndOrderError: DomainError, Equatable {
              .resourceDerived, .bundleContentTypeTooLong, .bundleContentEncodingTooLong,
              .feedbackReportIdNotUUID, .agentIdNotUUID, .deploymentEnvironmentInconsistent,
              .agentNotOnMachine, .evidenceBundleTooLarge, .outcomeBundleTooLarge,
-             .invalidScopeAttestationRequest, .unknownScope:
+             .invalidScopeAttestationRequest, .unknownScope, .noAvatarProvided,
+             .avatarTooLarge, .avatarBadFormat, .avatarUploadFailed:
             nil
+        case .avatarTooLarge(let maxBytes):
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_TOO_LARGE"),
+                OrderedJSONField("maxBytes", maxBytes),
+            ])
+        case .avatarBadFormat:
+            .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "PROFILE_AVATAR_BAD_FORMAT"),
+            ])
         }
     }
 

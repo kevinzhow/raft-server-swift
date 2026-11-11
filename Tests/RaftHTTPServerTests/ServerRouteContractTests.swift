@@ -124,6 +124,7 @@ import VaporTesting
             func request(_ method: HTTPRequest.Method, _ bearer: String, body: String? = nil) async throws -> ClientResponse {
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 if body != nil { headers[.contentType] = "application/json" }
                 return try await client.send(method, headers: headers, to: "/api/servers/\(serverId)/product-analytics-settings") { request in
                     if let body { request.body = .init(string: body) }

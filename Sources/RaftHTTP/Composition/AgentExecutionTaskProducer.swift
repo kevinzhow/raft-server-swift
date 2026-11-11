@@ -226,11 +226,19 @@ struct AgentExecutionTaskProducer: Sendable {
         let notice = append(StoredHumanMessage(id: UUID().uuidString.lowercased(), channelId: threadId,
             senderId: "system", content: content, randomId: nil, messageType: "system", senderType: "user",
             systemSubtype: "task.lifecycle_thread", causalActorType: "user", causalActorId: actorId))
+        // Upstream `broadcastSystemMessage` through the same persisted-frontend
+        // publisher the other system producers use: it joins the thread's human
+        // followers before its `message:new`, chooses the public-parent room or
+        // the private follower user rooms, and publishes the canonical system
+        // row (no storage-only causal columns).
         let relay = RealtimeRelayService(messages: messages)
-        try AgentExecutionPublication.publish(room: "channel:\(threadId)", event: "message:new", identity: notice.id,
-            payloadJSON: AgentExecutionPublication.systemMessagePayload(notice, channelType: "thread",
-                parentMessageId: task.messageId, parentChannelId: surface.channelId, parentChannelType: surface.type),
-            emit: { relay.emit($0, $1, $2) })
+        let realtime = MessageRealtimeService(
+            messages: messages, channels: channels, profiles: profiles, oauth: oauth
+        )
+        for frame in realtime.systemFrames(for: notice) {
+            try AgentExecutionPublication.publish(room: frame.room, event: frame.event, identity: notice.id,
+                payloadJSON: frame.payload, emit: { relay.emit($0, $1, $2) })
+        }
         if task.assigneeType == "agent", let agentId = task.assigneeId,
            oauth.agentRuntimeInfo(id: agentId)?.runtime == "codex" {
             try deliver(notice, surfaces: [TaskExecutionSurface(channelId: threadId, serverId: surface.serverId, name: "thread", type: "thread")], onlyAgentId: agentId)

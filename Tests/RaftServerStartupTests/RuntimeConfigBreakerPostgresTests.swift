@@ -153,22 +153,20 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         let retryLaunch = try retry.requireString("launchId")
         #expect(retryLaunch != firstLaunch)
         #expect(retry.bool("humanStart") == false)
+        // The message that caused the cold start rides it as its first input.
+        #expect(retry.object("wakeMessage")?.string("message_id") == retryMessage)
         try await peer.acknowledgeControlledStart(retry)
-        let delivered = try await peer.socket.nextObject(since: retryBoundary) {
-            $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == retryMessage
-        }
-        #expect(delivered.string("agentId") == agent)
-        let retryAudit = try await f.audit()
-        let retryDelivery = try #require(retryAudit.execution.commands.values.first { $0.deliveryId == delivered.string("deliveryId") })
-        #expect(retryDelivery.launchId == retryLaunch)
-        try await peer.acknowledgeControlledDelivery(delivered)
         let retryProcess = "controlled-retry-\(UUID().uuidString.lowercased())"
         try await processFrame("agent:process_spawned", id: agent, launch: retryLaunch, process: retryProcess, sequence: 3)
+        let retryAudit = try await f.audit()
+        let retryStart = try #require(retryAudit.execution.commands.values.first {
+            $0.kind == .start && $0.agentId == agent && $0.launchId == retryLaunch
+        })
+        #expect(retryStart.wakeMessage?.messageId == retryMessage)
         try await outcome(agent, launch: retryLaunch, sequence: 4)
         try await processFrame("agent:process_exited", id: agent, launch: retryLaunch, process: retryProcess, sequence: 5)
         let blockedAudit = try await f.audit()
-        #expect(blockedAudit.execution.commands[retryDelivery.commandId.uuidString]?.status == .accepted)
-        #expect(blockedAudit.execution.dispatches?[retryDelivery.commandId.uuidString]?.phase == .accepted)
+        #expect(blockedAudit.execution.commands[retryStart.commandId.uuidString]?.status == .accepted)
         let blocked = try #require(blockedAudit.execution.agents[agent])
         #expect(blocked.failureCount == 2)
         #expect(blocked.sameFingerprintCount == 2)
@@ -193,7 +191,7 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         let refusedAudit = try await f.audit()
         #expect(try bytes(refusedAudit.execution.agents[agent]) == blockedBytes)
         #expect(refusedAudit.execution.commands.count == blockedAudit.execution.commands.count)
-        _ = try await message(room, "A no-op and refused patch must leave the automatic breaker closed to wakes")
+        let blockedWakeMessage = try await message(room, "A no-op and refused patch must leave the automatic breaker closed to wakes")
         let stillBlocked = try await f.audit()
         #expect(stillBlocked.execution.commands.count == blockedAudit.execution.commands.count)
         try await noNewCommands(agent, since: refusedBoundary)
@@ -250,19 +248,24 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         let resumedMessage = try await message(room, "A committed real canonical change permits the next ordinary wake")
         let resumed = try await peer.socket.nextObject(since: resumedBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == agent }
         #expect(resumed.string("launchId") != retryLaunch)
-        try await peer.acknowledgeControlledStart(resumed)
-        let resumedDelivery = try await peer.socket.nextObject(since: resumedBoundary) {
-            $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == resumedMessage
-        }
-        #expect(resumedDelivery.string("agentId") == agent)
         #expect(resumed.bool("humanStart") == false)
-        let resumedAudit = try await f.audit()
-        let resumedCommand = try #require(resumedAudit.execution.commands.values.first { $0.deliveryId == resumedDelivery.string("deliveryId") })
-        #expect(resumedCommand.launchId == resumed.string("launchId"))
-        try await peer.acknowledgeControlledDelivery(resumedDelivery)
+        // The message that caused this start is its wake input; the retained
+        // breaker-paused wake is the remaining separate delivery.
+        #expect(resumed.object("wakeMessage")?.string("message_id") == resumedMessage)
+        try await peer.acknowledgeControlledStart(resumed)
         let resumedLaunch = try resumed.requireString("launchId")
         let resumedProcess = "controlled-resumed-\(UUID().uuidString.lowercased())"
         try await processFrame("agent:process_spawned", id: agent, launch: resumedLaunch, process: resumedProcess, sequence: 6)
+        let resumedDelivery = try await peer.socket.nextObject(since: resumedBoundary) {
+            $0.string("type") == "agent:deliver" && $0.string("agentId") == agent
+                && $0.object("message")?.string("message_id") == blockedWakeMessage
+        }
+        try await peer.acknowledgeControlledDelivery(resumedDelivery)
+        let resumedAudit = try await f.audit()
+        let resumedCommand = try #require(resumedAudit.execution.commands.values.first {
+            $0.kind == .start && $0.agentId == agent && $0.launchId == resumedLaunch
+        })
+        #expect(resumedCommand.wakeMessage?.messageId == resumedMessage)
         let completedBoundary = peer.socket.count
         try await peer.socket.send(.init(["type": .string("agent:runtime:outcome"), "v": .integer(1),
             "agentId": .string(agent), "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(7),
@@ -274,6 +277,7 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         print("configlift PG: unexited-exit-auto")
         let busyStart = try await start(busy)
         let busyLaunch = try busyStart.requireString("launchId")
+        print("configlift PG: unexited-start-acked")
         let process = "controlled-unexited-\(UUID().uuidString.lowercased())"
         let spawnBoundary = peer.socket.count
         try await peer.socket.send(.init(["type": .string("agent:process_spawned"), "agentId": .string(busy),
@@ -281,6 +285,7 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
             "processInstanceId": .string(process)]))
         _ = try await peer.socket.nextObject(since: spawnBoundary) { $0.string("type") == "agent:outcome:ack" && $0.string("agentId") == busy && $0.integer("clientSeq") == 0 }
         try await outcome(busy, launch: busyLaunch, sequence: 1)
+        print("configlift PG: unexited-outcome-acked")
         let beforeBusy = try #require(try await f.audit().execution.agents[busy])
         #expect(beforeBusy.processes[process]?.exited == false)
         let busyBoundary = peer.socket.count
@@ -291,26 +296,51 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         #expect(busyLift.generation == beforeBusy.generation + 1 && busyLift.currentLaunchId == nil)
         #expect(busyLift.processes[process]?.exited == false)
         #expect(busyLift.takeoverEpoch == beforeBusy.takeoverEpoch && busyLift.needsManual == beforeBusy.needsManual)
-        _ = try await message(busyRoom, "Unexited survives config lift and prohibits a second automatic spawn")
+        let refusedMessage = try await message(busyRoom, "Unexited survives config lift and prohibits a second automatic spawn")
         let unexitedAudit = try await f.audit()
         #expect(unexitedAudit.execution.commands.count == busyLiftAudit.execution.commands.count)
         try await noNewCommands(busy, since: busyBoundary)
+        print("configlift PG: unexited-no-new-commands")
         let exitBoundary = peer.socket.count
         try await peer.socket.send(.init(["type": .string("agent:process_exited"), "agentId": .string(busy),
             "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(2), "launchId": .string(busyLaunch),
             "processInstanceId": .string(process), "spawnLaunchId": .string(busyLaunch)]))
         _ = try await peer.socket.nextObject(since: exitBoundary) { $0.string("type") == "agent:outcome:ack" && $0.string("agentId") == busy && $0.integer("clientSeq") == 2 }
         #expect(try await f.audit().execution.agents[busy]?.processes[process]?.exited == true)
+        print("configlift PG: unexited-exit-acked")
         let exitedBoundary = peer.socket.count
         let afterExitMessage = try await message(busyRoom, "Only the actual exit permits the next automatic launch")
+        print("configlift PG: unexited-next-message-sent")
         let afterExit = try await peer.socket.nextObject(since: exitedBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == busy }
+        print("configlift PG: unexited-next-start-acked")
         #expect(afterExit.string("launchId") != busyLaunch)
         #expect(afterExit.bool("humanStart") == false)
+        // The exit released the previously refused message; that pending wake
+        // becomes this start's first input and the just-sent message is the
+        // remaining separate delivery.
+        #expect(afterExit.object("wakeMessage")?.string("message_id") == refusedMessage)
         try await peer.acknowledgeControlledStart(afterExit)
-        let afterExitDelivery = try await peer.socket.nextObject(since: exitedBoundary) {
-            $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == afterExitMessage
+        // The real daemon reports its spawned process after the start ack. That
+        // settling frame is also a release point for a wake refusal that was
+        // queued while the previous launch still held the agent (upstream's
+        // durable inbox release), so simulate it before expecting the delivery.
+        let afterExitProcess = "controlled-after-exit-\(UUID().uuidString.lowercased())"
+        let afterExitSpawn = peer.socket.count
+        try await peer.socket.send(.init(["type": .string("agent:process_spawned"), "agentId": .string(busy),
+            "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(3),
+            "launchId": .string(afterExit.requireString("launchId")), "processInstanceId": .string(afterExitProcess)]))
+        _ = try await peer.socket.nextObject(since: afterExitSpawn) {
+            $0.string("type") == "agent:outcome:ack" && $0.string("agentId") == busy && $0.integer("clientSeq") == 3
         }
-        try await peer.acknowledgeControlledDelivery(afterExitDelivery)
+        // The refused send is a durable pending wake. The post-exit start
+        // carries the new wake; the process settling releases the refused one
+        // exactly once as the remaining separate delivery.
+        let firstDelivery = try await peer.socket.nextObject(since: exitedBoundary) {
+            $0.string("type") == "agent:deliver" && $0.string("agentId") == busy
+        }
+        let firstMessage = try #require(firstDelivery.object("message")?.string("message_id"))
+        #expect(firstMessage == afterExitMessage)
+        try await peer.acknowledgeControlledDelivery(firstDelivery)
 
         // Independent real unexited branch: Node explicitly allows the
         // authenticated human_start takeover that automatic wakes cannot claim.
@@ -353,11 +383,8 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         let takenNext = try await peer.socket.nextObject(since: takenNextBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == human }
         #expect(takenNext.bool("humanStart") == false)
         #expect(takenNext.string("launchId") != takeoverLaunch)
+        #expect(takenNext.object("wakeMessage")?.string("message_id") == takenNextMessage)
         try await peer.acknowledgeControlledStart(takenNext)
-        let takenNextDelivery = try await peer.socket.nextObject(since: takenNextBoundary) {
-            $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == takenNextMessage
-        }
-        try await peer.acknowledgeControlledDelivery(takenNextDelivery)
         let takenNextState = try #require(try await f.audit().execution.agents[human])
         #expect(takenNextState.takeoverEpoch == taken.takeoverEpoch)
         #expect(takenNextState.processes[humanProcess]?.exited == false)
@@ -379,7 +406,7 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
             #expect(pendingChanged.status == 200)
             let afterPendingLift = try await f.audit()
             #expect(afterPendingLift.execution.agents[pending]?.generation == pendingState.generation + 1)
-            _ = try await message(pendingRoom, "Pending start evidence survives a config lift without a process report")
+            let retainedMessage = try await message(pendingRoom, "Pending start evidence survives a config lift without a process report")
             #expect(try await f.audit().execution.commands.count == afterPendingLift.execution.commands.count)
             try await noNewCommands(pending, since: boundary)
             let negativeBoundary = peer.socket.count
@@ -392,11 +419,20 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
             let releasedMessage = try await message(pendingRoom, "Actual not-spawned evidence releases the pending protection")
             let released = try await peer.socket.nextObject(since: releasedBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == pending }
             #expect(released.string("launchId") != pendingLaunch && released.bool("humanStart") == false)
+            // The pre-settle wake was retained, not dropped. It becomes the
+            // start's first input; the post-settle message is the separate
+            // delivery released when the process settles.
+            #expect(released.object("wakeMessage")?.string("message_id") == retainedMessage)
             try await peer.acknowledgeControlledStart(released)
-            let releaseDelivery = try await peer.socket.nextObject(since: releasedBoundary) {
-                $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == releasedMessage
+            let releasedLaunch = try released.requireString("launchId")
+            try await processFrame("agent:process_spawned", id: pending, launch: releasedLaunch,
+                                   process: "controlled-released-\(UUID().uuidString.lowercased())", sequence: 1)
+            let releasedDelivery = try await peer.socket.nextObject(since: releasedBoundary) {
+                $0.string("type") == "agent:deliver" && $0.string("agentId") == pending
             }
-            try await peer.acknowledgeControlledDelivery(releaseDelivery)
+            let releasedDeliveryMessage = try #require(releasedDelivery.object("message")?.string("message_id"))
+            #expect(releasedDeliveryMessage == releasedMessage)
+            try await peer.acknowledgeControlledDelivery(releasedDelivery)
         }
 
         // Lift detaches the old launch from breaker accounting, but authentic
@@ -437,16 +473,14 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
             let nextMessage = try await message(lateRoom, "A real old-generation outcome and exit permit the next automatic launch")
             let next = try await peer.socket.nextObject(since: nextBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == late }
             #expect(next.string("launchId") != oldLaunch && next.bool("humanStart") == false)
+            #expect(next.object("wakeMessage")?.string("message_id") == nextMessage)
             try await peer.acknowledgeControlledStart(next)
-            let nextDelivery = try await peer.socket.nextObject(since: nextBoundary) {
-                $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == nextMessage
-            }
-            try await peer.acknowledgeControlledDelivery(nextDelivery)
         }
 
-        // A confirmed healthy current process is exempt after clean E2. The
-        // next start is allowed, but the daemon must actually report rebind.
-        print("configlift PG: healthy-rebind-attempted")
+        // A clean, completed turn leaves the daemon's confirmed process
+        // resident. Upstream delivers the next wake to that same launch; it
+        // does not cold-start or rebind, because the runtime never stopped.
+        print("configlift PG: healthy-resident-delivery")
         let healthyStart = try await start(healthy)
         let healthyLaunch = try healthyStart.requireString("launchId")
         let healthyProcess = "controlled-healthy-\(UUID().uuidString.lowercased())"
@@ -456,23 +490,23 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         #expect(clean.launches[healthyLaunch]?.completed == true && clean.processes[healthyProcess]?.exited == false)
         #expect(clean.needsManual == nil && clean.blockedUntil == nil)
         let healthyBoundary = peer.socket.count
-        let healthyMessage = try await message(healthyRoom, "Clean E2 permits the next normal wake while its confirmed process remains live")
-        let healthyNext = try await peer.socket.nextObject(since: healthyBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == healthy }
-        let healthyNextLaunch = try healthyNext.requireString("launchId")
-        #expect(healthyNextLaunch != healthyLaunch && healthyNext.bool("humanStart") == false)
-        let reboundBoundary = peer.socket.count
-        try await peer.socket.send(.init(["type": .string("agent:start:outcome"), "agentId": .string(healthy),
-            "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(2), "launchId": .string(healthyNextLaunch),
-            "result": .object(["kind": .string("rebound"), "processInstanceId": .string(healthyProcess)])]))
-        _ = try await peer.socket.nextObject(since: reboundBoundary) { $0.string("type") == "agent:outcome:ack" && $0.string("agentId") == healthy && $0.integer("clientSeq") == 2 }
+        let healthyMessage = try await message(healthyRoom, "A clean completed turn keeps the resident process and receives the next wake directly")
         let healthyDelivery = try await peer.socket.nextObject(since: healthyBoundary) {
             $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == healthyMessage
         }
+        let healthyWire = try await peer.socket.wireFence(since: healthyBoundary)
+        #expect(!healthyWire.compactMap { try? ProtocolPGObject(text: $0) }.contains {
+            $0.string("agentId") == healthy && $0.string("type") == "agent:start"
+        }, "the resident process is delivered to, never cold-started")
+        let healthyAudit = try await f.audit()
+        let healthyCommand = try #require(healthyAudit.execution.commands.values.first {
+            $0.deliveryId == healthyDelivery.string("deliveryId")
+        })
+        #expect(healthyCommand.launchId == healthyLaunch)
         try await peer.acknowledgeControlledDelivery(healthyDelivery)
-        let rebound = try #require(try await f.audit().execution.agents[healthy])
-        #expect(rebound.launches[healthyNextLaunch]?.processInstanceId == healthyProcess)
-        #expect(rebound.processes[healthyProcess]?.exited == false)
-        #expect(rebound.processes[healthyProcess]?.launchIds.contains(healthyNextLaunch) == true)
+        let resident = try #require(try await f.audit().execution.agents[healthy])
+        #expect(resident.currentLaunchId == healthyLaunch)
+        #expect(resident.processes[healthyProcess]?.exited == false)
         let attemptedBoundary = peer.socket.count
         let attemptedMessage = try await message(healthyRoom, "An actually attempted delivery cannot be rewritten as never sent")
         let attemptedFrame = try await peer.socket.nextObject(since: attemptedBoundary) {
@@ -481,7 +515,7 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         let attemptedAudit = try await f.audit()
         let attemptedCommand = try #require(attemptedAudit.execution.commands.values.first { $0.deliveryId == attemptedFrame.string("deliveryId") })
         #expect(attemptedAudit.execution.dispatches?[attemptedCommand.commandId.uuidString] != nil)
-        try await outcome(healthy, launch: healthyNextLaunch, sequence: 3)
+        try await outcome(healthy, launch: healthyLaunch, sequence: 2)
         let terminalAttempt = try await f.audit()
         #expect(terminalAttempt.execution.commands[attemptedCommand.commandId.uuidString]?.status != .superseded)
         #expect(terminalAttempt.execution.dispatches?[attemptedCommand.commandId.uuidString] != nil)
@@ -515,33 +549,36 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         #expect(afterHistorical.generation == beforeHistorical.generation && afterHistorical.currentLaunchId == exitFirstNextLaunch)
         #expect(afterHistorical.failureCount == beforeHistorical.failureCount && afterHistorical.needsManual == beforeHistorical.needsManual)
         #expect(afterHistorical.sessionId == beforeHistorical.sessionId)
-        let exitFirstDelivery = try await peer.socket.nextObject(since: exitFirstBoundary) {
-            $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == exitFirstMessage
-        }
-        try await peer.acknowledgeControlledDelivery(exitFirstDelivery)
+        #expect(exitFirstNext.object("wakeMessage")?.string("message_id") == exitFirstMessage)
 
-        // Real queue boundary: withholding admission ACK makes delivery wait,
-        // without pausing or replacing a worker. E1 cancels only no-attempt work.
+        // Real queue boundary: a message accepted while the launch has no
+        // process is a durable pending wake, not an undispatchable delivery
+        // command. E1 cancels only no-attempt work; the pending message stays
+        // readable and is released after a real process exists.
         print("configlift PG: never-attempted-queue")
         let queuedStart = try await start(queued, acknowledge: false)
         let queuedLaunch = try queuedStart.requireString("launchId")
         let queuedMessage = try await message(queuedRoom, "Retained original message must not reach a failed launch")
         let queuedBefore = try await f.audit()
-        let queuedCommand = try #require(queuedBefore.execution.commands.values.first { $0.kind == .delivery && $0.messageId == queuedMessage })
-        #expect(queuedCommand.status == .pending)
-        #expect(queuedBefore.execution.dispatches?[queuedCommand.commandId.uuidString] == nil)
-        #expect(try await f.outbox(queuedCommand.commandId) != nil)
+        let queuedPending = try #require(queuedBefore.execution.pendingHumanDeliveries?.values.first {
+            $0.messageId == queuedMessage
+        })
+        #expect(queuedPending.releasedCommandId == nil)
+        #expect(!queuedBefore.execution.commands.values.contains {
+            $0.kind == .delivery && $0.messageId == queuedMessage
+        })
         let nonExecutionKeys = keys.filter { $0.domain != .agentsRuntime }
         let queuedFactsBefore = try await f.observer.readSnapshot(nonExecutionKeys)
         let cancelledBoundary = peer.socket.count
         try await outcome(queued, launch: queuedLaunch, sequence: 0)
         try await peer.acknowledgeControlledStart(queuedStart)
-        try await protocolPGEventually { try await f.outbox(queuedCommand.commandId)?.lastFailure == .rejected }
-        let rejectedDelivery = try #require(try await f.outbox(queuedCommand.commandId))
-        #expect(rejectedDelivery.deliveredAt == nil && rejectedDelivery.lastFailure == .rejected)
         let cancelled = try await f.audit()
-        #expect(cancelled.execution.commands[queuedCommand.commandId.uuidString]?.status == .superseded)
-        #expect(cancelled.execution.dispatches?[queuedCommand.commandId.uuidString] == nil)
+        #expect(cancelled.execution.pendingHumanDeliveries?.values.contains {
+            $0.messageId == queuedMessage
+        } == true)
+        #expect(!cancelled.execution.commands.values.contains {
+            $0.kind == .delivery && $0.messageId == queuedMessage
+        })
         #expect(cancelled.messages.contains { $0.string("id") == queuedMessage })
         let queuedFactsAfter = try await f.observer.readSnapshot(nonExecutionKeys)
         let nonExecutionFactsEqual = Dictionary(uniqueKeysWithValues: queuedFactsBefore.map { ($0.key, $0.json) }) == Dictionary(uniqueKeysWithValues: queuedFactsAfter.map { ($0.key, $0.json) })
@@ -556,13 +593,23 @@ func postgresRuntimeConfigChangesLiftOnlyCommittedTerminalBlocks() async throws 
         #expect(queuedChanged.status == 200)
         let queuedFreshBoundary = peer.socket.count
         let queuedFreshMessage = try await message(queuedRoom, "Future fresh wake preserves the retained original history")
-        let queuedFresh = try await peer.socket.nextObject(since: queuedFreshBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == queued }
+        // A pending start may already be in flight for the retained original
+        // message; select the fresh start that carries the new message.
+        let queuedFresh = try await peer.socket.nextObject(since: queuedFreshBoundary) {
+            $0.string("type") == "agent:start" && $0.string("agentId") == queued
+                && $0.object("wakeMessage")?.string("message_id") == queuedFreshMessage
+        }
         #expect(queuedFresh.string("launchId") != queuedLaunch && queuedFresh.bool("humanStart") == false)
         try await peer.acknowledgeControlledStart(queuedFresh)
-        let queuedFreshDelivery = try await peer.socket.nextObject(since: queuedFreshBoundary) {
-            $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == queuedFreshMessage
-        }
-        try await peer.acknowledgeControlledDelivery(queuedFreshDelivery)
+        let queuedFreshLaunch = try queuedFresh.requireString("launchId")
+        try await processFrame("agent:process_spawned", id: queued, launch: queuedFreshLaunch,
+                               process: "controlled-queued-\(UUID().uuidString.lowercased())", sequence: 2)
+        let queuedAfter = try await f.audit()
+        #expect(queuedAfter.messages.contains { $0.string("id") == queuedMessage })
+        #expect(queuedAfter.messages.contains { $0.string("id") == queuedFreshMessage })
+        #expect(queuedAfter.execution.pendingHumanDeliveries?.values.contains {
+            $0.messageId == queuedMessage
+        } == true)
         let history = try await f.http("GET", "/api/messages/channel/\(queuedRoom)", token: owner)
         #expect(history.status == 200)
         #expect(String(decoding: history.body, as: UTF8.self).contains(queuedMessage))

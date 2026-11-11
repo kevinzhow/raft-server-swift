@@ -25,6 +25,7 @@ public struct ActionCardExecuteService: Sendable {
     private let feedbackLocators: FeedbackLocatorService
     private let cards: ManagedMCPAndCardsStore
     private let prepare: ActionCardPrepareService
+    private let freshness: AgentSendFreshnessGate
     private let dependencies: AgentSendDependencies
     private let now: @Sendable () -> Date
     private let makeMessageId: @Sendable () -> String
@@ -88,6 +89,12 @@ public struct ActionCardExecuteService: Sendable {
         self.feedbackLocators = feedbackLocators
         self.cards = cards
         self.prepare = prepare
+        self.freshness = AgentSendFreshnessGate(
+            messages: messages,
+            channels: channels,
+            prepare: prepare,
+            oauth: oauth
+        )
         self.dependencies = dependencies
         self.now = now
         self.makeMessageId = makeMessageId
@@ -102,6 +109,9 @@ public struct ActionCardExecuteService: Sendable {
         legacyAgentId: String?,
         channelRef: String?
     ) throws -> AgentTasksListResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
         let identity = try taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
         try requireGrant(agentId: identity.agentId, scope: "task:read")
         guard let channelRef,
@@ -170,6 +180,61 @@ public struct ActionCardExecuteService: Sendable {
             now: now()
         )
         return .claimed(AgentTaskClaimResponse(results: results.map(Self.claimResult)))
+    }
+
+    // MARK: - POST /internal/agent-api/tasks/unclaim
+
+    /// The unclaim write. The route's request validator guarantees `channel` and
+    /// a positive `task_number`; the service keeps the credential, the grant, the
+    /// channel policy and the task row checks in the pinned order:
+    /// capability/grant 401/403 → channel 404 → not-joinable 403 → archived 409
+    /// → task 404 → store decision 409.
+    public func agentTaskUnclaim(
+        authorization: String?,
+        legacyAgentId: String?,
+        channel: String,
+        taskNumber: Int
+    ) throws -> AgentTaskUnclaimResponse {
+        if let denial = capabilityDenial(authorization, required: "tasks") {
+            throw denial
+        }
+        guard let writer = taskWriter(authorization: authorization, legacyAgentId: legacyAgentId) else {
+            throw FeedbackLocatorError.invalidAccessToken
+        }
+        try requireGrant(agentId: writer.agentId, scope: "task:write")
+        guard let channelId = taskChannel(
+            serverId: writer.serverId, agentId: writer.agentId, reference: channel
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard canAgentModifyTasks(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
+            throw AgentTaskApiError.agentCannotModifyTasks
+        }
+        guard !isChannelArchived(channelId) else { throw AgentTaskApiError.channelArchived }
+        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+            throw AgentTaskApiError.taskNotFound
+        }
+        switch tasks.unclaimForAgent(taskId: task.id, agentId: writer.agentId, now: now()) {
+        case .notFound: throw AgentTaskApiError.taskNotFound
+        case .done: throw AgentTaskApiError.taskDone
+        case .unassigned: throw AgentTaskApiError.taskNotAssigned
+        case .changedConcurrently: throw AgentTaskApiError.taskChangedConcurrently
+        case .unclaimed: return AgentTaskUnclaimResponse()
+        }
+    }
+
+    /// Upstream `channelService.canAgentPostToChannel`: the enabled `#all`
+    /// surface is open to every agent in the server; every other channel needs
+    /// an actual agent membership.
+    private func canAgentModifyTasks(serverId: String, agentId: String, channelId: String) -> Bool {
+        guard let channel = channels.postableChannel(id: channelId), channel.serverId == serverId else { return false }
+        if channel.kind == "channel", oauth.allChannelId(serverId: serverId) == channelId { return true }
+        return channel.memberIds.contains(agentId)
+            || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+    }
+
+    private func isChannelArchived(_ channelId: String) -> Bool {
+        channels.postableChannel(id: channelId)?.archived == true || oauth.channelArchivedAt(id: channelId) != nil
     }
 
     // MARK: - POST /internal/agent-api/tasks/update-status
@@ -429,139 +494,35 @@ public struct ActionCardExecuteService: Sendable {
             let holdForCards = !cardHoldReasons.isEmpty && !isContinueAnyway
 
             if freshnessEnabled, (requestedSendFreshness || forcedFreshness), !isContinueAnyway {
-                let snapshot = messages.sendFreshnessSnapshot(
+                switch freshness.evaluate(AgentSendFreshnessRequest(
+                    agentId: identity.agentId,
+                    serverId: identity.serverId,
                     channelId: channelId,
-                    agentId: identity.agentId
-                )
-                let conversation = channels.postableChannels[channelId]
-                let storageChannelId = channels.jointProjections.first {
-                    $0.localChannelId == channelId
-                }?.canonicalChannelId ?? channelId
-                let rows = snapshot.rows.compactMap { message -> (seq: Int, message: StoredHumanMessage)? in
-                    guard message.channelId == storageChannelId else { return nil }
-                    return (message.seq, message)
-                }
-                let latestFromOthers = rows.last {
-                    $0.message.senderType != "agent" || $0.message.senderId != identity.agentId
-                }?.seq ?? 0
-                let threadParentSeq = conversation?.kind == "thread"
-                    ? (conversation?.parentMessageId.flatMap { parentId in
-                        snapshot.rows.first { $0.id == parentId }?.seq
-                    } ?? 0)
-                    : 0
-                let fallbackBoundarySeq = conversation?.kind == "thread" ? threadParentSeq : 0
-                let boundarySeq = min(
-                    hasClientSeenBoundary ? clientSeenUpToSeq : fallbackBoundarySeq,
-                    latestFromOthers
-                )
-                let effectiveExactSeqs = Set(
-                    requestedSeenExactSeqs.filter { $0 > boundarySeq && $0 <= latestFromOthers }
-                )
-                let boundarySource: String
-                if hasClientSeenBoundary {
-                    boundarySource = "client_seen"
-                } else if !effectiveExactSeqs.isEmpty {
-                    boundarySource = "client_seen_exact"
-                } else if fallbackBoundarySeq > 0 {
-                    boundarySource = "thread_parent"
-                } else {
-                    boundarySource = "none"
-                }
-                let hasModelSeenProof = boundarySource == "client_seen"
-                    || boundarySource == "client_seen_exact"
-                let newer = rows.filter {
-                    $0.seq > boundarySeq
-                        && ($0.message.senderType != "agent" || $0.message.senderId != identity.agentId)
-                        && !effectiveExactSeqs.contains($0.seq)
-                        && !dependencies.messageSuppressed($0.message, identity.agentId)
-                        && !dependencies.selfCausedExempt($0.message, identity.agentId)
-                }
-                let formalMentionCount = newer.reduce(0) { partial, entry in
-                    partial + (snapshot.mentions.contains {
-                        $0.messageId == entry.message.id
-                            && $0.targetType == "agent"
-                            && $0.targetId == identity.agentId
-                            && ($0.notifiableAtSend || $0.notifiedAt != nil)
-                    } ? 1 : 0)
-                }
-                let boundaryMessageId: String? = boundarySeq > 0
-                    ? (conversation?.kind == "thread" && threadParentSeq == boundarySeq
-                        ? conversation?.parentMessageId
-                        : rows.first { $0.seq == boundarySeq }?.message.id)
-                    : nil
-                if let latestSeq = newer.last?.seq {
-                    let attentionCount = newer.count
-                    let shownRows = Array(newer.suffix(3))
-                    let shownCount = shownRows.count
-                    let holdCount = hasModelSeenProof ? attentionCount : min(attentionCount, 3)
-                    let omittedCount = hasModelSeenProof ? max(0, attentionCount - shownCount) : 0
-                    let showedEveryHeldMessage = shownCount >= attentionCount
-                    let conversationIdentity = prepare.heldConversationIdentity(
-                        channelId: channelId,
-                        agentId: identity.agentId
-                    )
-                    let heldMessageJSON = shownRows.map { entry in
-                        prepare.heldFreshnessMessageJSON(
-                            seq: entry.seq,
-                            message: entry.message,
-                            conversationIdentity: conversationIdentity
-                        )
+                    targetRef: trimmed,
+                    policy: .credential,
+                    seenUpToSeq: hasClientSeenBoundary ? clientSeenUpToSeq : nil,
+                    seenExactSeqs: requestedSeenExactSeqs,
+                    withheld: withheldMode,
+                    draftReholdCount: draftReholdCount,
+                    draftReplacedExisting: draftReplacedExisting
+                )) {
+                case .proceed:
+                    break
+                case .held(let facts):
+                    if facts.withheld {
+                        return AgentSendWithheldResponse(withheldMessageCount: facts.holdCount)
                     }
-                    if !withheldMode, showedEveryHeldMessage, latestSeq > snapshot.readCursor.seq {
-                        messages.advanceAgentReadCursors(
-                            agentId: identity.agentId,
-                            maxSeqByChannel: [channelId: latestSeq]
-                        )
-                    }
-                    if withheldMode {
-                        return AgentSendWithheldResponse(withheldMessageCount: holdCount)
-                    }
-                    let reason = boundarySource == "none" || boundarySource == "thread_parent"
-                        ? "server_first_touch_context"
-                        : "server_stale_model_boundary"
-                    let producerFactId = AgentFreshnessIdentity.freshnessDecisionProducerFactId(
-                        agentId: identity.agentId,
-                        target: trimmed,
-                        reason: reason,
-                        pendingMaxSeq: latestSeq,
-                        modelSeenSeq: boundarySource == "client_seen" ? boundarySeq : 0,
-                        heldMessageCount: shownCount,
-                        omittedMessageCount: omittedCount
-                    )
-                    dependencies.recordAttestedSendEvent(
-                        "gate_triggered",
-                        identity.agentId,
-                        newer.last?.message.id,
-                        .gateTriggered(
-                            lastSeenMessageId: boundaryMessageId,
-                            latestMessageId: newer.last?.message.id,
-                            draftReplacedExisting: draftReplacedExisting,
-                            newMessageCount: holdCount,
-                            boundarySource: boundarySource,
-                            boundarySeq: boundarySeq,
-                            latestSeq: latestSeq
-                        )
-                    )
-                    dependencies.recordAgentSendActivity(
-                        identity.agentId,
-                        "Send held by freshness check",
-                        "target: \(trimmed)\n"
-                            + "unreviewed synced context for this target: \(shownCount) messages\n"
-                            + "reason: this target's latest synced context was not yet in your reviewed context\n"
-                            + "action: review the synced context before sending",
-                        producerFactId
-                    )
                     return AgentSendHeldResponse(
-                        producerFactId: producerFactId,
-                        heldMessages: heldMessageJSON,
-                        newMessageCount: holdCount,
-                        shownMessageCount: shownCount,
-                        omittedMessageCount: omittedCount,
-                        seenUpToSeq: latestSeq,
-                        seenUpToMessageId: newer.last?.message.id,
-                        firstShownSeq: shownRows.first?.seq,
-                        formalMentionCount: formalMentionCount,
-                        continueAnywaySuggested: draftReholdCount >= 3,
+                        producerFactId: facts.producerFactId,
+                        heldMessages: facts.heldMessages,
+                        newMessageCount: facts.holdCount,
+                        shownMessageCount: facts.shownCount,
+                        omittedMessageCount: facts.omittedCount,
+                        seenUpToSeq: facts.latestSeq,
+                        seenUpToMessageId: facts.latestMessageId,
+                        firstShownSeq: facts.firstShownSeq,
+                        formalMentionCount: facts.formalMentionCount,
+                        continueAnywaySuggested: facts.continueAnywaySuggested,
                         holdReasons: holdForCards ? (["unread_messages"] + cardHoldReasons) : nil,
                         cards: cardFields
                     )
@@ -861,7 +822,7 @@ public struct ActionCardExecuteService: Sendable {
     // that have not migrated yet still call, so the policy has one copy.
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
     }
 
     /// The legacy `agentTaskAuth` credential outcome (401s are `DomainError`s).

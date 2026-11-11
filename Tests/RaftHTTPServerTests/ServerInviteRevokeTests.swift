@@ -41,6 +41,7 @@ import VaporTesting
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(method, headers: headers, to: URI(string: path)) { request in
                     if let body { request.body = .init(string: body) }
                 }

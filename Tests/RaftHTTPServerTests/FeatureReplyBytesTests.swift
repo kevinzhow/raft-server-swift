@@ -137,9 +137,15 @@ struct FeatureReplyBytesTests {
             }
             let malformed = shot(try await post("/api/auth/login", "{"))
             #expect(malformed.hasPrefix("400\n"))
-            for body: String? in [nil, "", "  \n", "[]", "null", "email=absent%40slock.test&password=wrong"] {
+            for body: String? in [nil, "", "  \n", "null", "email=absent%40slock.test&password=wrong"] {
                 #expect(shot(try await post("/api/auth/login", body, contentType: "application/x-www-form-urlencoded")) == malformed)
             }
+            // A valid JSON non-object root reaches the schema (the raw-JSON
+            // tolerance above decodes it) and publishes the zod object issue,
+            // not the empty-object refusal a malformed body gets.
+            let notObject = shot(try await post("/api/auth/login", "[]", contentType: "application/x-www-form-urlencoded"))
+            #expect(notObject.hasPrefix("400\n"))
+            #expect(notObject.hasSuffix(#"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#))
 
             // Email verification deliberately uses only the registered decoder.
             let missingToken = shot(try await post("/api/auth/verify-email", nil))
@@ -175,6 +181,7 @@ struct FeatureReplyBytesTests {
         accounts.oauth.addOwnedServer(id: serverId, slug: "body-policy", name: "Body", ownerId: owner)
         let channel = accounts.oauth.createChannel(serverId: serverId, name: "parent", creatorUserId: owner)
         accounts.addPostableChannel(serverId: serverId, channelId: channel, memberId: owner)
+        accounts.addChannelMessageForTesting(id: messageId, channelId: channel, content: "parent", senderId: owner)
         let thread = accounts.oauth.createThreadChannel(parentChannelId: channel, parentMessageId: messageId)
         accounts.addPostableChannel(serverId: serverId, channelId: thread, memberId: owner, kind: "thread", parentChannelId: channel, parentMessageId: messageId)
         let token = accounts.mintAccessTokenForTesting(userId: owner)
@@ -206,7 +213,7 @@ struct FeatureReplyBytesTests {
                     contentType: mediaType
                 )
                 #expect(response.status == .ok)
-                #expect(response.body.string == #"{"ok":true,"following":true}"#)
+                #expect(response.body.string == "{\"ok\":true,\"threadChannelId\":\"\(thread)\"}")
             }
         }
     }

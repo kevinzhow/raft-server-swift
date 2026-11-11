@@ -110,6 +110,15 @@ extension AgentsLifecycleService {
     private func authorizePreview(
         admission: AttachmentFlexAdmission, attachment: ChannelAttachment
     ) throws -> AttachmentPreviewAdmission {
+        let mime = try previewMIME(attachment)
+        return try authorizePreviewBody(admission: admission, attachment: attachment, mimeType: mime)
+    }
+
+    /// The Flex read authority shared by HTML preview and the JSON preview
+    /// route. `mimeType` is the published resolved type for the caller.
+    func authorizePreviewBody(
+        admission: AttachmentFlexAdmission, attachment: ChannelAttachment, mimeType: String
+    ) throws -> AttachmentPreviewAdmission {
         guard oauth.serverProfile(id: admission.serverId) != nil else { throw AgentsLifecycleError.attachmentNotFound }
         let authority: AttachmentPreviewAuthority
         switch admission.actor {
@@ -126,7 +135,7 @@ extension AgentsLifecycleService {
             _ = try attachmentReadRecord(admission: admission, attachmentId: attachment.id, preview: true)
             authority = .machine(serverId: admission.serverId, channelId: attachment.channelId)
         }
-        return AttachmentPreviewAdmission(mimeType: try previewMIME(attachment), authority: authority)
+        return AttachmentPreviewAdmission(mimeType: mimeType, authority: authority)
     }
 
     private func previewMIME(_ attachment: ChannelAttachment) throws -> String {

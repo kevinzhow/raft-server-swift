@@ -107,9 +107,9 @@ func postgresIdleProcessSurvivesMainRestartAndAcceptsHumanDelivery() async throw
         #expect(ready.execution.agents[agentID]?.needsManual == nil,
                 "ready reconciles a connection-derived flag from the retained settled facts")
 
-        // A normal v2 human send now reaches the running agent. The control
-        // plane stages the same launch/delivery sequence as before the restart;
-        // the peer acknowledges them because the process is still resident.
+        // A normal v2 human send now reaches the running agent. Upstream sends
+        // `agent:deliver` directly: a resident process that finished its turn is
+        // still the running runtime, and a Main restart did not end it.
         let deliveryBoundary = reconnected.socket.count
         let post = try await fixture.http("POST", "/api/v2/messages", token: owner,
             body: .init(["channelId": .string(channelID), "content": .string("Deliver after restart recovery")]))
@@ -118,23 +118,19 @@ func postgresIdleProcessSurvivesMainRestartAndAcceptsHumanDelivery() async throw
         let messageID = try messageObject.requireString("id")
         phase("message-posted")
         let staged = try await fixture.audit()
-        #expect(staged.execution.commands.values.contains {
+        let stagedCommand = try #require(staged.execution.commands.values.first {
             $0.kind == .delivery && $0.agentId == agentID && $0.messageId == messageID
         })
-        let restartStart = try await reconnected.socket.nextObject(since: deliveryBoundary) {
-            $0.string("type") == "agent:start" && $0.string("agentId") == agentID
-        }
-        let restartLaunch = try restartStart.requireString("launchId")
-        phase("restart-start-frame")
-        try await reconnected.acknowledgeControlledStart(restartStart)
-        try await reconnected.sendRebound(agentId: agentID, launchId: restartLaunch, processInstanceId: "process-1")
-        phase("rebound-sent")
+        #expect(stagedCommand.launchId == launchID, "the resident process keeps carrying its launch")
         let delivery = try await reconnected.socket.nextObject(since: deliveryBoundary) {
             $0.string("type") == "agent:deliver" && $0.string("agentId") == agentID
                 && $0.object("message")?.string("message_id") == messageID
         }
         phase("delivery-frame")
         try await reconnected.acknowledgeControlledDelivery(delivery)
+        let restartWire = try await reconnected.socket.wireFence(since: deliveryBoundary)
+        #expect(!restartWire.contains { $0.contains("\"agent:start\"") },
+                "no cold start after a Main restart with the process still resident")
         try await protocolPGEventually {
             let commands = try await fixture.audit().execution.commands
             return commands.values.contains {

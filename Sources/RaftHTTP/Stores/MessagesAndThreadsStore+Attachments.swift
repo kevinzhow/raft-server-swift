@@ -1,4 +1,5 @@
 import Foundation
+import RaftObjectStorage
 
 extension MessagesAndThreadsStore {
     /// Attachment chip counts for one replayed message, in request order.
@@ -82,6 +83,52 @@ extension MessagesAndThreadsStore {
     func insertAttachment(_ attachment: ChannelAttachment) {
         withState { state in
             state.channelAttachments[attachment.id] = attachment
+        }
+    }
+
+    /// Records a server-generated attachment projection after its object bytes
+    /// are durable. The referencing row and its object reference land in one
+    /// Messages borrow; the caller owns the preceding write, exactly like the
+    /// upload pipeline. A development graph without object storage keeps the
+    /// plaintext fallback the byte routes already read.
+    func recordServerGeneratedAttachment(
+        _ attachment: ChannelAttachment,
+        reference: AttachmentObjectReference?,
+        developmentBytes: Data?
+    ) {
+        withState { state in
+            state.channelAttachments[attachment.id] = attachment
+            if let reference {
+                state.attachmentObjectReferences[attachment.id] = reference
+            }
+            if let developmentBytes {
+                state.developmentAttachmentBytes[attachment.id] = developmentBytes
+            }
+        }
+    }
+
+    /// An attachment row by its stable id, for idempotent server-generated
+    /// projections.
+    func attachmentRow(id: String) -> ChannelAttachment? {
+        withState { $0.channelAttachments[id] }
+    }
+
+    /// One retained message's attachments in published order: the message's
+    /// ordered id list first, then real linked rows missing from a legacy id
+    /// array in persisted link order. A missing row keeps its id so each caller
+    /// can degrade it without dropping the position.
+    func orderedAttachmentRows(for message: StoredHumanMessage) -> [(id: String, row: ChannelAttachment?)] {
+        withState { state in
+            let linked = state.channelAttachments.values.filter { $0.messageId == message.id }.sorted { left, right in
+                if left.messagePosition != right.messagePosition {
+                    return (left.messagePosition ?? Int.max) < (right.messagePosition ?? Int.max)
+                }
+                if left.messagePosition == nil, left.createdAt != right.createdAt { return left.createdAt < right.createdAt }
+                return left.id < right.id
+            }
+            var ids = message.attachmentIds
+            for row in linked where !ids.contains(row.id) { ids.append(row.id) }
+            return ids.map { (id: $0, row: state.channelAttachments[$0]) }
         }
     }
 }

@@ -49,6 +49,7 @@ private func makeMembershipFixture(_ suffix: String) -> MembershipFixture {
     accounts.oauth.addChannelAgent(channelId: agentOnlyPrivateChannel, agentId: agentId)
     accounts.oauth.setChannelArchived(id: archivedChannel, archivedAt: Date())
     let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "membership-machine-\(suffix)")
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machine)
     let allChannel = accounts.oauth.allChannelId(serverId: serverId) ?? ""
     return MembershipFixture(
         accounts: accounts,

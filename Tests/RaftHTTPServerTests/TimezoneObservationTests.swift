@@ -36,6 +36,25 @@ import VaporTesting
             }
             #expect(unauthenticated.status == .unauthorized)
 
+            // Pinned `routes/auth.ts:1369-1376` publishes the zod 4.3.6 issue
+            // list under `timezone_observation_body_invalid` before validating
+            // the zone value.
+            let schemaMissing = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                request.body = .init(string: "{}")
+            }
+            #expect(schemaMissing.status == .badRequest)
+            #expect(schemaMissing.body.string == #"{"error":"Invalid timezone observation body","code":"timezone_observation_body_invalid","issues":[{"path":"timezone","message":"Invalid input: expected string, received undefined"}]}"#)
+
+            let schemaType = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                request.body = .init(string: #"{"timezone":480}"#)
+            }
+            #expect(schemaType.body.string == #"{"error":"Invalid timezone observation body","code":"timezone_observation_body_invalid","issues":[{"path":"timezone","message":"Invalid input: expected string, received number"}]}"#)
+
+            let schemaExtra = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                request.body = .init(string: #"{"timezone":"UTC","source":"client-controlled"}"#)
+            }
+            #expect(schemaExtra.body.string == #"{"error":"Invalid timezone observation body","code":"timezone_observation_body_invalid","issues":[{"path":"","message":"Unrecognized key: \"source\""}]}"#)
+
             let invalidBodies = [
                 "{}", "{\"timezone\":null}", "{\"timezone\":480}", "{\"timezone\":\"\"}",
                 "{\"timezone\":\"Not/A_Timezone\"}", "{\"timezone\":\"PST\"}", "{\"timezone\":\"+08:00\"}",
@@ -47,6 +66,29 @@ import VaporTesting
                     request.body = .init(string: body)
                 }
                 #expect(response.status == .badRequest)
+            }
+
+            // Pinned `lib/ianaTimezone.ts` `parseCanonicalBrowserTimezone`
+            // publishes its own sentence per failure, in this order: trim and
+            // non-empty, length, Intl validity, then Area/Location shape.
+            let valueErrors: [(body: String, expected: String)] = [
+                (#"{"timezone":""}"#, #"{"error":"timezone must be a non-empty IANA timezone"}"#),
+                (#"{"timezone":"   "}"#, #"{"error":"timezone must be a non-empty IANA timezone"}"#),
+                (
+                    #"{"timezone":"\#(String(repeating: "A", count: 129))"}"#,
+                    #"{"error":"timezone must be at most 128 characters"}"#
+                ),
+                (#"{"timezone":"Not/A_Timezone"}"#, #"{"error":"timezone must be an IANA timezone"}"#),
+                (#"{"timezone":"PST"}"#, #"{"error":"timezone must be a canonical IANA timezone"}"#),
+                (#"{"timezone":"+08:00"}"#, #"{"error":"timezone must be a canonical IANA timezone"}"#),
+                (#"{"timezone":"GMT"}"#, #"{"error":"timezone must be a canonical IANA timezone"}"#),
+            ]
+            for entry in valueErrors {
+                let response = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                    request.body = .init(string: entry.body)
+                }
+                #expect(response.status == .badRequest, "\(entry.body)")
+                #expect(response.body.string == entry.expected, "\(entry.body)")
             }
 
             func observe(_ body: String) async throws -> [String: Any] {

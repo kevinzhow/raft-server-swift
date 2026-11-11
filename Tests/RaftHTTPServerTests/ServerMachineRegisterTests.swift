@@ -38,6 +38,7 @@ import VaporTesting
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(bearer)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.post, headers: headers, to: "/api/servers/\(serverId)/machines") { request in
                     request.body = .init(string: body)
                 }
@@ -61,6 +62,7 @@ import VaporTesting
 
             var headers = HTTPFields()
             headers[.authorization] = "Bearer \(owner)"
+            headers[HTTPField.Name("X-Server-Id")!] = serverId
             let listed = try await client.get("/api/servers/\(serverId)/machines", headers: headers)
             let listedBody = try JSONSerialization.jsonObject(with: Data((listed.body.string ?? "").utf8)) as? [String: Any]
             #expect((listedBody?["machines"] as? [[String: Any]] ?? []).contains { $0["id"] as? String == machineId })

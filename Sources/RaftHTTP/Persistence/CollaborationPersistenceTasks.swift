@@ -195,15 +195,63 @@ private struct CPTaskEvent: Codable {
     var taskId: String
     var eventType: String
     var actorType: String
+    /// The canonical event group. Absent on a snapshot written before the task
+    /// history contract existed and restores as a pre-canonical row; a present
+    /// group is strict because it is one upstream `task_events` insert.
+    var history: CPTaskEventHistory?
 
-    init(_ value: (taskId: String, eventType: String, actorType: String)) {
+    init(_ value: TaskEventRecord) {
         taskId = value.taskId
         eventType = value.eventType
         actorType = value.actorType
+        history = value.history.map(CPTaskEventHistory.init)
     }
 
-    func restored() -> (taskId: String, eventType: String, actorType: String) {
-        (taskId: taskId, eventType: eventType, actorType: actorType)
+    func restored() -> TaskEventRecord {
+        TaskEventRecord(taskId: taskId, eventType: eventType, actorType: actorType,
+                        history: history?.restored())
+    }
+}
+
+private struct CPTaskEventHistory: Codable {
+    var id: String
+    var seq: Int
+    var actorId: String?
+    var payloadJSON: String
+    var createdAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id, seq, actorId, payloadJSON, createdAt
+    }
+
+    /// A present group is strict: every member key must exist. `actorId` is a
+    /// required nullable member, not an optional one, so a missing key rejects
+    /// the snapshot instead of silently restoring an absent actor.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        seq = try container.decode(Int.self, forKey: .seq)
+        guard container.contains(.actorId) else {
+            throw DecodingError.keyNotFound(CodingKeys.actorId, .init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Canonical task event history requires actorId"))
+        }
+        actorId = try container.decodeIfPresent(String.self, forKey: .actorId)
+        payloadJSON = try container.decode(String.self, forKey: .payloadJSON)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    init(_ value: TaskEventRecord.History) {
+        id = value.id
+        seq = value.seq
+        actorId = value.actorId
+        payloadJSON = value.payloadJSON
+        createdAt = value.createdAt
+    }
+
+    func restored() -> TaskEventRecord.History {
+        TaskEventRecord.History(id: id, seq: seq, actorId: actorId,
+                                payloadJSON: payloadJSON, createdAt: createdAt)
     }
 }
 

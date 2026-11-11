@@ -11,7 +11,8 @@ enum ProductionAgentExecutionWire {
         case invalidMessage
     }
 
-    static func start(_ command: AgentExecutionCommand, configuration: Data) throws -> Data {
+    static func start(_ command: AgentExecutionCommand, configuration: Data, wakeMessage: JSONValue?,
+                      resumeMessages: [JSONValue], unreadSummary: [String: Int]?) throws -> Data {
         guard command.kind == .start, !command.agentId.isEmpty, !command.launchId.isEmpty,
               let dispatch = command.startDispatchId, !dispatch.isEmpty, !command.connectionEpochId.isEmpty else {
             throw Error.invalidCommandIdentity
@@ -29,14 +30,45 @@ enum ProductionAgentExecutionWire {
         if let runtimeConfig = config["runtimeConfig"], runtimeConfig != .null, dictionary(runtimeConfig) == nil {
             throw Error.invalidConfiguration
         }
+        guard resumeMessages.allSatisfy({ if case .object = $0 { true } else { false } }),
+              resumeMessages.count <= 20,
+              unreadSummary.map({ $0.count <= 21 && $0.values.allSatisfy { $0 >= 0 } }) ?? true,
+              wakeMessage.map({ if case .object = $0 { true } else { false } }) ?? true else {
+            throw Error.invalidMessage
+        }
         let envelope = StartEnvelope(agentId: command.agentId, config: .object(config), launchId: command.launchId,
                                      startDispatchId: dispatch, breakerGeneration: command.breakerGeneration,
                                      takeoverEpoch: command.takeoverEpoch, humanStart: command.humanStart,
-                                     connectionEpochId: command.connectionEpochId, resumePrompt: command.resumePrompt)
+                                     connectionEpochId: command.connectionEpochId, resumePrompt: command.resumePrompt,
+                                     wakeMessage: wakeMessage, resumeMessages: resumeMessages, unreadSummary: unreadSummary)
         return try encode(envelope.value, failure: .invalidConfiguration)
     }
 
-    static func delivery(_ command: AgentExecutionCommand, message: Data, sequence: Int64) throws -> Data {
+    /// A transient notice frame. It is an `agent:deliver` with the upstream
+    /// notice body and a `seq: 0` envelope: the official Computer acks
+    /// `ackSeq = msg.seq > 0 ? msg.seq : msg.message.seq ?? 0`, i.e. 0.
+    static func notice(_ command: AgentExecutionCommand, message: Data) throws -> Data {
+        guard command.kind == .notice, let deliveryId = command.deliveryId, !deliveryId.isEmpty,
+              let channelId = command.channelId, let messageId = command.messageId,
+              !command.agentId.isEmpty else { throw Error.invalidCommandIdentity }
+        guard let body = object(message), string(body["channel_id"]) == channelId,
+              string(body["message_id"]) == messageId, string(body["channel_name"]) != nil,
+              string(body["sender_id"]) == "system", string(body["sender_name"]) == "system",
+              string(body["sender_type"]) == "system", nonempty(body["content"]),
+              nonempty(body["timestamp"]),
+              ["channel", "private", "joint", "dm", "thread"].contains(string(body["channel_type"]) ?? "") else {
+            throw Error.invalidMessage
+        }
+        // The synthetic notice has no stored `messages.seq`; the upstream body
+        // carries no seq member and the envelope owns the zero.
+        if body["seq"] != nil { throw Error.invalidMessage }
+        let envelope = DeliveryEnvelope(agentId: command.agentId, message: .object(body), seq: 0,
+                                        deliveryId: deliveryId, mentionDelivery: nil)
+        return try encode(envelope.value, failure: .invalidMessage)
+    }
+
+    static func delivery(_ command: AgentExecutionCommand, message: Data, sequence: Int64,
+                         mentionDelivery: MentionDeliveryIdentitySnapshot?) throws -> Data {
         guard command.kind == .delivery, let deliveryId = command.deliveryId, !deliveryId.isEmpty,
               let channelId = command.channelId, let messageId = command.messageId,
               !command.agentId.isEmpty, sequence >= 0, sequence <= 9_007_199_254_740_991 else { throw Error.invalidCommandIdentity }
@@ -48,7 +80,17 @@ enum ProductionAgentExecutionWire {
             throw Error.invalidMessage
         }
         if let raw = body["seq"], safeSequence(raw) != sequence { throw Error.invalidMessage }
-        let envelope = DeliveryEnvelope(agentId: command.agentId, message: .object(body), seq: sequence, deliveryId: deliveryId)
+        if let mentionDelivery {
+            // The daemon validates occurrenceId == deliveryId and messageId ==
+            // message.message_id, then checks the frozen identity against its
+            // own process. A mismatched frame is a terminal IDENTITY_DRIFT, so
+            // every member must come from the committed decision.
+            guard command.mentionDeliveryOccurrenceId == mentionDelivery.occurrenceId,
+                  deliveryId == mentionDelivery.occurrenceId,
+                  mentionDelivery.messageId == messageId else { throw Error.invalidCommandIdentity }
+        }
+        let envelope = DeliveryEnvelope(agentId: command.agentId, message: .object(body), seq: sequence,
+                                        deliveryId: deliveryId, mentionDelivery: mentionDelivery)
         return try encode(envelope.value, failure: .invalidMessage)
     }
 
@@ -62,6 +104,9 @@ enum ProductionAgentExecutionWire {
         let humanStart: Bool
         let connectionEpochId: String
         let resumePrompt: String?
+        let wakeMessage: JSONValue?
+        let resumeMessages: [JSONValue]
+        let unreadSummary: [String: Int]?
 
         var value: JSONValue {
             var members: [String: JSONValue] = [
@@ -71,6 +116,13 @@ enum ProductionAgentExecutionWire {
                 "humanStart": .bool(humanStart), "connectionEpochId": .string(connectionEpochId)
             ]
             if let resumePrompt { members["resumePrompt"] = .string(resumePrompt) }
+            // Upstream `attempt-wake` member order is producer-owned; the daemon
+            // reads it by name and runs it as the spawn turn.
+            if let wakeMessage { members["wakeMessage"] = wakeMessage }
+            if !resumeMessages.isEmpty { members["resumeMessages"] = .array(resumeMessages) }
+            if let unreadSummary, !unreadSummary.isEmpty {
+                members["unreadSummary"] = .object(unreadSummary.mapValues { .integer(Int64($0)) })
+            }
             return .object(members)
         }
         func encode(to encoder: Encoder) throws { try value.encode(to: encoder) }
@@ -81,10 +133,23 @@ enum ProductionAgentExecutionWire {
         let message: JSONValue
         let seq: Int64
         let deliveryId: String
+        let mentionDelivery: MentionDeliveryIdentitySnapshot?
 
         var value: JSONValue {
-            .object(["type": .string("agent:deliver"), "agentId": .string(agentId), "message": message,
-                     "seq": .integer(seq), "deliveryId": .string(deliveryId)])
+            var members: [String: JSONValue] = [
+                "type": .string("agent:deliver"), "agentId": .string(agentId), "message": message,
+                "seq": .integer(seq), "deliveryId": .string(deliveryId)
+            ]
+            if let mentionDelivery {
+                members["mentionDelivery"] = .object([
+                    "occurrenceId": .string(mentionDelivery.occurrenceId),
+                    "messageId": .string(mentionDelivery.messageId),
+                    "machineId": .string(mentionDelivery.machineId),
+                    "launchId": .string(mentionDelivery.launchId),
+                    "sessionId": .string(mentionDelivery.sessionId),
+                ])
+            }
+            return .object(members)
         }
         func encode(to encoder: Encoder) throws { try value.encode(to: encoder) }
     }

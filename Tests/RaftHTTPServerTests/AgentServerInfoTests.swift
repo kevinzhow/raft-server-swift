@@ -48,8 +48,17 @@ import VaporTesting
             let own = agents.first { $0["id"] as? String == agent }
             #expect(own?["name"] as? String == "AgentInfoBot")
             #expect(own?["role"] as? String == "member")
-            #expect(own?["status"] as? String == "active")
+            // Upstream `toServerInfoAgentSummary` serves the stored `a.status`;
+            // the endpoint never fabricates an active process.
+            #expect(own?["status"] as? String == "inactive")
             #expect(own?["activity"] is String)
+
+            accounts.oauth.setAgentStatus(id: agent, status: "stopped")
+            let stoppedResponse = try await client.send(.get, headers: headers, to: "/internal/agent-api/server")
+            #expect(stoppedResponse.status == .ok)
+            let stoppedBody = try JSONSerialization.jsonObject(with: Data((stoppedResponse.body.string ?? "").utf8)) as? [String: Any] ?? [:]
+            let stoppedOwn = (stoppedBody["agents"] as? [[String: Any]] ?? []).first { $0["id"] as? String == agent }
+            #expect(stoppedOwn?["status"] as? String == "stopped")
         }
     }
 }

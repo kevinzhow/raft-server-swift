@@ -119,12 +119,141 @@ public struct JointInviteAcceptedResponse: JSONBodyConvertible, Equatable {
     }
 }
 
+/// One pending joint-channel invite row.
+///
+/// Member order follows the upstream `listPendingJointChannelInvites` select:
+/// `id`, `jointChannelId`, `fromServerId`, `fromServerName`, `fromServerSlug`,
+/// `channelName`, `channelDescription`, `invitedByUserId`, `invitedUserId`,
+/// `expiresAt`, `createdAt`.
+public struct JointInviteRow: JSONBodyConvertible, Equatable, Sendable {
+    let id: String
+    let jointChannelId: String
+    let fromServerId: String
+    let fromServerName: String
+    let fromServerSlug: String
+    let channelName: String
+    let channelDescription: String?
+    let invitedByUserId: String
+    let invitedUserId: String
+    let expiresAt: Date
+    let createdAt: Date
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("id", id),
+            OrderedJSONField("jointChannelId", jointChannelId),
+            OrderedJSONField("fromServerId", fromServerId),
+            OrderedJSONField("fromServerName", fromServerName),
+            OrderedJSONField("fromServerSlug", fromServerSlug),
+            OrderedJSONField("channelName", channelName),
+            OrderedJSONField("channelDescription", optional: channelDescription),
+            OrderedJSONField("invitedByUserId", invitedByUserId),
+            OrderedJSONField("invitedUserId", invitedUserId),
+            OrderedJSONField("expiresAt", RuntimeUsageISO.string(expiresAt)),
+            OrderedJSONField("createdAt", RuntimeUsageISO.string(createdAt)),
+        ])
+    }
+}
+
+/// `POST /api/channels/:id/joint-invites` request.
+///
+/// The retired handler read each member with `typeof`/`Array.isArray`; a member
+/// of the wrong type reads as absent here. `invitedPeople` keeps the create
+/// route's all-or-nothing `[String]` decode.
+public struct JointChannelInviteRequest: Decodable, Sendable, Equatable {
+    public var targetServerSlug: String?
+    public var invitedPeople: [String]?
+    public var sameAdmin: Bool?
+
+    public init(
+        targetServerSlug: String? = nil,
+        invitedPeople: [String]? = nil,
+        sameAdmin: Bool? = nil
+    ) {
+        self.targetServerSlug = targetServerSlug
+        self.invitedPeople = invitedPeople
+        self.sameAdmin = sameAdmin
+    }
+
+    private enum CodingKeys: String, CodingKey { case targetServerSlug, invitedPeople, sameAdmin }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        targetServerSlug = try? container.decode(String.self, forKey: .targetServerSlug)
+        invitedPeople = try? container.decode([String].self, forKey: .invitedPeople)
+        sameAdmin = try? container.decode(Bool.self, forKey: .sameAdmin)
+    }
+}
+
+/// `GET /api/channels/joint-invites`.
+public struct JointInviteListResponse: JSONBodyConvertible {
+    let invites: [JointInviteRow]
+
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("invites", .array(invites.map(\.jsonBody)))])
+    }
+}
+
+/// `POST /api/channels/:id/joint-invite/resend`.
+public struct JointInviteResendResponse: JSONBodyConvertible, Equatable {
+    let resentCount: Int
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", true),
+            OrderedJSONField("resentCount", resentCount),
+        ])
+    }
+}
+
+/// `POST /api/channels/:id/joint-invites`.
+///
+/// The upstream reply is the updated channel projection with `jointInvites` and
+/// `jointInvite` appended. This port projects the retained channel fields; the
+/// omitted columns are the same ones `GET /api/channels` does not carry yet.
+public struct JointChannelInviteResponse: JSONBodyConvertible {
+    let id: String
+    let serverId: String
+    let name: String
+    let description: String?
+    let type: String
+    let createdAt: Date?
+    let joined: Bool
+    let invites: [JointInviteRow]
+
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        body.append("serverId", serverId)
+        body.append("name", name)
+        body.append("description", ifPresent: description)
+        body.append("type", type)
+        body.append("createdAt", ifPresent: createdAt.map(RuntimeUsageISO.string))
+        body.append("joined", joined)
+        body.append("jointInvites", .array(invites.map(\.jsonBody)))
+        body.append("jointInvite", invites.first?.jsonBody ?? .null)
+        return body.json
+    }
+}
+
 /// `GET /api/channels`.
+///
+/// Published row order for the fields this port retains: `id`, `serverId`,
+/// `name`, `description`, `type`, `createdAt`, `archivedAt`, `joined`,
+/// `activityMuted`, `muteFromSeq`, `prefsVersion`, `activityMuteSupported`,
+/// `collapseLongMessages`, `displayPrefsVersion`, `maxReadSeq`,
+/// `readStateVersion`, `readState`, `lastMessageAt`, `channelRole`,
+/// `channelAdminBasis`, `channelCapabilities`, `channelAuthorityRevision`.
+/// Upstream also carries the remaining channel columns, joint metadata, bridge
+/// metadata and conversion jobs; those are not projected by this slice.
 public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
     struct Row: Sendable {
         let id: String
+        let serverId: String
         let name: String
+        let description: String?
         let type: String
+        let createdAt: Date?
         let joined: Bool
         let archivedAt: Date?
         let lastMessageAt: Date?
@@ -133,11 +262,15 @@ public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
         let prefsVersion: Int
         let collapseLongMessages: Bool
         let displayPrefsVersion: Int
+        let maxReadSeq: Int
+        let readStateVersion: Int
+        let readState: ChannelReadStateFrontier
         let channelRole: String
         let channelAdminBasis: String?
         let capability: Bool
         let isJoint: Bool
         let serverAdmin: Bool
+        let channelAuthorityRevision: Int
     }
 
     let rows: [Row]
@@ -157,20 +290,27 @@ public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
             ])
             return .object([
                 OrderedJSONField("id", row.id),
+                OrderedJSONField("serverId", row.serverId),
                 OrderedJSONField("name", row.name),
+                OrderedJSONField("description", optional: row.description),
                 OrderedJSONField("type", row.type),
-                OrderedJSONField("joined", row.name == "all" || row.joined),
+                OrderedJSONField("createdAt", optional: row.createdAt.map(RuntimeUsageISO.string)),
                 OrderedJSONField("archivedAt", optional: row.archivedAt.map(RuntimeUsageISO.string)),
-                OrderedJSONField("lastMessageAt", optional: row.lastMessageAt.map(RuntimeUsageISO.string)),
+                OrderedJSONField("joined", row.name == "all" || row.joined),
                 OrderedJSONField("activityMuted", row.activityMuted),
                 OrderedJSONField("muteFromSeq", optional: row.muteFromSeq),
                 OrderedJSONField("prefsVersion", row.prefsVersion),
-                OrderedJSONField("activityMuteSupported", row.type == "channel"),
+                OrderedJSONField("activityMuteSupported", ChannelActivityMuteSupport.supports(row.type)),
                 OrderedJSONField("collapseLongMessages", row.collapseLongMessages),
                 OrderedJSONField("displayPrefsVersion", row.displayPrefsVersion),
+                OrderedJSONField("maxReadSeq", row.maxReadSeq),
+                OrderedJSONField("readStateVersion", row.readStateVersion),
+                OrderedJSONField("readState", row.readState.json),
+                OrderedJSONField("lastMessageAt", optional: row.lastMessageAt.map(RuntimeUsageISO.string)),
                 OrderedJSONField("channelRole", row.channelRole),
                 OrderedJSONField("channelAdminBasis", optional: row.channelAdminBasis),
                 OrderedJSONField("channelCapabilities", caps),
+                OrderedJSONField("channelAuthorityRevision", row.channelAuthorityRevision),
             ])
         })
     }
@@ -371,6 +511,41 @@ public struct PushUnbindResponse: Codable, Sendable, Equatable {
     init(unbound: Int) {
         ok = true
         self.unbound = unbound
+    }
+}
+
+/// `GET /api/push/vapid-key`.
+public struct WebPushVapidKeyResponse: JSONBodyConvertible, Equatable {
+    let publicKey: String
+
+    public init(publicKey: String) {
+        self.publicKey = publicKey
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("publicKey", publicKey)])
+    }
+}
+
+/// `POST /api/push/test`.
+public struct WebPushTestResponse: JSONBodyConvertible, Equatable {
+    let attempted: Int
+    let delivered: Int
+    let failed: Int
+
+    public init(attempted: Int, delivered: Int, failed: Int) {
+        self.attempted = attempted
+        self.delivered = delivered
+        self.failed = failed
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", true),
+            OrderedJSONField("attempted", attempted),
+            OrderedJSONField("delivered", delivered),
+            OrderedJSONField("failed", failed),
+        ])
     }
 }
 

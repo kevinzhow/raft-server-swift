@@ -115,11 +115,9 @@ extension AgentExecutionDomain {
                     throw AgentExecutionError.invalidRequest
                 }
                 // The automatic admission already checked manual-stop/failure
-                // fences. Reuse the owned producer to recheck delivery authority
-                // and persist replacement references in this same transaction.
-                try releaseHeldDeliveries(start: start)
-                // Active is canonical running-allowed intent after admission,
-                // never a claim that a process or provider became ready.
+                // fences. Held sends stay queued until this launch reports its
+                // process (or session), where the ordinary release step owns
+                // them exactly once.
                 setIntentStatus(agentId: intent.agentId, status: "active")
             }
             return true

@@ -87,7 +87,7 @@ extension AgentExecutionDomain {
                 agentId: request.agentId, launchId: agent.currentLaunchId ?? request.commandId.uuidString,
                 startDispatchId: nil, deliveryId: nil, connectionEpochId: state.connections[machineId]?.connectionEpochId ?? "",
                 takeoverEpoch: agent.takeoverEpoch, breakerGeneration: agent.generation, humanStart: false,
-                sessionId: agent.sessionId, resumePrompt: nil, channelId: nil, messageId: nil, status: .pending, createdAt: now)
+                sessionId: agent.sessionId, resumePrompt: nil, channelId: nil, messageId: nil, notice: nil, status: .pending, createdAt: now)
             state.commands[request.commandId.uuidString] = command
             return command
         }
@@ -108,41 +108,6 @@ extension AgentExecutionDomain {
                 serverId: request.serverId, agentId: request.agentId, channelId: request.channelId,
                 messageId: request.messageId, createdAt: Date())
             state.heldDeliveries = held
-        }
-    }
-
-    func releaseHeldDeliveries(start: AgentExecutionCommand) throws {
-        let held = (agents.state.execution.heldDeliveries ?? [:]).values.filter {
-            $0.serverId == start.serverId && $0.agentId == start.agentId && $0.releasedCommandId == nil && !$0.cancelled
-        }.sorted {
-            $0.createdAt == $1.createdAt ? $0.commandId.uuidString < $1.commandId.uuidString : $0.createdAt < $1.createdAt
-        }
-        for delivery in held {
-            guard agents.state.execution.dispatches?[delivery.commandId.uuidString] == nil else {
-                throw AgentExecutionError.manualRecoveryRequired
-            }
-            let authorized = deliveryIsAuthorized(serverId: delivery.serverId, agentId: delivery.agentId,
-                                                 channelId: delivery.channelId, messageId: delivery.messageId)
-            let released = try mutate { state -> AgentExecutionCommand? in
-                guard var current = state.heldDeliveries?[delivery.commandId.uuidString],
-                      current.releasedCommandId == nil, !current.cancelled else { throw AgentExecutionError.conflictingCommand }
-                guard authorized else {
-                    current.cancelled = true
-                    state.heldDeliveries?[delivery.commandId.uuidString] = current
-                    return nil
-                }
-                let command = AgentExecutionCommand(commandId: UUID(), kind: .delivery,
-                    serverId: start.serverId, machineId: start.machineId, agentId: start.agentId,
-                    launchId: start.launchId, startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
-                    connectionEpochId: start.connectionEpochId, takeoverEpoch: start.takeoverEpoch,
-                    breakerGeneration: start.breakerGeneration, humanStart: false, sessionId: start.sessionId,
-                    resumePrompt: nil, channelId: current.channelId, messageId: current.messageId, status: .pending, createdAt: Date())
-                current.releasedCommandId = command.commandId
-                state.heldDeliveries?[delivery.commandId.uuidString] = current
-                state.commands[command.commandId.uuidString] = command
-                return command
-            }
-            if let released { try stage(released) }
         }
     }
 
@@ -175,7 +140,10 @@ extension AgentExecutionDomain {
             guard let channelId = command.channelId, let messageId = command.messageId,
                   deliveryIsAuthorized(serverId: command.serverId, agentId: command.agentId, channelId: channelId, messageId: messageId) else { return .obsolete }
         }
-        if command.kind == .delivery, !launch.startAccepted && launch.processInstanceId == nil {
+        // A notice has no stored row to authorize. It is still only sent to a
+        // launch the daemon admitted; a dead agent is never started here.
+        if (command.kind == .delivery || command.kind == .notice),
+           !launch.startAccepted && launch.processInstanceId == nil {
             return .wait(reason: "start_not_admitted_by_daemon")
         }
         return .ready(command)

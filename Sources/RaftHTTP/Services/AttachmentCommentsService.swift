@@ -123,6 +123,10 @@ struct AttachmentCommentsDependencies: Sendable {
         _ content: String, _ mentions: [MentionInput], _ warnUnresolved: Bool,
         _ surface: MessageMentionSurface) throws -> ResolvedMentions
     var recordMemberMentionRows: @Sendable (_ messageId: String, _ channelId: String, _ resolution: ResolvedMentions) -> Void
+    /// The persisted-frontend publisher slot. A comment is an ordinary thread
+    /// reply upstream (`broadcastAndDeliver`), and the follow-up shared scrub is
+    /// the sparse `message:updated` notification the Web reloads on.
+    var emitRealtime: @Sendable (_ room: String, _ event: String, _ payload: String) -> Void
 }
 
 // MARK: - Service
@@ -331,7 +335,18 @@ public struct AttachmentCommentsService: Sendable {
             content, mentions, false, mentionSurface)
         let now = Date()
         let id = UUID().uuidString.lowercased()
-        messages.appendAttachmentComment(
+        var committedComment = StoredHumanMessage(
+            id: id,
+            channelId: threadChannelId,
+            senderId: userId,
+            content: content,
+            randomId: nil,
+            messageType: "comment",
+            senderType: "user",
+            createdAt: now,
+            mentions: resolution.mentions.map { StoredMessageMention(type: $0.type, id: $0.id, name: $0.name) }
+        )
+        committedComment.seq = messages.appendAttachmentComment(
             AttachmentCommentRecord(
                 id: id,
                 attachmentId: attachmentId,
@@ -344,20 +359,31 @@ public struct AttachmentCommentsService: Sendable {
                 hostMessageId: hostMessageId,
                 hostChannelId: hostChannelId
             ),
-            message: StoredHumanMessage(
-                id: id,
-                channelId: threadChannelId,
-                senderId: userId,
-                content: content,
-                randomId: nil,
-                messageType: "comment",
-                senderType: "user",
-                createdAt: now,
-                mentions: resolution.mentions.map { StoredMessageMention(type: $0.type, id: $0.id, name: $0.name) }
-            ),
+            message: committedComment,
             ledger: MessageLedgerPort(oauth: oauth)
         )
         dependencies.recordMemberMentionRows(id, threadChannelId, resolution)
+        // Upstream `broadcastAndDeliver` for the comment thread reply, then the
+        // shared privacy scrub `{id, channelId, commentRef: null}` after the ref
+        // row exists. `stripViewerScopedAttachmentCommentMetadata` always nulls
+        // the ref on a shared room frame. The ordinary human-send transaction
+        // clears the thread's Done scopes; this append path owns that step.
+        messages.clearThreadDone(threadChannelId: threadChannelId)
+        let realtime = MessageRealtimeService(
+            messages: messages, channels: channels, profiles: profiles, oauth: oauth
+        )
+        for frame in realtime.frames(for: committedComment) {
+            dependencies.emitRealtime(frame.room, frame.event, frame.payload)
+        }
+        dependencies.emitRealtime(
+            "channel:\(threadChannelId)",
+            "message:updated",
+            OrderedJSON.object([
+                OrderedJSONField("id", id),
+                OrderedJSONField("channelId", threadChannelId),
+                OrderedJSONField("commentRef", .null),
+            ]).render()
+        )
         return AttachmentCommentCreatedResponse(
             id: id,
             attachmentId: attachmentId,

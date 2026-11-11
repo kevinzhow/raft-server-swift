@@ -14,6 +14,7 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
     case onlyOwnersAndAdminsCanChangeSetup
     case onlyOwnersAndAdminsCanInstall
     case onlyOwnersAndAdminsCanUninstall
+    case onlyOwnersAndAdminsCanManageIntegrations
     case invalidRequestBody
     case integrationAppNotFound
     /// `{"error": <message>, "errorCode": "INVALID_APP_METADATA"}`.
@@ -33,22 +34,33 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
     case invalidLimit
     case invalidBeforeCursor
     case eventNotFound
+    case oauthClientNotFound
+    case noLogoFile
+    case logoTooLarge
+    case logoBadFormat
+    case logoUploadFailed
+    case logoClearFailed
 
     public var status: UInt {
         switch self {
         case .unauthorized, .setupReportNeedsAppCredentials, .invalidClientCredentials:
             401
         case .notAMember, .onlyOwnersAndAdminsCanChangeSetup, .onlyOwnersAndAdminsCanInstall,
-             .onlyOwnersAndAdminsCanUninstall, .cannotManageAgentAppAccess:
+             .onlyOwnersAndAdminsCanUninstall, .onlyOwnersAndAdminsCanManageIntegrations,
+             .cannotManageAgentAppAccess:
             403
         case .activeInstallationNotFound, .integrationAppNotFound, .accessRequestNotFound,
-             .agentNotFound, .integrationAppNotFoundForServer, .grantNotFound, .eventNotFound:
+             .agentNotFound, .integrationAppNotFoundForServer, .grantNotFound, .eventNotFound,
+             .oauthClientNotFound:
             404
         case .setupDeclarationChanged:
             409
         case .invalidRequestBody, .invalidAppMetadata, .invalidSetupReport, .invalidSetupStatus,
-             .clientIdRequired, .invalidScope, .invalidLimit, .invalidBeforeCursor:
+             .clientIdRequired, .invalidScope, .invalidLimit, .invalidBeforeCursor,
+             .noLogoFile, .logoTooLarge, .logoBadFormat:
             400
+        case .logoUploadFailed, .logoClearFailed:
+            500
         }
     }
 
@@ -66,6 +78,8 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
             "Only server owners and admins can install apps"
         case .onlyOwnersAndAdminsCanUninstall:
             "Only server owners and admins can uninstall apps"
+        case .onlyOwnersAndAdminsCanManageIntegrations:
+            "Only server owners and admins can manage integrations"
         case .invalidRequestBody:
             "Invalid request body"
         case .integrationAppNotFound:
@@ -102,6 +116,18 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
             "before is not a valid cursor"
         case .eventNotFound:
             "Event not found"
+        case .oauthClientNotFound:
+            "OAuth client not found"
+        case .noLogoFile:
+            "No logo file provided"
+        case .logoTooLarge:
+            "Avatar image must be 5 MB or smaller"
+        case .logoBadFormat:
+            "Only image files are allowed (JPEG, PNG, GIF, WebP)"
+        case .logoUploadFailed:
+            "Failed to upload OAuth client logo"
+        case .logoClearFailed:
+            "Failed to clear OAuth client logo"
         }
     }
 
@@ -114,12 +140,14 @@ public enum IntegrationsAndAppAccessError: DomainError, Equatable {
             ])
         case .unauthorized, .notAMember, .activeInstallationNotFound,
              .onlyOwnersAndAdminsCanChangeSetup, .onlyOwnersAndAdminsCanInstall,
-             .onlyOwnersAndAdminsCanUninstall, .invalidRequestBody, .integrationAppNotFound,
+             .onlyOwnersAndAdminsCanUninstall, .onlyOwnersAndAdminsCanManageIntegrations,
+             .invalidRequestBody, .integrationAppNotFound,
              .setupReportNeedsAppCredentials, .invalidSetupReport, .invalidSetupStatus,
              .invalidClientCredentials, .setupDeclarationChanged, .accessRequestNotFound,
              .clientIdRequired, .agentNotFound, .cannotManageAgentAppAccess,
              .integrationAppNotFoundForServer, .invalidScope, .grantNotFound, .invalidLimit,
-             .invalidBeforeCursor, .eventNotFound:
+             .invalidBeforeCursor, .eventNotFound, .oauthClientNotFound, .noLogoFile,
+             .logoTooLarge, .logoBadFormat, .logoUploadFailed, .logoClearFailed:
             nil
         }
     }
@@ -639,5 +667,74 @@ public struct IntegrationsAndAppAccessService: Sendable {
         case .event(let event):
             return AgentAppEventDetailResponse(event: event)
         }
+    }
+
+    // MARK: - Integration logos
+
+    /// `POST /api/integrations/clients/:clientId/logo`. Owner/admin of the
+    /// owning Server only; a cross-Server or built-in App is indistinguishable
+    /// from a missing one. The response is the same row projection
+    /// `GET /api/integrations/clients` publishes.
+    public func uploadIntegrationClientLogo(
+        authorization: String?,
+        serverId: String,
+        clientId: String,
+        contentType: String?,
+        body: Data
+    ) async throws -> IntegrationSettingsClient {
+        let userId = try requireUser(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            throw IntegrationsAndAppAccessError.onlyOwnersAndAdminsCanManageIntegrations
+        }
+        guard UUID(uuidString: clientId) != nil else { throw IntegrationRouteError.appMissing }
+        // Upstream reads the multipart file before the App lookup, so an
+        // unknown App with no file publishes the file refusal first.
+        guard let file = FormPayload.multipartFilePart(named: "logo", contentType: contentType, body: body) else {
+            throw IntegrationsAndAppAccessError.noLogoFile
+        }
+        guard let recordId = oauth.userManagedClientRecordId(serverId: serverId, clientKey: clientId) else {
+            throw IntegrationsAndAppAccessError.oauthClientNotFound
+        }
+        let service = AvatarService(storage: oauth.assets, oauth: oauth)
+        let stored: AvatarStoredFile
+        do {
+            stored = try await service.storeIntegrationLogo(clientRecordId: recordId, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge: throw IntegrationsAndAppAccessError.logoTooLarge
+            case .badFormat: throw IntegrationsAndAppAccessError.logoBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure:
+                throw IntegrationsAndAppAccessError.logoUploadFailed
+            }
+        }
+        oauth.setClientLogo(clientRecordId: recordId, logoUrl: stored.url, logoStorageKey: stored.objectKey)
+        guard let updated = oauth.integrationSettingsClient(clientRecordId: recordId) else {
+            throw IntegrationsAndAppAccessError.oauthClientNotFound
+        }
+        return updated
+    }
+
+    /// `DELETE /api/integrations/clients/:clientId/logo`.
+    public func clearIntegrationClientLogo(
+        authorization: String?,
+        serverId: String,
+        clientId: String
+    ) async throws -> IntegrationSettingsClient {
+        let userId = try requireUser(authorization)
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId), role == "owner" || role == "admin" else {
+            throw IntegrationsAndAppAccessError.onlyOwnersAndAdminsCanManageIntegrations
+        }
+        guard UUID(uuidString: clientId) != nil else { throw IntegrationRouteError.appMissing }
+        guard let recordId = oauth.userManagedClientRecordId(serverId: serverId, clientKey: clientId) else {
+            throw IntegrationsAndAppAccessError.oauthClientNotFound
+        }
+        let previousKey = oauth.clearClientLogo(clientRecordId: recordId)
+        if let previousKey {
+            await AvatarService(storage: oauth.assets, oauth: oauth).deleteStoredObject(previousKey)
+        }
+        guard let updated = oauth.integrationSettingsClient(clientRecordId: recordId) else {
+            throw IntegrationsAndAppAccessError.oauthClientNotFound
+        }
+        return updated
     }
 }

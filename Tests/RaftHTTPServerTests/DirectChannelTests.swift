@@ -56,7 +56,12 @@ import VaporTesting
             #expect(dmResponse.status == .ok)
             let dm = try json(dmResponse)
             let dmId = dm["id"] as? String ?? ""
-            #expect(dm["activityMuteSupported"] as? Bool == false)
+            // The create route returns the DM channel row (upstream
+            // findOrCreateUserDM); the capability flag is published by the
+            // list, detail and notification-settings exits.
+            #expect(dm["activityMuteSupported"] == nil)
+            #expect(dm["peerType"] as? String == "user")
+            #expect(dm["peerName"] as? String == "dm-peer")
 
             #expect(try json(try await settings(dmId))["activityMuteSupported"] as? Bool == false)
             #expect(try json(try await patchSettings(dmId))["activityMuteSupported"] as? Bool == false)

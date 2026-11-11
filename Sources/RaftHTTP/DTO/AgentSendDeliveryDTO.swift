@@ -5,17 +5,234 @@ import RaftShared
 
 /// `POST /internal/agent/:agentId/send` request body.
 ///
-/// The legacy handler accepted any JSON object with a string `target` and a
-/// string `content`; a missing or non-string key is the published
-/// `Invalid target` 400. The route decodes this shape when it can and passes
-/// `nil` when it cannot, so the same 400 stays reachable for a malformed body.
-public struct AgentSendRequest: Codable, Sendable, Equatable {
-    public var target: String?
-    public var content: String?
+/// The pinned route validates the whole body with `legacyAgentSendBodySchema`
+/// before the handler runs: every member is optional, unknown members pass
+/// through, and a wrong member type is one `issues` entry rather than a
+/// decode failure. `issues` is empty exactly when the body matches that
+/// schema; the route turns a non-empty list into the published
+/// `legacy_agent_send_contract_invalid` 400 before any side effect.
+public struct AgentSendRequest: Sendable, Equatable {
+    /// One zod issue: a dotted path and a human-readable reason.
+    ///
+    /// The shared `AuthRequestIssue` is the only issue shape this repo
+    /// publishes for zod request bodies; the nested name stays for callers.
+    public typealias Issue = AuthRequestIssue
 
-    public init(target: String? = nil, content: String? = nil) {
+    public var target: String?
+    public var channel: String?
+    public var dmTo: String?
+    public var content: String?
+    public var attachmentIds: [String]
+    public var idempotencyKey: String?
+    public var reconcileOnly: Bool
+    /// The deprecated `continue` request member.
+    public var continueFlag: Bool
+    public var sendDraft: Bool
+    public var continueAnyway: Bool
+    public var draftReholdCount: Double?
+    public var draftReplacedExisting: Bool
+    /// Kept as the JSON number the schema accepts; the handler floors it.
+    public var seenUpToSeq: Double?
+    public var seenExactSeqs: [Int]
+    public var freshnessContextMode: String?
+    public var issues: [Issue]
+
+    public init(
+        target: String? = nil,
+        channel: String? = nil,
+        dmTo: String? = nil,
+        content: String? = nil,
+        attachmentIds: [String] = [],
+        idempotencyKey: String? = nil,
+        reconcileOnly: Bool = false,
+        continueFlag: Bool = false,
+        sendDraft: Bool = false,
+        continueAnyway: Bool = false,
+        draftReholdCount: Double? = nil,
+        draftReplacedExisting: Bool = false,
+        seenUpToSeq: Double? = nil,
+        seenExactSeqs: [Int] = [],
+        freshnessContextMode: String? = nil,
+        issues: [Issue] = []
+    ) {
         self.target = target
+        self.channel = channel
+        self.dmTo = dmTo
         self.content = content
+        self.attachmentIds = attachmentIds
+        self.idempotencyKey = idempotencyKey
+        self.reconcileOnly = reconcileOnly
+        self.continueFlag = continueFlag
+        self.sendDraft = sendDraft
+        self.continueAnyway = continueAnyway
+        self.draftReholdCount = draftReholdCount
+        self.draftReplacedExisting = draftReplacedExisting
+        self.seenUpToSeq = seenUpToSeq
+        self.seenExactSeqs = seenExactSeqs
+        self.freshnessContextMode = freshnessContextMode
+        self.issues = issues
+    }
+
+    /// The effective target: `target || channel || dm:@<dm_to>` (`||` skips an
+    /// empty string, exactly like the pinned route).
+    public var effectiveTarget: String? {
+        if let target, !target.isEmpty { return target }
+        if let channel, !channel.isEmpty { return channel }
+        if let dmTo, !dmTo.isEmpty {
+            var peer = dmTo
+            if peer.hasPrefix("@") { peer = String(peer.dropFirst()) }
+            return "dm:@\(peer)"
+        }
+        return nil
+    }
+}
+
+extension AgentSendRequest: Decodable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = Self.parse(try container.decode(JSONValue.self))
+    }
+
+    /// Pinned `legacyAgentSendBodySchema` over `req.body ?? {}`.
+    ///
+    /// The schema is `agentApiSendBodySchema.extend({channel, dm_to})` with
+    /// `.passthrough()`. zod reports issues in shape order, not input order,
+    /// and an array-level `.max` issue follows every element issue. This
+    /// builder walks the shape in that same order; a JSON `null` root is the
+    /// empty object, exactly like `req.body ?? {}`.
+    static func parse(_ raw: JSONValue?) -> AgentSendRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return AgentSendRequest(issues: [rootIssue])
+        }
+        return validate(fields)
+    }
+
+    private static func validate(_ fields: [String: JSONValue]) -> AgentSendRequest {
+        var issues: [AuthRequestIssue] = []
+        var request = AgentSendRequest()
+
+        let target = AuthRequestSchema.optionalString(fields["target"], path: "target")
+        issues += target.issues
+        request.target = target.value
+
+        let content = AuthRequestSchema.optionalString(fields["content"], path: "content")
+        issues += content.issues
+        request.content = content.value
+
+        let attachmentIds = AuthRequestSchema.array(fields["attachmentIds"], path: "attachmentIds")
+        issues += attachmentIds.issues
+        if let entries = attachmentIds.items {
+            var ids: [String] = []
+            for (index, entry) in entries.enumerated() {
+                let element = AuthRequestSchema.string(
+                    entry,
+                    path: "attachmentIds.\(index)",
+                    min: 1,
+                    trim: true
+                )
+                issues += element.issues
+                if let id = element.value { ids.append(id) }
+            }
+            request.attachmentIds = ids
+        }
+
+        let idempotencyKey = AuthRequestSchema.optionalString(
+            fields["idempotencyKey"], path: "idempotencyKey", trim: true
+        )
+        issues += idempotencyKey.issues
+        request.idempotencyKey = idempotencyKey.value
+
+        let reconcileOnly = AuthRequestSchema.optionalBoolean(fields["reconcileOnly"], path: "reconcileOnly")
+        issues += reconcileOnly.issues
+        request.reconcileOnly = reconcileOnly.value ?? false
+
+        let continueFlag = AuthRequestSchema.optionalBoolean(fields["continue"], path: "continue")
+        issues += continueFlag.issues
+        request.continueFlag = continueFlag.value ?? false
+
+        let sendDraft = AuthRequestSchema.optionalBoolean(fields["sendDraft"], path: "sendDraft")
+        issues += sendDraft.issues
+        request.sendDraft = sendDraft.value ?? false
+
+        let continueAnyway = AuthRequestSchema.optionalBoolean(fields["continueAnyway"], path: "continueAnyway")
+        issues += continueAnyway.issues
+        request.continueAnyway = continueAnyway.value ?? false
+
+        let draftReholdCount = AuthRequestSchema.optionalNumber(
+            fields["draftReholdCount"], path: "draftReholdCount"
+        )
+        issues += draftReholdCount.issues
+        request.draftReholdCount = draftReholdCount.value
+
+        let draftReplacedExisting = AuthRequestSchema.optionalBoolean(
+            fields["draftReplacedExisting"], path: "draftReplacedExisting"
+        )
+        issues += draftReplacedExisting.issues
+        request.draftReplacedExisting = draftReplacedExisting.value ?? false
+
+        let seenUpToSeq = AuthRequestSchema.optionalNumber(fields["seenUpToSeq"], path: "seenUpToSeq")
+        issues += seenUpToSeq.issues
+        request.seenUpToSeq = seenUpToSeq.value
+
+        let seenExactSeqs = AuthRequestSchema.array(fields["seenExactSeqs"], path: "seenExactSeqs")
+        issues += seenExactSeqs.issues
+        if let entries = seenExactSeqs.items {
+            var seqs: [Int] = []
+            for (index, entry) in entries.enumerated() {
+                let element = AuthRequestSchema.integer(
+                    entry,
+                    path: "seenExactSeqs.\(index)",
+                    positive: true
+                )
+                issues += element.issues
+                if let seq = element.value { seqs.append(seq) }
+            }
+            if entries.count > 2500 {
+                issues.append(AuthRequestIssue(
+                    path: "seenExactSeqs",
+                    message: "Too big: expected array to have <=2500 items"
+                ))
+            }
+            request.seenExactSeqs = seqs
+        }
+
+        if let value = fields["seenCards"] {
+            if case .object(let cards) = value {
+                for key in ["channel", "peer"] {
+                    let card = AuthRequestSchema.nullableString(
+                        cards[key],
+                        path: "seenCards.\(key)",
+                        min: 1
+                    )
+                    issues += card.issues
+                }
+            } else {
+                issues.append(AuthRequestIssue(
+                    path: "seenCards",
+                    message: "Invalid input: expected object, received \(value.zodKind)"
+                ))
+            }
+        }
+
+        let freshnessContextMode = AuthRequestSchema.enumValue(
+            fields["freshnessContextMode"],
+            path: "freshnessContextMode",
+            options: ["inline", "withheld"]
+        )
+        issues += freshnessContextMode.issues
+        request.freshnessContextMode = freshnessContextMode.value
+
+        let channel = AuthRequestSchema.optionalString(fields["channel"], path: "channel")
+        issues += channel.issues
+        request.channel = channel.value
+
+        let dmTo = AuthRequestSchema.optionalString(fields["dm_to"], path: "dm_to")
+        issues += dmTo.issues
+        request.dmTo = dmTo.value
+
+        request.issues = issues
+        return request
     }
 }
 
@@ -166,20 +383,93 @@ public struct AgentActivityEvent: Decodable, Sendable, Equatable {
 
 // MARK: - Responses
 
-public struct AgentSendResponse: Codable, Sendable, Equatable, JSONBodyConvertible {
-    public let id: String
-    public let channelId: String
+/// `POST /internal/agent/:agentId/send` committed body.
+///
+/// Legacy order: `ok`, `state`, `messageId`, `messageSeq`, then the optional
+/// sender-side mention fields. A held response never carries them.
+public struct AgentSendResponse: JSONBodyConvertible, Sendable, Equatable {
+    public let messageId: String
+    public let messageSeq: Int
 
-    public init(id: String, channelId: String) {
-        self.id = id
-        self.channelId = channelId
+    public init(messageId: String, messageSeq: Int) {
+        self.messageId = messageId
+        self.messageSeq = messageSeq
     }
 
-    /// Legacy order: `id`, then `channelId`.
     public var jsonBody: OrderedJSON {
         var body = OrderedJSONObject()
-        body.append("id", id)
-        body.append("channelId", channelId)
+        body.append("ok", true)
+        body.append("state", "sent")
+        body.append("messageId", messageId)
+        body.append("messageSeq", messageSeq)
+        return body.json
+    }
+}
+
+/// `POST /internal/agent/:agentId/send` freshness hold.
+///
+/// The `apmHeldFreshness` inline envelope plus the legacy-only extras. Member
+/// order is the pinned spread order; `continueAnywaySuggested` and
+/// `seenUpToMessageId` are always present (false / JSON null), while
+/// `firstShownSeq` is only present when a context window was shown.
+public struct LegacyAgentSendHeldResponse: JSONBodyConvertible, Sendable, Equatable {
+    public var producerFactId: String
+    /// Envelopes already rendered by the action-card prepare service.
+    public var heldMessages: [String]
+    public var newMessageCount: Int
+    public var shownMessageCount: Int
+    public var omittedMessageCount: Int
+    public var seenUpToSeq: Int
+    public var seenUpToMessageId: String?
+    public var formalMentionCount: Int
+    public var continueAnywaySuggested: Bool
+
+    public init(
+        producerFactId: String,
+        heldMessages: [String],
+        newMessageCount: Int,
+        shownMessageCount: Int,
+        omittedMessageCount: Int,
+        seenUpToSeq: Int,
+        seenUpToMessageId: String?,
+        formalMentionCount: Int,
+        continueAnywaySuggested: Bool
+    ) {
+        self.producerFactId = producerFactId
+        self.heldMessages = heldMessages
+        self.newMessageCount = newMessageCount
+        self.shownMessageCount = shownMessageCount
+        self.omittedMessageCount = omittedMessageCount
+        self.seenUpToSeq = seenUpToSeq
+        self.seenUpToMessageId = seenUpToMessageId
+        self.formalMentionCount = formalMentionCount
+        self.continueAnywaySuggested = continueAnywaySuggested
+    }
+
+    public var jsonBody: OrderedJSON {
+        var body = OrderedJSONObject()
+        body.append("ok", true)
+        body.append("state", "held")
+        body.append("outcome", "held")
+        body.append("subtype", "freshness")
+        body.append("reason", "newer_messages_available")
+        body.append("decision", "syncing_hold")
+        body.append("producerFactId", producerFactId)
+        body.append("available_actions", .array([
+            .string("check_messages"),
+            .string("send_draft"),
+            .string("send_anyway"),
+        ]))
+        body.append("heldMessages", .array(heldMessages.map(OrderedJSON.raw)))
+        body.append("newMessageCount", newMessageCount)
+        body.append("shownMessageCount", shownMessageCount)
+        body.append("omittedMessageCount", omittedMessageCount)
+        body.append("seenUpToSeq", seenUpToSeq)
+        body.append("mentionAnnotation", .object([
+            OrderedJSONField("formalMentionCount", formalMentionCount),
+        ]))
+        body.append("continueAnywaySuggested", continueAnywaySuggested)
+        body.append("seenUpToMessageId", optional: seenUpToMessageId)
         return body.json
     }
 }

@@ -72,15 +72,34 @@ private func body(_ error: any DomainError) -> String {
         == #"{"saved":[],"total":0,"hasMore":false}"#)
 
     #expect(AllChannelVisibilityResponse(id: "c", visible: false).jsonBody.render() == #"{"id":"c","visible":false}"#)
-    #expect(DirectChannelResponse(id: "d", peerId: "p", peerType: "agent").jsonBody.render() == """
-    {"id":"d","type":"dm","activityMuteSupported":false,"peerId":"p","peerType":"agent"}
+
+    let agentPeer = DirectChannelPeerFacts(
+        peerId: "a", peerName: "atlas", peerDisplayName: "Atlas", peerDescription: nil,
+        peerGravatarHash: nil, peerAvatarUrl: nil, peerType: "agent"
+    )
+    #expect(DirectChannelResponse(
+        id: "d", name: "", description: nil, createdAt: "2026-01-01T00:00:00.000Z", peer: agentPeer
+    ).jsonBody.render() == """
+    {"id":"d","name":"","type":"dm","description":null,"createdAt":"2026-01-01T00:00:00.000Z","peerId":"a","peerName":"atlas","peerDisplayName":"Atlas","peerDescription":null,"peerGravatarHash":null,"peerAvatarUrl":null,"peerType":"agent"}
     """)
+    let userPeer = DirectChannelPeerFacts(
+        peerId: "p", peerName: "peer", peerDisplayName: "Peer", peerDescription: nil,
+        peerGravatarHash: "hash", peerAvatarUrl: "https://cdn.test/p.png", peerType: "user"
+    )
+    #expect(DirectChannelResponse(
+        id: "d", name: "peer", description: nil, createdAt: "2026-01-01T00:00:00.000Z", peer: userPeer
+    ).jsonBody.render() == """
+    {"id":"d","name":"peer","type":"dm","description":null,"createdAt":"2026-01-01T00:00:00.000Z","peerType":"user","peerId":"p","peerName":"peer","peerDisplayName":"Peer","peerDescription":null,"peerAvatarUrl":"https://cdn.test/p.png","peerGravatarHash":"hash"}
+    """)
+
     let listed = DirectChannelListRowDTO(
-        id: "d", joined: true, peerId: "p", peerType: "user",
-        lastMessageAt: "2026-01-01T00:00:00.000Z", lastMessagePreview: "yo", lastMessageSenderName: nil
+        id: "d", name: "peer", description: nil, createdAt: "2026-01-01T00:00:00.000Z", peer: userPeer,
+        activityMuted: false, muteFromSeq: nil, prefsVersion: 0, collapseLongMessages: true,
+        displayPrefsVersion: 0, maxReadSeq: 0, readStateVersion: 0, readState: .absent,
+        lastMessageAt: "2026-01-02T00:00:00.000Z", lastMessagePreview: "yo", lastMessageSenderName: nil
     )
     #expect(DirectChannelListResponse(rows: [listed]).jsonBody.render() == """
-    [{"id":"d","type":"dm","joined":true,"activityMuteSupported":false,"peerId":"p","peerType":"user","lastMessageAt":"2026-01-01T00:00:00.000Z","lastMessagePreview":"yo","lastMessageSenderName":null}]
+    [{"id":"d","name":"peer","type":"dm","description":null,"createdAt":"2026-01-01T00:00:00.000Z","peerId":"p","peerName":"peer","peerDisplayName":"Peer","peerDescription":null,"peerAvatarUrl":"https://cdn.test/p.png","peerGravatarHash":"hash","peerType":"user","activityMuted":false,"muteFromSeq":null,"prefsVersion":0,"activityMuteSupported":false,"collapseLongMessages":true,"displayPrefsVersion":0,"maxReadSeq":0,"readStateVersion":0,"readState":{"kind":"absent"},"lastMessageAt":"2026-01-02T00:00:00.000Z","lastMessagePreview":"yo","lastMessageSenderName":null}]
     """)
     #expect(DirectChannelListResponse(rows: []).jsonBody.render() == "[]")
 }
@@ -113,23 +132,38 @@ private func body(_ error: any DomainError) -> String {
         changeChannelMemberRoles: true, manageGuestAccess: false, deleteChannels: true,
         changeChannelVisibility: false, federateChannels: true
     )
-    func detail(peer: ChannelDetailResponse.DirectPeer?, read: ChannelDetailResponse.PeerReadState?) -> String {
+    func detail(peer: DirectChannelPeerFacts?, read: ChannelDetailResponse.PeerReadState?) -> String {
         ChannelDetailResponse(
-            id: "c", name: "general", type: "dm", joined: true, directPeer: peer, maxReadSeq: 3, readStateVersion: 1,
-            activityMuteSupported: false, collapseLongMessages: true, displayPrefsVersion: 2, channelRole: "admin",
-            channelAdminBasis: nil, channelAuthorityRevision: 4, capabilities: capabilities, peerReadState: read
+            id: "c", serverId: "s", name: "general", description: nil, type: "dm", createdAt: "2026-01-01T00:00:00.000Z",
+            directPeer: peer, joined: true, collapseLongMessages: true, displayPrefsVersion: 2,
+            maxReadSeq: 3, readStateVersion: 1, readState: .present(readStateVersion: 1, maxReadSeq: 3),
+            activityMuteSupported: false, channelRole: "admin", channelAdminBasis: nil,
+            capabilities: capabilities, channelAuthorityRevision: 4, peerReadState: read
         ).jsonBody.render()
     }
-    let tail = #""maxReadSeq":3,"readStateVersion":1,"activityMuteSupported":false,"collapseLongMessages":true,"displayPrefsVersion":2,"channelRole":"admin","channelAdminBasis":null,"channelAuthorityRevision":4,"channelCapabilities":{"editChannelMetadata":true,"archiveChannels":false,"addChannelMembers":true,"removeChannelMembers":false,"changeChannelMemberRoles":true,"manageGuestAccess":false,"deleteChannels":true,"changeChannelVisibility":false,"federateChannels":true}"#
-    #expect(detail(peer: nil, read: nil) == #"{"id":"c","name":"general","type":"dm","joined":true,"# + tail + "}")
-    #expect(detail(peer: .init(peerType: "agent", peerId: "a", peerName: "Atlas"), read: nil)
-        == #"{"id":"c","name":"general","type":"dm","joined":true,"peerType":"agent","peerId":"a","peerName":"Atlas","# + tail + "}")
+    let head = #"{"id":"c","serverId":"s","name":"general","description":null,"type":"dm","createdAt":"2026-01-01T00:00:00.000Z""#
+    let tail = #""joined":true,"collapseLongMessages":true,"displayPrefsVersion":2,"maxReadSeq":3,"readStateVersion":1,"readState":{"kind":"present","readStateVersion":1,"maxReadSeq":"3","latestActivity":null},"activityMuteSupported":false,"channelRole":"admin","channelAdminBasis":null,"channelCapabilities":{"editChannelMetadata":true,"archiveChannels":false,"addChannelMembers":true,"removeChannelMembers":false,"changeChannelMemberRoles":true,"manageGuestAccess":false,"deleteChannels":true,"changeChannelVisibility":false,"federateChannels":true},"channelAuthorityRevision":4"#
+    #expect(detail(peer: nil, read: nil) == head + "," + tail + "}")
+    let agentPeer = DirectChannelPeerFacts(
+        peerId: "a", peerName: "Atlas", peerDisplayName: "Atlas Display", peerDescription: nil,
+        peerGravatarHash: nil, peerAvatarUrl: nil, peerType: "agent"
+    )
+    #expect(detail(peer: agentPeer, read: nil)
+        == head + #","peerId":"a","peerName":"Atlas","peerDisplayName":"Atlas Display","peerDescription":null,"peerGravatarHash":null,"peerAvatarUrl":null,"peerType":"agent","# + tail + "}")
+    let userPeer = DirectChannelPeerFacts(
+        peerId: "p", peerName: "peer", peerDisplayName: nil, peerDescription: nil,
+        peerGravatarHash: "hash", peerAvatarUrl: nil, peerType: "user"
+    )
+    #expect(detail(peer: userPeer, read: nil)
+        == head + #","peerType":"user","peerId":"p","peerName":"peer","peerDisplayName":null,"peerDescription":null,"peerAvatarUrl":null,"peerGravatarHash":"hash","# + tail + "}")
+    let tailBeforePeerRead = #""joined":true,"collapseLongMessages":true,"displayPrefsVersion":2,"maxReadSeq":3,"readStateVersion":1,"readState":{"kind":"present","readStateVersion":1,"maxReadSeq":"3","latestActivity":null}"#
+    let tailAfterPeerRead = #","activityMuteSupported":false,"channelRole":"admin","channelAdminBasis":null,"channelCapabilities":{"editChannelMetadata":true,"archiveChannels":false,"addChannelMembers":true,"removeChannelMembers":false,"changeChannelMemberRoles":true,"manageGuestAccess":false,"deleteChannels":true,"changeChannelVisibility":false,"federateChannels":true},"channelAuthorityRevision":4"#
     #expect(detail(peer: nil, read: .states([(peerId: "a", maxReadSeq: 2)]))
-        == #"{"id":"c","name":"general","type":"dm","joined":true,"# + tail
-        + #","peerReadStates":[{"peerKind":"agent","peerId":"a","maxReadSeq":2}]}"#)
+        == head + "," + tailBeforePeerRead
+        + #","peerReadStates":[{"peerKind":"agent","peerId":"a","maxReadSeq":2}]"# + tailAfterPeerRead + "}")
     #expect(detail(peer: nil, read: .summary(peerCount: 51, readCountAtSeq: [(seq: 1, count: 3)]))
-        == #"{"id":"c","name":"general","type":"dm","joined":true,"# + tail
-        + #","peerReadSummary":{"peerCount":51,"readCountAtSeq":[{"seq":1,"count":3}]}}"#)
+        == head + "," + tailBeforePeerRead
+        + #","peerReadSummary":{"peerCount":51,"readCountAtSeq":[{"seq":1,"count":3}]}"# + tailAfterPeerRead + "}")
 }
 
 // MARK: - Typed refusals
@@ -233,9 +267,14 @@ private func body(_ error: any DomainError) -> String {
     let created = try service.createDirectChannel(
         authorization: f.ownerAuthorization, serverId: f.serverId, body: DirectChannelRequest(agentId: f.agentId)
     )
-    #expect(created.jsonBody.render() == """
-    {"id":"\(created.id)","type":"dm","activityMuteSupported":false,"peerId":"\(f.agentId)","peerType":"agent"}
-    """)
+    #expect(created.peer.peerType == "agent")
+    #expect(created.peer.peerId == f.agentId)
+    #expect(created.peer.peerName == "atlas-003")
+    #expect(created.peer.peerDisplayName == "atlas-003")
+    #expect(created.name == "")
+    let createdBody = created.jsonBody.render()
+    #expect(createdBody.hasPrefix(#"{"id":"\#(created.id)","name":"","type":"dm","description":null,"createdAt":""#))
+    #expect(createdBody.hasSuffix(#"","peerId":"\#(f.agentId)","peerName":"atlas-003","peerDisplayName":"atlas-003","peerDescription":null,"peerGravatarHash":null,"peerAvatarUrl":null,"peerType":"agent"}"#))
     let row = f.accounts.serversAndChannelsStore.postableChannel(id: created.id)
     #expect(row?.kind == "dm")
     #expect(row?.memberIds == [f.ownerId, f.agentId])
@@ -243,11 +282,16 @@ private func body(_ error: any DomainError) -> String {
     let human = try service.createDirectChannel(
         authorization: f.ownerAuthorization, serverId: f.serverId, body: DirectChannelRequest(userId: f.memberId)
     )
-    #expect(human.peerType == "user")
+    #expect(human.peer.peerType == "user")
+    #expect(human.peer.peerName == "tool-member-003")
+    #expect(human.peer.peerGravatarHash
+        == "4d1879a2098156e6f34ef6562a00d5c48303f5e5ade31cbeed9d0385fb2d1a82")
 
     let list = try service.listDirectChannels(authorization: f.ownerAuthorization, serverId: f.serverId)
     #expect(list.rows.count == 2)
-    #expect(list.rows.contains { $0.id == created.id && $0.peerId == f.agentId && $0.peerType == "agent" })
+    #expect(list.rows.contains {
+        $0.id == created.id && $0.peer.peerId == f.agentId && $0.peer.peerType == "agent" && $0.peer.peerName == "atlas-003"
+    })
     #expect(list.jsonBody.render().hasPrefix("[{\"id\":\""))
 }
 

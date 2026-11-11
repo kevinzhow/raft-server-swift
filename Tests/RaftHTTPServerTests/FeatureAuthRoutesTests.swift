@@ -9,7 +9,7 @@ import VaporTesting
 
 /// Every `method path` pair the auth slice owns. This is the complete list of
 /// `app.get/post/patch/delete/on("api", "auth", ...)` registrations in
-/// `FallbackApplication.configure` at extraction time (38 routes).
+/// `FallbackApplication.configure` at extraction time (40 routes).
 private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
     (.get, "GET /api/auth/invite-info"),
     (.post, "POST /api/auth/mobile/oauth/apple/native/start"),
@@ -34,6 +34,7 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/auth/logout"),
     (.get, "GET /api/auth/identities"),
     (.delete, "DELETE /api/auth/identities/:provider"),
+    (.post, "POST /api/auth/forgot-password"),
     (.post, "POST /api/auth/reset-password"),
     (.post, "POST /api/auth/pending-link/cancel"),
     (.post, "POST /api/auth/login"),
@@ -44,6 +45,7 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
     (.post, "POST /api/auth/app-login/complete"),
     (.get, "GET /api/auth/providers"),
     (.get, "GET /api/auth/me"),
+    (.get, "GET /api/auth/me/username-available"),
     (.post, "POST /api/auth/me/avatar"),
     (.post, "POST /api/auth/me/complete-profile"),
     (.post, "POST /api/auth/me/timezone-observation"),
@@ -77,8 +79,8 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
 
         // The list is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedAuthRoutes.count == 38)
-        #expect(expected.count == 38)
+        #expect(expectedAuthRoutes.count == 40)
+        #expect(expected.count == 40)
 
         // One route per table entry, and no route outside `/api/auth/...`.
         #expect(app.routes.all.count == expected.count)
@@ -117,6 +119,7 @@ private let expectedAuthRoutes: [(HTTPRequest.Method, String)] = [
                 var headers = HTTPFields()
                 headers[.authorization] = "Bearer \(authorization)"
                 headers[.contentType] = "application/json"
+                headers[HTTPField.Name("X-Server-Id")!] = serverId
                 return try await client.send(.post, headers: headers, to: URI(string: path)) { $0.body = .init(string: body) }
             }
             func joinToken() async throws -> String {

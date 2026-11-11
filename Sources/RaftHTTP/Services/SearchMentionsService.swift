@@ -421,10 +421,18 @@ public struct SearchMentionsService: Sendable {
         let beforeBoundary = try parseBoundary(before, label: "before")
         let channelState = channels.state
         let messageState = messages.state
-        guard let machine = machines.machineKeys[token], machine.agentId == agentId else {
+        let credential = machines.machineCredential(apiKey: token, agentId: agentId)
+        let serverId: String
+        if let machine = credential.machine {
+            guard agents.agentMachineIds[agentId] == machine.id else {
+                throw SearchMentionsError.agentSearchInvalidToken
+            }
+            serverId = machine.serverId
+        } else if let legacy = credential.legacy, legacy.agentId == agentId {
+            serverId = legacy.serverId
+        } else {
             throw SearchMentionsError.agentSearchInvalidToken
         }
-        let serverId = machine.serverId
         var senderScope: String?
         if let sender, !sender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let handle = sender.hasPrefix("@") ? String(sender.dropFirst()) : sender

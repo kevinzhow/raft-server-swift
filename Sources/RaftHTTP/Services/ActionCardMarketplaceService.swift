@@ -393,23 +393,23 @@ public struct ActionCardMarketplaceService: Sendable {
             }
             assignee = resolved
         }
+        let resourceFlags = body.tasks.map(\.createsResource)
         let created = tasks.appendTaskBatch(
             channelId: channelId,
             titles: titles,
             creatorId: auth.agentId,
+            resourceReceiptFlags: resourceFlags,
             now: now()
         )
         let ids = created.map(\.id)
-        let resourceFlags = body.tasks.map(\.createsResource)
-        if resourceFlags.contains(true) {
-            tasks.markRequiresResourceReceipt(taskIds: ids, flags: resourceFlags)
-        }
         var receipt: ActionCardTaskAssignmentReceipt?
         if let assignee {
             let updated = tasks.applyAssignment(
                 taskIds: ids,
                 assigneeId: assignee.id,
-                assigneeType: assignee.type
+                assigneeType: assignee.type,
+                actorId: auth.agentId,
+                now: now()
             )
             for task in updated {
                 inboxFacts.append(StoredInboxFact(
@@ -500,7 +500,9 @@ public struct ActionCardMarketplaceService: Sendable {
             channelId: channelId,
             taskNumber: taskNumber,
             receiptJSON: receiptJSON,
-            reminder: reminder
+            reminder: reminder,
+            actorId: writer.agentId,
+            now: now()
         ) {
         case .notFound:
             throw ActionCardMarketplaceError.taskNotFound
@@ -554,7 +556,9 @@ public struct ActionCardMarketplaceService: Sendable {
             channelId: channelId,
             taskNumber: taskNumber,
             assigneeId: resolved.id,
-            assigneeType: resolved.type
+            assigneeType: resolved.type,
+            actorId: agent.id,
+            now: now()
         ) {
         case .notFound:
             throw ActionCardMarketplaceError.taskNotFoundForAssignment
@@ -856,7 +860,7 @@ public struct ActionCardMarketplaceService: Sendable {
     }
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, oauth: oauth)
+        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
     }
 
     private func taskAuth(

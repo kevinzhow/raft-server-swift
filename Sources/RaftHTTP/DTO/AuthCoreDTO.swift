@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 // Request and response shapes of the session core: social completion,
 // register, staging retirement, device grants, refresh and logout.
@@ -25,14 +26,6 @@ private extension KeyedDecodingContainer {
             return number == 1
         }
         return nil
-    }
-
-    /// One required string in the three states an issue list distinguishes.
-    func bodyField(_ key: Key) -> LoginBodyField {
-        guard contains(key) else { return .absent }
-        if let string = try? decode(String.self, forKey: key) { return .string(string) }
-        let shape = (try? decode(JSONShape.self, forKey: key)) ?? .object
-        return .wrongType(shape.name)
     }
 }
 
@@ -80,11 +73,22 @@ public struct SocialCompleteRequest: Decodable, Sendable, Equatable {
 }
 
 /// `POST /api/auth/register` request body.
+///
+/// Pinned `routes/auth.ts:102` is a zod 4.3.6 passthrough object: `email` and
+/// `password` are required non-empty strings, `name` and
+/// `stagingSelfAccountCapability` are optional, and unknown members pass
+/// through. The decoder keeps the raw JSON value so the service publishes the
+/// exact issue list before any account exists.
 public struct RegisterRequest: Decodable, Sendable, Equatable {
-    public var email: LoginBodyField
-    public var password: LoginBodyField
-    public var name: LoginBodyField
-    public var stagingSelfAccountCapability: LoginBodyField
+    /// The valid string values; `nil` when the member was absent or invalid
+    /// (the reason is one of `issues`).
+    public var email: String?
+    public var password: String?
+    public var name: String?
+    public var stagingSelfAccountCapability: String?
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object.
+    public var issues: [AuthRequestIssue]
     public var acceptTerms: Bool
     public var termsVersion: String?
     public var privacyVersion: String?
@@ -92,10 +96,11 @@ public struct RegisterRequest: Decodable, Sendable, Equatable {
     public var e2eAutoVerify: Bool
 
     public init(
-        email: LoginBodyField = .absent,
-        password: LoginBodyField = .absent,
-        name: LoginBodyField = .absent,
-        stagingSelfAccountCapability: LoginBodyField = .absent,
+        email: String? = nil,
+        password: String? = nil,
+        name: String? = nil,
+        stagingSelfAccountCapability: String? = nil,
+        issues: [AuthRequestIssue] = [],
         acceptTerms: Bool = false,
         termsVersion: String? = nil,
         privacyVersion: String? = nil,
@@ -106,6 +111,7 @@ public struct RegisterRequest: Decodable, Sendable, Equatable {
         self.password = password
         self.name = name
         self.stagingSelfAccountCapability = stagingSelfAccountCapability
+        self.issues = issues
         self.acceptTerms = acceptTerms
         self.termsVersion = termsVersion
         self.privacyVersion = privacyVersion
@@ -113,23 +119,62 @@ public struct RegisterRequest: Decodable, Sendable, Equatable {
         self.e2eAutoVerify = e2eAutoVerify
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case email, password, name, stagingSelfAccountCapability
-        case acceptTerms, termsVersion, privacyVersion, legalAcceptanceSource
-        case e2eAutoVerify = "__e2eAutoVerify"
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = Self.parse(try container.decode(JSONValue.self))
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        email = container.bodyField(.email)
-        password = container.bodyField(.password)
-        name = container.bodyField(.name)
-        stagingSelfAccountCapability = container.bodyField(.stagingSelfAccountCapability)
-        acceptTerms = container.lenientBool(.acceptTerms) == true
-        termsVersion = container.lenientString(.termsVersion)
-        privacyVersion = container.lenientString(.privacyVersion)
-        legalAcceptanceSource = container.lenientString(.legalAcceptanceSource)
-        e2eAutoVerify = container.lenientBool(.e2eAutoVerify) == true
+    /// Pinned `emailRegisterRequestSchema`. The issue order is the schema's
+    /// member order (`email`, `password`, `name`,
+    /// `stagingSelfAccountCapability`).
+    static func parse(_ raw: JSONValue?) -> RegisterRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return RegisterRequest(issues: [rootIssue])
+        }
+        var issues: [AuthRequestIssue] = []
+        let email = AuthRequestSchema.string(fields["email"], path: "email", min: 1)
+        issues += email.issues
+        let password = AuthRequestSchema.string(fields["password"], path: "password", min: 1)
+        issues += password.issues
+        let name = AuthRequestSchema.optionalString(fields["name"], path: "name", min: 1)
+        issues += name.issues
+        let capability = AuthRequestSchema.optionalString(
+            fields["stagingSelfAccountCapability"],
+            path: "stagingSelfAccountCapability",
+            min: 32,
+            max: 256
+        )
+        issues += capability.issues
+        return RegisterRequest(
+            email: email.value,
+            password: password.value,
+            name: name.value,
+            stagingSelfAccountCapability: capability.value,
+            issues: issues,
+            acceptTerms: Self.legacyBool(fields["acceptTerms"]) == true,
+            termsVersion: Self.legacyString(fields["termsVersion"]),
+            privacyVersion: Self.legacyString(fields["privacyVersion"]),
+            legalAcceptanceSource: Self.legacyString(fields["legalAcceptanceSource"]),
+            e2eAutoVerify: Self.legacyBool(fields["__e2eAutoVerify"]) == true
+        )
+    }
+
+    /// The retired parser's `as? String` for a passthrough member: only a JSON
+    /// string reads as a value.
+    private static func legacyString(_ value: JSONValue?) -> String? {
+        if case .string(let text)? = value { return text }
+        return nil
+    }
+
+    /// The retired parser's `as? Bool`, including the `0`/`1` number bridge.
+    private static func legacyBool(_ value: JSONValue?) -> Bool? {
+        switch value {
+        case .bool(let flag)?: return flag
+        case .integer(let number)?: return number == 0 || number == 1 ? number == 1 : nil
+        case .number(let number)?: return number == 0 || number == 1 ? number == 1 : nil
+        default: return nil
+        }
     }
 }
 
@@ -240,14 +285,16 @@ public struct RefreshTokenRequest: Decodable, Sendable, Equatable {
 
 // MARK: - Responses
 
-/// One identity row of the link-completion reply.
+/// One identity row of the link-completion reply. Upstream returns the same
+/// `{provider, providerEmail}` rows as `GET /api/auth/identities`
+/// (`services/userService.ts:658-681`, `routes/auth.ts:1173-1188`).
 public struct SocialLinkedIdentityDTO: Sendable, Equatable {
     public var provider: String
-    public var providerUserId: String
+    public var providerEmail: String?
 
-    public init(provider: String, providerUserId: String) {
+    public init(provider: String, providerEmail: String?) {
         self.provider = provider
-        self.providerUserId = providerUserId
+        self.providerEmail = providerEmail
     }
 }
 
@@ -274,7 +321,7 @@ public enum SocialCompleteResponse: JSONBodyConvertible, Equatable {
             body.append("identities", .array(identities.map {
                 .object([
                     OrderedJSONField("provider", $0.provider),
-                    OrderedJSONField("providerUserId", $0.providerUserId),
+                    OrderedJSONField("providerEmail", optional: $0.providerEmail),
                 ])
             }))
         case .session(let provider, let mode, let returnTo, let accessToken, let refreshToken, let linkedProvider):

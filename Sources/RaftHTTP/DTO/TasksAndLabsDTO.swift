@@ -411,6 +411,8 @@ public struct AgentChannelMembersResponse: JSONBodyConvertible, Sendable, Equata
     public struct Agent: Sendable, Equatable {
         public var id: String
         public var name: String
+        /// The authoritative persisted agent status, never a constant.
+        public var status: String
     }
 
     public var ref: String
@@ -439,7 +441,7 @@ public struct AgentChannelMembersResponse: JSONBodyConvertible, Sendable, Equata
             OrderedJSON.object([
                 OrderedJSONField("id", agent.id),
                 OrderedJSONField("name", agent.name),
-                OrderedJSONField("status", "active"),
+                OrderedJSONField("status", agent.status),
             ])
         }
         return .object([
@@ -476,6 +478,9 @@ public struct AgentServerInfoResponse: JSONBodyConvertible, Sendable, Equatable 
         public var id: String
         public var name: String
         public var role: String?
+        /// Upstream `toServerInfoAgentSummary` publishes the stored agent
+        /// status (`a.status`); this is not a readiness or socket claim.
+        public var status: String
         public var activity: String
         public var activityDetail: String
     }
@@ -518,7 +523,7 @@ public struct AgentServerInfoResponse: JSONBodyConvertible, Sendable, Equatable 
                 OrderedJSONField("id", agent.id),
                 OrderedJSONField("name", agent.name),
                 OrderedJSONField("role", optional: agent.role),
-                OrderedJSONField("status", "active"),
+                OrderedJSONField("status", agent.status),
                 OrderedJSONField("activity", agent.activity),
                 OrderedJSONField("activityDetail", agent.activityDetail),
             ])

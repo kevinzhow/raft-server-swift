@@ -131,16 +131,39 @@ import TestSupport
         )
     }
 
-    let invalid = [
-        "{}", "Not/A_Timezone", "PST", "+08:00", String(repeating: "A", count: 129),
-    ]
-    for raw in invalid {
-        #expect(throws: AuthProfileError.invalidTimezoneObservation) {
+    // Pinned `lib/ianaTimezone.ts` publishes one sentence per failure.
+    #expect(throws: AuthProfileError.timezoneEmpty) {
+        try first.observeTimezone(
+            authorization: authorization,
+            TimezoneObservationRequest(timezone: "   ")
+        )
+    }
+    #expect(throws: AuthProfileError.timezoneTooLong) {
+        try first.observeTimezone(
+            authorization: authorization,
+            TimezoneObservationRequest(timezone: String(repeating: "A", count: 129))
+        )
+    }
+    #expect(throws: AuthProfileError.timezoneNotIana) {
+        try first.observeTimezone(
+            authorization: authorization,
+            TimezoneObservationRequest(timezone: "Not/A_Timezone")
+        )
+    }
+    for raw in ["PST", "+08:00", "GMT", "UTC+0"] {
+        #expect(throws: raw == "UTC+0" ? AuthProfileError.timezoneNotIana : AuthProfileError.timezoneNotCanonical) {
             try first.observeTimezone(
                 authorization: authorization,
                 TimezoneObservationRequest(timezone: raw)
             )
         }
+    }
+    // A body that misses the strict schema publishes the zod issue list instead
+    // of the zone-value refusal.
+    #expect(throws: AuthProfileError.invalidTimezoneObservationBody([
+        AuthRequestIssue(path: "timezone", message: "Invalid input: expected string, received undefined"),
+    ])) {
+        try first.observeTimezone(authorization: authorization, TimezoneObservationRequest())
     }
 
     // The alias canonicalizes to the IANA zone, and the first pair survives the
@@ -163,28 +186,34 @@ import TestSupport
     #expect(observedSecond.lastObservedTimezoneAt == ISO8601DateFormatter.profileTimestamp(secondNow))
 }
 
-@Test func timezoneObservationRequestRejectsUnknownKeys() throws {
+@Test func timezoneObservationRequestDecodesStrictSchemaIssues() throws {
     let decoder = JSONDecoder()
-    #expect(throws: (any Error).self) {
-        try decoder.decode(
-            TimezoneObservationRequest.self,
-            from: Data(#"{"timezone":"UTC","source":"client-controlled"}"#.utf8)
-        )
-    }
-    #expect(throws: (any Error).self) {
-        try decoder.decode(TimezoneObservationRequest.self, from: Data("{}".utf8))
-    }
+    let extra = try decoder.decode(
+        TimezoneObservationRequest.self,
+        from: Data(#"{"timezone":"UTC","source":"client-controlled"}"#.utf8)
+    )
+    #expect(extra.issues == [
+        AuthRequestIssue(path: "", message: #"Unrecognized key: "source""#),
+    ])
+    let missing = try decoder.decode(TimezoneObservationRequest.self, from: Data("{}".utf8))
+    #expect(missing.issues == [
+        AuthRequestIssue(path: "timezone", message: "Invalid input: expected string, received undefined"),
+    ])
 
     let accepted = try decoder.decode(
         TimezoneObservationRequest.self,
         from: Data(#"{"timezone":" Asia/Shanghai "}"#.utf8)
     )
     #expect(accepted.timezone == " Asia/Shanghai ")
+    #expect(accepted.issues.isEmpty)
     let nullValue = try decoder.decode(
         TimezoneObservationRequest.self,
         from: Data(#"{"timezone":null}"#.utf8)
     )
     #expect(nullValue.timezone == nil)
+    #expect(nullValue.issues == [
+        AuthRequestIssue(path: "timezone", message: "Invalid input: expected string, received null"),
+    ])
 }
 
 private extension ISO8601DateFormatter {

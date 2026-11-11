@@ -8,7 +8,7 @@ extension OAuthLedger {
             ledgerState.servers[id] = Server(id: id, slug: slug, name: name, ownerId: ownerId)
             ledgerState.members["\(id)\n\(ownerId)"] = "owner"
             let allId = UUID().uuidString.lowercased()
-            ledgerState.channelRecords.append(ChannelRecord(id: allId, serverId: id, name: "all", type: "channel"))
+            ledgerState.channelRecords.append(ChannelRecord(id: allId, serverId: id, name: "all", type: "channel", createdAt: Date()))
             ledgerState.channelHumans.insert("\(allId)\n\(ownerId)")
         }
     }
