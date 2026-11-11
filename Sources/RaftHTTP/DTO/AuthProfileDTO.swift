@@ -30,80 +30,40 @@ public struct CompleteProfileRequest: Sendable, Equatable {
     /// The refusal for a body that never reached the schema (no body or invalid
     /// JSON). Upstream parses `req.body ?? {}`, so both required members are
     /// missing.
-    public static let missingBody = CompleteProfileRequest(issues: [
-        AuthRequestIssue(
-            path: "name",
-            message: "Invalid input: expected string, received undefined"
-        ),
-        AuthRequestIssue(
-            path: "displayName",
-            message: "Invalid input: expected string, received undefined"
-        ),
-    ])
+    public static let missingBody = parse(nil)
 
-    private static func issue(_ path: String, _ message: String) -> AuthRequestIssue {
-        AuthRequestIssue(path: path, message: message)
-    }
-
-    private static func stringIssue(_ value: JSONValue, path: String) -> AuthRequestIssue {
-        issue(path, "Invalid input: expected string, received \(value.zodKind)")
-    }
-
-    static func parse(_ raw: JSONValue) -> CompleteProfileRequest {
-        guard case .object(let fields) = raw else {
-            // Upstream `req.body ?? {}` rewrites a JSON null to the empty
-            // object, so a null body reports the two required members rather
-            // than an object-type issue.
-            if case .null = raw { return parse(.object([:])) }
-            return CompleteProfileRequest(issues: [
-                issue("", "Invalid input: expected object, received \(raw.zodKind)"),
-            ])
+    /// Pinned `completeProfileRequestSchema`: a strict object whose `name` is a
+    /// non-empty string and whose `displayName` is trimmed before the 1...80
+    /// length check.
+    static func parse(_ raw: JSONValue?) -> CompleteProfileRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return CompleteProfileRequest(issues: [rootIssue])
         }
 
         var issues: [AuthRequestIssue] = []
-        var name = ""
-        switch fields["name"] {
-        case nil:
-            issues.append(issue("name", "Invalid input: expected string, received undefined"))
-        case .string(let value)?:
-            if value.isEmpty {
-                issues.append(issue("name", "Too small: expected string to have >=1 characters"))
-            } else {
-                name = value
-            }
-        case .some(let value):
-            issues.append(stringIssue(value, path: "name"))
-        }
-
-        var displayName = ""
-        switch fields["displayName"] {
-        case nil:
-            issues.append(issue("displayName", "Invalid input: expected string, received undefined"))
-        case .string(let value)?:
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.utf16.count == 0 {
-                issues.append(issue("displayName", "Too small: expected string to have >=1 characters"))
-            } else if trimmed.utf16.count > 80 {
-                issues.append(issue("displayName", "Too big: expected string to have <=80 characters"))
-            } else {
-                displayName = trimmed
-            }
-        case .some(let value):
-            issues.append(stringIssue(value, path: "displayName"))
-        }
+        let name = AuthRequestSchema.string(fields["name"], path: "name", min: 1)
+        issues += name.issues
+        let displayName = AuthRequestSchema.string(
+            fields["displayName"],
+            path: "displayName",
+            min: 1,
+            max: 80,
+            trim: true
+        )
+        issues += displayName.issues
 
         // `.strict()` reports one issue for every member the shape does not
-        // know, after the shape's own issues. The dictionary has no source
-        // order, so the keys are sorted to keep the published bytes stable.
-        let unknown = fields.keys
-            .filter { $0 != "name" && $0 != "displayName" }
-            .sorted()
-        if !unknown.isEmpty {
-            let label = unknown.count > 1 ? "Unrecognized keys" : "Unrecognized key"
-            let keys = unknown.map { "\"\($0)\"" }.joined(separator: ", ")
-            issues.append(issue("", "\(label): \(keys)"))
+        // know, after the shape's own issues.
+        let unknown = fields.keys.filter { $0 != "name" && $0 != "displayName" }
+        if let unrecognized = AuthRequestSchema.unrecognizedKeys(unknown) {
+            issues.append(unrecognized)
         }
-        return CompleteProfileRequest(issues: issues, name: name, displayName: displayName)
+        return CompleteProfileRequest(
+            issues: issues,
+            name: name.value ?? "",
+            displayName: displayName.value ?? ""
+        )
     }
 }
 
@@ -181,41 +141,56 @@ public struct ResetPasswordRequest: Codable, Sendable, Equatable {
 
 /// `POST /api/auth/me/timezone-observation` request body.
 ///
-/// The published shape is exactly one key, `timezone`, holding a string. The
-/// decoder rejects any other key set so the typed route keeps the upstream
-/// `{"timezone": …, "source": …}` 400 without a raw JSON parser.
+/// Pinned `routes/auth.ts:119` is a strict zod object with exactly one string
+/// member. The decoder keeps the raw JSON value and publishes the zod 4.3.6
+/// issue list (missing/wrong-typed member, unknown key, non-object root) before
+/// the zone value is validated.
 public struct TimezoneObservationRequest: Codable, Sendable, Equatable {
     public var timezone: String?
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object.
+    public var issues: [AuthRequestIssue]
 
-    public init(timezone: String? = nil) {
-        self.timezone = timezone
+    /// The no-body request: pinned routes parse `req.body ?? {}`, so an absent
+    /// body is the empty object and reports the missing member.
+    public init() {
+        self = Self.parse(nil)
     }
+
+    public init(timezone: String?) {
+        self.timezone = timezone
+        self.issues = []
+    }
+
+    init(timezone: String?, issues: [AuthRequestIssue]) {
+        self.timezone = timezone
+        self.issues = issues
+    }
+
+    private enum CodingKeys: String, CodingKey { case timezone }
 
     public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: AnyCodingKey.self)
-        guard container.allKeys.map(\.stringValue) == ["timezone"] else {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "timezone must be the only key"
-            ))
-        }
-        guard let key = container.allKeys.first else {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: "timezone is required"
-            ))
-        }
-        // A null or non-string value reads as absent; the service answers the
-        // published 400 either way.
-        self.timezone = try? container.decode(String.self, forKey: key)
+        let container = try decoder.singleValueContainer()
+        self = Self.parse(try container.decode(JSONValue.self))
     }
 
-    private struct AnyCodingKey: CodingKey {
-        var stringValue: String
-        var intValue: Int? { nil }
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(timezone, forKey: .timezone)
+    }
 
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { return nil }
+    static func parse(_ raw: JSONValue?) -> TimezoneObservationRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return TimezoneObservationRequest(timezone: nil, issues: [rootIssue])
+        }
+        let timezone = AuthRequestSchema.string(fields["timezone"], path: "timezone")
+        var issues = timezone.issues
+        let unknown = fields.keys.filter { $0 != "timezone" }
+        if let unrecognized = AuthRequestSchema.unrecognizedKeys(unknown) {
+            issues.append(unrecognized)
+        }
+        return TimezoneObservationRequest(timezone: timezone.value, issues: issues)
     }
 }
 

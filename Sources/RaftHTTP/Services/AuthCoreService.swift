@@ -202,21 +202,14 @@ public struct AuthCoreService: Sendable {
         userAgent: String?,
         acceptLanguage: String?
     ) throws -> (attempt: RegistrationAttempt, password: String) {
-        guard let body else {
-            throw AuthCoreError.registerBodyInvalid([
-                AuthRequestIssue(path: "", message: "Expected object, received string"),
-            ])
-        }
-        var issues: [AuthRequestIssue] = []
-        let email = Self.requiredString(body.email, path: "email", into: &issues)
-        let password = Self.requiredString(body.password, path: "password", into: &issues)
-        if body.name != .absent {
-            _ = Self.requiredString(body.name, path: "name", into: &issues)
-        }
-        let capability = Self.stagingCapability(body.stagingSelfAccountCapability, into: &issues)
-        guard let email, let password, issues.isEmpty else {
-            throw AuthCoreError.registerBodyInvalid(issues)
-        }
+        // Pinned `routes/auth.ts:134` parses `req.body ?? {}` with the zod 4
+        // register schema; the DTO has already produced that issue list.
+        let body = body ?? RegisterRequest.parse(nil)
+        guard body.issues.isEmpty,
+              let email = body.email,
+              let password = body.password
+        else { throw AuthCoreError.registerBodyInvalid(body.issues) }
+        let capability = body.stagingSelfAccountCapability
         if capability != nil {
             let stagingEmail = email.wholeMatch(of: /(?i).*@mail\.build/) != nil
             if deploymentConfiguration.releaseBranch != "staging" || !stagingEmail {
@@ -224,7 +217,7 @@ public struct AuthCoreService: Sendable {
             }
         }
         var requestedName: String?
-        if case .string(let name) = body.name {
+        if let name = body.name {
             // Pinned `routes/auth.ts:647-658`: the chosen handle passes the
             // shared `validateName(name, "Name", 5)` (length and pattern) before
             // the reserved-name gate. Both refusals are a bare `error` body.
@@ -234,6 +227,10 @@ public struct AuthCoreService: Sendable {
             if AccountNaming.isReservedAgentName(name) { throw AuthCoreError.reservedName }
             requestedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        // Pinned `routes/auth.ts:659-661`: the eight-character floor runs after
+        // the handle checks and before the account write. JavaScript counts
+        // UTF-16 code units, so this uses `utf16.count`, not `count`.
+        guard password.utf16.count >= 8 else { throw AuthCoreError.passwordTooShort }
         guard body.acceptTerms else { throw AuthCoreError.legalAcceptanceRequired }
         if body.termsVersion != AuthLegalPolicy.termsVersion
             || body.privacyVersion != AuthLegalPolicy.privacyVersion {
@@ -271,51 +268,6 @@ public struct AuthCoreService: Sendable {
                 accessToken: registered.tokens.accessToken,
                 refreshToken: registered.tokens.refreshToken
             )
-        }
-    }
-
-    private static func requiredString(
-        _ field: LoginBodyField,
-        path: String,
-        into issues: inout [AuthRequestIssue]
-    ) -> String? {
-        switch field {
-        case .absent:
-            issues.append(AuthRequestIssue(path: path, message: "Required"))
-            return nil
-        case .string(let value):
-            if value.isEmpty {
-                issues.append(AuthRequestIssue(path: path, message: "String must contain at least 1 character(s)"))
-                return nil
-            }
-            return value
-        case .wrongType(let shape):
-            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(shape)"))
-            return nil
-        }
-    }
-
-    private static func stagingCapability(
-        _ field: LoginBodyField,
-        into issues: inout [AuthRequestIssue]
-    ) -> String? {
-        let path = "stagingSelfAccountCapability"
-        switch field {
-        case .absent:
-            return nil
-        case .wrongType(let shape):
-            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(shape)"))
-            return nil
-        case .string(let text):
-            if text.count < 32 {
-                issues.append(AuthRequestIssue(path: path, message: "String must contain at least 32 character(s)"))
-                return nil
-            }
-            if text.count > 256 {
-                issues.append(AuthRequestIssue(path: path, message: "String must contain at most 256 character(s)"))
-                return nil
-            }
-            return text
         }
     }
 
@@ -390,7 +342,8 @@ public struct AuthCoreService: Sendable {
         case .absent:
             break
         case .string(let name):
-            guard name.count <= 200 else { throw AuthCoreError.clientNameInvalid }
+            // Pinned `routes/deviceAuth.ts:71` checks JavaScript `String.length`.
+            guard name.utf16.count <= 200 else { throw AuthCoreError.clientNameInvalid }
             clientName = name
         case .invalidType:
             throw AuthCoreError.clientNameInvalid

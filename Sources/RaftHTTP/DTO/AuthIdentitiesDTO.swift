@@ -1,112 +1,66 @@
 import Foundation
+import RaftShared
 
 // MARK: - Request bodies
 //
-// The retired handlers read these bodies with the Foundation JSON object parser and per-field
-// `as? String` / `as? Bool` casts. The decoders below keep that tolerance: a
-// value of the wrong JSON type reads as absent (or as the field-specific
-// "invalid" state the old validation order reported), so a request the old
-// routes accepted cannot become a different status. A body that is not a JSON
-// object fails to decode; the feature maps that to the same published reply the
-// old non-object cast produced.
-
-/// The JSON shape of one value whose type the old parser reported by name.
-///
-/// `LoginRequest` and `RegisterRequest` need it: their issue lists print the received type
-/// (`Expected string, received number`). the Foundation object parser bridged a JSON
-/// `0` or `1` to `Bool`, so those two numbers read as `boolean`; the decoder
-/// keeps that quirk because the published bytes carry it.
-enum JSONShape: Decodable {
-    case null
-    case string
-    case boolean
-    case number
-    case array
-    case object
-
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if container.decodeNil() {
-            self = .null
-        } else if (try? container.decode(String.self)) != nil {
-            self = .string
-        } else if (try? container.decode(Bool.self)) != nil {
-            self = .boolean
-        } else if let number = try? container.decode(Double.self) {
-            self = (number == 0 || number == 1) ? .boolean : .number
-        } else if (try? container.decode([JSONShape].self)) != nil {
-            self = .array
-        } else if (try? container.decode([String: JSONShape].self)) != nil {
-            self = .object
-        } else {
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported JSON value")
-        }
-    }
-
-    var name: String {
-        switch self {
-        case .null: "null"
-        case .string: "string"
-        case .boolean: "boolean"
-        case .number: "number"
-        case .array: "array"
-        case .object: "object"
-        }
-    }
-}
-
-/// One required string of the login body, in the three states the issue list
-/// distinguishes: absent, a string (possibly empty) and any other JSON type.
-public enum LoginBodyField: Sendable, Equatable {
-    case absent
-    case string(String)
-    case wrongType(String)
-}
-
-/// One entry of the published `issues` list of the login 400.
-public struct AuthRequestIssue: Sendable, Equatable {
-    public let path: String
-    public let message: String
-
-    public init(path: String, message: String) {
-        self.path = path
-        self.message = message
-    }
-}
+// The pinned login and register bodies are zod 4.3.6 schemas
+// (`routes/auth.ts:102-126`). The decoders keep the raw JSON value and hand it
+// to `AuthRequestSchema`, so a wrong member type becomes one published `issues`
+// entry (with zod's exact wording) instead of a decode failure, and an unknown
+// member still passes through the passthrough schemas. A body that is not a
+// JSON object at all is one `expected object` issue; a missing or malformed
+// body reads as `{}` (`req.body ?? {}`).
 
 /// `POST /api/auth/login` request body.
 public struct LoginRequest: Decodable, Sendable, Equatable {
-    public var email: LoginBodyField
-    public var password: LoginBodyField
+    /// The valid string values; `nil` when the member was absent or invalid
+    /// (the reason is one of `issues`).
+    public var email: String?
+    public var password: String?
     public var pendingLinkToken: String?
+    /// The zod schema issues, in issue order. Empty exactly when the body is a
+    /// valid object.
+    public var issues: [AuthRequestIssue]
 
     public init(email: String, password: String, pendingLinkToken: String? = nil) {
-        self.email = .string(email)
-        self.password = .string(password)
+        self.email = email
+        self.password = password
         self.pendingLinkToken = pendingLinkToken
+        self.issues = []
     }
 
-    private enum CodingKeys: String, CodingKey {
-        case email
-        case password
-        case pendingLinkToken
+    init(email: String?, password: String?, pendingLinkToken: String?, issues: [AuthRequestIssue]) {
+        self.email = email
+        self.password = password
+        self.pendingLinkToken = pendingLinkToken
+        self.issues = issues
     }
 
     public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        email = Self.field(.email, in: container)
-        password = Self.field(.password, in: container)
-        pendingLinkToken = (try? container.decodeIfPresent(String.self, forKey: .pendingLinkToken)) ?? nil
+        let container = try decoder.singleValueContainer()
+        self = Self.parse(try container.decode(JSONValue.self))
     }
 
-    private static func field(
-        _ key: CodingKeys,
-        in container: KeyedDecodingContainer<CodingKeys>
-    ) -> LoginBodyField {
-        guard container.contains(key) else { return .absent }
-        if let string = try? container.decode(String.self, forKey: key) { return .string(string) }
-        let shape = (try? container.decode(JSONShape.self, forKey: key)) ?? .object
-        return .wrongType(shape.name)
+    /// Pinned `emailLoginRequestSchema`: a passthrough object with two required
+    /// non-empty strings.
+    static func parse(_ raw: JSONValue?) -> LoginRequest {
+        let (fields, rootIssue) = AuthRequestSchema.objectFields(raw)
+        if let rootIssue {
+            return LoginRequest(email: nil, password: nil, pendingLinkToken: nil, issues: [rootIssue])
+        }
+        var issues: [AuthRequestIssue] = []
+        let email = AuthRequestSchema.string(fields["email"], path: "email", min: 1)
+        issues += email.issues
+        let password = AuthRequestSchema.string(fields["password"], path: "password", min: 1)
+        issues += password.issues
+        var pendingLinkToken: String?
+        if case .string(let token)? = fields["pendingLinkToken"] { pendingLinkToken = token }
+        return LoginRequest(
+            email: email.value,
+            password: password.value,
+            pendingLinkToken: pendingLinkToken,
+            issues: issues
+        )
     }
 }
 

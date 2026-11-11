@@ -259,18 +259,6 @@ extension AgentSendRequest: Decodable {
 }
 
 extension JSONValue {
-    /// The JSON type name zod prints for a received value.
-    var zodKind: String {
-        switch self {
-        case .object: "object"
-        case .array: "array"
-        case .string: "string"
-        case .number, .integer: "number"
-        case .bool: "boolean"
-        case .null: "null"
-        }
-    }
-
     /// A finite JSON number; `nil` for booleans, strings and non-finite values.
     var finiteNumber: Double? {
         switch self {

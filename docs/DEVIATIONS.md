@@ -295,6 +295,22 @@ excluded; the observable attachment HTTP behavior is locked by
 **Upstream.** `attachments`, `attachmentUploadSessions.api` enabled-fake cases.
 **Re-evaluate.** If a new public upload path is added.
 
+### D23. Malformed-JSON bodies and multi-key strict ordering
+
+**What.** The auth body-schema routes report a missing or malformed JSON body as
+`req.body ?? {}` (the schema's required-member issues). Upstream Express also
+answers a 400 for malformed JSON, but with the JSON parser's own body before the
+route runs. When a `.strict()` auth schema receives several unknown members, the
+published `Unrecognized keys` list is sorted by key; upstream prints zod's
+received member order.
+**Why.** The shared request helper returns `nil` for both "no body" and
+"unparseable JSON", and the shared `JSONValue` object is a dictionary without
+member order. The projected status (400) and every single-key issue are identical.
+**Upstream.** `routes/auth.ts:126-158` (`formatBodyIssues` and the four schemas)
+and `express.json()`'s error path; zod 4 `unrecognized_keys` ordering.
+**Re-evaluate.** If the request layer exposes whether a body was parsed, or an
+ordered JSON object is adopted for request bodies.
+
 ## Maintaining this list
 
 1. Add an entry only after the excluded assertion is understood and the

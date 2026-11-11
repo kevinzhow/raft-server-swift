@@ -129,12 +129,7 @@ public enum AuthIdentitiesError: DomainError, Equatable {
             .object([
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("code", "email_login_body_invalid"),
-                OrderedJSONField("issues", .array(issues.map {
-                    .object([
-                        OrderedJSONField("path", $0.path),
-                        OrderedJSONField("message", $0.message),
-                    ])
-                })),
+                OrderedJSONField("issues", .array(issues.map(\.json))),
             ])
         case .requestExpired(let redirectUrl):
             .object([
@@ -273,16 +268,14 @@ public struct AuthIdentitiesService: Sendable {
     }
 
     private static func loginInput(_ request: LoginRequest?) throws -> (email: String, password: String, pendingLinkToken: String?) {
-        guard let request else {
-            throw AuthIdentitiesError.invalidLoginBody([
-                AuthRequestIssue(path: "", message: "Expected object, received string"),
-            ])
-        }
-        var issues: [AuthRequestIssue] = []
-        let email = Self.requiredString(request.email, path: "email", into: &issues)
-        let password = Self.requiredString(request.password, path: "password", into: &issues)
-        if !issues.isEmpty { throw AuthIdentitiesError.invalidLoginBody(issues) }
-        return (AccountNaming.normalize(email ?? ""), password ?? "", request.pendingLinkToken)
+        // Pinned `routes/auth.ts:147` parses `req.body ?? {}` with the zod
+        // login schema; the DTO has already produced that issue list.
+        let request = request ?? LoginRequest.parse(nil)
+        guard request.issues.isEmpty,
+              let email = request.email,
+              let password = request.password
+        else { throw AuthIdentitiesError.invalidLoginBody(request.issues) }
+        return (AccountNaming.normalize(email), password, request.pendingLinkToken)
     }
 
     /// The full public user projection, including the separately stored
@@ -316,26 +309,6 @@ public struct AuthIdentitiesService: Sendable {
             throw AuthIdentitiesError.pendingLinkAccountMismatch
         case .rejected:
             throw AuthIdentitiesError.invalidCredentials
-        }
-    }
-
-    private static func requiredString(
-        _ field: LoginBodyField,
-        path: String,
-        into issues: inout [AuthRequestIssue]
-    ) -> String? {
-        switch field {
-        case .absent:
-            issues.append(AuthRequestIssue(path: path, message: "Required"))
-            return nil
-        case .string(let value) where value.isEmpty:
-            issues.append(AuthRequestIssue(path: path, message: "String must contain at least 1 character(s)"))
-            return nil
-        case .string(let value):
-            return value
-        case .wrongType(let name):
-            issues.append(AuthRequestIssue(path: path, message: "Expected string, received \(name)"))
-            return nil
         }
     }
 
@@ -544,7 +517,9 @@ public struct AuthIdentitiesService: Sendable {
     private static func passwordChange(_ request: UpdateProfileRequest) throws -> (current: String, next: String)? {
         guard case .value(let current) = request.currentPassword, !current.isEmpty,
               case .value(let next) = request.newPassword, !next.isEmpty else { return nil }
-        guard next.count >= 8 else { throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters") }
+        // Pinned `routes/auth.ts:1503-1506` checks JavaScript `String.length`,
+        // so the floor counts UTF-16 code units.
+        guard next.utf16.count >= 8 else { throw AuthIdentitiesError.invalidProfile("New password must be at least 8 characters") }
         return (current, next)
     }
 

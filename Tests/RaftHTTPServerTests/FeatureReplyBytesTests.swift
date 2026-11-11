@@ -137,9 +137,15 @@ struct FeatureReplyBytesTests {
             }
             let malformed = shot(try await post("/api/auth/login", "{"))
             #expect(malformed.hasPrefix("400\n"))
-            for body: String? in [nil, "", "  \n", "[]", "null", "email=absent%40slock.test&password=wrong"] {
+            for body: String? in [nil, "", "  \n", "null", "email=absent%40slock.test&password=wrong"] {
                 #expect(shot(try await post("/api/auth/login", body, contentType: "application/x-www-form-urlencoded")) == malformed)
             }
+            // A valid JSON non-object root reaches the schema (the raw-JSON
+            // tolerance above decodes it) and publishes the zod object issue,
+            // not the empty-object refusal a malformed body gets.
+            let notObject = shot(try await post("/api/auth/login", "[]", contentType: "application/x-www-form-urlencoded"))
+            #expect(notObject.hasPrefix("400\n"))
+            #expect(notObject.hasSuffix(#"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#))
 
             // Email verification deliberately uses only the registered decoder.
             let missingToken = shot(try await post("/api/auth/verify-email", nil))

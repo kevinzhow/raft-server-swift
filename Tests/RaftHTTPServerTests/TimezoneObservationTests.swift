@@ -36,6 +36,25 @@ import VaporTesting
             }
             #expect(unauthenticated.status == .unauthorized)
 
+            // Pinned `routes/auth.ts:1369-1376` publishes the zod 4.3.6 issue
+            // list under `timezone_observation_body_invalid` before validating
+            // the zone value.
+            let schemaMissing = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                request.body = .init(string: "{}")
+            }
+            #expect(schemaMissing.status == .badRequest)
+            #expect(schemaMissing.body.string == #"{"error":"Invalid timezone observation body","code":"timezone_observation_body_invalid","issues":[{"path":"timezone","message":"Invalid input: expected string, received undefined"}]}"#)
+
+            let schemaType = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                request.body = .init(string: #"{"timezone":480}"#)
+            }
+            #expect(schemaType.body.string == #"{"error":"Invalid timezone observation body","code":"timezone_observation_body_invalid","issues":[{"path":"timezone","message":"Invalid input: expected string, received number"}]}"#)
+
+            let schemaExtra = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                request.body = .init(string: #"{"timezone":"UTC","source":"client-controlled"}"#)
+            }
+            #expect(schemaExtra.body.string == #"{"error":"Invalid timezone observation body","code":"timezone_observation_body_invalid","issues":[{"path":"","message":"Unrecognized key: \"source\""}]}"#)
+
             let invalidBodies = [
                 "{}", "{\"timezone\":null}", "{\"timezone\":480}", "{\"timezone\":\"\"}",
                 "{\"timezone\":\"Not/A_Timezone\"}", "{\"timezone\":\"PST\"}", "{\"timezone\":\"+08:00\"}",

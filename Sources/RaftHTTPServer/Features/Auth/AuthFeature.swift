@@ -231,8 +231,9 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         auth.post("register") { request async throws -> Response in
-            // A body that is not a JSON object stays `nil`: the service answers
-            // the published `Expected object` issue list.
+            // The decoder keeps the raw JSON value: a non-object root becomes
+            // one `expected object` issue, and a missing body is `{}`
+            // (`req.body ?? {}`), both resolved by the service.
             let body = try await decodeJSONRequestBody(RegisterRequest.self, request, decoding: .json)
             return try await respond {
                 try await self.core.registerAsync(
@@ -282,8 +283,9 @@ public struct AuthFeature: RouteCollection, Sendable {
             return try await respond { self.profile.cancelPendingLink(body) }
         }
         auth.post("login") { request async throws -> Response in
-            // The lenient decoder keeps every wrong-typed field so the service
-            // can publish the upstream `issues` list; a non-object body is nil.
+            // The decoder keeps the raw JSON value so the service publishes the
+            // zod 4 issue list for every malformed shape; a missing body is
+            // `{}` (`req.body ?? {}`).
             let body = try await decodeJSONRequestBody(LoginRequest.self, request, decoding: .json)
             return try await respond { try await self.identities.loginAsync(body) }
         }
