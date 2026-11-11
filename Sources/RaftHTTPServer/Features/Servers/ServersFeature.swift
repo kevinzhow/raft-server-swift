@@ -279,11 +279,14 @@ public struct ServersFeature: RouteCollection, Sendable {
                 )
             }
         }
-        scoped.post(":id", "avatar") { request async throws -> Response in
-            try await respond {
-                try services.emailAccounts.serverProfileAndOrder.uploadServerAvatar(
+        scoped.on(.post, ":id", "avatar", maxBodySize: "6mb") { request async throws -> Response in
+            let data = try await request.body.collect() ?? Data()
+            return try await respond {
+                try await services.emailAccounts.serverProfileAndOrder.uploadServerAvatar(
                     authorization: request.headers[.authorization],
-                    serverId: request.parameters.get("id") ?? ""
+                    serverId: request.parameters.get("id") ?? "",
+                    contentType: request.headers[.contentType],
+                    body: data
                 )
             }
         }

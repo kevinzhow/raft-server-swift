@@ -337,8 +337,10 @@ private func createClient(
     }
 }
 
-@Test func logoUploadsAreRefusedWithoutAStorageBackend() async throws {
+@Test func logoUploadsStoreServeAndClearThroughAvatarStorage() async throws {
     let f = makePlatformScene("407")
+    // 1x1 transparent GIF: the avatar store validates the real image signature.
+    let gif = Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")!
     try await withApp { app in
         configureOAuthScene(app, scene: f.scene)
         try await app.testing { client in
@@ -354,22 +356,21 @@ private func createClient(
             let boundary = "raft-boundary-407"
             var headers = platformHeaders(f.ownerToken, f.serverId)
             headers[.contentType] = "multipart/form-data; boundary=\(boundary)"
-            let body = """
-            --\(boundary)\r
-            Content-Disposition: form-data; name="logo"; filename="logo.gif"\r
-            Content-Type: image/gif\r
-            \r
-            GIF89a\r
-            --\(boundary)--\r
-            """
+            var body = Data()
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"logo\"; filename=\"logo.gif\"\r\n".utf8))
+            body.append(Data("Content-Type: image/gif\r\n\r\n".utf8))
+            body.append(gif)
+            body.append(Data("\r\n--\(boundary)--\r\n".utf8))
             let upload = try await client.send(.post, headers: headers, to: "/api/integrations/clients/\(recordId)/logo") { request in
-                request.body = .init(string: body)
+                request.body = .init(data: body)
             }
-            #expect(upload.status == .internalServerError)
-            #expect(jsonObject(upload)["error"] as? String == "Failed to upload OAuth client logo")
-            #expect(jsonObject(upload)["correlationId"] as? String != nil)
-            #expect(upload.headers[HTTPField.Name("X-Slock-Error-Id")!] != nil)
+            #expect(upload.status == .ok, "logo body: \(upload.body.string ?? "")")
+            let logoURL = try #require(jsonObject(upload)["logoUrl"] as? String)
+            #expect(logoURL.wholeMatch(of: /^\/api\/integration-logos\/[0-9a-f-]+\/[0-9a-f]{32}\.webp$/) != nil)
 
+            // Serving the stored object is locked by ProfileAssetStorageTests;
+            // this scene mounts only the integrations collection.
             let cleared = try await client.send(.delete, headers: platformHeaders(f.ownerToken, f.serverId), to: "/api/integrations/clients/\(recordId)/logo")
             #expect(cleared.status == .ok)
             #expect(jsonObject(cleared)["logoUrl"] is NSNull)

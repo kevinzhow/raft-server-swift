@@ -333,17 +333,35 @@ public struct ServerProfileAndOrderService: Sendable {
 
     public func uploadServerAvatar(
         authorization: String?,
-        serverId: String
-    ) throws -> ServerAvatarUploadResponse {
+        serverId: String,
+        contentType: String?,
+        body: Data
+    ) async throws -> ServerAvatarUploadResponse {
         let userId = try requireUserWithCode(authorization)
         let role = try requireRole(serverId: serverId, userId: userId)
         guard role == "owner" || role == "admin" else {
             throw ServerProfileAndOrderError.forbidden
         }
-        let key = dependencies.makeUUID().replacingOccurrences(of: "-", with: "")
-        let avatarUrl = "/api/avatars/server-\(serverId)/\(key).webp"
-        dependencies.oauth.setServerAvatar(id: serverId, avatarUrl: avatarUrl)
-        return ServerAvatarUploadResponse(avatarUrl: avatarUrl)
+        guard let server = dependencies.oauth.serverProfile(id: serverId) else {
+            throw ServerProfileAndOrderError.notFound
+        }
+        guard let file = FormPayload.multipartFilePart(named: "avatar", contentType: contentType, body: body) else {
+            throw ServerProfileAndOrderError.noAvatarProvided
+        }
+        let stored: AvatarStoredFile
+        do {
+            stored = try await AvatarService(storage: dependencies.oauth.assets, oauth: dependencies.oauth)
+                .storeServerAvatar(serverId: server.id, existingAvatarUrl: server.avatarUrl, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge(let maxBytes): throw ServerProfileAndOrderError.avatarTooLarge(maxBytes: maxBytes)
+            case .badFormat: throw ServerProfileAndOrderError.avatarBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure:
+                throw ServerProfileAndOrderError.avatarUploadFailed
+            }
+        }
+        dependencies.oauth.setServerAvatar(id: serverId, avatarUrl: stored.url)
+        return ServerAvatarUploadResponse(avatarUrl: stored.url)
     }
 
     // MARK: - Member directory

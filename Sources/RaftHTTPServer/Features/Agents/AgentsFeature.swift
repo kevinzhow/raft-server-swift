@@ -166,13 +166,14 @@ public struct AgentsFeature: RouteCollection, Sendable {
                 )
             }
         }
-        agents.post(":id", "avatar") { request async throws -> Response in
-            let byteCount = (try await request.bodyText()).utf8.count
+        agents.on(.post, ":id", "avatar", maxBodySize: "6mb") { request async throws -> Response in
+            let data = try await request.body.collect() ?? Data()
             return try await respond {
-                try services.agentSurface.uploadAgentAvatar(
+                try await services.agentSurface.uploadAgentAvatar(
                     authorization: request.headers[.authorization],
                     agentId: request.parameters.get("id") ?? "",
-                    byteCount: byteCount
+                    contentType: request.headers[.contentType],
+                    body: data
                 )
             }
         }

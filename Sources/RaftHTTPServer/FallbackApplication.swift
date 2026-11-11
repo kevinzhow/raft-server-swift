@@ -246,6 +246,7 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 public func configure(_ app: Application, services: FallbackServices) {
     if services.nodeEnv == "production" {
         services.emailAccounts.requireDurableAttachmentStorage()
+        services.emailAccounts.requireDurableAvatarStorage()
     }
     let internalSurface = InternalSurfaceBox()
     InternalAgentApiFeature(services: services).register(routes: app)
@@ -264,6 +265,9 @@ public func configure(_ app: Application, services: FallbackServices) {
     ComputersFeature(services: services).register(routes: app)
     RemindersFeature(services: services).register(routes: app)
     NotificationsFeature(services: services).register(routes: app)
+    // Upstream mounts the capability-addressed profile assets at the app level,
+    // beside (not inside) the authenticated route families.
+    AvatarObjectRoutes(services: services).register(routes: app)
     ServersFeature(services: services).register(routes: app)
     let hostMessaging = services.channelMessaging
     ChannelsFeature(

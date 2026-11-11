@@ -286,6 +286,29 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
+        integrations.on(.post, "clients", ":clientId", "logo", maxBodySize: "6mb") { request async throws -> Response in
+            let data = try await request.body.collect() ?? Data()
+            return try await respond {
+                try await self.apps.uploadIntegrationClientLogo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    contentType: request.headers[.contentType],
+                    body: data
+                )
+            }
+        }
+
+        integrations.delete("clients", ":clientId", "logo") { request async throws -> Response in
+            try await respond {
+                try await self.apps.clearIntegrationClientLogo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
         integrations.post("marketplace", ":clientId", "install") { request async throws -> Response in
             try await respond {
                 try self.apps.installMarketplaceClient(
@@ -455,27 +478,6 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
             }
         }
 
-        integrations.post("clients", ":clientId", "logo") { request async throws -> Response in
-            let upload = await logoMultipart(request)
-            return try await respond {
-                try self.appManagement.uploadLogo(
-                    authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                    clientId: request.parameters.get("clientId") ?? "",
-                    upload: upload
-                )
-            }
-        }
-
-        integrations.delete("clients", ":clientId", "logo") { request async throws -> Response in
-            try await respond {
-                try self.appManagement.clearLogo(
-                    authorization: request.headers[.authorization],
-                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
-                    clientId: request.parameters.get("clientId") ?? ""
-                )
-            }
-        }
 
         integrations.put("clients", ":clientId", "app-notifications", "permissions") { request async throws -> Response in
             let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
@@ -706,74 +708,3 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
     }
 }
 
-
-// MARK: - Logo multipart
-
-private struct LogoMultipartPart {
-    var name: String?
-    var contentType: String?
-    var data: Data
-}
-
-private func logoMultipartParts(data: Data, boundary: String) -> [LogoMultipartPart] {
-    let separator = Data("\r\n--\(boundary)".utf8)
-    var chunks: [Data] = []
-    var splitCursor = data.startIndex
-    while let range = data.range(of: separator, in: splitCursor..<data.endIndex) {
-        chunks.append(data[splitCursor..<range.lowerBound])
-        splitCursor = range.upperBound
-    }
-    chunks.append(data[splitCursor..<data.endIndex])
-    let firstPrefix = Data("--\(boundary)\r\n".utf8)
-    if var first = chunks.first, first.starts(with: firstPrefix) {
-        first = first.dropFirst(firstPrefix.count)
-        chunks[0] = first
-    }
-    var parts: [LogoMultipartPart] = []
-    for chunk in chunks {
-        var part = chunk
-        if part.starts(with: Data("\r\n".utf8)) { part = part.dropFirst(2) }
-        if part.starts(with: Data("--".utf8)) { continue }
-        guard let headerEnd = part.range(of: Data("\r\n\r\n".utf8)) else { continue }
-        let headerData = part[part.startIndex..<headerEnd.lowerBound]
-        let body = part[headerEnd.upperBound..<part.endIndex]
-        let headers = String(decoding: headerData, as: UTF8.self)
-        var name: String?
-        var contentType: String? = "application/octet-stream"
-        for line in headers.components(separatedBy: "\r\n") {
-            let lower = line.lowercased()
-            if lower.hasPrefix("content-disposition:") {
-                for component in line.components(separatedBy: ";") {
-                    let trimmed = component.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("name=") {
-                        name = trimmed.dropFirst(5).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    }
-                }
-            } else if lower.hasPrefix("content-type:") {
-                contentType = line.components(separatedBy: ":").dropFirst().joined(separator: ":")
-                    .trimmingCharacters(in: .whitespaces)
-            }
-        }
-        parts.append(LogoMultipartPart(name: name, contentType: contentType, data: Data(body)))
-    }
-    return parts
-}
-
-private func logoMultipart(_ request: Request) async -> MultipartUpload {
-    guard let contentType = request.headers[.contentType],
-          contentType.lowercased().hasPrefix("multipart/form-data"),
-          let boundary = contentType.components(separatedBy: ";")
-            .map({ $0.trimmingCharacters(in: .whitespaces) })
-            .first(where: { $0.lowercased().hasPrefix("boundary=") })
-            .map({ String($0.dropFirst("boundary=".count)).trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }),
-          let bytes = try? await request.body.collect()
-    else {
-        return MultipartUpload()
-    }
-    guard let part = logoMultipartParts(data: bytes, boundary: boundary).first(where: { $0.name == "logo" }) else {
-        return MultipartUpload()
-    }
-    return MultipartUpload(file: MultipartUpload.File(
-        contentType: part.contentType ?? "application/octet-stream", bytes: part.data
-    ))
-}

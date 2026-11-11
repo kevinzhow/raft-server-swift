@@ -595,7 +595,7 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
     #expect(IntegrationSettingsClientsResponse(clients: [IntegrationSettingsClient(
         id: "1", clientId: "c", name: "n", appType: "t", description: nil, homepageUrl: "https://x.test", publishStatus: "draft"
     )]).jsonBody.render()
-        == #"[{"id":"1","clientId":"c","name":"n","appType":"t","description":null,"homepageUrl":"https://x.test","publishStatus":"draft"}]"#)
+        == #"[{"id":"1","clientId":"c","name":"n","appType":"t","description":null,"homepageUrl":"https://x.test","publishStatus":"draft","logoUrl":null}]"#)
 }
 
 @Test func oauthSessionIgnoresRevokedFamiliesLikeTheRetiredLookup() {

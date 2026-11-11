@@ -10,11 +10,10 @@ import VaporTesting
 // MARK: - GET /api/avatars/:namespace/:filename
 
 /// `routes/agents.ts:3707-3733`: the filename must be lowercase hex plus
-/// `.webp` (400 otherwise), and without the CDN object store the route answers
-/// the same 500 `{"error":"Storage not configured"}` the pinned handler uses.
-/// This deployment has no avatar object bucket, so no fabricated bytes are
-/// served.
-@Test func avatarObjectRouteValidatesTheFilenameAndReportsMissingStorage() async throws {
+/// `.webp` (400 otherwise). A well-formed filename that names no retained
+/// object answers the explicit 404 `{"error":"Avatar not found"}` (D24); no
+/// fabricated bytes are served.
+@Test func avatarObjectRouteValidatesTheFilenameAndReportsAnUnknownObject() async throws {
     let accounts = EmailLoginDirectory()
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -23,9 +22,9 @@ import VaporTesting
         ))
         try await app.testing { client in
             let storedName = String(repeating: "a", count: 32)
-            let missingStorage = try await client.get(URI(string: "/api/avatars/users/\(storedName).webp"))
-            #expect(missingStorage.status == .internalServerError)
-            #expect(missingStorage.body.string == #"{"error":"Storage not configured"}"#)
+            let missingObject = try await client.get(URI(string: "/api/avatars/users/\(storedName).webp"))
+            #expect(missingObject.status == .notFound)
+            #expect(missingObject.body.string == #"{"error":"Avatar not found"}"#)
 
             for filename in ["not-hex.webp", "AAAAAA.webp", "abcdef.png", "abcdef.webp.png", "abc"] {
                 let invalid = try await client.get(URI(string: "/api/avatars/users/\(filename)"))

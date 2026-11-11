@@ -33,3 +33,15 @@ public protocol AttachmentObjectStoring: Sendable {
     func get(_ reference: AttachmentObjectReference) async throws -> Data
     func delete(_ reference: AttachmentObjectReference) async throws
 }
+
+/// Public-facing profile assets (avatars and integration logos) are addressed
+/// by the same capability path the upstream CDN uses: the object key itself is
+/// the HTTP path (`avatars/<namespace>/<hash>.webp` or
+/// `integration-logos/<clientId>/<hash>.webp`). The deployment encrypts every
+/// object with the existing attachment key, so this port stores and returns
+/// plaintext while the provider only ever sees AES-GCM ciphertext.
+public protocol PublicAssetObjectStoring: Sendable {
+    func putPublicAsset(_ key: String, bytes: Data) async throws
+    func getPublicAsset(_ key: String) async throws -> Data
+    func deletePublicAsset(_ key: String) async throws
+}

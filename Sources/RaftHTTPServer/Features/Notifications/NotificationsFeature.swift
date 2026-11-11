@@ -68,18 +68,6 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             }
         }
         PixelAvatarRoutes().register(routes: app)
-        // Public, capability-based avatar object serving. Uploaded avatars are
-        // stored in the CDN bucket upstream; this deployment has no avatar
-        // object store, so the route keeps the published filename validation
-        // and answers the upstream unconfigured 500.
-        let avatars = app.grouped("api", "avatars")
-        avatars.get(":namespace", ":filename") { request async throws -> Response in
-            let filename = request.parameters.get("filename") ?? ""
-            guard filename.wholeMatch(of: /^[0-9a-f]+\.webp$/) != nil else {
-                return avatarError(400, "Invalid filename")
-            }
-            return avatarError(500, "Storage not configured")
-        }
         desktopDownload.get { request async in
             routeResponse(await DesktopDownload.downloadReply(
                 target: desktopQuery(request.url.query, "target"),
@@ -590,7 +578,3 @@ private func mobileAppEmailUnsubscribeResponse(_ outcome: MobileAppEmailUnsubscr
     return Response(status: status, headers: headers, body: .init(string: html))
 }
 
-/// One `{"error": …}` reply for the avatar object route.
-private func avatarError(_ status: UInt, _ error: String) -> Response {
-    respond(status: status, rawJSON: OrderedJSON.object([OrderedJSONField("error", error)]).render())
-}

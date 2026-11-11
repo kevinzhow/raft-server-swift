@@ -13,7 +13,7 @@ import VaporTesting
 /// mounts the collection.
 @Suite
 struct FeatureIntegrationsRoutesTests {
-    /// Complete table of the 42 registrations extracted from
+    /// Complete table of the registrations extracted from
     /// `FallbackApplication.configure` at extraction time.
     private let expectedIntegrationsRoutes: [(HTTPRequest.Method, String)] = [
         (.get, "api/mcp/servers"),
