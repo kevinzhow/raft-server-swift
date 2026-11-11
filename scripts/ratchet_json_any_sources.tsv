@@ -14,7 +14,6 @@ Sources/RaftHTTP/Support/MessagePageCursor.swift	2
 Sources/RaftHTTP/Support/MobileAppEmailUnsubscribe.swift	2
 Sources/RaftHTTP/Support/TaskCatalogPolicy.swift	2
 Sources/RaftRealtime/DesktopAttentionEvents.swift	1
-Sources/RaftRealtime/RealtimeServer.swift	2
 Sources/RaftRealtime/SocketIOProtocol.swift	3
 Sources/RaftRealtime/SocketTraceMetadata.swift	2
 Sources/RaftServer/main.swift	1

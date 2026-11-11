@@ -166,19 +166,59 @@ public final class RealtimeHub: Sendable {
     }
 }
 
+final class EngineIOSessionRegistry: Sendable {
+    private let sessions = Mutex<[String: EngineIOSession]>([:])
+
+    func insert(_ session: EngineIOSession) {
+        sessions.withLock { $0[session.id] = session }
+    }
+
+    func session(id: String) -> EngineIOSession? {
+        sessions.withLock { $0[id] }
+    }
+
+    func remove(id: String) {
+        _ = sessions.withLock { $0.removeValue(forKey: id) }
+    }
+
+    func closeAll() {
+        let all = sessions.withLock { state -> [EngineIOSession] in
+            let all = Array(state.values)
+            state.removeAll()
+            return all
+        }
+        for session in all { session.close() }
+    }
+}
+
 public final class RealtimeServer: Sendable {
     private let group: MultiThreadedEventLoopGroup
     private let channel: any Channel
     public let hub: RealtimeHub
     public let desktopAttention: DesktopAttentionRegistry
     public let port: Int
+    private let registry: EngineIOSessionRegistry
+    private let cors: EngineIOCORS
+    private let heartbeat: RealtimeHeartbeatConfiguration
 
-    private init(group: MultiThreadedEventLoopGroup, channel: any Channel, port: Int, hub: RealtimeHub, desktopAttention: DesktopAttentionRegistry) {
+    private init(
+        group: MultiThreadedEventLoopGroup,
+        channel: any Channel,
+        port: Int,
+        hub: RealtimeHub,
+        desktopAttention: DesktopAttentionRegistry,
+        registry: EngineIOSessionRegistry,
+        cors: EngineIOCORS,
+        heartbeat: RealtimeHeartbeatConfiguration
+    ) {
         self.group = group
         self.channel = channel
         self.port = port
         self.hub = hub
         self.desktopAttention = desktopAttention
+        self.registry = registry
+        self.cors = cors
+        self.heartbeat = heartbeat
     }
 
     public static func start(
@@ -186,10 +226,13 @@ public final class RealtimeServer: Sendable {
         host: String = "127.0.0.1",
         port: Int = 0,
         hub: RealtimeHub = RealtimeHub(),
-        heartbeat: RealtimeHeartbeatConfiguration = .production
+        heartbeat: RealtimeHeartbeatConfiguration = .production,
+        corsOrigins: [String] = []
     ) async throws -> RealtimeServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let desktopAttention = DesktopAttentionRegistry()
+        let registry = EngineIOSessionRegistry()
+        let cors = EngineIOCORS(origins: corsOrigins)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
@@ -198,7 +241,10 @@ public final class RealtimeServer: Sendable {
                 // submit closure; synchronous installation never transfers the
                 // non-Sendable handler to another executor or channel.
                 let handler = NIOLoopBound(
-                    RealtimeConnectionHandler(auth: auth, hub: hub, serverPort: port, desktopAttention: desktopAttention, heartbeat: heartbeat),
+                    RealtimeConnectionHandler(
+                        auth: auth, hub: hub, desktopAttention: desktopAttention,
+                        heartbeat: heartbeat, registry: registry, cors: cors
+                    ),
                     eventLoop: channel.eventLoop
                 )
                 return channel.eventLoop.submit {
@@ -212,7 +258,11 @@ public final class RealtimeServer: Sendable {
                 try await group.shutdownGracefully()
                 throw RealtimeServerError.missingPort
             }
-            return RealtimeServer(group: group, channel: channel, port: boundPort, hub: hub, desktopAttention: desktopAttention)
+            return RealtimeServer(
+                group: group, channel: channel, port: boundPort, hub: hub,
+                desktopAttention: desktopAttention, registry: registry,
+                cors: cors, heartbeat: heartbeat
+            )
         } catch {
             try await group.shutdownGracefully()
             throw error
@@ -221,6 +271,7 @@ public final class RealtimeServer: Sendable {
 
     public func close() async throws {
         try await channel.close()
+        registry.closeAll()
         try await group.shutdownGracefully()
     }
 }
@@ -229,47 +280,63 @@ public enum RealtimeServerError: Error {
     case missingPort
 }
 
-// All mutable parser and handshake state belongs exclusively to the channel
-// event loop. Construction/installation above and every pipeline entry below
-// check that confinement; this handler is deliberately not Sendable.
-private final class RealtimeConnectionHandler: ChannelInboundHandler {
+/// One TCP connection on the Socket.IO listener. It handles HTTP requests
+/// (polling GET/POST and the WebSocket handshake) and, after an upgrade, the
+/// WebSocket frame stream. Engine state lives in `EngineIOSession`, not here.
+private final class RealtimeConnectionHandler: ChannelDuplexHandler {
     typealias InboundIn = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    private enum Mode {
+        case http
+        case websocket
+    }
+
+    private struct HeldHTTPResponse {
+        var bytes: [UInt8]
+        var closeAfter: Bool
+    }
 
     private let auth: any RealtimeAuthorizing
     private let hub: RealtimeHub
     private let desktopAttention: DesktopAttentionRegistry
     private let heartbeat: RealtimeHeartbeatConfiguration
-    private var desktopAttentionHandler: DesktopAttentionHandler?
-    private var httpBuffer: [UInt8] = []
-    private var frameBuffer: [UInt8] = []
-    private var upgraded = false
-    private var session: SocketIOSession?
+    private let registry: EngineIOSessionRegistry
+    private let cors: EngineIOCORS
+    private let connectionID = UUID()
+
+    private var mode: Mode = .http
+    private var httpFramer = EngineIOHTTPFramer(maxPayload: 1_000_000)
+    private var websocketBuffer: [UInt8] = []
+    private var engine: EngineIOSession?
+    private var layer: RealtimeSocketIOSession?
     private var closed = false
+    private var engineCloseNotified = false
 
-    // Engine.IO heartbeat timers stay on this channel's event loop. The
-    // generation invalidates a task that already fired but has not run yet.
-    private var heartbeatChannel: (any Channel)?
-    private var heartbeatTimer: Scheduled<Void>?
-    private var heartbeatGeneration = 0
-    private var awaitingPong = false
-    private var pongDeadlineExtended = false
+    /// A polling GET that has not written its response yet owns the next
+    /// response position on this connection. Later pipelined responses are
+    /// held until the poll response flushes, matching Node's ordered
+    /// ServerResponse queue.
+    private var awaitingEngineResponse = false
+    private var heldResponses: [HeldHTTPResponse] = []
+    private var engineResponseFlushPending = false
+    private var stopReadingHTTP = false
 
-    // The application-level socket.io `heartbeat` has its own timer and
-    // generation: Engine.IO pongs must not re-arm or cancel it.
-    private var applicationHeartbeatTimer: Scheduled<Void>?
-    private var applicationHeartbeatGeneration = 0
-    private var applicationHeartbeatActive = false
-
-    private enum HeartbeatDeadline: Sendable {
-        case ping
-        case pong
-    }
-
-    init(auth: any RealtimeAuthorizing, hub: RealtimeHub, serverPort: Int, desktopAttention: DesktopAttentionRegistry, heartbeat: RealtimeHeartbeatConfiguration) {
+    init(
+        auth: any RealtimeAuthorizing,
+        hub: RealtimeHub,
+        desktopAttention: DesktopAttentionRegistry,
+        heartbeat: RealtimeHeartbeatConfiguration,
+        registry: EngineIOSessionRegistry,
+        cors: EngineIOCORS
+    ) {
         self.auth = auth
         self.hub = hub
         self.desktopAttention = desktopAttention
         self.heartbeat = heartbeat
+        self.registry = registry
+        self.cors = cors
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -278,68 +345,348 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         guard let bytes = buffer.readBytes(length: buffer.readableBytes), !bytes.isEmpty else {
             return
         }
-        if upgraded {
-            frameBuffer.append(contentsOf: bytes)
-            drainFrames(context: context)
-        } else {
-            httpBuffer.append(contentsOf: bytes)
+        switch mode {
+        case .http:
+            httpFramer.append(bytes)
             drainHTTP(context: context)
+        case .websocket:
+            websocketBuffer.append(contentsOf: bytes)
+            drainWebSocket(context: context)
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
         context.eventLoop.preconditionInEventLoop()
-        closeSession()
+        closed = true
+        heldResponses.removeAll()
+        notifyEngineOfClose()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         context.eventLoop.preconditionInEventLoop()
-        closeSession()
+        closed = true
+        heldResponses.removeAll()
+        notifyEngineOfClose()
         context.close(promise: nil)
     }
 
-    private func drainHTTP(context: ChannelHandlerContext) {
-        let separator: [UInt8] = [13, 10, 13, 10]
-        guard let end = find(separator, in: httpBuffer) else { return }
-        let headBytes = Array(httpBuffer[..<end])
-        let leftover = Array(httpBuffer[(end + 4)...])
-        httpBuffer = []
-        guard let head = String(bytes: headBytes, encoding: .utf8) else {
-            reject(context: context, status: "400 Bad Request")
-            return
+    private func notifyEngineOfClose() {
+        guard !engineCloseNotified else { return }
+        engineCloseNotified = true
+        guard let engine else { return }
+        if mode == .websocket {
+            engine.websocketClosed(connectionID)
+        } else {
+            engine.pollConnectionClosed(connectionID)
         }
-        guard let request = SocketIOUpgradeRequest(head: head),
-              request.path == "/socket.io/",
-              request.query["EIO"] == "4",
-              request.query["transport"] == "websocket",
-              let key = request.header("sec-websocket-key")
-        else {
-            reject(context: context, status: "400 Bad Request")
-            return
-        }
-        let accept = secWebSocketAccept(key)
-        let prelude = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
-        var bytes = Array(prelude.utf8)
-        bytes.append(contentsOf: websocketTextFrame(engineIOOpenFrame(sid: socketIOGeneratedID(), heartbeat: heartbeat)))
-        write(context: context, bytes: bytes)
-        upgraded = true
-        heartbeatChannel = context.channel
-        startHeartbeat(context: context)
-        frameBuffer.append(contentsOf: leftover)
-        drainFrames(context: context)
     }
 
-    private func drainFrames(context: ChannelHandlerContext) {
-        while let frame = readWebSocketFrame(from: &frameBuffer) {
+    /// Engine poll writes reach this handler (`channel.writeAndFlush` starts at
+    /// the tail) while this handler's own writes use its context and skip the
+    /// interception. A flushed engine response releases held pipelined
+    /// responses in request order.
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        engineResponseFlushPending = true
+        context.write(data, promise: promise)
+    }
+
+    func flush(context: ChannelHandlerContext) {
+        context.flush()
+        guard engineResponseFlushPending else { return }
+        engineResponseFlushPending = false
+        guard awaitingEngineResponse else { return }
+        awaitingEngineResponse = false
+        flushHeldResponses(context: context)
+    }
+
+    // MARK: - HTTP
+
+    private func drainHTTP(context: ChannelHandlerContext) {
+        while mode == .http, !closed, !stopReadingHTTP {
+            switch httpFramer.next() {
+            case .incomplete:
+                return
+            case .failure:
+                // Node's HTTP parser answers an invalid request head or body
+                // framing with 400 and closes that connection before any
+                // engine.io routing happens.
+                writeMalformed(context: context)
+                return
+            case .oversized(let request):
+                // The unread body cannot be framed again on this connection,
+                // so every oversized response closes it regardless of whether
+                // the request itself was otherwise routable.
+                handle(request, body: [], keepAlive: false, oversized: true, context: context)
+                return
+            case .upgrade(let request, let residual):
+                guard request.path == "/socket.io/" else {
+                    writeNotFound(request, context: context)
+                    return
+                }
+                handleWebSocket(
+                    request, sid: request.query["sid"], residual: residual,
+                    keepAlive: request.keepsConnectionAlive, context: context
+                )
+                return
+            case .request(let request, let body):
+                let keepAlive = request.keepsConnectionAlive
+                handle(request, body: body, keepAlive: keepAlive, context: context)
+                if mode == .websocket || closed || stopReadingHTTP { return }
+            }
+        }
+    }
+
+    private func handle(
+        _ request: EngineIOHTTPRequest,
+        body: [UInt8],
+        keepAlive: Bool,
+        oversized: Bool = false,
+        context: ChannelHandlerContext
+    ) {
+        let origin = request.header("origin")
+        guard request.path == "/socket.io/" else {
+            writeNotFound(request, context: context)
+            return
+        }
+        if request.method == "OPTIONS", cors.isEnabled {
+            let bytes = engineIOPreflightResponseBytes(
+                cors: cors, origin: origin, requestedHeaders: request.header("access-control-request-headers")
+            )
+            writeHTTPResponse(bytes, closeAfter: false, context: context)
+            return
+        }
+        guard let transport = request.query["transport"], transport == "polling" || transport == "websocket" else {
+            writeEngineError(code: 0, message: "Transport unknown", origin: origin, keepAlive: keepAlive, context: context)
+            return
+        }
+        if request.query["EIO"] != "4" {
+            let sid = request.query["sid"]
+            if let sid, !sid.isEmpty {
+                writeEngineError(code: 3, message: "Bad request", origin: origin, keepAlive: keepAlive, context: context)
+            } else {
+                writeEngineError(code: 5, message: "Unsupported protocol version", origin: origin, keepAlive: keepAlive, context: context)
+            }
+            return
+        }
+        if transport == "websocket" {
+            // A WebSocket transport without an Upgrade header is the
+            // `TRANSPORT_HANDSHAKE_ERROR` / mismatch arm of engine.io.
+            writeEngineError(code: 3, message: "Bad request", origin: origin, keepAlive: keepAlive, context: context)
+            return
+        }
+        let sid = request.query["sid"]
+        if let sid, !sid.isEmpty {
+            guard let engine = registry.session(id: sid) else {
+                writeEngineError(code: 1, message: "Session ID unknown", origin: origin, keepAlive: keepAlive, context: context)
+                return
+            }
+            handlePollingRequest(
+                engine, request: request, body: body, origin: origin,
+                keepAlive: keepAlive, oversized: oversized, context: context
+            )
+        } else {
+            guard request.method == "GET" else {
+                writeEngineError(code: 2, message: "Bad handshake method", origin: origin, keepAlive: keepAlive, context: context)
+                return
+            }
+            let engine = makeEngine(on: context.eventLoop)
+            engine.startPolling()
+            attachPoll(
+                engine, origin: origin, userAgent: request.header("user-agent"),
+                keepAlive: keepAlive, context: context
+            )
+        }
+    }
+
+    private func handlePollingRequest(
+        _ engine: EngineIOSession,
+        request: EngineIOHTTPRequest,
+        body: [UInt8],
+        origin: String?,
+        keepAlive: Bool,
+        oversized: Bool,
+        context: ChannelHandlerContext
+    ) {
+        self.engine = engine
+        if oversized {
+            writeEmptyError(
+                status: "413 Payload Too Large", origin: origin,
+                context: context, closeAfter: true
+            )
+            return
+        }
+        switch request.method {
+        case "GET":
+            attachPoll(
+                engine, origin: origin, userAgent: request.header("user-agent"),
+                keepAlive: keepAlive, context: context
+            )
+        case "POST":
+            let contentType = request.header("content-type")?.lowercased() ?? ""
+            if contentType == "application/octet-stream" {
+                engine.close()
+                writeEmptyError(
+                    status: "400 Bad Request", origin: origin,
+                    context: context, closeAfter: !keepAlive
+                )
+                return
+            }
+            let text = String(decoding: body, as: UTF8.self)
+            let packets = text.split(separator: "\u{1e}", omittingEmptySubsequences: false).map(String.init)
+            switch engine.beginPost(connectionID: connectionID) {
+            case .accepted:
+                engine.receivePostPackets(packets)
+                engine.endPost(connectionID: connectionID)
+                let bytes = engineIOPostAckBytes(
+                    cors: cors, origin: origin, userAgent: request.header("user-agent"),
+                    keepAlive: keepAlive
+                )
+                writeHTTPResponse(bytes, closeAfter: !keepAlive, context: context)
+            case .overlap:
+                writeEmptyError(
+                    status: "400 Bad Request", origin: origin,
+                    context: context, closeAfter: !keepAlive
+                )
+            case .unknownSid:
+                writeEngineError(code: 1, message: "Session ID unknown", origin: origin, keepAlive: keepAlive, context: context)
+            case .wrongTransport:
+                writeEngineError(code: 3, message: "Bad request", origin: origin, keepAlive: keepAlive, context: context)
+            }
+        default:
+            writeEmptyError(
+                status: "500 Internal Server Error", origin: origin,
+                context: context, closeAfter: !keepAlive
+            )
+        }
+    }
+
+    private func attachPoll(
+        _ engine: EngineIOSession,
+        origin: String?,
+        userAgent: String?,
+        keepAlive: Bool,
+        context: ChannelHandlerContext
+    ) {
+        self.engine = engine
+        switch engine.attachPoll(
+            connectionID: connectionID, channel: context.channel, origin: origin,
+            userAgent: userAgent, keepAlive: keepAlive
+        ) {
+        case .accepted:
+            // The poll response is produced on the engine's owner loop. Until
+            // it flushes, later pipelined responses stay queued behind it.
+            awaitingEngineResponse = true
+        case .overlap:
+            writeEmptyError(
+                status: "400 Bad Request", origin: origin,
+                context: context, closeAfter: !keepAlive
+            )
+        case .unknownSid:
+            writeEngineError(code: 1, message: "Session ID unknown", origin: origin, keepAlive: keepAlive, context: context)
+        case .wrongTransport:
+            writeEngineError(code: 3, message: "Bad request", origin: origin, keepAlive: keepAlive, context: context)
+        }
+    }
+
+    private func makeEngine(on eventLoop: any EventLoop) -> EngineIOSession {
+        let layer = RealtimeSocketIOSession(
+            auth: auth, hub: hub, desktopAttention: desktopAttention,
+            heartbeat: heartbeat, ownerLoop: eventLoop
+        )
+        self.layer = layer
+        let bound = NIOLoopBound(layer, eventLoop: eventLoop)
+        let engineID = socketIOGeneratedID()
+        let hub = self.hub
+        let engine = EngineIOSession(
+            id: engineID,
+            heartbeat: heartbeat,
+            ownerLoop: eventLoop,
+            cors: cors,
+            onClose: { [weak registry] socketIO in
+                registry?.remove(id: engineID)
+                if let socketIO { hub.unregister(socketIO) }
+            },
+            socketIOHandler: { packet in
+                eventLoop.execute { bound.value.receive(packet) }
+            }
+        )
+        layer.engine = engine
+        self.engine = engine
+        registry.insert(engine)
+        return engine
+    }
+
+    // MARK: - WebSocket
+
+    private func handleWebSocket(
+        _ request: EngineIOHTTPRequest,
+        sid: String?,
+        residual: [UInt8],
+        keepAlive: Bool,
+        context: ChannelHandlerContext
+    ) {
+        guard let key = request.header("sec-websocket-key"), !key.isEmpty else {
+            writeUpgradeAbort(engineIOEmptyErrorResponseBytes(
+                status: "400 Bad Request", cors: cors, origin: request.header("origin"),
+                keepAlive: false
+            ), context: context)
+            return
+        }
+        if let sid, !sid.isEmpty {
+            guard registry.session(id: sid) != nil else {
+                writeUpgradeAbort(engineIOWebSocketAbortBytes(message: "Session ID unknown"), context: context)
+                return
+            }
+            if request.query["EIO"] != "4" {
+                writeUpgradeAbort(engineIOWebSocketAbortBytes(message: "Bad request"), context: context)
+                return
+            }
+        } else if request.query["EIO"] != "4" {
+            writeUpgradeAbort(engineIOWebSocketAbortBytes(message: "Unsupported protocol version"), context: context)
+            return
+        }
+        let prelude = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(secWebSocketAccept(key))\r\n\r\n"
+        writeRawResponse(Array(prelude.utf8), closeAfter: false, context: context)
+        mode = .websocket
+        websocketBuffer = residual
+        // Any HTTP response still queued on the old transport would be written
+        // into the WebSocket frame stream; the upgrade request owns this
+        // connection from the 101 onward.
+        awaitingEngineResponse = false
+        heldResponses.removeAll()
+        stopReadingHTTP = false
+        if let sid, !sid.isEmpty {
+            guard let engine = registry.session(id: sid) else {
+                context.close(promise: nil)
+                closed = true
+                return
+            }
+            self.engine = engine
+            engine.startUpgrade(context.channel, connectionID: connectionID)
+        } else {
+            let engine = makeEngine(on: context.eventLoop)
+            engine.startWebSocket(context.channel, connectionID: connectionID)
+        }
+        drainWebSocket(context: context)
+    }
+
+    private func drainWebSocket(context: ChannelHandlerContext) {
+        while mode == .websocket, !closed {
+            guard let frame = readWebSocketFrame(from: &websocketBuffer) else { return }
             switch frame.opcode {
             case 0x1:
-                handleText(String(decoding: frame.payload, as: UTF8.self), context: context)
+                guard let engine else { return }
+                engine.handleWebSocketText(String(decoding: frame.payload, as: UTF8.self), connectionID: connectionID)
             case 0x8:
-                closeSession()
+                if let engine { engine.websocketClosed(connectionID) }
+                closed = true
                 context.close(promise: nil)
                 return
             case 0x9:
-                write(context: context, bytes: websocketControlFrame(opcode: 0xA, payload: frame.payload))
+                writeRawResponse(
+                    websocketControlFrame(opcode: 0xA, payload: frame.payload),
+                    closeAfter: false, context: context
+                )
             case 0xA:
                 break
             default:
@@ -348,500 +695,84 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         }
     }
 
-    private func handleText(_ text: String, context: ChannelHandlerContext) {
-        if text == "3" {
-            receiveHeartbeatPong()
-            return
-        }
-        if text == "2" {
-            // engine.io 6.6.11, protocol v4: the server owns the ping
-            // direction. A client `2` is an invalid heartbeat direction; the
-            // pinned upstream closes the transport ("transport error") and
-            // sends no pong.
-            closeSession()
-            context.close(promise: nil)
-            return
-        }
-        // engine.io extends an outstanding pong deadline once when any other
-        // packet arrives before the pong.
-        extendPongDeadlineOnce()
-        if text == "41" {
-            closeSession()
-            context.close(promise: nil)
-            return
-        }
-        if text.hasPrefix("40"), session == nil {
-            connect(payload: String(text.dropFirst(2)), context: context)
-            return
-        }
-        guard let session else { return }
-        if text.hasPrefix("42") {
-            handleEvent(String(text.dropFirst(2)), session: session)
-        }
-    }
+    // MARK: - Responses
 
-    private func startHeartbeat(context: ChannelHandlerContext) {
-        context.eventLoop.preconditionInEventLoop()
-        awaitingPong = false
-        pongDeadlineExtended = false
-        armHeartbeat(
-            eventLoop: context.eventLoop,
-            afterMilliseconds: heartbeat.pingIntervalMilliseconds,
-            deadline: .ping
-        )
-    }
-
-    private func armHeartbeat(eventLoop: any EventLoop, afterMilliseconds milliseconds: Int, deadline: HeartbeatDeadline) {
-        eventLoop.preconditionInEventLoop()
-        heartbeatGeneration += 1
-        let generation = heartbeatGeneration
-        let loopSelf = NIOLoopBound(self, eventLoop: eventLoop)
-        heartbeatTimer?.cancel()
-        heartbeatTimer = eventLoop.scheduleTask(in: .milliseconds(Int64(milliseconds))) {
-            let handler = loopSelf.value
-            // A cancelled task that already fired can still reach this closure;
-            // the generation and the closed gate discard it.
-            guard !handler.closed, handler.heartbeatGeneration == generation else { return }
-            handler.heartbeatTimer = nil
-            switch deadline {
-            case .ping:
-                handler.sendHeartbeatPing()
-            case .pong:
-                handler.closeTimedOutHeartbeat()
-            }
-        }
-    }
-
-    private func sendHeartbeatPing() {
-        guard let channel = heartbeatChannel, !closed else { return }
-        channel.eventLoop.preconditionInEventLoop()
-        awaitingPong = true
-        pongDeadlineExtended = false
-        write(bytes: websocketTextFrame("2"), on: channel)
-        armHeartbeat(
-            eventLoop: channel.eventLoop,
-            afterMilliseconds: heartbeat.pingTimeoutMilliseconds,
-            deadline: .pong
-        )
-    }
-
-    private func receiveHeartbeatPong() {
-        guard let channel = heartbeatChannel, !closed else { return }
-        channel.eventLoop.preconditionInEventLoop()
-        awaitingPong = false
-        pongDeadlineExtended = false
-        armHeartbeat(
-            eventLoop: channel.eventLoop,
-            afterMilliseconds: heartbeat.pingIntervalMilliseconds,
-            deadline: .ping
-        )
-    }
-
-    private func extendPongDeadlineOnce() {
-        guard let channel = heartbeatChannel, !closed, awaitingPong, !pongDeadlineExtended else { return }
-        channel.eventLoop.preconditionInEventLoop()
-        pongDeadlineExtended = true
-        armHeartbeat(
-            eventLoop: channel.eventLoop,
-            afterMilliseconds: heartbeat.pingTimeoutMilliseconds,
-            deadline: .pong
-        )
-    }
-
-    private func closeTimedOutHeartbeat() {
-        guard let channel = heartbeatChannel, !closed else { return }
-        channel.eventLoop.preconditionInEventLoop()
-        awaitingPong = false
-        closeSession()
-        channel.close(promise: nil)
-    }
-
-    private func stopHeartbeat() {
-        heartbeatGeneration += 1
-        heartbeatTimer?.cancel()
-        heartbeatTimer = nil
-        awaitingPong = false
-        pongDeadlineExtended = false
-    }
-
-    // MARK: - Application-level `heartbeat` event
-
-    /// `socket/index.ts` creates this interval inside `if (serverId)` after the
-    /// socket connects, so user-scoped connections never receive the event.
-    /// A provider that does not expose the retained sequence stays quiet
-    /// instead of publishing an invented counter.
-    private func startApplicationHeartbeat(context: ChannelHandlerContext) {
-        context.eventLoop.preconditionInEventLoop()
-        guard heartbeat.applicationIntervalMilliseconds > 0, session?.serverId != nil else { return }
-        applicationHeartbeatActive = true
-        armApplicationHeartbeat(eventLoop: context.eventLoop)
-    }
-
-    private func armApplicationHeartbeat(eventLoop: any EventLoop) {
-        eventLoop.preconditionInEventLoop()
-        applicationHeartbeatGeneration += 1
-        let generation = applicationHeartbeatGeneration
-        let loopSelf = NIOLoopBound(self, eventLoop: eventLoop)
-        applicationHeartbeatTimer?.cancel()
-        applicationHeartbeatTimer = eventLoop.scheduleTask(in: .milliseconds(Int64(heartbeat.applicationIntervalMilliseconds))) {
-            let handler = loopSelf.value
-            // A cancelled task that already fired can still reach this closure;
-            // the generation and the closed gate discard it.
-            handler.applicationHeartbeatTimer = nil
-            guard !handler.closed, handler.applicationHeartbeatActive,
-                  handler.applicationHeartbeatGeneration == generation,
-                  let session = handler.session,
-                  let serverId = session.serverId
-            else { return }
-            // Upstream reads getMaxSeq inside the interval callback, so the
-            // value is the max at send time, not at connect time.
-            if let seq = handler.auth.maxMessageSeq(serverId: serverId) {
-                let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-                session.send(socketIOApplicationHeartbeatFrame(seq: seq, timestampMilliseconds: timestamp))
-            }
-            handler.armApplicationHeartbeat(eventLoop: eventLoop)
-        }
-    }
-
-    private func stopApplicationHeartbeat() {
-        applicationHeartbeatActive = false
-        applicationHeartbeatGeneration += 1
-        applicationHeartbeatTimer?.cancel()
-        applicationHeartbeatTimer = nil
-    }
-
-    private func connect(payload: String, context: ChannelHandlerContext) {
-        let parsed = parseSocketHandshakeAuth(Data(payload.utf8))
-        let handshake: SocketHandshakeAuth
-        switch parsed {
-        case .success(let value): handshake = value
-        case .failure:
-            send(text: socketIOErrorFrame("Authentication required"), context: context)
-            context.close(promise: nil)
-            return
-        }
-        guard let identity = auth.sessionIdentity(forAccessToken: handshake.token) else {
-            send(text: socketIOErrorFrame("Invalid or expired token"), context: context)
-            context.close(promise: nil)
-            return
-        }
-        let userId = identity.userId
-        // Register before ALL role/visibility reads: revocation before this
-        // point is reflected by those reads; after it the hub sees the pending
-        // connection just as Node's pendingHandshakes set does.
-        let session = SocketIOSession(id: socketIOGeneratedID(), userId: userId,
-            serverId: handshake.serverId, clientKind: handshake.clientKind,
-            familyId: identity.familyId, channel: context.channel, pending: true)
-        self.session = session
-        hub.register(session)
-        let role: String?
-        let channelIds: [String]
-        if let serverId = handshake.serverId {
-            role = auth.serverRole(serverId: serverId, userId: userId)
-            guard role != nil else {
-                send(text: socketIOErrorFrame(socketNotServerMemberMessage), context: context)
-                context.close(promise: nil)
-                return
-            }
-            channelIds = auth.visibleChannelIds(serverId: serverId, userId: userId)
-        } else {
-            role = nil
-            channelIds = []
-        }
-        // A profile/family revoke before registration cannot be reinterpreted
-        // as a legacy familyless identity. After registration any user/family
-        // revoke closes this pending session; no new error/frame is invented.
-        guard auth.sessionIdentity(forAccessToken: handshake.token) == identity, session.admit() else {
-            session.close()
-            return
-        }
-        desktopAttentionHandler = DesktopAttentionHandler(userId: userId,
-            clientKind: handshake.clientKind, recorder: desktopAttention)
-        send(text: socketIOConnectFrame(sid: session.id), context: context)
-        session.join(["user:\(userId)", socketClientKindRoom(userId: userId, clientKind: handshake.clientKind)])
-        if let serverId = handshake.serverId {
-            if role == "guest" { session.join([socketServerGuestsRoom(serverId: serverId)]) }
-            else { session.join(["server:\(serverId)"]) }
-            session.join([socketUserServerRoom(userId: userId, serverId: serverId)])
-            session.join(channelIds.map { "channel:\($0)" })
-            send(text: socketIOEventFrame("rooms:joined"), context: context)
-            startApplicationHeartbeat(context: context)
-        }
-    }
-
-    private func handleEvent(_ payload: String, session: SocketIOSession) {
-        guard let data = payload.data(using: .utf8),
-              let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any],
-              let event = array.first as? String
-        else { return }
-        if event == DesktopAttentionEvents.eventName {
-            desktopAttentionHandler?.handle(array.count > 1 ? array[1] : nil)
-            return
-        }
-        guard let serverId = session.serverId else { return }
-        let userId = session.userId
-        switch event {
-        case "join:channel":
-            guard array.count > 1, let channelId = array[1] as? String, !channelId.isEmpty else { return }
-            guard auth.visibleChannelIds(serverId: serverId, userId: userId).contains(channelId) else { return }
-            session.join(["channel:\(channelId)"])
-        case "leave:channel":
-            guard array.count > 1, let channelId = array[1] as? String else { return }
-            session.leave("channel:\(channelId)")
-        case "sync:resume":
-            guard let serverId = session.serverId,
-                  array.count > 1,
-                  let payload = array[1] as? [String: Any],
-                  let lastSeq = (payload["lastSeq"] as? NSNumber)?.intValue ?? (payload["lastSeq"] as? Int),
-                  lastSeq > 0
-            else { return }
-            guard let body = auth.syncResumePayload(
-                serverId: serverId,
-                userId: userId,
-                lastSeq: lastSeq,
-                limit: socketResumeLimit
-            ) else { return }
-            session.send(socketIOEventFrame("sync:resume:response", payloadJSON: body))
-        default:
-            break
-        }
-    }
-
-    private func send(text: String, context: ChannelHandlerContext) {
-        write(context: context, bytes: websocketTextFrame(text))
-    }
-
-    private func write(context: ChannelHandlerContext, bytes: [UInt8]) {
-        context.eventLoop.preconditionInEventLoop()
-        write(bytes: bytes, on: context.channel)
-    }
-
-    private func write(bytes: [UInt8], on channel: any Channel) {
-        channel.eventLoop.preconditionInEventLoop()
-        // Protocol replies share the terminal gate with hub events. Since this
-        // write is synchronous on the owner loop, a concurrent terminal drain
-        // cannot overtake it after the open-state check.
-        guard session?.isClosed != true else { return }
-        var buffer = channel.allocator.buffer(capacity: bytes.count)
-        buffer.writeBytes(bytes)
-        channel.writeAndFlush(buffer, promise: nil)
-    }
-
-    private func reject(context: ChannelHandlerContext, status: String) {
-        let response = "HTTP/1.1 \(status)\r\nContent-Length: 0\r\n\r\n"
-        write(context: context, bytes: Array(response.utf8))
-        context.close(promise: nil)
-    }
-
-    private func closeSession() {
+    private func writeHTTPResponse(_ bytes: [UInt8], closeAfter: Bool, context: ChannelHandlerContext) {
         guard !closed else { return }
-        closed = true
-        stopHeartbeat()
-        stopApplicationHeartbeat()
-        if let session {
-            hub.unregister(session)
-            session.markClosed()
+        if awaitingEngineResponse {
+            heldResponses.append(HeldHTTPResponse(bytes: bytes, closeAfter: closeAfter))
+            if closeAfter { stopReadingHTTP = true }
+            return
         }
+        writeRawResponse(bytes, closeAfter: closeAfter, context: context)
     }
 
-    private func find(_ needle: [UInt8], in haystack: [UInt8]) -> Int? {
-        guard !needle.isEmpty, haystack.count >= needle.count else { return nil }
-        for index in 0...(haystack.count - needle.count) {
-            if Array(haystack[index..<(index + needle.count)]) == needle { return index }
-        }
-        return nil
-    }
-}
-
-final class SocketIOSession: Sendable {
-    let id: String
-    let userId: String
-    let serverId: String?
-    let clientKind: SocketClientKind
-    let familyId: String?
-    let channel: any Channel
-
-    private enum Write: Sendable {
-        case frame(String)
-        case close
-        case finalFrame(String)
-    }
-
-    private struct State: Sendable {
-        var rooms: Set<String> = []
-        var admitted = true
-        var closed = false
-        var pending = CircularBuffer<Write>(initialCapacity: 64)
-        var draining = false
-    }
-
-    private let state = Mutex(State())
-
-    init(
-        id: String,
-        userId: String,
-        serverId: String?,
-        clientKind: SocketClientKind,
-        familyId: String?,
-        channel: any Channel,
-        pending: Bool = false
-    ) {
-        self.id = id
-        self.userId = userId
-        self.serverId = serverId
-        self.clientKind = clientKind
-        self.familyId = familyId
-        self.channel = channel
-        if pending { state.withLock { $0.admitted = false } }
-    }
-
-    /// Transport phase only; the actual auth and visibility reads already ran.
-    func admit() -> Bool {
-        state.withLock { state in
-            guard !state.closed else { return false }
-            state.admitted = true
-            return true
-        }
-    }
-
-    var isClosed: Bool { state.withLock { $0.closed } }
-
-    func hasRoom(_ room: String) -> Bool { state.withLock { $0.admitted && $0.rooms.contains(room) } }
-
-    func join(_ newRooms: [String]) { state.withLock { $0.rooms.formUnion(newRooms) } }
-
-    func leave(_ room: String) { _ = state.withLock { $0.rooms.remove(room) } }
-
-    func leave(_ leavingRooms: [String]) {
-        guard !leavingRooms.isEmpty else { return }
-        state.withLock { $0.rooms.subtract(leavingRooms) }
-    }
-
-    func markClosed() {
-        state.withLock {
-            $0.closed = true
-            $0.pending.removeAll()
-        }
-    }
-
-    func send(_ text: String) { enqueue(.frame(text), terminal: false) }
-
-    func close() { enqueue(.close, terminal: true) }
-
-    func sendAndClose(_ text: String) { enqueue(.finalFrame(text), terminal: true) }
-
-    private func enqueue(_ write: Write, terminal: Bool) {
-        let shouldDrain = state.withLock { state in
-            guard !state.closed else { return false }
-            let queued: Write
-            switch write {
-            case .frame:
-                guard state.admitted else { return false }
-                queued = write
-            case .finalFrame: queued = state.admitted ? write : .close
-            case .close: queued = write
-            }
-            if terminal { state.closed = true }
-            state.pending.append(queued)
-            guard !state.draining else { return false }
-            state.draining = true
-            return true
-        }
-        if shouldDrain {
-            // No loop scheduling or outbound handler callback runs under the
-            // state mutex. One drainer preserves admitted frame/close order.
-            channel.eventLoop.execute { self.drainWrites() }
-        }
-    }
-
-    private func drainWrites() {
-        channel.eventLoop.preconditionInEventLoop()
-        let writes = state.withLock { state in
-            let count = min(state.pending.count, 64)
-            var writes: [Write] = []
-            writes.reserveCapacity(count)
-            for _ in 0..<count { writes.append(state.pending.removeFirst()) }
-            return writes
-        }
-        for write in writes {
-            switch write {
-            case .frame(let text):
-                guard channel.isActive else { continue }
-                writeFrame(text, closeAfterFlush: false)
-            case .close:
-                channel.close(promise: nil)
-            case .finalFrame(let text):
-                guard channel.isActive else {
-                    channel.close(promise: nil)
-                    continue
-                }
-                writeFrame(text, closeAfterFlush: true)
-            }
-        }
-        let shouldContinue = state.withLock { state in
-            // Keep ownership while work remains. An enqueue after this empty
-            // check either sees draining=true or claims the next drain itself.
-            guard state.pending.isEmpty else { return true }
-            state.draining = false
-            return false
-        }
-        if shouldContinue {
-            // This NIO loop drains immediate tasks until none remain. A future
-            // tick, rather than execute(), also yields to selector I/O under a
-            // continuous producer, while the single drainer preserves FIFO.
-            _ = channel.eventLoop.scheduleTask(in: .milliseconds(1)) { self.drainWrites() }
-        }
-    }
-
-    private func writeFrame(_ text: String, closeAfterFlush: Bool) {
-        channel.eventLoop.preconditionInEventLoop()
-        var buffer = channel.allocator.buffer(capacity: text.utf8.count + 4)
-        buffer.writeBytes(websocketTextFrame(text))
-        if closeAfterFlush {
-            channel.writeAndFlush(buffer).whenComplete { [channel] _ in
+    private func writeRawResponse(_ bytes: [UInt8], closeAfter: Bool, context: ChannelHandlerContext) {
+        guard !closed else { return }
+        var buffer = context.channel.allocator.buffer(capacity: bytes.count)
+        buffer.writeBytes(bytes)
+        if closeAfter {
+            closed = true
+            let channel = context.channel
+            context.writeAndFlush(wrapOutboundOut(buffer)).whenComplete { _ in
                 channel.close(promise: nil)
             }
         } else {
-            channel.writeAndFlush(buffer, promise: nil)
+            context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
         }
     }
-}
 
-private struct SocketIOUpgradeRequest {
-    var path: String
-    var query: [String: String]
-    private var headers: [String: String]
-
-    init?(head: String) {
-        let lines = head.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else { return nil }
-        let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2 else { return nil }
-        let target = String(parts[1])
-        let split = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-        path = String(split[0])
-        var query: [String: String] = [:]
-        if split.count == 2 {
-            for pair in split[1].split(separator: "&") {
-                let item = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                let name = String(item[0]).removingPercentEncoding ?? String(item[0])
-                let value = item.count == 2 ? (String(item[1]).removingPercentEncoding ?? String(item[1])) : ""
-                query[name] = value
-            }
+    private func flushHeldResponses(context: ChannelHandlerContext) {
+        let responses = heldResponses
+        heldResponses.removeAll()
+        for response in responses {
+            writeRawResponse(response.bytes, closeAfter: response.closeAfter, context: context)
+            if response.closeAfter { return }
         }
-        self.query = query
-        var headers: [String: String] = [:]
-        for line in lines.dropFirst() {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
-            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-            headers[name] = value
-        }
-        self.headers = headers
     }
 
-    func header(_ name: String) -> String? {
-        headers[name.lowercased()]
+    private func writeUpgradeAbort(_ bytes: [UInt8], context: ChannelHandlerContext) {
+        // An upgrade abort closes before the 101; it owns the connection and is
+        // never queued behind a polling response.
+        writeRawResponse(bytes, closeAfter: true, context: context)
+    }
+
+    private func writeNotFound(_ request: EngineIOHTTPRequest, context: ChannelHandlerContext) {
+        let keepAlive = request.keepsConnectionAlive
+        let bytes = engineIOHTTPResponseBytes(
+            status: "404 Not Found", headers: [], body: [], keepAlive: keepAlive,
+            chunked: false, contentLength: true
+        )
+        writeHTTPResponse(bytes, closeAfter: !keepAlive, context: context)
+    }
+
+    private func writeEngineError(
+        code: Int, message: String, origin: String?, keepAlive: Bool, context: ChannelHandlerContext
+    ) {
+        let bytes = engineIOErrorResponseBytes(
+            code: code, message: message, cors: cors, origin: origin, keepAlive: keepAlive
+        )
+        writeHTTPResponse(bytes, closeAfter: !keepAlive, context: context)
+    }
+
+    private func writeEmptyError(
+        status: String, origin: String? = nil,
+        context: ChannelHandlerContext, closeAfter: Bool
+    ) {
+        let bytes = engineIOEmptyErrorResponseBytes(
+            status: status, cors: cors, origin: origin, keepAlive: !closeAfter
+        )
+        writeHTTPResponse(bytes, closeAfter: closeAfter, context: context)
+    }
+
+    private func writeMalformed(context: ChannelHandlerContext) {
+        let bytes = engineIOHTTPResponseBytes(
+            status: "400 Bad Request", headers: [], body: [], keepAlive: false,
+            chunked: true, contentLength: false
+        )
+        // A parser error terminates the connection even if an earlier poll is
+        // still outstanding, exactly like Node destroying the socket.
+        writeRawResponse(bytes, closeAfter: true, context: context)
     }
 }
 
