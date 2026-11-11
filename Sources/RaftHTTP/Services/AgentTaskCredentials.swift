@@ -124,11 +124,39 @@ struct AgentTaskCredentials: Sendable {
     /// from starting the work at all.
     func channel(serverId: String, agentId: String, reference: String) -> String? {
         guard case .resolved(let channelId) = resolution(
-            serverId: serverId, agentId: agentId, reference: reference, allowThread: false
+            serverId: serverId, agentId: agentId, reference: reference, allowThread: true
         ) else {
             return nil
         }
         return channelId
+    }
+
+    /// Resolve a task target and publish the caller-fixable DM failures.
+    ///
+    /// Every published task handler resolves its target through the same
+    /// upstream `channelService.resolveChannelByName`, which accepts the
+    /// `:<8-hex>` thread suffix everywhere. A route that needs the base board
+    /// (claim/create refuse threads) still has to parse the ref as one; a route
+    /// that can address a thread (assign/update/delete/amend/…) must keep the
+    /// thread id instead of silently falling back to the parent channel.
+    func resolvedChannel(
+        serverId: String,
+        agentId: String,
+        reference: String,
+        allowThread: Bool = true
+    ) throws -> String {
+        switch resolution(
+            serverId: serverId, agentId: agentId, reference: reference, allowThread: allowThread
+        ) {
+        case .resolved(let channelId):
+            return channelId
+        case .notFound:
+            throw AgentTaskApiError.agentOrChannelNotFound
+        case .ambiguous(let peerName):
+            throw ActionCardExecuteError.dmTargetAmbiguous(peerName: peerName)
+        case .invalidPeerKind(let rawPeer, let suffix):
+            throw ActionCardExecuteError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: suffix)
+        }
     }
 
     /// The channel-reference resolution with the caller-fixable DM failures
@@ -181,32 +209,108 @@ struct AgentTaskCredentials: Sendable {
 
     // MARK: - Task-write policy
 
-    /// Upstream `channelService.canAgentPostToChannel`: the enabled `#all`
-    /// surface is open to every live agent in the server, a thread borrows its
-    /// parent's access, the private reminder surface is server-only, and every
-    /// other channel needs an actual agent membership.
+    /// The published writable boundary every task write shares.
+    ///
+    /// The decision order is the pinned `assertAgentApiTaskWritableChannel`:
+    /// a thread target is refused *before* membership (only the routes that
+    /// cannot address a thread call for this), then `canAgentPostToChannel`,
+    /// then the archived row. Reads (list/history) never call this.
+    enum TaskWriteBoundary: Sendable, Equatable {
+        case allowed
+        case thread
+        case notWritable
+        case archived
+    }
+
+    func taskWriteBoundary(serverId: String, agentId: String, channelId: String, refusesThread: Bool) -> TaskWriteBoundary {
+        let type = oauth.channelType(id: channelId) ?? channels.postableChannel(id: channelId)?.kind
+        if refusesThread, type == "thread" { return .thread }
+        guard canAgentPost(serverId: serverId, agentId: agentId, channelId: channelId) else {
+            return .notWritable
+        }
+        guard !isChannelArchived(channelId) else { return .archived }
+        return .allowed
+    }
+
+    /// Upstream `channelService.canAgentPostToChannel`: an assistant posts only
+    /// in its owner's DM (or a thread under it), the enabled `#all` surface is
+    /// open to every live agent in the server, the private reminder surface is
+    /// server-only, a thread borrows its parent's access, and every other
+    /// channel needs an actual agent membership.
     func canAgentPost(serverId: String, agentId: String, channelId: String) -> Bool {
         guard let channel = channels.postableChannel(id: channelId), channel.serverId == serverId,
               channel.deletedAt == nil else {
             return false
         }
-        if reminderSurface(agentId) == channelId { return false }
         let name = oauth.channelInfo(id: channelId)?.name ?? channel.name
         let type = oauth.channelType(id: channelId) ?? channel.kind
-        if name == "all", type == "channel" || type == "private" {
-            guard type == "channel" else { return false }
+        // Before the #all shortcut below: that one lets any server agent post
+        // there, but an assistant may only ever post in its owner's DM.
+        if let assistantVerdict = assistantMayPost(
+            serverId: serverId, agentId: agentId, channelId: channelId, type: type
+        ) {
+            return assistantVerdict
+        }
+        let isAllSystem = name == "all" && (type == "channel" || type == "private")
+        if isAllSystem, type != "channel" { return false }
+        if isAllSystem, type == "channel" {
             guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
                 return false
             }
             return true
         }
-        if type == "thread", channel.parentChannelId != nil {
-            return channel.parentChannelId.map {
-                canAgentPost(serverId: serverId, agentId: agentId, channelId: $0)
-            } ?? false
+        if type == "dm", reminderSurface(agentId) == channelId { return false }
+        if type == "thread" {
+            if let parentId = channel.parentChannelId {
+                return canAgentPost(serverId: serverId, agentId: agentId, channelId: parentId)
+            }
+            return false
         }
         return channel.memberIds.contains(agentId)
             || oauth.channelAgentIds(channelId: channelId).contains(agentId)
+    }
+
+    /// RFC 074 §2 / upstream `assistantMayPostTo`: an agent with an owner may
+    /// post only in the DM between itself and that owner, or a thread under
+    /// that DM. Nil when the agent is not a live assistant, so the ordinary
+    /// channel rules apply. The send path uses the same live-ownership query.
+    private func assistantMayPost(
+        serverId: String,
+        agentId: String,
+        channelId: String,
+        type: String
+    ) -> Bool? {
+        guard let ownerId = AssistantOwnershipQuery(agents: agents, oauth: oauth)
+            .liveOwner(agentId: agentId, serverId: serverId) else {
+            return nil
+        }
+        let dmChannelId: String
+        if type == "thread" {
+            guard let parentId = channels.postableChannel(id: channelId)?.parentChannelId,
+                  let parent = channels.postableChannel(id: parentId),
+                  (oauth.channelType(id: parentId) ?? parent.kind) == "dm" else {
+                return false
+            }
+            dmChannelId = parentId
+        } else if type == "dm" {
+            dmChannelId = channelId
+        } else {
+            return false
+        }
+        guard oauth.channelHumanIds(channelId: dmChannelId).contains(ownerId) else { return false }
+        return oauth.channelAgentIds(channelId: dmChannelId).contains(agentId)
+    }
+
+    /// The canonical handle a claim conflict names. The store returns the
+    /// assignee facts it observed; this resolves the published `@name` from
+    /// the same accounts/agent rows the rest of the task surface reads.
+    func taskActorName(type: String?, id: String?) -> String? {
+        guard let type, let id else { return nil }
+        switch type {
+        case "user": return accounts.account(userId: id)?.name
+        case "agent": return oauth.agentRuntimeInfo(id: id)?.name
+        default: return nil
+        }
     }
 
     /// Upstream `isChannelArchived` reads the durable channel row.
