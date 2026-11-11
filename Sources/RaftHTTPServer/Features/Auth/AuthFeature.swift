@@ -230,10 +230,11 @@ public struct AuthFeature: RouteCollection, Sendable {
             // A body that is not a JSON object reads as an empty request.
             let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
             // Pinned `routes/auth.ts:1131-1138` checks the completion code
-            // before `parsePendingLinkToken`. JavaScript `!code` covers a
-            // missing member, `null`, `""`, `0` and `false`; whitespace is
-            // truthy and falls through to the token check.
-            guard body.code.map({ !$0.isEmpty }) == true else {
+            // before `parsePendingLinkToken`. The check is raw JavaScript
+            // truthiness: `5`, `true`, `[]` and `{}` pass it, while a missing
+            // member, `null`, `""`, `0`/`-0` and `false` are the "code is
+            // required" 400. Whitespace is a non-empty (truthy) string.
+            guard body.completionCode != .absent else {
                 return domainErrorResponse(AuthCoreError.socialCompletionCodeRequired)
             }
             // Pinned `routes/auth.ts:1138` reads the pending-link token before
