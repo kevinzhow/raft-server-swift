@@ -108,6 +108,8 @@ private func uuidIn(_ body: String, key: String) -> String {
         senderId: agent, senderType: "agent"
     )
     accounts.addStoredMentionForTesting(channelId: channelId, messageId: agentMessage, targetId: agent, targetType: "agent", handle: "bytesbot", terminalCode: "QUOTA_LIMITED")
+    _ = accounts.ensureMentionDeliveryOccurrenceForTesting(messageId: agentMessage, agentId: agent)
+    _ = accounts.advanceMentionDeliveryForTesting(messageId: agentMessage, agentId: agent, outcome: "QUOTA_LIMITED")
 
     // App events for the grant surface.
     let now = Date()

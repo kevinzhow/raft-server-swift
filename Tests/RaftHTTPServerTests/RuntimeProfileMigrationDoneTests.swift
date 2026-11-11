@@ -58,7 +58,9 @@ import VaporTesting
 
             let invalidKey = try await migrationDone("{\"migrationKey\":\"\"}", key: "mk_not_a_key")
             #expect(invalidKey.status == .unauthorized)
-            #expect(payload(invalidKey)["code"] as? String == "auth_required")
+            #expect(payload(invalidKey)["error"] as? String
+                == "Invalid authentication: machine API key required")
+            #expect(payload(invalidKey)["code"] == nil)
         }
     }
 }

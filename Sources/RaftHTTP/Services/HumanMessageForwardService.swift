@@ -316,7 +316,12 @@ extension HumanMessageCreateService {
             items: itemRecords,
             destinationTargetId: destinationChannelId
         )
-        let written = try dependencies.storeHumanMessage(storageChannelId, userId, content, randomId, [], nil, [], false)
+        // Upstream `persistForwardBundle` commits the bundle before
+        // `broadcastAndDeliver`, so the frame carries the forwarded metadata.
+        // This store therefore defers publication until `commitForward`.
+        let written = try dependencies.storeHumanMessageDeferred(
+            storageChannelId, userId, content, randomId, [], nil, []
+        )
         guard written.status == 200 else {
             throw HumanMessageCreateError.messageWriteRejected(status: UInt(written.status), body: written.body)
         }
@@ -332,6 +337,7 @@ extension HumanMessageCreateService {
         ) else {
             return .stored(messageJSON: written.body)
         }
+        dependencies.publishForwardedMessage(message)
         return .message(forwardedMessage(message, record), outcome: "success")
     }
 

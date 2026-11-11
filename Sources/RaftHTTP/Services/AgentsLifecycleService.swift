@@ -133,14 +133,18 @@ public struct AgentsLifecycleService: Sendable {
         try agentApiIdentity(authorization: authorization).identity
     }
 
-    /// The scopes of a live agent credential, without recording a use.
+    /// The bound agent and scopes of a live agent credential, without recording
+    /// a use.
     ///
     /// The contract-validation gate asks this before publishing request-schema
-    /// issues so an absent/invalid credential or a missing capability keeps
-    /// answering 401/403 first, exactly like the pinned
-    /// `authFromRegistry()` + `requireAgentCapability` middleware order.
-    /// `nil` means the request must continue to the route's own auth path.
-    public func agentApiCredentialScopes(authorization: String?) -> [String]? {
+    /// issues so an absent or invalid credential keeps answering the route's
+    /// own 401 first. A live credential then runs the pinned
+    /// `requireAgentCapability` and `requireAgentGrant` checks, so those 403s
+    /// precede every schema issue. `nil` means the request must continue to the
+    /// route's own auth path.
+    public func agentApiCredentialIdentity(
+        authorization: String?
+    ) -> (agentId: String, scopes: [String])? {
         guard let token = Self.bearerToken(authorization) else { return nil }
         guard let credential = agents.agentCredentials[token], credential.revokedAt == nil else {
             return nil
@@ -148,7 +152,7 @@ public struct AgentsLifecycleService: Sendable {
         guard let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted else {
             return nil
         }
-        return Array(credential.scopes)
+        return (credential.agentId, Array(credential.scopes))
     }
 
     /// `GET /internal/agent-api`. The credential use is recorded after the token
@@ -433,13 +437,15 @@ public struct AgentsLifecycleService: Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             throw AgentsLifecycleError.notAMember
         }
-        let access = channelProbeAccess(channelId: channelId, serverId: serverId, userId: userId)
-        let channel = channels.postableChannels[channelId]
-        if access == .residue { throw AgentsLifecycleError.forbidden }
-        guard access == .allowed, let channel, channel.deletedAt == nil else {
-            throw AgentsLifecycleError.channelNotFound
-        }
-        guard channel.kind == "channel" || channel.memberIds.contains(userId) else {
+        let readAccess = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+        let readable = readAccess.authority(channelId: channelId, serverId: serverId, userId: userId) != nil
+            || (channels.postableChannel(id: channelId) == nil
+                && LedgerChannelReadFallback.canReadHuman(
+                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth))
+        guard readable else {
+            if readAccess.hasPriorRelationship(channelId: channelId, serverId: serverId, userId: userId) {
+                throw AgentsLifecycleError.forbidden
+            }
             throw AgentsLifecycleError.channelNotFound
         }
         let limit = ChannelFileRules.channelFilesLimit(rawLimit)
@@ -841,5 +847,28 @@ public struct AgentsLifecycleService: Sendable {
         guard role == "owner" || role == "admin" else { throw AgentsLifecycleError.forbidden }
         guard kind == "antiproton" else { throw AgentsLifecycleError.unknownRuntimeProvider }
         return RuntimeProviderProbeResponse(available: agents.hostedProviderAvailable(serverId: serverId))
+    }
+
+    /// `GET /api/agent-runtime-providers/:kind/models`. The deployment has no
+    /// hosted-runtime provider client (D5): an unavailable provider answers the
+    /// upstream 404, and an available one answers the upstream provider-failure
+    /// 502 instead of inventing a model list.
+    public func agentRuntimeProviderModels(
+        authorization: String?,
+        serverId: String,
+        kind: String
+    ) throws -> OrderedBodyDTO {
+        let userId = try requireUser(authorization)
+        guard kind == "antiproton" else { throw AgentsLifecycleError.runtimeProviderModelsUnknown }
+        guard let role = oauth.memberRole(serverId: serverId, userId: userId) else {
+            throw AgentsLifecycleError.notAMember
+        }
+        guard role == "owner" || role == "admin" else {
+            throw AgentsLifecycleError.runtimeProviderForbidden
+        }
+        guard agents.hostedProviderAvailable(serverId: serverId) else {
+            throw AgentsLifecycleError.runtimeProviderUnavailable
+        }
+        throw AgentsLifecycleError.hostedRuntimeModelUnavailable
     }
 }

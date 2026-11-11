@@ -57,6 +57,28 @@ private struct MaterializationFixture {
         let admission = try domain.requestStart(.init(serverId: serverId, agentId: agentId))
         return try #require(accounts.agentsRuntimeStore.state.execution.commands[admission.commandId.uuidString])
     }
+
+    /// A started launch that has already reported its daemon process is the
+    /// resident case: later human sends deliver directly instead of riding a
+    /// new wake start. Call inside the transaction that owns the fixtures.
+    func makeResident(_ service: AgentExecutionMaterializationService,
+                      processId: String = "materialization-process") throws {
+        let command = try stageStart()
+        _ = try service.materializeInTransaction(command: command)
+        let machine = AgentExecutionMachineContext(machineId: machineId, serverId: serverId,
+                                                   connectionEpochId: command.connectionEpochId)
+        let body: [String: JSONValue] = [
+            "type": .string("agent:process_spawned"), "agentId": .string(agentId),
+            "daemonInstanceId": .string("materialization-daemon"), "clientSeq": .integer(1),
+            "launchId": .string(command.launchId), "processInstanceId": .string(processId),
+        ]
+        let result = try domain.stageIngress(context: machine, type: "agent:process_spawned",
+                                             payload: JSONValue.object(body).data())
+        guard case .committed = result else {
+            Issue.record("Expected the resident process spawn to commit, got \(result)")
+            return
+        }
+    }
 }
 
 private func materializationObject(_ data: Data) throws -> [String: Any] {
@@ -70,8 +92,8 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let first) = try service.materializeInTransaction(command: command),
-              case .start(let retry) = try service.materializeInTransaction(command: command) else { Issue.record("Expected start configuration"); return }
+        guard case .start(let first, _, _, _) = try service.materializeInTransaction(command: command),
+              case .start(let retry, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected start configuration"); return }
         let body = try materializationObject(first)
         let again = try materializationObject(retry)
         let key = try #require(body["agentCredentialKey"] as? String)
@@ -122,7 +144,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let credentialId = try #require(try materializationObject(config)["agentCredentialId"] as? String)
         #expect(fixture.accounts.agentsRuntimeStore.revokeCredential(agentId: fixture.agentId, credentialId: credentialId, now: Date()))
         #expect(throws: AgentExecutionMaterializationError.credentialUnavailable) {
@@ -147,7 +169,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
             drafts: [TaskDraft(title: "Original immutable title", description: "actual canonical description")])
         let host = try #require(batch.messages.first)
         let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values.first { $0.messageId == host.id })
-        guard case .delivery(let data, let sequence) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
+        guard case .delivery(let data, let sequence, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
         let body = try materializationObject(data)
         #expect(body["channel_id"] as? String == fixture.channelId)
         #expect(body["message_id"] as? String == host.id)
@@ -169,7 +191,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         #expect(summary.causalActorId == fixture.userId)
         #expect(fixture.accounts.authProfileStore.account(userId: "system") == nil)
         let summaryCommand = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values.first { $0.messageId == summary.id })
-        guard case .delivery(let summaryData, let summarySeq) = try service.materializeInTransaction(command: summaryCommand) else { Issue.record("Expected system delivery"); return }
+        guard case .delivery(let summaryData, let summarySeq, _) = try service.materializeInTransaction(command: summaryCommand) else { Issue.record("Expected system delivery"); return }
         let system = try materializationObject(summaryData)
         #expect(system["sender_type"] as? String == "system")
         #expect(system["sender_id"] as? String == "system")
@@ -179,7 +201,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         let taskNumber = try #require(batch.tasks.first?.taskNumber)
         _ = try #require(fixture.accounts.tasksAndRemindersStore.amendTask(channelId: fixture.channelId, taskNumber: taskNumber,
             title: "Current amended task text", description: "current description", actorId: "materializer-agent", amendedByName: "materializer-agent", now: Date()))
-        guard case .delivery(let updated, let sameSeq) = try service.materializeInTransaction(command: command) else { Issue.record("Expected amended projection"); return }
+        guard case .delivery(let updated, let sameSeq, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected amended projection"); return }
         let amended = try materializationObject(updated)
         #expect(amended["content"] as? String == "Original immutable title")
         let current = try #require(amended["task_current_projection"] as? [String: Any])
@@ -190,6 +212,42 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         #expect(fixture.accounts.messagesAndThreadsStore.humanMessageRows.count == 2)
     }
     #expect(fixture.accounts.messagesAndThreadsStore.humanMessageRows.isEmpty)
+}
+
+@Test func agentStartCarriesTheWakeMessageBodyAndSkipsTheResumeCatchup() async throws {
+    let fixture = try MaterializationFixture()
+    let service = fixture.materializer()
+    let context = TransactionContext()
+    try await withTransactionContext(context) {
+        defer { context.discard() }
+        _ = try fixture.stageStart()
+        // A sessioned agent would normally receive a resume catch-up. Upstream
+        // skips it when the start already carries the message that caused it.
+        fixture.accounts.agentsRuntimeStore.withState {
+            $0.execution.agents[fixture.agentId]?.sessionId = "wake-session"
+        }
+        let message = fixture.accounts.oauth.createMessageRecord(
+            channelId: fixture.channelId, content: "The wake body", senderId: fixture.userId, seq: 7)
+        fixture.accounts.messagesAndThreadsStore.withState {
+            $0.humanMessageRows.append(StoredHumanMessage(id: message.id, channelId: fixture.channelId,
+                                                          senderId: fixture.userId, content: "The wake body", seq: 7))
+        }
+        let admission = try fixture.domain.requestStart(.init(
+            serverId: fixture.serverId, agentId: fixture.agentId, control: .humanStart,
+            wakeMessage: .init(channelId: fixture.channelId, messageId: message.id)))
+        let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands[admission.commandId.uuidString])
+        guard case .start(_, let wake, let resumeMessages, let unreadSummary) = try service.materializeInTransaction(command: command),
+              case .object(let wakeBody)? = wake else {
+            Issue.record("a wake start must materialize its message body")
+            return
+        }
+        #expect(wakeBody["message_id"] == .string(message.id))
+        #expect(wakeBody["channel_id"] == .string(fixture.channelId))
+        #expect(wakeBody["content"] == .string("The wake body"))
+        #expect(wakeBody["sender_id"] == .string(fixture.userId))
+        #expect(resumeMessages.isEmpty, "a wake message replaces the resume catch-up")
+        #expect(unreadSummary != nil, "the unread summary is still published with a wake message")
+    }
 }
 
 @Test func agentExecutionMaterializationRequiresTransactionAndExplicitValidServerURL() async throws {
@@ -234,7 +292,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         let host = try #require(batch.messages.first)
         #expect(host.channelId == fixture.channelId)
         let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values.first { $0.messageId == host.id })
-        guard case .delivery(let data, let seq) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
+        guard case .delivery(let data, let seq, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
         let body = try materializationObject(data)
         #expect(body["channel_id"] as? String == localId)
         #expect(body["channel_name"] as? String == "local-joint")
@@ -254,7 +312,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let key = try #require(try materializationObject(config)["agentCredentialKey"] as? String)
         let machine = AgentExecutionMachineContext(machineId: fixture.machineId, serverId: fixture.serverId, connectionEpochId: command.connectionEpochId)
         func ingress(_ type: String, sequence: Int64, fields: [String: JSONValue]) throws {
@@ -299,7 +357,7 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let key = try #require(try materializationObject(config)["agentCredentialKey"] as? String)
         let machine = AgentExecutionMachineContext(machineId: fixture.machineId, serverId: fixture.serverId, connectionEpochId: command.connectionEpochId)
         let reference = AgentExecutionIntentReference(commandId: command.commandId)
@@ -324,7 +382,8 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
     let context = TransactionContext()
     try await withTransactionContext(context) {
         defer { context.discard() }
-        _ = try fixture.stageStart()
+        let materializer = fixture.materializer()
+        try fixture.makeResident(materializer)
         let exec = AgentExecutionService(producerTransactionAgents: fixture.accounts.agentsRuntimeStore,
             machines: fixture.accounts.machinesAndComputersStore, oauth: fixture.accounts.oauth,
             channels: fixture.accounts.serversAndChannelsStore, messages: fixture.accounts.messagesAndThreadsStore)
@@ -342,8 +401,7 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
         #expect(task.title == "asTask agent delivery")
         let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values
             .first { $0.messageId == messageId })
-        let materializer = fixture.materializer()
-        guard case .delivery(let data, let sequence) = try materializer.materializeInTransaction(command: command) else {
+        guard case .delivery(let data, let sequence, _) = try materializer.materializeInTransaction(command: command) else {
             Issue.record("Expected a delivery command for the asTask host message")
             return
         }
@@ -361,4 +419,57 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
         try context.prepareCommit()
     }
     #expect(fixture.accounts.tasksAndRemindersStore.taskRecords.isEmpty)
+}
+
+/// The agent delivery body carries the same attachment metadata the pinned
+/// `agent:deliver` payload does (`messageService.ts:10477-10492`): id,
+/// filename, resolved MIME type and size. Human `sender_name` is the retained
+/// account handle (`users.name` via `getSenderIdentity`, `messageService.ts:2203`),
+/// never a stale pre-profile display placeholder.
+@Test func agentDeliveryMaterializesAttachmentMetadataAndRetainedHumanHandle() async throws {
+    let fixture = try MaterializationFixture()
+    let service = fixture.materializer()
+    let attachmentId = UUID().uuidString.lowercased()
+    let messageId = UUID().uuidString.lowercased()
+    fixture.accounts.setAccountProfileForTesting(
+        id: fixture.userId, name: "kevinchou-c", displayName: "pending_7808a39c4efb92d4cb34")
+    let record = fixture.accounts.oauth.createMessageRecord(
+        channelId: fixture.channelId, content: "please read acceptance.txt",
+        senderId: fixture.userId, id: messageId, seq: 1)
+    fixture.accounts.messagesAndThreadsStore.withState { state in
+        state.humanMessageRows.append(StoredHumanMessage(
+            id: messageId, channelId: fixture.channelId, senderId: fixture.userId,
+            content: "please read acceptance.txt", seq: record.seq, attachmentIds: [attachmentId]))
+        state.channelAttachments[attachmentId] = ChannelAttachment(
+            id: attachmentId, channelId: fixture.channelId, uploaderId: fixture.userId,
+            filename: "acceptance.txt", messageId: messageId, messagePosition: 0,
+            mimeType: "application/octet-stream", sizeBytes: 130, uploaderType: "user")
+    }
+    let context = TransactionContext()
+    try await withTransactionContext(context) {
+        defer { context.discard() }
+        try fixture.makeResident(service)
+        let disposition = try fixture.domain.requestHumanMessageDelivery(.init(
+            serverId: fixture.serverId, agentId: fixture.agentId,
+            channelId: fixture.channelId, messageId: messageId))
+        guard case .staged(let admission) = disposition else {
+            Issue.record("Expected a staged delivery, got \(disposition)")
+            return
+        }
+        let command = try #require(
+            fixture.accounts.agentsRuntimeStore.state.execution.commands[admission.commandId.uuidString])
+        guard case .delivery(let data, _, _) = try service.materializeInTransaction(command: command) else {
+            Issue.record("Expected delivery materialization")
+            return
+        }
+        let body = try materializationObject(data)
+        #expect(body["sender_name"] as? String == "kevinchou-c")
+        let attachments = try #require(body["attachments"] as? [[String: Any]])
+        #expect(attachments.count == 1)
+        #expect(attachments.first?["id"] as? String == attachmentId)
+        #expect(attachments.first?["filename"] as? String == "acceptance.txt")
+        #expect(attachments.first?["mimeType"] as? String == "text/plain")
+        #expect(attachments.first?["sizeBytes"] as? Int == 130)
+        try context.prepareCommit()
+    }
 }

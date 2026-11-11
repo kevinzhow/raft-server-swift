@@ -53,6 +53,19 @@ struct ThreadsDependencies: Sendable {
     var channelUnread: @Sendable (_ channelId: String, _ userId: String) -> ThreadsUnreadInfo
     var firstUnreadMessageId: @Sendable (_ channelId: String, _ userId: String) -> String?
     var messageChannelId: @Sendable (_ messageId: String) -> String?
+    /// The parent message's channel as this server reads it: the ordinary
+    /// channel row, or the active local projection of a joint parent. Nil is
+    /// the neutral `Message not found` refusal.
+    var localParentChannelId: @Sendable (_ messageId: String, _ serverId: String) -> String?
+    /// `getOrCreateThreadForChannel` for the manual-follow route: the parent
+    /// message's empty thread is materialized (and the parent stamped) before
+    /// the follower row is written.
+    var findOrCreateThread: @Sendable (
+        _ serverId: String,
+        _ parentChannelId: String,
+        _ parentMessageId: String,
+        _ creatorId: String
+    ) -> String
     var channelProbeAccess: @Sendable (_ channelId: String, _ serverId: String, _ userId: String) -> ThreadsChannelProbe
     var channelActorCanSee: @Sendable (_ channelId: String, _ userId: String) -> Bool
     var guestCanSeeScope: @Sendable (_ scopeId: String) -> Bool
@@ -103,6 +116,29 @@ extension ThreadsDependencies {
             },
             firstUnreadMessageId: { oauth.firstUnreadMessageId(channelId: $0, userId: $1) },
             messageChannelId: { oauth.messageChannelId($0) },
+            localParentChannelId: { messageId, serverId in
+                guard let storage = oauth.messageChannelId(messageId) else { return nil }
+                let state = channels.state
+                if let row = state.postableChannels[storage],
+                   row.serverId == serverId, row.kind != "joint", row.deletedAt == nil {
+                    return storage
+                }
+                return state.jointProjections.first {
+                    $0.canonicalChannelId == storage && $0.serverId == serverId && $0.status == "active"
+                }?.localChannelId
+            },
+            findOrCreateThread: { serverId, parentChannelId, parentMessageId, creatorId in
+                switch channels.findOrCreateThread(
+                    serverId: serverId,
+                    parentChannelId: parentChannelId,
+                    parentMessageId: parentMessageId,
+                    creatorId: creatorId,
+                    threadChannels: ThreadChannelCommand(oauth: oauth)
+                ) {
+                case .existing(let id), .created(let id):
+                    return id
+                }
+            },
             channelProbeAccess: { ThreadsChannelProbe(channelProbeAccess($0, $1, $2)) },
             channelActorCanSee: { visibility.actorCanSee(channelId: $0, userId: $1) },
             guestCanSeeScope: guestCanSeeScope,

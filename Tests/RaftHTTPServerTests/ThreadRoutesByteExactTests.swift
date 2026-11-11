@@ -122,7 +122,7 @@ import VaporTesting
                 request.body = .init(string: "{\"threadChannelId\":\"\(threadOne)\"}")
             }
             #expect(follow.status == .ok)
-            #expect(follow.body.string == "{\"ok\":true,\"following\":true}")
+            #expect(follow.body.string == "{\"ok\":true,\"threadChannelId\":\"\(threadOne)\"}")
 
             let unknown = try await client.send(.post, headers: ownerHeaders, to: "/api/channels/threads/follow") { request in
                 request.body = .init(string: "{\"threadChannelId\":\"99999999-9999-4999-8999-999999999999\"}")
@@ -178,7 +178,7 @@ import VaporTesting
                 request.body = .init(string: "{\"threadChannelId\":\"\(threadOne)\"}")
             }
             #expect(unfollow.status == .ok)
-            #expect(unfollow.body.string == "{\"ok\":true,\"following\":false}")
+            #expect(unfollow.body.string == "{\"ok\":true}")
 
             let inbox = try await client.get(URI(string: "/api/channels/inbox/unfollowed"), headers: ownerHeaders)
             let inboxBody = try #require(inbox.body.string)

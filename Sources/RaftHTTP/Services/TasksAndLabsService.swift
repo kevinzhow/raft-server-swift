@@ -240,7 +240,14 @@ public struct TasksAndLabsService: Sendable {
             throw TaskHistoryError.taskNotFound
         }
         guard task.hasHostMessage else { throw TaskHistoryError.legacyTask }
-        let events = tasks.publishedTaskEvents(taskId: task.id).compactMap { record -> TaskHistoryEventDTO? in
+        return TaskHistoryResponse(events: canonicalTaskEvents(taskId: task.id))
+    }
+
+    /// The `task_events` projection both the human and the agent history reads
+    /// publish. Rows without the complete event group are skipped; an
+    /// unresolvable actor keeps `actorName` null rather than inventing a name.
+    func canonicalTaskEvents(taskId: String) -> [TaskHistoryEventDTO] {
+        tasks.publishedTaskEvents(taskId: taskId).compactMap { record -> TaskHistoryEventDTO? in
             guard let history = record.history else { return nil }
             return TaskHistoryEventDTO(
                 id: history.id,
@@ -253,7 +260,77 @@ public struct TasksAndLabsService: Sendable {
                 createdAt: DateText.isoString(history.createdAt)
             )
         }
-        return TaskHistoryResponse(events: events)
+    }
+
+    // MARK: - GET /internal/agent-api/tasks/history
+
+    /// The credential-surface task history read.
+    ///
+    /// Order: credential capability (`tasks`), the `task:read` grant, the
+    /// channel reference (404 `Agent or channel not found`), the task row
+    /// (404 `Task not found`), then the canonical-only guard (409). The
+    /// request validator has already guaranteed `channel` and a positive
+    /// `task_number`.
+    public func agentTaskHistory(
+        authorization: String?,
+        legacyAgentId: String?,
+        channelRef: String,
+        taskNumber: Int
+    ) throws -> AgentTaskHistoryResponse {
+        let identity = try agentTasks.taskAuth(authorization: authorization, legacyAgentId: legacyAgentId)
+        switch feedbackLocators.grantDecision(agentId: identity.agentId, scope: "task:read") {
+        case .allowed: break
+        case .missingScope(let scope): throw FeedbackLocatorError.missingScope(scope: scope)
+        }
+        guard let channelId = agentTasks.taskChannel(
+            serverId: identity.serverId, agentId: identity.agentId, reference: channelRef
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard let task = tasks.task(channelId: channelId, taskNumber: taskNumber) else {
+            throw AgentTaskApiError.taskNotFound
+        }
+        guard task.hasHostMessage else { throw AgentTaskApiError.legacyTaskHistory }
+        return AgentTaskHistoryResponse(
+            task: AgentTaskCardProjection(
+                taskNumber: task.taskNumber,
+                title: task.title,
+                description: task.description,
+                revision: task.revision
+            ),
+            events: canonicalTaskEvents(taskId: task.id)
+        )
+    }
+
+    // MARK: - GET /internal/agent/:id/tasks (legacy machine surface)
+
+    /// The legacy machine task list. `LegacyAgentSurfaceService` has already
+    /// authenticated the machine and checked the `task:read` grant; this method
+    /// owns the channel resolution, the `?status` filter and the projection.
+    public func legacyAgentTasks(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        channelRef: String,
+        rawQuery: String?
+    ) throws -> LegacyAgentTaskListResponse {
+        guard let channelId = agentTasks.taskChannel(
+            serverId: agent.serverId, agentId: agent.id, reference: channelRef
+        ) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        guard let surface = producer.surfaces(for: channelId).first(where: {
+            $0.channelId == channelId && $0.serverId == agent.serverId
+        }) else {
+            throw AgentTaskApiError.agentOrChannelNotFound
+        }
+        let status: String?
+        switch Self.statusFilter(rawQuery) {
+        case .invalid: throw AgentTaskApiError.invalidStatusFilter
+        case .valid(let value): status = value
+        }
+        let rows = tasks.tasks(channelId: producer.storageChannelId(channelId), status: status)
+        return LegacyAgentTaskListResponse(tasks: rows.map { row in
+            LegacyAgentTaskProjection(base: producer.project(row, to: surface).projection)
+        })
     }
 
     private static func taskHistoryActorName(

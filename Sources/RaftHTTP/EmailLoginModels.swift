@@ -95,6 +95,21 @@ struct WebPushSubscription: Sendable {
         var endpoint: String
     }
 
+/// One browser push prompt telemetry row (`POST /api/push/prompt-events`,
+/// `routes/push.ts:92-139`). Every bounded field is already trimmed and
+/// truncated by the service.
+struct PushPromptEvent: Sendable, Equatable {
+        var userId: String
+        var serverId: String?
+        var event: String
+        var trigger: String
+        var result: String?
+        var permissionBefore: String?
+        var permissionAfter: String?
+        var detail: String?
+        var createdAt: Date
+    }
+
 struct ExternalAvatarAsset: Sendable {
         var id: String
         var contentType: String
@@ -472,7 +487,14 @@ struct StoredMention: Sendable {
         var notifiedByType: String?
         var notifiedById: String?
         var notifiedAction: String?
+        /// Legacy pre-occurrence terminal code. Never written by this port's
+        /// send path; retained so an older snapshot and the legacy test seam
+        /// still restore. The sender projection reads the occurrence below.
         var terminalCode: String? = nil
+        /// Upstream durable mention-delivery occurrence. Optional on purpose:
+        /// a snapshot written before the occurrence spine restores with none,
+        /// and an older build restores a snapshot that carries one.
+        var mentionDeliveryOccurrence: MentionDeliveryOccurrence? = nil
     }
 
 struct PostableChannel: Sendable {

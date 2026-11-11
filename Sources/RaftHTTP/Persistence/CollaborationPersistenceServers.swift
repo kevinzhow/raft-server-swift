@@ -601,8 +601,14 @@ private struct CPJointInvite: Codable {
     var targetChannelId: String
     var targetOwnerId: String
     var status: String
+    /// Added with the joint-invite list/resend routes. Older snapshots have no
+    /// invite metadata; restore it as an already-expired invite rather than
+    /// inventing a fresh 14-day window.
+    var invitedByUserId: String?
+    var createdAt: Date?
+    var expiresAt: Date?
 
-    init(_ value: (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String)) {
+    init(_ value: (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String)) {
         id = value.id
         hostServerId = value.hostServerId
         hostChannelId = value.hostChannelId
@@ -610,10 +616,19 @@ private struct CPJointInvite: Codable {
         targetChannelId = value.targetChannelId
         targetOwnerId = value.targetOwnerId
         status = value.status
+        invitedByUserId = value.invitedByUserId
+        createdAt = value.createdAt
+        expiresAt = value.expiresAt
     }
 
-    func restored() -> (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, status: String) {
-        (id: id, hostServerId: hostServerId, hostChannelId: hostChannelId, targetServerId: targetServerId, targetChannelId: targetChannelId, targetOwnerId: targetOwnerId, status: status)
+    func restored() -> (id: String, hostServerId: String, hostChannelId: String, targetServerId: String, targetChannelId: String, targetOwnerId: String, invitedByUserId: String, createdAt: Date, expiresAt: Date, status: String) {
+        (
+            id: id, hostServerId: hostServerId, hostChannelId: hostChannelId,
+            targetServerId: targetServerId, targetChannelId: targetChannelId,
+            targetOwnerId: targetOwnerId, invitedByUserId: invitedByUserId ?? "",
+            createdAt: createdAt ?? Date(timeIntervalSince1970: 0),
+            expiresAt: expiresAt ?? Date(timeIntervalSince1970: 0), status: status
+        )
     }
 }
 

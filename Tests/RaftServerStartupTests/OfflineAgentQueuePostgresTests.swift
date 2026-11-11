@@ -76,26 +76,28 @@ func postgresOfflineDmIsQueuedAndDeliveredExactlyOnceOnReady() async throws {
             $0.string("type") == "agent:start" && $0.string("agentId") == agentId
         }
         phase("start-frame")
+        // Upstream `attempt-wake`: the queued message is the start's first input,
+        // not a separate agent:deliver. The daemon runs it as the spawn turn.
+        let wakeMessage = try #require(start.object("wakeMessage"))
+        #expect(wakeMessage.string("message_id") == messageId)
+        #expect(wakeMessage.string("channel_id") == channelId)
         try await peer.acknowledgeControlledStart(start)
-        let delivery = try await peer.socket.nextObject(since: boundary) {
-            $0.string("type") == "agent:deliver" && $0.string("agentId") == agentId
-                && $0.object("message")?.string("message_id") == messageId
-        }
-        phase("delivery-frame")
-        try await peer.acknowledgeControlledDelivery(delivery)
         try await protocolPGEventually {
             let audit = try await fixture.audit()
             let pendingReleased = (audit.execution.pendingHumanDeliveries ?? [:]).isEmpty
             let accepted = audit.execution.commands.values.contains {
-                $0.kind == .delivery && $0.agentId == agentId && $0.messageId == messageId && $0.status == .accepted
+                $0.kind == .start && $0.agentId == agentId && $0.wakeMessage?.messageId == messageId
+                    && $0.status == .accepted
             }
             return pendingReleased && accepted
         }
-        phase("delivery-accepted")
+        phase("wake-accepted")
 
-        // A second ready with the same queue state sends neither frame again.
-        let replayBoundary = peer.socket.count
+        // The wake frame carries the body and no duplicate delivery follows even
+        // when the queue is re-released by later triggers.
+        try await peer.socket.applicationFence()
         try await peer.sendControlledReady(runningAgentIds: [])
+        let replayBoundary = peer.socket.count
         try await peer.socket.applicationFence()
         let replayWire = try await peer.socket.wireFence(since: replayBoundary)
         #expect(!replayWire.contains { $0.contains("\"agent:start\"") })
@@ -103,7 +105,7 @@ func postgresOfflineDmIsQueuedAndDeliveredExactlyOnceOnReady() async throws {
         let starts = peer.socket.texts.filter { $0.contains("\"agent:start\"") }
         let deliveries = peer.socket.texts.filter { $0.contains("\"agent:deliver\"") }
         #expect(starts.count == 1)
-        #expect(deliveries.count == 1)
+        #expect(deliveries.isEmpty, "the wake message is never also sent as agent:deliver")
         phase("complete")
     } catch {
         await fixture.close(machine: machine)

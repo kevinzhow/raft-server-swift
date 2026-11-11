@@ -381,7 +381,7 @@ private final class Collected<Value: Sendable>: @unchecked Sendable {
     let key = fixture.agentKey
     DispatchQueue.concurrentPerform(iterations: 16) { _ in
         guard let response = try? service.agentThirdPartyEvents(authorization: "Bearer \(key)") else { return }
-        for case .message(_, let messageId, _, _, _, _, _, _, _, _, _, _) in response.events {
+        for case .message(_, let messageId, _, _, _, _, _, _, _, _, _, _, _) in response.events {
             delivered.add(messageId)
         }
     }

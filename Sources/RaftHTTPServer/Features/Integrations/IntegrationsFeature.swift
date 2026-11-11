@@ -16,6 +16,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
     private let controlPlane: ManagedMCPControlPlaneService
     private let identities: AuthIdentitiesService
     private let apps: IntegrationsAndAppAccessService
+    private let appManagement: IntegrationAppManagementService
     private let cardPrepare: ActionCardPrepareService
     private let agentsLifecycle: AgentsLifecycleService
     private let providerConnections: ManagedMCPProviderConnectionsService
@@ -25,6 +26,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         controlPlane: ManagedMCPControlPlaneService,
         identities: AuthIdentitiesService,
         apps: IntegrationsAndAppAccessService,
+        appManagement: IntegrationAppManagementService,
         cardPrepare: ActionCardPrepareService,
         agentsLifecycle: AgentsLifecycleService,
         providerConnections: ManagedMCPProviderConnectionsService,
@@ -33,6 +35,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         self.controlPlane = controlPlane
         self.identities = identities
         self.apps = apps
+        self.appManagement = appManagement
         self.cardPrepare = cardPrepare
         self.agentsLifecycle = agentsLifecycle
         self.providerConnections = providerConnections
@@ -50,6 +53,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         let runtimeProviders = app.grouped("api", "agent-runtime-providers")
         let providerConnections = app.grouped("api", "provider-connections")
         let appInstallation = app.grouped("api", "app-installation")
+        let integrationInvites = app.grouped("api", "integration-invites")
 
         mcp.get("servers") { request async throws -> Response in
             try await respond {
@@ -97,6 +101,36 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         mcp.delete("servers", ":id") { request async throws -> Response in
             try await respond {
                 try self.controlPlane.deleteServer(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? ""
+                )
+            }
+        }
+
+        mcp.post("servers", ":id", "oauth", "start") { request async throws -> Response in
+            try await respond {
+                try self.controlPlane.startServerOAuth(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? ""
+                )
+            }
+        }
+
+        mcp.delete("servers", ":id", "oauth") { request async throws -> Response in
+            try await respond {
+                try self.controlPlane.disconnectServerOAuth(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    serverIdPath: request.parameters.get("id") ?? ""
+                )
+            }
+        }
+
+        mcp.post("servers", ":id", "test") { request async throws -> Response in
+            try await respond {
+                try self.controlPlane.testServer(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     serverIdPath: request.parameters.get("id") ?? ""
@@ -161,7 +195,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.post("requests", ":requestId", "approve") { request async throws -> Response in
-            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
             return try await respond {
                 try self.apps.approveAgentAccessRequest(
                     authorization: request.headers[.authorization],
@@ -172,7 +206,7 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.post("agents", ":agentId", "grants") { request async throws -> Response in
-            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
             return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
                 try self.apps.createAgentGrant(
                     authorization: request.headers[.authorization],
@@ -241,13 +275,36 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         }
 
         integrations.patch("clients", ":clientId") { request async throws -> Response in
-            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            let body = await jsonRequestBody(IntegrationRequestBody.self, request)
             return try await respond {
                 try self.apps.updateIntegrationClientSetup(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     clientId: request.parameters.get("clientId") ?? "",
                     body: body
+                )
+            }
+        }
+
+        integrations.on(.post, "clients", ":clientId", "logo", maxBodySize: "6mb") { request async throws -> Response in
+            let data = try await request.body.collect() ?? Data()
+            return try await respond {
+                try await self.apps.uploadIntegrationClientLogo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    contentType: request.headers[.contentType],
+                    body: data
+                )
+            }
+        }
+
+        integrations.delete("clients", ":clientId", "logo") { request async throws -> Response in
+            try await respond {
+                try await self.apps.clearIntegrationClientLogo(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
                 )
             }
         }
@@ -329,13 +386,198 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
 
         integrations.get("clients", ":clientId", "share-link") { request async throws -> Response in
             try await respond {
-                try IntegrationRoutes.shareLink(clientId: request.parameters.get("clientId") ?? "")
+                try self.appManagement.getShareLink(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        // MARK: - Developer-platform App management
+
+        integrations.get("overview") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.overview(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
+        }
+
+        integrations.post("clients") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond {
+                try self.appManagement.createClient(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    body: body
+                )
+            }
+        }
+
+        integrations.delete("clients", ":clientId") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.deleteClient(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        integrations.post("clients", ":clientId", "regenerate-secret") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.regenerateSecret(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        integrations.post("clients", ":clientId", "request-publish") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.requestPublish(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        integrations.post("clients", ":clientId", "request-unpublish") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.requestUnpublish(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        integrations.post("clients", ":clientId", "share-link") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond {
+                try self.appManagement.createShareLink(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    body: body
+                )
+            }
+        }
+
+        integrations.delete("clients", ":clientId", "share-link") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.revokeShareLink(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+
+        integrations.put("clients", ":clientId", "app-notifications", "permissions") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond {
+                try self.appManagement.updatePermissions(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    body: body
+                )
+            }
+        }
+
+        integrations.put("clients", ":clientId", "app-notifications", "webhook") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try self.appManagement.configureWebhook(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    body: body
+                )
+            }
+        }
+
+        integrations.post("clients", ":clientId", "app-notifications", "webhook", "rotate-secret") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                try self.appManagement.rotateWebhookSecret(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? "",
+                    body: body
+                )
+            }
+        }
+
+        integrations.delete("clients", ":clientId", "app-notifications", "webhook") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.disableWebhook(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        integrations.put("marketplace", ":clientId", "install", "app-notifications", "grant") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.updateInstallationGrant(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    clientId: request.parameters.get("clientId") ?? ""
+                )
+            }
+        }
+
+        integrations.post("requests", ":requestId", "deny") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.denyRequest(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    requestId: request.parameters.get("requestId") ?? ""
+                )
+            }
+        }
+
+        integrationInvites.get(":token") { request async throws -> Response in
+            try await respond {
+                try self.appManagement.getInvite(
+                    authorization: request.headers[.authorization],
+                    token: request.parameters.get("token") ?? ""
+                )
+            }
+        }
+
+        integrationInvites.post(":token", "install") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond {
+                try self.appManagement.installInvite(
+                    authorization: request.headers[.authorization],
+                    token: request.parameters.get("token") ?? "",
+                    body: body
+                )
             }
         }
 
         integrations.get("marketplace", ":clientId", "install", "app-notifications") { request async throws -> Response in
             try await respond {
                 try IntegrationRoutes.marketplaceAppNotifications(clientId: request.parameters.get("clientId") ?? "")
+            }
+        }
+
+        runtimeProviders.get(":kind", "models") { request async throws -> Response in
+            try await respond {
+                try self.agentsLifecycle.agentRuntimeProviderModels(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    kind: request.parameters.get("kind") ?? ""
+                )
             }
         }
 
@@ -363,6 +605,26 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
                 try self.providerConnections.retiredProviderProbe(
                     authorization: request.headers[.authorization],
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? ""
+                )
+            }
+        }
+
+        providerConnections.get(":id", "probes") { request async throws -> Response in
+            try await respond {
+                try self.providerConnections.listProviderProbes(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? ""
+                )
+            }
+        }
+
+        providerConnections.post(":id", "probes") { request async throws -> Response in
+            try await respond {
+                try self.providerConnections.createProviderProbe(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    connectionId: request.parameters.get("id") ?? ""
                 )
             }
         }
@@ -445,3 +707,4 @@ public struct IntegrationsFeature: RouteCollection, Sendable {
         InstallationCredentialRoutes(apps: self.apps).registerReads(routes: appInstallation)
     }
 }
+

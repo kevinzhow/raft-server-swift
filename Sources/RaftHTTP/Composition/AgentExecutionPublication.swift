@@ -62,15 +62,14 @@ enum AgentExecutionPublication {
     }
 
     /// Node's system broadcaster uses the rich frontend projection. Causal actor
-    /// metadata belongs to the human/agent that caused the event; its persisted
-    /// sender identity remains user/system rather than an invented account.
+    /// metadata belongs to the human/agent that caused the event and is a
+    /// storage-only column: `projectRichMessageSocketPayload` strips
+    /// `causalActorType`, `causalActorId` and `systemSubtype` from every socket
+    /// frame, so it is never published here.
     static func systemMessagePayload(_ message: StoredHumanMessage, channelType: String,
                                      parentMessageId: String? = nil, parentChannelId: String? = nil,
                                      parentChannelType: String? = nil) -> String {
         var payload = baseMessagePayload(message, senderName: "System")
-        payload.append("causalActorType", optional: message.causalActorType)
-        payload.append("causalActorId", optional: message.causalActorId)
-        payload.append("systemSubtype", optional: message.systemSubtype)
         payload.append("senderDescription", .null)
         payload.append("senderMembershipStatus", .null)
         payload.append("attachments", .array([]))

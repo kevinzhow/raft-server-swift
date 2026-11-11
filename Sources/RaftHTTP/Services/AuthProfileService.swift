@@ -171,6 +171,34 @@ public struct AuthProfileService: Sendable {
         return ForgotPasswordResponse()
     }
 
+    /// `GET /api/auth/me/username-available`. Mirrors the `complete-profile`
+    /// checks (`validate → reserved → uniqueness`) but only reads; a name can
+    /// still be taken between this check and submit.
+    public func usernameAvailability(
+        authorization: String?,
+        name: String?
+    ) throws -> UsernameAvailabilityResponse {
+        guard userId(authorization: authorization) != nil else {
+            throw AuthProfileError.unauthenticated
+        }
+        let candidate = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let message = AccountNaming.validateName(candidate, "Username", minLength: 5) {
+            return UsernameAvailabilityResponse(available: false, reason: "invalid", message: message)
+        }
+        if candidate.lowercased().hasPrefix("pending_") || AccountNaming.isReservedAgentName(candidate) {
+            return UsernameAvailabilityResponse(
+                available: false, reason: "reserved",
+                message: "This username is reserved. Choose another name."
+            )
+        }
+        let available = store.isUsernameAvailable(candidate)
+        return UsernameAvailabilityResponse(
+            available: available,
+            reason: available ? nil : "taken",
+            message: available ? nil : "This username is already taken."
+        )
+    }
+
     /// `POST /api/auth/pending-link/cancel` for a token the route already
     /// checked. Always 204, including a second cancel and an unknown token.
     public func cancelPendingLink(_ request: CancelPendingLinkRequest) -> NoContentResponse {
@@ -298,7 +326,7 @@ public struct AuthProfileService: Sendable {
     ///
     /// Foundation on this platform does not canonicalize `TimeZone(identifier:)`
     /// (it returns the input id), so this stays a finite table; see
-    /// `docs/DEVIATIONS.md#d24` for the residual and the re-evaluate trigger.
+    /// `docs/DEVIATIONS.md#d33` for the residual and the re-evaluate trigger.
     private static func canonicalBrowserTimezone(_ resolved: String) -> String {
         switch resolved {
         case "Etc/UTC", "Etc/GMT", "Etc/UCT", "Etc/GMT+0", "Etc/GMT-0",

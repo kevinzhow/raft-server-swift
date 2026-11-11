@@ -42,7 +42,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
         )
         let inbox = services.emailAccounts.inboxAndWake
         readMutations.post { request async throws -> Response in
-            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{}")
+            let body = await jsonRequestBody(LenientJSONObjectRequest.self, request, emptyDefault: "{ }")
             return try await respond(status: { $0.status }, headers: { _ in .standard() }) {
                 try services.emailAccounts.managedMCPLifecycle.postReadMutation(
                     authorization: request.headers[.authorization],
@@ -246,7 +246,7 @@ public struct MessagingFeature: RouteCollection, Sendable {
             }
         }
         attachments.post(":id", "comments") { request async throws -> Response in
-            let body = await jsonRequestBody(IntegrationRequestBody.self, request, emptyDefault: "{}")
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
             return try await respond {
                 try services.emailAccounts.attachmentComments.createAttachmentComment(
                     authorization: request.headers[.authorization],
@@ -283,6 +283,26 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
                     messageId: request.parameters.get("messageId") ?? "",
                     body: body
+                )
+            }
+        }
+        actions.post(":messageId", "event") { request async throws -> Response in
+            let body = (await jsonRequestBody(IntegrationRequestBody.self, request)) ?? IntegrationRequestBody()
+            return try await respond {
+                try services.emailAccounts.actionCards.emitActionCardEvent(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? "",
+                    body: body
+                )
+            }
+        }
+        actions.post(":messageId", "reconfirm") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.actionCards.reconfirmActionCard(
+                    authorization: request.headers[.authorization],
+                    serverId: request.headers[HTTPField.Name("X-Server-Id")!] ?? "",
+                    messageId: request.parameters.get("messageId") ?? ""
                 )
             }
         }
@@ -450,6 +470,15 @@ public struct MessagingFeature: RouteCollection, Sendable {
                     throw AttachmentFlexAdmissionError.authenticationRequired
                 }
                 return try await services.emailAccounts.agentsLifecycle.attachmentHTMLPreviewURL(
+                    attachmentId: request.parameters.get("id") ?? "", admission: admission)
+            }
+        }
+        attachments.get(":id", "preview") { request async throws -> Response in
+            return try await respond(headers: .standard(extra: ["Cache-Control": "private, no-store"])) {
+                guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
+                    throw AttachmentFlexAdmissionError.authenticationRequired
+                }
+                return try await services.emailAccounts.agentsLifecycle.attachmentPreview(
                     attachmentId: request.parameters.get("id") ?? "", admission: admission)
             }
         }

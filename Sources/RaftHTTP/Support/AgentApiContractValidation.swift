@@ -638,6 +638,15 @@ public enum AgentApiContractRouteKey: String, Sendable, CaseIterable {
     case taskDelete
     case taskConvert
     case taskAmend
+    case taskHistory
+    case taskUnclaim
+    case attachmentUploadSessionCreate
+    case attachmentUploadSessionComplete
+    case attachmentUploadSessionCancel
+    case attachmentUploadSessionStatus
+    case integrationAppRotateSecret
+    case integrationAppTransferOwner
+    case integrationAppManage
     case reminderList
     case reminderCreate
     case reminderCancel
@@ -662,10 +671,14 @@ public enum AgentApiContractRouteKey: String, Sendable, CaseIterable {
              .assistantOwnerInbox, .assistantOwnerMessages, .profileShow,
              .integrationMarketplaceSearch, .integrationToken, .integrationLogin,
              .integrationAppPrepare, .integrationAppUpdate, .integrationAppStatus,
+             .integrationAppRotateSecret, .integrationAppTransferOwner,
+             .integrationAppManage,
              .reminderList, .reminderLog, .appConfigGet, .feedbackLocatorList:
             return "read"
         case .messageSend, .messageSendV2, .resolveChannel, .profileUpdate,
-             .feedbackLocatorIngest:
+             .feedbackLocatorIngest, .attachmentUploadSessionCreate,
+             .attachmentUploadSessionComplete, .attachmentUploadSessionCancel,
+             .attachmentUploadSessionStatus:
             return "send"
         case .messageReactionAdd, .messageReactionRemove:
             return "reactions"
@@ -678,6 +691,7 @@ public enum AgentApiContractRouteKey: String, Sendable, CaseIterable {
             return "channels"
         case .taskList, .taskCreate, .taskClaim, .taskAssign, .taskUpdateStatus,
              .taskResourceReceipt, .taskDelete, .taskConvert, .taskAmend,
+             .taskHistory, .taskUnclaim,
              .reminderCreate, .reminderCancel, .reminderSnooze, .reminderUpdate,
              .appConfigPatch, .actionPrepare:
             return "tasks"
@@ -685,6 +699,78 @@ public enum AgentApiContractRouteKey: String, Sendable, CaseIterable {
             return "mcp"
         }
     }
+
+    /// The ordered credential/agent checks the pinned registration runs before
+    /// the request validators:
+    /// `requireAgentCapability(route.capability)`, then
+    /// `requireAgentGrant(AGENT_API_ROUTE_GRANTS[key])`, then any inline pair
+    /// the route spells out (`userChannels` adds `read` + `server:read`).
+    /// `requireAgentGrant` reads the human-managed agent grant set, not the
+    /// credential scopes.
+    public var preconditions: [AgentApiContractPrecondition] {
+        switch self {
+        case .userChannels:
+            // `routes/internalAgentApi.ts:2546-2548`: the registered
+            // `channels` + `channel:read` pair, then the inline
+            // `read` + `server:read` pair, then the query schema.
+            return [
+                .capability("channels"),
+                .grant("channel:read"),
+                .capability("read"),
+                .grant("server:read"),
+            ]
+        default:
+            return [.capability(capability)] + grants.map(AgentApiContractPrecondition.grant)
+        }
+    }
+
+    /// `AGENT_API_ROUTE_GRANTS`: the per-agent grants the pinned
+    /// `registerAgentApiRoute` inserts before the request validators. Routes
+    /// absent from that table have no grant check (their services still apply
+    /// ownership and membership authority).
+    public var grants: [String] {
+        switch self {
+        case .historyRead, .events, .messageResolve, .messageSearch:
+            return ["message:read"]
+        case .channelMembers:
+            return ["channel:read"]
+        case .messageSend, .messageSendV2, .messageReactionAdd, .messageReactionRemove:
+            return ["message:send"]
+        case .channelJoin:
+            return ["channel:join"]
+        case .channelLeave:
+            return ["channel:leave"]
+        case .threadUnfollow:
+            return ["thread:unfollow"]
+        case .channelCreate:
+            return ["channel:create"]
+        case .channelUpdate:
+            return ["channel:update"]
+        case .channelMemberAdd:
+            return ["channel:add_member"]
+        case .channelMemberRemove:
+            return ["channel:remove_member"]
+        case .taskList:
+            return ["task:read"]
+        case .taskCreate, .taskClaim, .taskUnclaim, .taskUpdateStatus:
+            return ["task:write"]
+        case .actionPrepare:
+            return ["action:prepare"]
+        case .attachmentUploadSessionCreate, .attachmentUploadSessionComplete:
+            return ["attachment:upload"]
+        case .userChannels:
+            return ["channel:read", "server:read"]
+        default:
+            return []
+        }
+    }
+}
+
+/// One middleware check the pinned registration runs before the request
+/// validators.
+public enum AgentApiContractPrecondition: Sendable, Equatable {
+    case capability(String)
+    case grant(String)
 }
 
 /// The single validation entry point: one route key plus one request part.

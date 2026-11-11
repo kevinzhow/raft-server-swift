@@ -17,6 +17,11 @@ public enum ActionCardServiceError: DomainErrorWithBody, Equatable {
     case forbidden
     case notAMember
     case actionCardNotFound
+    case cardMessageNotFound
+    case messageNotActionCard
+    case eventNotAllowed
+    case eventTypeInvalid
+    case reconfirmFrozen
     case invalidResult
     case incompatibleResult
     case invalidAgentId
@@ -40,6 +45,14 @@ public enum ActionCardServiceError: DomainErrorWithBody, Equatable {
             401
         case .forbidden, .notAMember, .capabilityNotAuthorized:
             403
+        case .cardMessageNotFound:
+            404
+        case .messageNotActionCard, .eventTypeInvalid:
+            400
+        case .eventNotAllowed:
+            403
+        case .reconfirmFrozen:
+            409
         case .actionCardNotFound, .providerConnectionNotFound,
              .providerAgentAssignmentNotFound, .managedMCPServerNotFound:
             404
@@ -64,6 +77,21 @@ public enum ActionCardServiceError: DomainErrorWithBody, Equatable {
             ActionCardErrorBody(error: "Not a member of this server")
         case .actionCardNotFound:
             ActionCardErrorBody(error: "Action card not found", code: "NOT_FOUND")
+        case .cardMessageNotFound:
+            ActionCardErrorBody(error: "Card message not found")
+        case .messageNotActionCard:
+            ActionCardErrorBody(error: "Message is not an action card")
+        case .eventNotAllowed:
+            ActionCardErrorBody(error: "Not allowed to emit events for this card")
+        case .eventTypeInvalid:
+            ActionCardErrorBody(
+                error: "eventType must be one of action_card.open, action_card.dismiss, action_card.execute_attempt, action_card.execute_fail"
+            )
+        case .reconfirmFrozen:
+            ActionCardTypedErrorBody(
+                error: "This action card is frozen while channel conversion is active; retry after conversion completes.",
+                errorCode: "action_card_conversion_frozen"
+            )
         case .invalidResult:
             ActionCardErrorBody(error: "A result is required", code: "INVALID_RESULT")
         case .incompatibleResult:
@@ -134,23 +162,31 @@ public enum ActionCardServiceError: DomainErrorWithBody, Equatable {
 /// policy and the agent-credential capability check).
 public struct ActionCardService: Sendable {
     private let store: ManagedMCPAndCardsStore
+    private let productEvents: ProductEventStore
     private let oauth: OAuthLedger
     private let sessionUserId: @Sendable (String?) -> String?
     private let cardWriteDecision: @Sendable (String, ActionCardRecord) -> ActionCardWriteDecision
     private let mcpIdentity: @Sendable (String?) -> FeedbackLocatorService.IdentityResolution
+    /// Publishes the executed carrier's `message:updated`; upstream
+    /// `emitActionCardMessageUpdated` reloads the row after the write.
+    private let publishMessageUpdated: @Sendable (_ messageId: String, _ metadataJSON: String) -> Void
 
     init(
         store: ManagedMCPAndCardsStore,
+        productEvents: ProductEventStore,
         oauth: OAuthLedger,
         sessionUserId: @escaping @Sendable (String?) -> String?,
         cardWriteDecision: @escaping @Sendable (String, ActionCardRecord) -> ActionCardWriteDecision,
-        mcpIdentity: @escaping @Sendable (String?) -> FeedbackLocatorService.IdentityResolution
+        mcpIdentity: @escaping @Sendable (String?) -> FeedbackLocatorService.IdentityResolution,
+        publishMessageUpdated: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) {
         self.store = store
+        self.productEvents = productEvents
         self.oauth = oauth
         self.sessionUserId = sessionUserId
         self.cardWriteDecision = cardWriteDecision
         self.mcpIdentity = mcpIdentity
+        self.publishMessageUpdated = publishMessageUpdated
     }
 
     // MARK: - Action cards (`POST /api/actions/:id/mark-executed`)
@@ -198,7 +234,128 @@ public struct ActionCardService: Sendable {
         guard store.markActionCardExecuted(messageId: messageId, userId: userId) != nil else {
             throw ActionCardServiceError.actionCardNotFound
         }
+        // Upstream emits only on the transition, not on an idempotent replay.
+        // The plain action-card row projects the legacy fallback metadata shape.
+        if stored.state != "executed" {
+            let metadataJSON = OrderedJSON.object([
+                OrderedJSONField("kind", "action-card"),
+                OrderedJSONField("state", "executed"),
+            ]).render()
+            publishMessageUpdated(messageId, metadataJSON)
+        }
         return MarkActionCardExecutedResponse(messageId: messageId)
+    }
+
+    // MARK: - Action card product events (`POST /api/actions/:messageId/event`)
+
+    /// Records one client-emitted product-funnel event for an action card.
+    /// Success is the upstream bare 204; the card authority, event whitelist and
+    /// metadata filter are the published checks in front of it.
+    public func emitActionCardEvent(
+        authorization: String?,
+        serverId: String,
+        messageId: String,
+        body: IntegrationRequestBody?
+    ) throws -> NoContentResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw ActionCardServiceError.unauthorized
+        }
+        if oauth.memberRole(serverId: serverId, userId: userId) == "guest" {
+            throw ActionCardServiceError.forbidden
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ActionCardServiceError.notAMember
+        }
+        guard let stored = store.actionCard(messageId: messageId) else {
+            throw ActionCardServiceError.cardMessageNotFound
+        }
+        guard stored.serverId == serverId else { throw ActionCardServiceError.cardMessageNotFound }
+        guard let eventType = body?.string("eventType") else {
+            throw ActionCardServiceError.eventTypeInvalid
+        }
+        let allowed = [
+            "action_card.open", "action_card.dismiss",
+            "action_card.execute_attempt", "action_card.execute_fail",
+        ]
+        guard allowed.contains(eventType) else {
+            throw ActionCardServiceError.eventTypeInvalid
+        }
+        switch cardWriteDecision(userId, stored) {
+        case .allowed:
+            break
+        case .notMember:
+            throw ActionCardServiceError.notAMember
+        case .forbidden:
+            throw ActionCardServiceError.eventNotAllowed
+        case .notFound:
+            throw ActionCardServiceError.cardMessageNotFound
+        }
+        var metadata = OrderedJSONObject()
+        if case .object(let fields)? = body?.value("metadata") {
+            if case .string(let reason)? = fields["dismiss_reason"],
+               ["close_button", "esc", "backdrop", "route_change"].contains(reason) {
+                metadata.append("dismiss_reason", reason)
+            }
+            if case .integer(let latency)? = fields["latency_ms"], latency >= 0, latency < 1_000_000 {
+                metadata.append("latency_ms", Int(latency))
+            }
+            if eventType == "action_card.execute_fail" {
+                if case .string(let errorClass)? = fields["error_class"],
+                   ["validation", "permission", "not_found", "conflict", "network", "unknown"].contains(errorClass) {
+                    metadata.append("error_class", errorClass)
+                }
+                if case .string(let code)? = fields["error_code"], code.count > 0, code.count <= 64 {
+                    metadata.append("error_code", code)
+                }
+                if case .integer(let status)? = fields["http_status"], (100..<600).contains(status) {
+                    metadata.append("http_status", Int(status))
+                }
+            }
+        }
+        if !stored.actionType.isEmpty { metadata.append("action_type", stored.actionType) }
+        let metadataJSON = metadata.json.render()
+        let idempotencyKey = body?.string("idempotencyKey").flatMap {
+            $0.isEmpty || $0.count > 128 ? nil : $0
+        }
+        productEvents.appendActionCardEvent(
+            cardId: stored.messageId,
+            eventType: eventType,
+            actorType: "human",
+            actorId: userId,
+            source: "web",
+            idempotencyKey: idempotencyKey,
+            metadataJSON: metadataJSON
+        )
+        return NoContentResponse()
+    }
+
+    /// `POST /api/actions/:messageId/reconfirm`. The source port has no joint
+    /// channel conversion, so every card is outside the reconfirm state and the
+    /// upstream frozen refusal is the truthful answer after the visibility gate.
+    public func reconfirmActionCard(
+        authorization: String?,
+        serverId: String,
+        messageId: String
+    ) throws -> NoContentResponse {
+        guard let userId = sessionUserId(authorization) else {
+            throw ActionCardServiceError.unauthorized
+        }
+        guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
+            throw ActionCardServiceError.notAMember
+        }
+        guard let stored = store.actionCard(messageId: messageId), stored.serverId == serverId else {
+            throw ActionCardServiceError.cardMessageNotFound
+        }
+        switch cardWriteDecision(userId, stored) {
+        case .allowed:
+            throw ActionCardServiceError.reconfirmFrozen
+        case .notMember:
+            throw ActionCardServiceError.notAMember
+        case .forbidden:
+            throw ActionCardServiceError.eventNotAllowed
+        case .notFound:
+            throw ActionCardServiceError.cardMessageNotFound
+        }
     }
 
     // MARK: - Provider connections (`/api/integrations/provider-connections`)
@@ -400,6 +557,7 @@ extension EmailLoginDirectory {
     public var actionCards: ActionCardService {
         ActionCardService(
             store: managedMCPAndCardsStore,
+            productEvents: productEventStore,
             oauth: oauth,
             sessionUserId: { self.sessionUserId(authorization: $0) },
             cardWriteDecision: { userId, card in
@@ -413,6 +571,16 @@ extension EmailLoginDirectory {
                     authorization: authorization,
                     capability: "mcp"
                 )
+            },
+            publishMessageUpdated: { [messages = messagesAndThreadsStore, serversAndChannelsStore,
+                                      authProfileStore, oauth, realtimeRelay] messageId, metadataJSON in
+                MessageUpdatePublisher(
+                    messages: messages,
+                    channels: serversAndChannelsStore,
+                    profiles: authProfileStore,
+                    oauth: oauth,
+                    emit: { room, event, payload in realtimeRelay.emit(room, event, payload) }
+                ).actionCard(messageId: messageId, metadataJSON: metadataJSON)
             }
         )
     }

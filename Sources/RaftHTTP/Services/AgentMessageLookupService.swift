@@ -148,13 +148,18 @@ public struct AgentMessageLookupService: Sendable {
         else {
             throw AgentMessageLookupError.notJoinable
         }
-        let deliveries = state.storedMentions.filter {
-            $0.messageId == message.id && $0.targetType == "agent" && $0.notifiableAtSend
-        }.map {
-            AgentMentionDeliveriesResponse.Delivery(
-                targetId: $0.targetId, handle: $0.handle, terminalCode: $0.terminalCode
-            )
-        }
+        // Upstream lists the occurrence rows themselves, so a row whose mention
+        // has since been deleted from the projection is still reported; the
+        // authored handle comes from the mention record (`handleAtSendTime`).
+        let deliveries = state.storedMentions
+            .filter { $0.messageId == message.id && $0.mentionDeliveryOccurrence != nil }
+            .sorted { $0.id < $1.id }
+            .map { mention in
+                AgentMentionDeliveriesResponse.Delivery(
+                    targetHandle: mention.handle,
+                    outcome: MentionDeliverySenderProjection.outcome(
+                        occurrence: mention.mentionDeliveryOccurrence))
+            }
         return AgentMentionDeliveriesResponse(messageId: message.id, deliveries: deliveries)
     }
 
@@ -164,6 +169,16 @@ public struct AgentMessageLookupService: Sendable {
         messageRef: String
     ) throws -> AgentMessageResolveResponse {
         let agent = try requireReadingAgent(authorization)
+        return try messageResolve(agent: agent, messageRef: messageRef)
+    }
+
+    /// The resolution itself, after an owner has established the acting agent.
+    /// The legacy machine route and the credential route publish the same body;
+    /// only the credential check in front of them differs.
+    func messageResolve(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        messageRef: String
+    ) throws -> AgentMessageResolveResponse {
         let state = messages.state
         let channelState = channels.state
         let postableChannels = channelState.postableChannels
@@ -252,6 +267,7 @@ public struct AgentMessageLookupService: Sendable {
             createdAt: formatter.string(from: message.createdAt),
             senderTimezone: message.senderTimezone,
             mentioned: mentioned,
+            attachments: attachments(for: message),
             externalMessage: message.senderType == "external_projection"
                 ? AgentMessageResolveResponse.ExternalMessage(
                     messageId: message.externalMessageId,
@@ -260,6 +276,18 @@ public struct AgentMessageLookupService: Sendable {
                 )
                 : nil
         )
+    }
+
+    private func attachments(for message: StoredHumanMessage) -> [AgentHistoryMessage.Attachment] {
+        messages.orderedAttachmentRows(for: message).compactMap { entry in
+            guard let row = entry.row, row.channelId == message.channelId else { return nil }
+            return AgentHistoryMessage.Attachment(
+                id: row.id,
+                filename: row.filename,
+                mimeType: ChannelFileRules.resolveAttachmentMimeType(filename: row.filename, stored: row.mimeType),
+                sizeBytes: row.sizeBytes
+            )
+        }
     }
 
     /// The local channel of a joint canonical channel the agent can act in.

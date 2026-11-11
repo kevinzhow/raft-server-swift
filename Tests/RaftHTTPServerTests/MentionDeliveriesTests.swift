@@ -103,6 +103,9 @@ private func mentionRead(_ client: any Client, token: String?, serverId: String,
                 handle: "original-name",
                 terminalCode: "IDENTITY_DRIFT"
             )
+            _ = seed.accounts.ensureMentionDeliveryOccurrenceForTesting(messageId: message, agentId: seed.agentId)
+            _ = seed.accounts.advanceMentionDeliveryForTesting(
+                messageId: message, agentId: seed.agentId, outcome: "IDENTITY_DRIFT")
 
             let read = try await mentionRead(client, token: author, serverId: seed.serverId, messageId: message)
             #expect(read.status == .ok)
@@ -188,7 +191,7 @@ private func mentionRead(_ client: any Client, token: String?, serverId: String,
     }
 }
 
-@Test func mentionDeliveriesReportTheRetainedDeliveryFact() async throws {
+@Test func mentionDeliveriesReportTheOccurrenceReceipts() async throws {
     let seed = mentionDeliverySeed("504")
     try await withApp { app in
         configure(app, services: FallbackServices(
@@ -207,38 +210,58 @@ private func mentionRead(_ client: any Client, token: String?, serverId: String,
                 targetType: "agent",
                 handle: "original-name"
             )
-            // No retained delivery attempt yet: upstream's missing occurrence.
-            let unknown = try await mentionRead(client, token: author, serverId: seed.serverId, messageId: message)
-            #expect((unknown.body["deliveries"] as? [[String: Any]])?.first?["outcome"] as? String == "unknown")
-
-            // A durably queued wake is pending, never delivered or lost.
+            // No occurrence: unknown, never inferred from unrelated queues or
+            // delivery commands.
             seed.accounts.agentsRuntimeStore.withState { state in
                 let key = AgentExecutionState.key(seed.serverId, seed.agentId, seed.channelId, message)
                 state.execution.pendingHumanDeliveries = [key: AgentExecutionPendingDelivery(
                     serverId: seed.serverId, agentId: seed.agentId, channelId: seed.channelId,
                     messageId: message, createdAt: Date())]
             }
+            let unknown = try await mentionRead(client, token: author, serverId: seed.serverId, messageId: message)
+            #expect((unknown.body["deliveries"] as? [[String: Any]])?.first?["outcome"] as? String == "unknown")
+
+            // The recorded occurrence with no receipt is a broken server
+            // decision: pending, never delivered or lost.
+            _ = seed.accounts.ensureMentionDeliveryOccurrenceForTesting(messageId: message, agentId: seed.agentId)
             let pending = try await mentionRead(client, token: author, serverId: seed.serverId, messageId: message)
             #expect((pending.body["deliveries"] as? [[String: Any]])?.first?["outcome"] as? String == "pending")
 
-            // The daemon acknowledged the delivery: that is the only fact that
-            // publishes `delivered`.
-            seed.accounts.agentsRuntimeStore.withState { state in
-                state.execution.pendingHumanDeliveries = nil
-                let commandId = UUID()
-                state.execution.commands[commandId.uuidString] = AgentExecutionCommand(
-                    commandId: commandId, kind: .delivery, serverId: seed.serverId,
-                    machineId: "mention-machine", agentId: seed.agentId, launchId: "launch-mention",
-                    startDispatchId: nil, deliveryId: UUID().uuidString.lowercased(),
-                    connectionEpochId: "mention-epoch", takeoverEpoch: 0, breakerGeneration: 0,
-                    humanStart: false, sessionId: nil, resumePrompt: nil, channelId: seed.channelId,
-                    messageId: message, notice: nil, status: .accepted, createdAt: Date())
-            }
+            // The daemon receipt chain is the only fact that publishes delivered.
+            #expect(seed.accounts.advanceMentionDeliveryForTesting(
+                messageId: message, agentId: seed.agentId, outcome: "delivered"))
             let delivered = try await mentionRead(client, token: author, serverId: seed.serverId, messageId: message)
             let row = try #require((delivered.body["deliveries"] as? [[String: Any]])?.first)
             #expect(row["outcome"] as? String == "delivered")
             #expect(row["reasonCategory"] == nil)
             #expect(row["targetHandle"] as? String == "original-name")
+        }
+    }
+}
+
+@Test func legacyTerminalCodeWithoutAnOccurrenceIsNotADeliveryFact() async throws {
+    let seed = mentionDeliverySeed("505")
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test",
+            tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {},
+            emailAccounts: seed.accounts
+        ))
+        try await app.testing { client in
+            let author = try await mentionLogin(client, email: seed.authorEmail)
+            let message = try await mentionSend(client, token: author, serverId: seed.serverId,
+                                                channelId: seed.channelId, content: "synthetic")
+            // The retired pre-occurrence fixture wrote only this column. It is
+            // not a daemon receipt and must not publish a verdict.
+            seed.accounts.addStoredMentionForTesting(
+                channelId: seed.channelId, messageId: message, targetId: seed.agentId,
+                targetType: "agent", handle: "original-name", terminalCode: "IDENTITY_DRIFT")
+            let read = try await mentionRead(client, token: author, serverId: seed.serverId, messageId: message)
+            #expect(read.status == .ok)
+            let rows = read.body["deliveries"] as? [[String: Any]] ?? []
+            #expect(rows.first?["outcome"] as? String == "unknown")
+            #expect(rows.first?["reasonCategory"] == nil)
         }
     }
 }

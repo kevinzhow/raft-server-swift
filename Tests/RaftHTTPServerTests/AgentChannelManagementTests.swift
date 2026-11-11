@@ -54,6 +54,7 @@ private func makeChannelManagementFixture(_ suffix: String) -> ChannelManagement
     accounts.oauth.addChannelAgent(channelId: archivedChannel, agentId: agentId)
     accounts.oauth.setChannelArchived(id: archivedChannel, archivedAt: Date())
     let machineId = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "channel-mgmt-machine-\(suffix)")
+    accounts.assignAgentMachineForTesting(agentId: agentId, machineId: machineId)
     return ChannelManagementFixture(
         accounts: accounts,
         serverId: serverId,
