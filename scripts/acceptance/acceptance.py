@@ -88,8 +88,10 @@ ATTACHMENT_READ_INSTRUCTION = (
     "Read the attached text file and reply with the exact token it contains. "
     "The token is the file's only content; do not guess or invent one. "
     "The attachment id is {attachment_id}. Download it with "
-    "`raft attachment view --id {attachment_id} --output /tmp/acceptance-read.txt` "
-    "(or your attachment viewer), then read that file."
+    "`raft attachment view --id {attachment_id} --output ./{filename}` "
+    "(or your attachment viewer), then read that file. "
+    "Write the output inside your current workspace using that relative path; "
+    "do not write it to /tmp or anywhere outside the workspace."
 )
 
 
@@ -631,7 +633,9 @@ class Acceptance:
             attachment = self.upload_attachment(
                 channel_id, case["content"].encode("utf-8"), case["filename"]
             )
-            instruction = case["instruction"].format(attachment_id=attachment["id"])
+            instruction = case["instruction"].format(
+                attachment_id=attachment["id"], filename=case["filename"]
+            )
             if case["nonce"] in instruction:
                 raise Failure(f"attachment read round {index}: prompt leaked the hidden token")
             sent = self.send_message(

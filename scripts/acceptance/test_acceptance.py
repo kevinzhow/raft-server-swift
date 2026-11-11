@@ -23,7 +23,10 @@ class AttachmentReadCaseTests(unittest.TestCase):
     def test_hidden_nonce_is_absent_from_prompt_and_filename(self) -> None:
         for index in range(1, 101):
             case = make_attachment_read_case(index)
-            prompt = case["instruction"].format(attachment_id="00000000-0000-4000-8000-000000000000")
+            prompt = case["instruction"].format(
+                attachment_id="00000000-0000-4000-8000-000000000000",
+                filename=case["filename"],
+            )
             self.assertNotIn(case["nonce"], prompt)
             self.assertNotIn(case["nonce"], case["filename"])
             self.assertEqual(case["content"], case["nonce"] + "\n")
@@ -38,11 +41,18 @@ class AttachmentReadCaseTests(unittest.TestCase):
 
     def test_instruction_requires_reading_the_attachment(self) -> None:
         case = make_attachment_read_case(1)
-        prompt = case["instruction"].format(attachment_id="00000000-0000-4000-8000-000000000000")
+        prompt = case["instruction"].format(
+            attachment_id="00000000-0000-4000-8000-000000000000",
+            filename=case["filename"],
+        )
         self.assertIn("attached text file", prompt)
         self.assertIn("exact token", prompt)
         self.assertIn("attachment view", prompt)
         self.assertIn("00000000-0000-4000-8000-000000000000", prompt)
+        self.assertIn(f"--output ./{case['filename']}", prompt)
+        self.assertIn("current workspace", prompt)
+        self.assertNotIn("/tmp/", prompt)
+        self.assertNotIn("--output /", prompt)
 
 
 class CorrelatedReplyTests(unittest.TestCase):
