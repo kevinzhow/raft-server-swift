@@ -220,13 +220,26 @@ public struct AuthFeature: RouteCollection, Sendable {
             return try await respond { try await self.oauthFlows.completeMobileOAuthAsync(body) }
         }
         provider.post("complete") { request async throws -> Response in
+            // Pinned `routes/auth.ts:1125-1129` resolves the provider before
+            // reading the body; an unknown provider falls through to the 404
+            // route, not to a body refusal. The service's provider discovery
+            // is the authoritative table.
+            let providerID = request.parameters.get("provider") ?? ""
+            let knownProviders = (try? self.oauthFlows.authProviders(platform: "web"))?.providers.map(\.id) ?? []
+            guard knownProviders.contains(providerID) else { return domainErrorResponse(AuthCoreError.notFound) }
+            // A body that is not a JSON object reads as an empty request.
+            let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
+            // Pinned `routes/auth.ts:1131-1138` checks the completion code
+            // before `parsePendingLinkToken`. JavaScript `!code` covers a
+            // missing member, `null`, `""`, `0` and `false`; whitespace is
+            // truthy and falls through to the token check.
+            guard body.code.map({ !$0.isEmpty }) == true else {
+                return domainErrorResponse(AuthCoreError.socialCompletionCodeRequired)
+            }
             // Pinned `routes/auth.ts:1138` reads the pending-link token before
             // the completion lookup; a non-string token is that 400, not a
             // sign-in attempt.
             if let refusal = try await pendingLinkTokenRefusal(request) { return refusal }
-            // A body that is not a JSON object reads as an empty request, so the
-            // service answers the published "code is required" 400.
-            let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
             return try await respond {
                 try await self.core.completeSocialAsync(
                     provider: request.parameters.get("provider") ?? "",
