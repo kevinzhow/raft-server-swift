@@ -42,6 +42,11 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
     case invalidCapability
     case capabilityNoLongerValid
     case installationIdRequired
+    case pushNotConfigured
+    case invalidPushPromptEvent
+    case missingPushEndpoint
+    case noPushSubscription
+    case pushDeliveryFailed
 
     public var status: UInt {
         switch self {
@@ -57,11 +62,18 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
             409
         case .providerProbeRetired:
             410
+        case .pushNotConfigured:
+            503
+        case .pushDeliveryFailed:
+            502
+        case .noPushSubscription:
+            409
         case .invalidMutationId, .invalidMutationPayload, .profileSetupInvalid,
              .profileSetupNameReserved, .invalidServerRequest, .slugTooShort,
              .productAnalyticsNotBoolean, .invalidProviderConnection, .rotateCredentialSeparately,
              .apiKeyRequired, .invalidPushRegistration, .invalidPushSubscription,
-             .invalidCapability, .installationIdRequired:
+             .invalidCapability, .installationIdRequired, .invalidPushPromptEvent,
+             .missingPushEndpoint:
             400
         }
     }
@@ -98,6 +110,11 @@ public enum ManagedMCPLifecycleError: DomainError, Equatable {
         case .invalidCapability: "Invalid capability"
         case .capabilityNoLongerValid: "Capability is no longer valid"
         case .installationIdRequired: "Valid installationId is required"
+        case .pushNotConfigured: "Push notifications not configured"
+        case .invalidPushPromptEvent: "Invalid push prompt event"
+        case .missingPushEndpoint: "Missing endpoint"
+        case .noPushSubscription: "No push subscription found for this user on this server"
+        case .pushDeliveryFailed: "Push delivery failed for all subscriptions"
         }
     }
 

@@ -95,6 +95,21 @@ struct WebPushSubscription: Sendable {
         var endpoint: String
     }
 
+/// One browser push prompt telemetry row (`POST /api/push/prompt-events`,
+/// `routes/push.ts:92-139`). Every bounded field is already trimmed and
+/// truncated by the service.
+struct PushPromptEvent: Sendable, Equatable {
+        var userId: String
+        var serverId: String?
+        var event: String
+        var trigger: String
+        var result: String?
+        var permissionBefore: String?
+        var permissionAfter: String?
+        var detail: String?
+        var createdAt: Date
+    }
+
 struct ExternalAvatarAsset: Sendable {
         var id: String
         var contentType: String

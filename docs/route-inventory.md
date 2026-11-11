@@ -19,10 +19,10 @@ python3 scripts/route_inventory.py --swift-dump /tmp/swift-routes.tsv --write do
 | Metric | Count |
 | --- | ---: |
 | Upstream route registrations | 644 |
-| Swift route registrations | 545 |
-| Exact matches | 517 |
+| Swift route registrations | 566 |
+| Exact matches | 538 |
 | Parameter-variant matches | 1 |
-| Missing in Swift | 123 |
+| Missing in Swift | 102 |
 | Extra in Swift | 27 |
 
 A parameter-variant match means one side registers a literal path segment where
@@ -116,20 +116,6 @@ does not prove no other consumer exists.
 | `GET /api/integrations/overview` | 1 | 0 |
 | `POST /api/integrations/requests/:param/deny` | 1 | 0 |
 
-### billing — 9 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `POST /api/billing/cancel` | 1 | 0 |
-| `POST /api/billing/checkout` | 1 | 0 |
-| `GET /api/billing/hosted-runtime-usage` | 2 | 0 |
-| `POST /api/billing/pack-quantity` | 0 | 0 |
-| `POST /api/billing/pack-quantity/preview` | 0 | 0 |
-| `POST /api/billing/portal` | 1 | 0 |
-| `POST /api/billing/seat-pack-quantity` | 1 | 0 |
-| `POST /api/billing/seat-pack-quantity/preview` | 1 | 0 |
-| `GET /api/billing/subscription` | 1 | 0 |
-
 ### other / top-level — 8 missing
 
 | Method path | Web | CLI |
@@ -154,16 +140,6 @@ does not prove no other consumer exists.
 | `POST /api/slack-bridge/provisioning/enable` | 0 | 0 |
 | `POST /api/slack-bridge/provisioning/preflight` | 0 | 0 |
 
-### raftbench — 5 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `GET /api/raftbench` | 5 | 0 |
-| `PUT /api/raftbench` | 5 | 0 |
-| `GET /api/raftbench/agents` | 1 | 0 |
-| `POST /api/raftbench/agents` | 1 | 0 |
-| `PUT /api/raftbench/assignment` | 1 | 0 |
-
 ### public*.ts — 4 missing
 
 | Method path | Web | CLI |
@@ -172,15 +148,6 @@ does not prove no other consumer exists.
 | `GET /api/public/search/servers/:param` | 0 | 0 |
 | `GET /api/public/search/servers/:param/channels/:param` | 0 | 0 |
 | `GET /api/public/search/servers/:param/threads/:param` | 0 | 0 |
-
-### push — 4 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `POST /api/push/prompt-events` | 1 | 0 |
-| `DELETE /api/push/subscribe` | 1 | 0 |
-| `POST /api/push/test` | 1 | 0 |
-| `GET /api/push/vapid-key` | 1 | 0 |
 
 ### mcp — 3 missing
 
@@ -204,13 +171,6 @@ does not prove no other consumer exists.
 | --- | ---: | ---: |
 | `POST /api/actions/:param/event` | 1 | 0 |
 | `POST /api/actions/:param/reconfirm` | 1 | 0 |
-
-### auth / login / oauth — 2 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `POST /api/auth/forgot-password` | 2 | 0 |
-| `GET /api/auth/me/username-available` | 1 | 0 |
 
 ### integration-invites — 2 missing
 
@@ -255,12 +215,6 @@ does not prove no other consumer exists.
 | Method path | Web | CLI |
 | --- | ---: | ---: |
 | `GET /api/attachments/:param/preview` | 1 | 0 |
-
-### avatars — 1 missing
-
-| Method path | Web | CLI |
-| --- | ---: | ---: |
-| `GET /api/avatars/:param/:param` | 1 | 0 |
 
 ### connections — 1 missing
 
@@ -493,7 +447,7 @@ does not prove no other consumer exists.
 | auth | `POST /api/auth/device/approve` | matched |
 | auth | `POST /api/auth/device/authorize` | matched |
 | auth | `POST /api/auth/device/token` | matched |
-| auth | `POST /api/auth/forgot-password` | missing |
+| auth | `POST /api/auth/forgot-password` | matched |
 | auth | `GET /api/auth/identities` | matched |
 | auth | `DELETE /api/auth/identities/:param` | matched |
 | auth | `GET /api/auth/invite-info` | matched |
@@ -504,7 +458,7 @@ does not prove no other consumer exists.
 | auth | `POST /api/auth/me/avatar` | matched |
 | auth | `POST /api/auth/me/complete-profile` | matched |
 | auth | `POST /api/auth/me/timezone-observation` | matched |
-| auth | `GET /api/auth/me/username-available` | missing |
+| auth | `GET /api/auth/me/username-available` | matched |
 | auth | `POST /api/auth/mobile/oauth/:param/link/complete` | matched |
 | auth | `POST /api/auth/mobile/oauth/:param/link/start` | matched |
 | auth | `POST /api/auth/mobile/oauth/apple/native/authorize` | matched |
@@ -519,17 +473,17 @@ does not prove no other consumer exists.
 | auth | `POST /api/auth/reset-password` | matched |
 | auth | `POST /api/auth/staging-self-account/retire` | matched |
 | auth | `POST /api/auth/verify-email` | matched |
-| avatars | `GET /api/avatars/:param/:param` | missing |
+| avatars | `GET /api/avatars/:param/:param` | matched |
 | avatars | `GET /api/avatars/pixel/:param` | matched |
-| billing | `POST /api/billing/cancel` | missing |
-| billing | `POST /api/billing/checkout` | missing |
-| billing | `GET /api/billing/hosted-runtime-usage` | missing |
-| billing | `POST /api/billing/pack-quantity` | missing |
-| billing | `POST /api/billing/pack-quantity/preview` | missing |
-| billing | `POST /api/billing/portal` | missing |
-| billing | `POST /api/billing/seat-pack-quantity` | missing |
-| billing | `POST /api/billing/seat-pack-quantity/preview` | missing |
-| billing | `GET /api/billing/subscription` | missing |
+| billing | `POST /api/billing/cancel` | matched |
+| billing | `POST /api/billing/checkout` | matched |
+| billing | `GET /api/billing/hosted-runtime-usage` | matched |
+| billing | `POST /api/billing/pack-quantity` | matched |
+| billing | `POST /api/billing/pack-quantity/preview` | matched |
+| billing | `POST /api/billing/portal` | matched |
+| billing | `POST /api/billing/seat-pack-quantity` | matched |
+| billing | `POST /api/billing/seat-pack-quantity/preview` | matched |
+| billing | `GET /api/billing/subscription` | matched |
 | channels | `GET /api/channels` | matched |
 | channels | `POST /api/channels` | matched |
 | channels | `DELETE /api/channels/:param` | matched |
@@ -922,18 +876,18 @@ does not prove no other consumer exists.
 | public-visits | `POST /api/public-visits/:param` | matched |
 | push | `GET /api/push/delivery-status` | matched |
 | push | `POST /api/push/family-revoke` | matched |
-| push | `POST /api/push/prompt-events` | missing |
+| push | `POST /api/push/prompt-events` | matched |
 | push | `POST /api/push/registrations` | matched |
 | push | `DELETE /api/push/registrations/:param` | matched |
-| push | `DELETE /api/push/subscribe` | missing |
+| push | `DELETE /api/push/subscribe` | matched |
 | push | `POST /api/push/subscribe` | matched |
-| push | `POST /api/push/test` | missing |
-| push | `GET /api/push/vapid-key` | missing |
-| raftbench | `GET /api/raftbench` | missing |
-| raftbench | `PUT /api/raftbench` | missing |
-| raftbench | `GET /api/raftbench/agents` | missing |
-| raftbench | `POST /api/raftbench/agents` | missing |
-| raftbench | `PUT /api/raftbench/assignment` | missing |
+| push | `POST /api/push/test` | matched |
+| push | `GET /api/push/vapid-key` | matched |
+| raftbench | `GET /api/raftbench` | matched |
+| raftbench | `PUT /api/raftbench` | matched |
+| raftbench | `GET /api/raftbench/agents` | matched |
+| raftbench | `POST /api/raftbench/agents` | matched |
+| raftbench | `PUT /api/raftbench/assignment` | matched |
 | read-mutations | `POST /api/read-mutations` | matched |
 | read-mutations | `GET /api/read-mutations/frontier` | matched |
 | release-notes | `GET /api/release-notes` | matched |

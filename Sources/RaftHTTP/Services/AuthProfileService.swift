@@ -133,6 +133,46 @@ public struct AuthProfileService: Sendable {
         return ForgotPasswordResponse()
     }
 
+    /// `GET /api/auth/me/username-available`. Mirrors the `complete-profile`
+    /// checks (`validate → reserved → uniqueness`) but only reads; a name can
+    /// still be taken between this check and submit.
+    public func usernameAvailability(
+        authorization: String?,
+        name: String?
+    ) throws -> UsernameAvailabilityResponse {
+        guard userId(authorization: authorization) != nil else {
+            throw AuthProfileError.unauthenticated
+        }
+        let candidate = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let message = Self.usernameValidationMessage(candidate) {
+            return UsernameAvailabilityResponse(available: false, reason: "invalid", message: message)
+        }
+        if candidate.lowercased().hasPrefix("pending_") || AccountNaming.isReservedAgentName(candidate) {
+            return UsernameAvailabilityResponse(
+                available: false, reason: "reserved",
+                message: "This username is reserved. Choose another name."
+            )
+        }
+        let available = store.isUsernameAvailable(candidate)
+        return UsernameAvailabilityResponse(
+            available: available,
+            reason: available ? nil : "taken",
+            message: available ? nil : "This username is already taken."
+        )
+    }
+
+    /// Pinned `validateName(name, "Username", 5)`
+    /// (`packages/shared/src/index.ts:4368-4430`).
+    private static func usernameValidationMessage(_ name: String) -> String? {
+        if name.isEmpty { return "Username is required" }
+        if name.count < 5 { return "Username must be at least 5 characters" }
+        if name.count > 32 { return "Username must be at most 32 characters" }
+        guard name.wholeMatch(of: /^[\p{L}][\p{L}\p{N}_-]*$/) != nil else {
+            return "Username must start with a letter and can only contain letters, numbers, hyphens, and underscores"
+        }
+        return nil
+    }
+
     /// `POST /api/auth/pending-link/cancel`. Always 204, including a second
     /// cancel and an unknown or absent token.
     public func cancelPendingLink(_ request: CancelPendingLinkRequest) -> NoContentResponse {

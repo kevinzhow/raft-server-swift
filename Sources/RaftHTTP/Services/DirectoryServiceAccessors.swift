@@ -986,4 +986,17 @@ extension EmailLoginDirectory {
             oauth: oauth
         )
     }
+
+    /// The `/api/billing` summary and provider-disabled refusals. The server
+    /// plan, member roster and live agent rows are the authoritative facts;
+    /// no subscription store exists in this deployment.
+    public var billing: BillingService {
+        BillingService(profiles: authProfileStore, oauth: oauth)
+    }
+
+    /// `/api/raftbench` authority, request validation and the deployment gate.
+    /// The environment carries `DEPLOYMENT_ENV` and the optional canary id.
+    public func raftBench(environment: [String: String]) -> RaftBenchService {
+        RaftBenchService(profiles: authProfileStore, oauth: oauth, environment: environment)
+    }
 }

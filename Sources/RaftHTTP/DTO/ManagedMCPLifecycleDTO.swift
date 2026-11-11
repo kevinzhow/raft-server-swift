@@ -514,6 +514,41 @@ public struct PushUnbindResponse: Codable, Sendable, Equatable {
     }
 }
 
+/// `GET /api/push/vapid-key`.
+public struct WebPushVapidKeyResponse: JSONBodyConvertible, Equatable {
+    let publicKey: String
+
+    public init(publicKey: String) {
+        self.publicKey = publicKey
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([OrderedJSONField("publicKey", publicKey)])
+    }
+}
+
+/// `POST /api/push/test`.
+public struct WebPushTestResponse: JSONBodyConvertible, Equatable {
+    let attempted: Int
+    let delivered: Int
+    let failed: Int
+
+    public init(attempted: Int, delivered: Int, failed: Int) {
+        self.attempted = attempted
+        self.delivered = delivered
+        self.failed = failed
+    }
+
+    public var jsonBody: OrderedJSON {
+        .object([
+            OrderedJSONField("ok", true),
+            OrderedJSONField("attempted", attempted),
+            OrderedJSONField("delivered", delivered),
+            OrderedJSONField("failed", failed),
+        ])
+    }
+}
+
 /// `POST /api/push/subscribe` request.
 ///
 /// The retired parser required a string `endpoint` and an object `keys` whose
