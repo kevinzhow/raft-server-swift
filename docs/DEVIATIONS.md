@@ -3,7 +3,9 @@
 This is the curated list of where the Swift port intentionally differs from
 `raft-source` tag `v1.21.23-source.1`, and of upstream assertions that were
 adjudicated as non-executable here. It replaces the append-only
-`docs/BEHAVIOR.md` log (removed; history remains in git).
+`docs/BEHAVIOR.md` log (removed; history remains in git). Route-level raw-table
+adjudication (the 5 parser false positives, 57 raw missing, 27 raw extras and
+their class counts) is in [ROUTE-DEVIATIONS.md](ROUTE-DEVIATIONS.md).
 
 Use this file when reviewing a parity claim, when someone asks "why is this not
 implemented?", or before adding a new exclusion. Each entry records **what**
@@ -82,14 +84,56 @@ the gateway.
 Slack bridge control plane, Hands feedback proxying, CDN/object-storage upload
 resource flows and the OTLP trace relay are absent or answer explicit refusal
 (503/404/410). Provider-connection test/models endpoints return 410.
+
+This entry names only the excluded external integration backends. It is **not**
+a claim that this deployment has no external services. Cloudflare Email Sending
+is configured for transactional email
+(`Sources/RaftHTTP/Support/TransactionalEmailCloudflare.swift`;
+`docs/DEPLOYMENT.md`), and the encrypted private R2/S3 object bucket is
+configured and used for attachments and profile assets (D24). The excluded
+storage flow above is the upstream public CDN upload-resource pipeline, not that
+private bucket. `integrations.api` also covers the App-side bot routes:
+`POST /api/app-bot/token` (OAuth access token to managed-bot credential
+exchange; `packages/server/src/app.ts:825-833`,
+`packages/server/src/routes/integrations.ts:894-990`) and
+`POST /api/integrations/clients/:id/install/bot` (managed-bot grant/revoke;
+`routes/integrations.ts:813-885`).
+
+The Slack family is deliberately asymmetric. `GET /api/slack-bridge/provisioning`
+is registered and answers `503 {"ok":false,"code":"slack_bridge_provider_unavailable"}`;
+`POST /oauth/start`, `POST /events` and `GET /oauth/callback` answer the same
+503. The six provisioning mutations (`POST connect`, `PUT/DELETE channel-pairs`,
+`POST disconnect`, `POST preflight`, `POST enable`) are not registered and fall
+to the fallback 404. `HumanAdmissionMiddleware.swift:54-61` already lists all
+six for verified-profile admission, so the asymmetry is visible in review. The
+pinned Web loader is gated by the family GET's 503, so the 404s are not a live
+owner path; keep them documented until the bridge is deployed.
+
+The hosted-provider callback is absent. The port still builds
+`returnUrl = <origin>/api/connections/callback/<serverId>/<agentId>` in
+`Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift:680`, while the
+callback route is not registered and the provider relay is `.unavailable`
+(`Sources/RaftHTTP/Services/RelayServices.swift:60-80`). If a hosted provider is
+enabled, register the callback before enabling the provider; see D34.
+
+The Stripe webhook has a status difference from billing. With no Stripe
+provider, upstream answers 503 `Billing is not configured` for the registered
+billing mutations **and** for `POST /api/webhooks/stripe`; this port registers
+the billing mutations (503) but not the webhook, so the webhook answers the
+fallback 404. See D12.
+
 **Why.** These are external services with their own protocols and credentials;
 the repository contract excludes porting them for test-only assertions.
 **Upstream.** `agentRuntimeProviders.api`, `agentAudienceJwt.grafana`,
 `slackBridge.api`, `integrations.api`, `otlpRelay`, `productFeedback.api` (Hands
-paths), attachment CDN/storage streaming cases.
+paths), attachment CDN/storage streaming cases; Slack control-plane registrations
+in `packages/server/src/app.ts:403-450`; hosted callback in
+`packages/server/src/app.ts:783` and
+`packages/server/src/routes/agentConnectionCallback.ts:1-25`.
 **Re-evaluate.** If the owner deploys one of these services and the public path
 must reach it; implement it as a real adapter with its own acceptance rail, not
-as a stub.
+as a stub. For Slack, register the six 503 refusals or the real mutations only
+with the bridge. For the callback, add the route before the hosted provider.
 
 ### D6. The official Computer/provider acceptance is separate
 
@@ -187,8 +231,19 @@ as `#system.canary` are absent.
 **Why.** There is no billing provider or joint-channel model in this deployment,
 and no pinned Web consumer uses them here; the registered routes refuse instead
 of fabricating a plan, price, subscription or joint channel.
+
+The Stripe webhook is not registered, so `POST /api/webhooks/stripe` answers
+the fallback 404 (`{"error":"Not found","code":"not_found","path":...}`), not
+the upstream no-provider 503 `{"error":"Billing is not configured"}`. The
+registered billing mutations do answer that 503. The difference is deliberate:
+the webhook route is absent rather than a fabricated billing refusal. Upstream
+registers it before the JSON parser to preserve the raw body and checks
+`isStripeConfigured()` first (`packages/server/src/routes/billing.ts:316-330`).
+
 **Upstream.** `billing.api`, `channels.joint.api`, `internalAgentApi.userChannels`
-(built-in app case), `productFeedback.api` (pseudo-server kind row).
+(built-in app case), `productFeedback.api` (pseudo-server kind row);
+`packages/server/src/app.ts:236` and
+`packages/server/src/routes/billing.ts:316-330` for the Stripe webhook.
 **Re-evaluate.** Only with an explicit product scope change or a real Stripe
 deployment; then implement the provider adapter and its acceptance rail.
 
@@ -436,26 +491,78 @@ would fabricate state.
 **Re-evaluate.** If joint channel conversion is implemented; then persist the
 conversion epoch/freeze state and lock the real reconfirm transition.
 
-### D31. Legacy machine routes reject live computer credentials
+### D31. Legacy machine surface: credential refusal and unregistered siblings
 
-**What.** Every legacy `/internal/agent/:id/*` route runs the shared
+**What.** The registered legacy `/internal/agent/:id/*` routes run the shared
 `LegacyAgentMachineGate` (`requireMachineAuth` + `requireAgentScope`). A live
 `sk_agent_*` credential and a `sk_computer_*` computer credential are both
 refused with 401 `Invalid authentication: machine API key required`; only
 `sk_machine_*` and legacy `sk_daemon_*` keys authenticate. Upstream
 `requireMachineAuth` also resolves a `sk_computer_*` key to its linked machine
 and admits it on `/internal/*`.
+
+The port also does not register these 11 legacy siblings:
+
+```text
+GET  /internal/agent/:agentId/integrations
+POST /internal/agent/:agentId/integrations/login
+POST /internal/agent/:agentId/integrations/app/prepare
+POST /internal/agent/:agentId/resolve-channel
+GET  /internal/agent/:agentId/knowledge/search
+GET  /internal/agent/:agentId/profile
+POST /internal/agent/:agentId/profile
+POST /internal/agent/:agentId/profile/avatar
+POST /internal/agent/:agentId/tasks/unclaim
+POST /internal/agent/:agentId/prepare-action
+GET  /internal/agent/:agentId/scopes
+```
+
+These are not machine-gated because they are not registered. They match the
+five-method `/internal/agent/**` catch-all: a live agent credential gets
+401 `{"error":"This internal surface is not registered","code":"auth_policy_unregistered_path"}`;
+another credential gets `invalid_principal`; a request without a bearer gets
+`auth_required` (`Sources/RaftHTTPServer/FallbackApplication.swift:348-363`;
+`Sources/RaftHTTP/Services/AgentsLifecycleError.swift:29,39,83,96`).
+Credential-surface equivalents are registered for profile (including avatar),
+integrations (including login and app/prepare), knowledge/search,
+resolve-channel, prepare-action and tasks/unclaim. There is no
+credential-surface scopes route: upstream has none either (the human
+`GET/PUT /api/agents/:id/scopes` routes are registered and matched), so the
+legacy scope set is not represented on `/internal/agent-api/*`.
+
+Four old machine routes are also unregistered:
+
+```text
+GET  /internal/machine/self
+GET  /internal/machine/agents
+POST /internal/machine/agents/:agentId/start
+POST /internal/machine/agents/:agentId/stop
+```
+
+There is no `/internal/machine/**` catch-all, so these answer the fallback
+404 (`{"error":"Not found","code":"not_found","path":...}`), not the 401 policy
+envelope. The one registered machine route is
+`POST /internal/machine/scope-attestation`.
+
 **Why.** This port has no `findComputerByApiKey`/linked-machine lookup on the
 legacy machine surface; the computer principal exists only on
 `/internal/computer/*` and `/daemon/connect`. Admitting the key without the
 upstream machine binding would either invent an identity or bypass the
 machine-ownership check, so the gate fails closed. `sk_agent_*` is the
 credential-surface principal and was never a machine principal upstream either.
-**Upstream.** `middleware/auth.ts:482-568` (`requireMachineAuth`,
-`isComputerApiKey` branch).
+The unregistered siblings are the compatibility remainder upstream itself marks
+as legacy ("DO NOT ADD OR EXPAND ROUTES HERE ... kept only for compatibility
+until it can be deleted"); the pinned CLI rewrites the prefix to
+`/internal/agent-api/*`, and the pinned daemon uses `/internal/computer/*`.
+**Upstream.** `packages/server/src/routes/internal.ts:6-19` (legacy-surface
+notice), `:1400-1512` (machine routes) and `:1512-5356` (the 11 legacy
+handlers); `middleware/auth.ts:482-568` (`requireMachineAuth`,
+`isComputerApiKey` branch); `docs/PARITY.tsv` `internalAgentApi.registryParity`.
 **Re-evaluate.** When a Computer credential registry can resolve
 `computer.machineId` to a live machine on the legacy surface; then map it to the
-same `LegacyAgentMachinePrincipal` instead of refusing.
+same `LegacyAgentMachinePrincipal` instead of refusing. Re-open the 11 legacy
+siblings or the four machine routes only if a pre-RFC daemon or a legacy-machine
+CLI mode is actually deployed.
 
 ### D32. Malformed-JSON bodies and multi-key strict ordering
 
@@ -498,6 +605,207 @@ shipped runtime without that symbol.
 project takes an explicit ICU/tzdata dependency); then replace
 `AccountNaming.timezoneAliases` and the special cases with that lookup and add
 the alias cases above to `TimezoneObservationTests`.
+
+### D34. App-backend, scoped-OAuth and marketplace-reviewer routes are partial
+
+**What.** The owner-Web app-management subset is implemented; the App-backend,
+scoped-OAuth and marketplace-reviewer subset is not. These 13 routes are not
+registered and answer the fallback 404 (`{"error":"Not found","code":"not_found","path":...}`):
+
+```text
+PUT  /api/oauth/installations/:installationId/subscriptions
+POST /oidc/:server/api/oauth/agent-events
+POST /oidc/:server/api/oauth/authorize/human
+GET  /oidc/:server/api/oauth/clients/lookup
+POST /oidc/:server/api/oauth/installation-token
+PUT  /oidc/:server/api/oauth/installations/:installationId/setup
+PUT  /oidc/:server/api/oauth/installations/:installationId/subscriptions
+POST /oidc/:server/api/oauth/installations/lookup
+POST /oidc/:server/api/oauth/requests/agent
+GET  /api/app-installation/computers
+GET  /api/integrations/built-in
+POST /api/integrations/clients/:clientId/review-publish
+GET  /api/connections/callback/:serverId/:agentId
+```
+
+`PUT /api/oauth/installations/:installationId/subscriptions` is the
+App-backend update of `subscribed_events`: 200
+`{installation_id, subscribed_events, subscription_revision}`, 400
+`AppOutboundPermissionError`, 404 unknown active installation
+(`packages/server/src/routes/oauth.ts:565-596`). Swift models the
+`subscribedEvents`/`subscriptionRevision` fields but has no update route.
+
+The eight `/oidc/:server/api/oauth/*` rows are the server-scoped mount of the
+whole `oauthRouter` (`packages/server/src/app.ts:380-385`); each therefore has
+the same handler and contract as its unscoped counterpart. The mount guard
+answers 400 for an invalid server segment and 404 for a path outside
+`OIDC_SCOPED_ROUTES` (`packages/server/src/routes/oauth.ts:300-313`). Swift
+registers only discovery, agents, jwks, userinfo, serverinfo, authorize and
+token under that mount (`Sources/RaftHTTPServer/Features/OAuth/OAuthFeature.swift:158-254`);
+the missing eight are the remaining router verbs. The unscoped setup, lookup,
+requests/agent, agent-events, authorize/human and clients/lookup routes are
+registered and matched; only the unscoped subscriptions route is missing.
+
+`GET /api/app-installation/computers` is the installation-credential computer
+projection: 200 `{installation_id, computers}`, 401 otherwise
+(`packages/server/src/routes/appInstallations.ts:123-129`). Swift registers only
+the `server` and `channels` projections
+(`Sources/RaftHTTPServer/Features/Integrations/InstallationCredentialRoutes.swift:26-40`).
+`GET /api/integrations/built-in` is a compatibility-only `200 []`; upstream says
+the retired class is never queried and new clients do not call it
+(`packages/server/src/routes/integrations.ts:144-150`).
+`POST /api/integrations/clients/:clientId/review-publish` is
+marketplace-reviewer-only: 403 for everyone else, 400 for an invalid review,
+404 for a missing publish request, 200 for a reviewer
+(`packages/server/src/routes/integrations.ts:625-650`).
+
+`GET /api/connections/callback/:serverId/:agentId` is the unauthenticated
+hosted-provider OAuth browser return: 302 to the Web landing page or 404
+`{"error":"Unknown connection callback"}` (`packages/server/src/app.ts:783`;
+`packages/server/src/routes/agentConnectionCallback.ts:1-25`). Swift still
+builds that `returnUrl` (`Sources/RaftHTTP/Services/MachinesAndHostedRuntimeService.swift:680`)
+but the provider relay is `.unavailable` (D5), so the start call fails before a
+browser can follow it. Add the callback route before enabling a hosted provider.
+
+The App-side bot routes (`POST /api/app-bot/token`,
+`POST /api/integrations/clients/:id/install/bot`) are already covered by D5 and
+`docs/PARITY.tsv` `integrations.api`; they are not part of this 13-route count.
+
+**Why.** These routes need an installed App, a marketplace reviewer or a hosted
+runtime provider. None is configured in this deployment; the owner-Web routes
+that manage Apps are implemented. Returning an App installation, a review
+decision or a provider redirect without the external identity would fabricate
+state. This is the existing `integrations.api`/`oauth.api` scope, not a new
+capability decision.
+**Upstream.** `docs/PARITY.tsv` `integrations.api` and `oauth.api`; D5;
+`packages/server/src/routes/oauth.ts:300-313,565-596`,
+`packages/server/src/app.ts:380-385`,
+`packages/server/src/routes/appInstallations.ts:123-129`,
+`packages/server/src/routes/integrations.ts:144-150,625-650`,
+`packages/server/src/routes/agentConnectionCallback.ts:1-25`.
+**Re-evaluate.** When an installed App, a marketplace reviewer or a hosted
+provider is configured. Add the real route with its own acceptance rail; add the
+callback route before enabling the hosted provider. Do not add fabricated
+App/reviewer responses to satisfy a route-name check.
+
+### D35. Agent-SDK-only operations are not registered
+
+**What.** These seven credential-surface operations are not registered:
+
+```text
+GET    /internal/agent-api/labs
+PUT    /internal/agent-api/labs/:labKey
+PATCH  /internal/agent-api/labs/access
+GET    /internal/agent-api/mentions/:messageId/delivery
+GET    /internal/agent-api/push-webhook
+DELETE /internal/agent-api/push-webhook
+POST   /internal/agent-api/app-sources/ack
+```
+
+They match the `/internal/agent-api/**` five-method catch-all. A live agent
+credential gets 401
+`{"error":"This internal surface is not registered","code":"auth_policy_unregistered_path"}`;
+another credential gets `invalid_principal`; no bearer gets `auth_required`
+(`Sources/RaftHTTPServer/FallbackApplication.swift:348-363`;
+`Sources/RaftHTTP/Services/AgentsLifecycleError.swift:29,39,83,96`).
+
+Upstream contracts: Labs are `GET /labs`, `PATCH /labs/access` and
+`PUT /labs/:labKey` (`packages/shared/src/agentApiContract.ts:2611-2641`), backed
+by the same transactional service and owner/admin policy as the human Settings
+routes (`packages/server/src/routes/serverLabs.ts:167-193`); they answer 200 with
+the server Labs projection, 400 for invalid body/version and 403 for insufficient
+authority. Push registration status is 200
+`{registered, url, enabled, disabledReason, disabledAt, lastAttemptAt,
+lastDeliveryAt, lastError, consecutiveFailures, nextAttemptAt}`; delete is 204;
+403 `AGENT_NOT_EXTERNAL` and 503 `PUSH_UNAVAILABLE` are the typed failures
+(`packages/shared/src/agentApiContract.ts:3125-3152`;
+`packages/server/src/services/agentInboxPushService.ts:203-218,283-290`).
+Receiver-bound mention delivery is 200 or 404 `{"status":"NOT_JOINABLE"}`
+(`packages/server/src/routes/internalAgentApi.ts:3243-3275`). App-source ack is
+200 for the built-in `system.reminder` source and 404
+`app_source_authority_not_registered` for anything else
+(`packages/server/src/routes/internalAgentApi.ts:9388-9405`;
+`packages/server/src/apps/reminder/sourceAck.ts:1-80`).
+
+The sibling `PUT /internal/agent-api/push-webhook` is registered
+(`Sources/RaftHTTPServer/Features/InternalAgentApi/InternalAgentApiFeature.swift:881`),
+and the author-bound `GET /internal/agent-api/messages/:messageId/mention-deliveries`
+is registered and matched. The missing receiver-bound route is a different view.
+
+**Why.** The pinned CLI surface client does not expose `labs`, `pushWebhook` or
+receiver-bound mention delivery (`packages/cli/src/agentApiPath.ts:393` onward);
+the `raft-sdk` does (`packages/raft-sdk/src/raft.ts:430,739`), and no pinned CLI
+command calls them. The surface client does expose `appSources.ack`
+(`agentApiPath.ts:464`), but no pinned CLI command calls it. The push chain is
+the unported durable inbox (D8); the app-source ack needs the unported built-in
+`system.reminder` app runtime/source chain (D12). These are real contract
+routes, not false positives, but they are not reachable from the pinned
+owner/Computer/Codex command surface.
+**Upstream.** `docs/PARITY.tsv` `internalAgentApi.inboxPush`,
+`internalAgentApi.senderMentionDeliveries`,
+`internalAgentApi.registryParity`; D8; D12.
+**Re-evaluate.** When an SDK-only client, the built-in App source chain or a
+durable inbox push backend is deployed. Add the real route and lock its public
+contract; do not answer a fabricated labs/push/ack success from the catch-all.
+
+### D36. Resumable streamed migration chunks are not implemented
+
+**What.** `POST /internal/computer/agent-migrations/by-id/:migrationId/resumable/stream-chunks/:chunkIndex`
+is not registered, so it matches the `/internal/computer/**` five-method
+catch-all and a live Computer credential gets 401
+`{"error":"This internal surface is not registered","code":"auth_policy_unregistered_path"}`
+(`Sources/RaftHTTPServer/FallbackApplication.swift:337-345`).
+
+Upstream is a presigned-PUT planning call: the source asks for one upload URL as
+soon as a chunk is packed, before the control manifest exists. It answers 200
+`{"ok":true, "uploaded": <bool>, "url": <string|null>}`; the chunk's size and
+SHA-256 must match, an already-received chunk returns `uploaded:true,url:null`,
+and typed 400/401/409 errors cover invalid chunks, generation/lease staleness,
+quiescence and receipt mismatch (`packages/server/src/routes/internalComputer.ts:495-523`;
+`packages/server/src/services/agentMigrationService.ts:773-860`). The port
+implements the control manifest, chunk receipts and upload-complete
+(`Sources/RaftHTTPServer/Features/InternalAdmin/InternalAdminFeature.swift:493-536`)
+but not the streamed chunk planning route.
+
+**Why.** No production migration lease dispatches a resumable upload today.
+`machineMigrationLeaseDispatch` is installed only by
+`Tests/TestSupport/AgentRuntimeRelaySeams.swift:54-62`, never by `Sources/`; the
+pinned daemon calls this route only for a `transferKind === "upload"` lease
+(`packages/daemon/src/core.ts:2715,2790`). A 401 here is therefore latent, not a
+current user-path defect.
+**Upstream.** `docs/PARITY.tsv` `internalComputer.agentMigration` (case 2 /
+pre-existing simplified resumable contract); `routes/internalComputer.ts:495-523`;
+`services/agentMigrationService.ts:773-860`.
+**Re-evaluate.** When a production `transferKind:"upload"` lease can be
+dispatched. Implement the route with the presigned PUT and receipt
+reconciliation, and add a controlled-Computer acceptance rail.
+
+### D37. Resend newsletter webhook is not registered
+
+**What.** `POST /api/webhooks/resend` is not registered, so it answers the
+fallback 404 (`{"error":"Not found","code":"not_found","path":...}`). Upstream
+registers it with a raw body and checks the three Svix headers: missing headers
+answer 400 `{"error":"Missing Resend webhook signature headers"}`; a failed
+verification answers 400 `{"error":"Resend webhook verification failed"}`; a
+verified newsletter event answers 200 `{"received":true,...}`
+(`packages/server/src/app.ts:238`;
+`packages/server/src/routes/newsletterWebhooks.ts:1-30`).
+
+This is the newsletter/Svix receiver, not the transactional email sender.
+Cloudflare Email Sending is configured for transactional email (D5;
+`docs/DEPLOYMENT.md`), and a Resend API key used for sending is separate from
+this webhook's Svix signing secret. Do not cite this entry to claim email
+sending is absent.
+
+**Why.** This deployment does not configure the newsletter webhook/Svix
+receiver. Registering the route without a signing secret would either accept
+unverified newsletter events or reject every request with an invented status;
+the fallback 404 is the truthful unmounted result.
+**Upstream.** `packages/server/src/app.ts:238`;
+`packages/server/src/routes/newsletterWebhooks.ts:1-30`; D5.
+**Re-evaluate.** When the newsletter Resend webhook and its Svix secret are
+configured. Register the raw-body route before the JSON parser, verify the Svix
+signature, and add the delivery/verification acceptance rail.
 
 ## Maintaining this list
 
