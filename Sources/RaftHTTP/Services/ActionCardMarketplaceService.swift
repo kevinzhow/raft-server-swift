@@ -325,6 +325,12 @@ public struct ActionCardMarketplaceService: Sendable {
         else {
             throw ActionCardMarketplaceError.invalidTaskConvertRequest
         }
+        guard credentials.canAgentPost(serverId: writer.serverId, agentId: writer.agentId, channelId: channelId) else {
+            throw AgentTaskApiError.agentCannotModifyTasks
+        }
+        guard !credentials.isChannelArchived(channelId) else {
+            throw AgentTaskApiError.channelArchived
+        }
         guard let message = messages.messageForConvert(prefix: messageRef, channelId: channelId) else {
             throw ActionCardMarketplaceError.messageNotFound
         }
@@ -860,7 +866,11 @@ public struct ActionCardMarketplaceService: Sendable {
     }
 
     private var credentials: AgentTaskCredentials {
-        AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth)
+        AgentTaskCredentials(
+            agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth,
+            accounts: accounts,
+            reminderSurface: { agentId in locator.agentReminderSurfaceChannelId(agentId: agentId) }
+        )
     }
 
     private func taskAuth(
