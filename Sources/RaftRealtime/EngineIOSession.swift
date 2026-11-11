@@ -256,20 +256,22 @@ final class EngineIOSession: Sendable {
     func handleWebSocketText(_ text: String, connectionID: UUID) {
         var upgrading = false
         var upgradeChannel: (any Channel)?
-        var probeReceived = false
         var currentTransport = false
         state.withLock { state in
             if state.upgrading, state.upgradeConnectionID == connectionID {
                 upgrading = true
                 upgradeChannel = state.upgradeChannel
-                probeReceived = state.probeReceived
             } else if case .websocket = state.transport, state.wsConnectionID == connectionID {
                 currentTransport = true
             }
         }
         if upgrading {
             guard let upgradeChannel else { return }
-            if text == engineIOProbePingPacket, !probeReceived {
+            if text == engineIOProbePingPacket {
+                // engine.io@6.6.11 socket.js:249-256 answers every probe ping
+                // on the upgrading transport with a probe pong. A repeated
+                // probe is not an upgrade failure; it keeps the same
+                // upgrading state and does not restart the upgrade timeout.
                 state.withLock { state in
                     guard state.upgrading, state.upgradeConnectionID == connectionID else { return }
                     state.probeReceived = true
