@@ -131,11 +131,27 @@ import TestSupport
         )
     }
 
-    let invalid = [
-        "Not/A_Timezone", "PST", "+08:00", String(repeating: "A", count: 129),
-    ]
-    for raw in invalid {
-        #expect(throws: AuthProfileError.invalidTimezoneObservation) {
+    // Pinned `lib/ianaTimezone.ts` publishes one sentence per failure.
+    #expect(throws: AuthProfileError.timezoneEmpty) {
+        try first.observeTimezone(
+            authorization: authorization,
+            TimezoneObservationRequest(timezone: "   ")
+        )
+    }
+    #expect(throws: AuthProfileError.timezoneTooLong) {
+        try first.observeTimezone(
+            authorization: authorization,
+            TimezoneObservationRequest(timezone: String(repeating: "A", count: 129))
+        )
+    }
+    #expect(throws: AuthProfileError.timezoneNotIana) {
+        try first.observeTimezone(
+            authorization: authorization,
+            TimezoneObservationRequest(timezone: "Not/A_Timezone")
+        )
+    }
+    for raw in ["PST", "+08:00", "GMT", "UTC+0"] {
+        #expect(throws: raw == "UTC+0" ? AuthProfileError.timezoneNotIana : AuthProfileError.timezoneNotCanonical) {
             try first.observeTimezone(
                 authorization: authorization,
                 TimezoneObservationRequest(timezone: raw)

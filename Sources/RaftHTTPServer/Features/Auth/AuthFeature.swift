@@ -1,6 +1,7 @@
 import Foundation
 import HTTPTypes
 import RaftHTTP
+import RaftShared
 import RaftRealtime
 import Synchronization
 import Vapor
@@ -214,10 +215,15 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         mobileOAuth.post("complete") { request async throws -> Response in
+            if let refusal = try await pendingLinkTokenRefusal(request) { return refusal }
             let body = (try await decodeJSONRequestBody(MobileOAuthCompleteRequest.self, request, decoding: .json)) ?? MobileOAuthCompleteRequest()
             return try await respond { try await self.oauthFlows.completeMobileOAuthAsync(body) }
         }
         provider.post("complete") { request async throws -> Response in
+            // Pinned `routes/auth.ts:1138` reads the pending-link token before
+            // the completion lookup; a non-string token is that 400, not a
+            // sign-in attempt.
+            if let refusal = try await pendingLinkTokenRefusal(request) { return refusal }
             // A body that is not a JSON object reads as an empty request, so the
             // service answers the published "code is required" 400.
             let body = (try await decodeJSONRequestBody(SocialCompleteRequest.self, request, decoding: .json)) ?? SocialCompleteRequest()
@@ -298,11 +304,20 @@ public struct AuthFeature: RouteCollection, Sendable {
             }
         }
         auth.post("pending-link", "cancel") { request async throws -> Response in
-            // An empty or malformed body still answers 204, so cancel stays
-            // idempotent for every client shape.
-            let body = (try? await decodeJSONRequestBody(CancelPendingLinkRequest.self, request, decoding: .contentOnly))
-                ?? CancelPendingLinkRequest()
-            return try await respond { self.profile.cancelPendingLink(body) }
+            // Pinned `routes/auth.ts:1285-1291`: a non-string token is the
+            // "must be a string" 400 and a missing/empty one is the "required"
+            // 400. A present token keeps the idempotent 204.
+            let raw = try await requestBodyJSON(request)
+            switch PendingLinkToken.parse(raw) {
+            case .invalid:
+                return respond(status: 400, rawJSON: PendingLinkToken.invalidBody.render())
+            case .absent:
+                return respond(status: 400, rawJSON: PendingLinkToken.requiredBody.render())
+            case .token(let token):
+                return try await respond {
+                    self.profile.cancelPendingLink(CancelPendingLinkRequest(pendingLinkToken: token))
+                }
+            }
         }
         auth.post("login") { request async throws -> Response in
             // The decoder keeps the raw JSON value so the service publishes the
@@ -493,4 +508,25 @@ private struct ForgotPasswordRateLimitMiddleware: Middleware {
         response.headers[HTTPField.Name("RateLimit-Reset")!] = resetSeconds
         return response
     }
+}
+
+/// The pending-link check shared by the mobile OAuth completion and the
+/// provider completion routes. A body without the member (or a JSON `null`)
+/// is "not sent"; the route continues to its own published checks.
+private func pendingLinkTokenRefusal(_ request: Request) async throws -> Response? {
+    switch PendingLinkToken.parse(try await requestBodyJSON(request)) {
+    case .absent, .token:
+        return nil
+    case .invalid:
+        return respond(status: 400, rawJSON: PendingLinkToken.invalidBody.render())
+    }
+}
+
+/// The request body as JSON; a missing, empty or unparsable body is `nil`
+/// (`req.body` without a parsed value).
+private func requestBodyJSON(_ request: Request) async throws -> JSONValue? {
+    guard let data = try await request.body.collect(), !data.isEmpty else {
+        return nil
+    }
+    return try? JSONDecoder().decode(JSONValue.self, from: data)
 }

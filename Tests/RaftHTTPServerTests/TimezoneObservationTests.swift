@@ -68,6 +68,29 @@ import VaporTesting
                 #expect(response.status == .badRequest)
             }
 
+            // Pinned `lib/ianaTimezone.ts` `parseCanonicalBrowserTimezone`
+            // publishes its own sentence per failure, in this order: trim and
+            // non-empty, length, Intl validity, then Area/Location shape.
+            let valueErrors: [(body: String, expected: String)] = [
+                (#"{"timezone":""}"#, #"{"error":"timezone must be a non-empty IANA timezone"}"#),
+                (#"{"timezone":"   "}"#, #"{"error":"timezone must be a non-empty IANA timezone"}"#),
+                (
+                    #"{"timezone":"\#(String(repeating: "A", count: 129))"}"#,
+                    #"{"error":"timezone must be at most 128 characters"}"#
+                ),
+                (#"{"timezone":"Not/A_Timezone"}"#, #"{"error":"timezone must be an IANA timezone"}"#),
+                (#"{"timezone":"PST"}"#, #"{"error":"timezone must be a canonical IANA timezone"}"#),
+                (#"{"timezone":"+08:00"}"#, #"{"error":"timezone must be a canonical IANA timezone"}"#),
+                (#"{"timezone":"GMT"}"#, #"{"error":"timezone must be a canonical IANA timezone"}"#),
+            ]
+            for entry in valueErrors {
+                let response = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
+                    request.body = .init(string: entry.body)
+                }
+                #expect(response.status == .badRequest, "\(entry.body)")
+                #expect(response.body.string == entry.expected, "\(entry.body)")
+            }
+
             func observe(_ body: String) async throws -> [String: Any] {
                 let response = try await client.send(.post, headers: headers, to: "/api/auth/me/timezone-observation") { request in
                     request.body = .init(string: body)
