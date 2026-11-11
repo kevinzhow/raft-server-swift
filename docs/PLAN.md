@@ -29,9 +29,13 @@ stage. Verification is moving from browser-only acceptance to scripted API
 acceptance (`scripts/acceptance/`), with the browser used only for visual
 confirmation. The `integrate-4` batch adds canonical `message:updated` and
 system-notice frames, durable mention-delivery occurrences with `agent:start`
-resume context, and unified resident-launch adoption on both ready and
-`agent:session` with takeover-epoch scoping; it awaits the trunk gate and a
-deploy.
+resume context, unified resident-launch adoption on both ready and
+`agent:session` with takeover-epoch scoping, the gated fresh-database PG fixes,
+the complete channels/joint and thread-read route family, attachment preview
+and agent attachment context, the missing internal agent API routes,
+account/billing/push/raftbench/avatar routes, and one shared handle validator
+for register, complete-profile and username-available. It awaits the trunk gate
+and a deploy.
 
 ## What works
 
@@ -56,7 +60,17 @@ deploy.
   (durable occurrences, redrive and outcome projection), task history and
   `asTask`, canonical message payloads and `message:updated` updates, system
   notices, Socket.IO room joins/`message:new`/`thread:updated`/`dm:new`,
-  `activityDetailKind` and terminal-failure visibility.
+  `activityDetailKind` and terminal-failure visibility, the channels joint/
+  conversion and saved-message routes, attachment preview plus agent attachment
+  metadata and thread-parent read authority, the internal agent API task
+  history/unclaim, avatar, upload-session and integration-app routes, legacy
+  machine agent routes, and account (forgot-password, username-available),
+  billing, push, raftbench and avatar-serving routes.
+- **Route inventory.** `make route-inventory` dumps the booted Vapor router and
+  diffs it against the pinned Express registrations into
+  `docs/route-inventory.md`: upstream 644, Swift 584, exact matches 556,
+  parameter variants 1, missing 84, extra 27. The channels family is complete
+  (64/64, missing 0).
 - **Production operations.** Reproducible Main release build, stage, verify and
   maintenance-ordered upgrade are in `deploy/swift-production/`; the previous
   release is kept for rollback and the pre-upgrade `pg_dump` is taken.
@@ -73,7 +87,8 @@ deploy.
 | G6 | Official Computer/Codex/provider acceptance after the latest release | Separate from the unit gate by design | Run it after deploy and record the result in the deployment record |
 | G7 | One `make test` run hung in an unrelated test | Test-scaffold lost-wakeup fix merged; sharded runner now isolates and retries | Re-run `make gate`; keep the shard log if it recurs |
 | G8 | Activity trajectory entries and gap recovery are not stored | Deliberate (see DEVIATIONS D10) | Re-open only if the pinned Web consumes them |
-| G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. | Fixed in `fix-test-pg-findings`; `make test-pg` is green on one throwaway PostgreSQL 17 + Redis | Re-run `make gate` on the integration commit, merge through the normal path, then deploy |
+| G9 | Fresh-database `make test-pg` exposed warm-database fixtures and one epoch-scoping defect: the fourteen-owner snapshot assumed one shared revision although the fail-closed writer commits changed rows only; the config-breaker fixture left durably queued wakes unacknowledged after the resident-delivery release made them real deliveries; the Built-in unavailable projection expected the old two-provider metadata instead of the pinned sixteen-preset plus two-gateway catalog; the lease-loss journal only accepted the stale-heartbeat cause, not the fenced command that lost its session first; and an unexited process from an older human-takeover epoch was treated as the new epoch's live runtime. | Fixed and merged; `make test-pg` was green on the owning branch and is re-run on the integration commit | Deploy after the integration gate and the full persistence gate |
+| G10 | Route inventory still lists 84 upstream Express registrations without a Swift counterpart and 27 Swift-only routes; the largest remaining families are `internal*.ts` (28, mostly agent-side labs/machine/profile variants and trace ingest), integrations (19), slack-bridge (6), public search index/detail (4), MCP/provider connections (6) and OIDC installation routes (8). | Tracked by `docs/route-inventory.md`; most missing families are unported external services covered by D5/D12/D19/D21 or not referenced by the pinned Web/CLI | Re-run `make route-inventory` after each slice; register the reachable gaps and record every remaining exclusion in `docs/DEVIATIONS.md` |
 
 ## Next steps
 

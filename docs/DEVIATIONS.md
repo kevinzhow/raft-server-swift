@@ -125,7 +125,9 @@ requirements beyond the locked body/target/refusal contract.
 cross-replica wake dispatch are not ported. Read-position semantics are locked
 by `internalAgentApi.historyUnread`; wake-hint SSE framing by
 `internalAgentApi.wakeHintStream`; offline queueing uses the retained pending
-delivery facts.
+delivery facts. The legacy `GET /internal/agent/:id/receive` runs the machine
+and agent-scope gates and then answers `{"messages":[]}`, because there is no
+orchestrated machine inbox to drain; `block`/`timeout` are accepted and ignored.
 **Why.** Those assertions depend on an unported RisingWave chain, an
 `AgentOrchestrator` stub and test-only selectors; no black-box HTTP path reaches
 them.
@@ -174,14 +176,21 @@ still supported.
 
 ### D12. Billing, joint-channel/server model and built-in app conversations
 
-**What.** The billing surface, joint channels across two servers (no
-`server.kind`), and built-in app conversations such as `#system.canary` are not
-implemented.
-**Why.** Not part of the delivered product surface; no consumer in the pinned Web
-uses them here.
+**What.** Billing publishes only the read projection from retained facts (free
+server plan, live member/agent usage, upload quota, permissions), with
+`stripeConfigured:false` and null price/subscription; every mutation answers
+`503 {"error":"Billing is not configured"}`, and hosted-runtime usage answers the
+no-cloud-agents 404. Joint channels across two servers (no `server.kind`) are not
+created: the invite/resend/invite/disconnect and conversion-job routes are
+registered and answer the pinned flag-off 404. Built-in app conversations such
+as `#system.canary` are absent.
+**Why.** There is no billing provider or joint-channel model in this deployment,
+and no pinned Web consumer uses them here; the registered routes refuse instead
+of fabricating a plan, price, subscription or joint channel.
 **Upstream.** `billing.api`, `channels.joint.api`, `internalAgentApi.userChannels`
 (built-in app case), `productFeedback.api` (pseudo-server kind row).
-**Re-evaluate.** Only with an explicit product scope change.
+**Re-evaluate.** Only with an explicit product scope change or a real Stripe
+deployment; then implement the provider adapter and its acceptance rail.
 
 ### D13. Image, document and archive pipelines
 
@@ -258,7 +267,11 @@ it consumes.
 ### D19. Benchmark and staging-only services
 
 **What.** `raftbench` synthetic analysis and staging-only integrations are not
-registered or emulated.
+emulated. The five `/api/raftbench` routes are registered with the upstream
+auth/verified/member ordering, strict request validation and the
+`raftbench_server_not_allowed` pilot refusal; an enrolled staging pilot server
+answers the typed 403 `raftbench_disabled` instead of a fabricated dashboard.
+The agent-side `/internal/agent-api/raftbench/*` routes are not registered.
 **Why.** No local production consumer; they are external staging infrastructure.
 **Upstream.** `internalAgentApi.raftbench`, `raftbench.api`,
 `raftbench.canary.api`, `raftbench.progressive.api`.
@@ -290,10 +303,41 @@ cross-replica modules.
 RFC5987, MIME normalization) and six enabled upload-session fake-service cases are
 excluded; the observable attachment HTTP behavior is locked by
 `attachments.api`, `attachmentPreviewBridge.api`, `attachmentComments.api` and
-`attachmentUploadSessions.api` default surface.
+`attachmentUploadSessions.api` default surface. The four upload-session verbs are
+registered and answer the pinned direct-uploads-disabled 404 (see D23).
 **Why.** Helper-unit and fake-service assertions have no black-box HTTP surface.
 **Upstream.** `attachments`, `attachmentUploadSessions.api` enabled-fake cases.
 **Re-evaluate.** If a new public upload path is added.
+
+### D23. No object storage for avatars, app logos or direct uploads
+
+**What.** `GET /api/avatars/:namespace/:filename` validates the filename and then
+answers the unconfigured `500 {"error":"Storage not configured"}`; profile and
+server avatar uploads (credential and legacy routes) validate the image part and
+store only the `/api/avatars/<server>/<key>.webp` URL projection, not the bytes;
+integration-app logo uploads likewise store only the logo URL projection. The
+attachment upload-session verbs answer the pinned
+`404 {"code":"UPLOAD_SESSION_NOT_FOUND","message":"Direct uploads are disabled."}`
+and the capabilities route already publishes `directUploadEnabled:false`.
+**Why.** This deployment has no S3/CDN bucket binding or avatar object store;
+fabricating bytes, object URLs or an attachment row would invent state.
+**Upstream.** `routes/agents.ts:3707-3733`, `services/avatarService.ts:11-21`,
+`routes/internalAgentApi.ts:5627-5755` (upload sessions),
+`routes/internalAgentApi.ts:7133-7250` (app logo).
+**Re-evaluate.** When object storage or a CDN bucket is provisioned; implement
+the real adapter and its own acceptance rail, then serve the retained bytes.
+
+### D24. No web-push delivery transport
+
+**What.** `/api/push/vapid-key` is public and answers the disabled 503 without a
+VAPID key; `/api/push/test` answers the disabled 503, and a stored subscription
+that cannot be attempted gets the truthful 409/502 instead of a fabricated
+delivery. `prompt-events` persists only the closed event shape and
+`DELETE /subscribe` removes the caller's row idempotently.
+**Why.** There is no VAPID key pair and no web-push transport in this port, so
+delivery cannot be claimed.
+**Upstream.** `routes/push.ts:77-208,349-397`.
+**Re-evaluate.** When VAPID keys and a real push transport are deployed.
 
 ## Maintaining this list
 
