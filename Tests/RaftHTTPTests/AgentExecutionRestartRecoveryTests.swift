@@ -778,4 +778,327 @@ import Testing
             $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == queuedMessage
         } == false)
     }
+
+    /// The online first-DM shape: the machine is ready, the agent has no runtime,
+    /// so the send is staged as one `agent:start` carrying the message as its
+    /// wake input. That start never reaches the wire. The durable pending queue
+    /// is empty because the online path did not refuse the send; the start is
+    /// therefore the only obligation. A new Computer process with a complete
+    /// empty inventory retires the old-instance launch, which must hand the same
+    /// canonical message back to the durable queue before superseding it. The
+    /// ordinary strict release then stages exactly one replacement wake start.
+    @Test func newDaemonRetirementReobligesAnOnlineWakeStartAndReleasesItOnce() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1", running: [])
+        let (channel, message) = conversation(domain, f, content: "Online first DM")
+        let disposition = try await commit {
+            try domain.requestHumanMessageDelivery(.init(serverId: f.server, agentId: f.agent,
+                                                         channelId: channel, messageId: message))
+        }
+        guard case .staged = disposition else {
+            Issue.record("an online first DM must stage its wake start, got \(disposition)")
+            return
+        }
+        let firstStart = try #require(f.agents.state.execution.commands.values.first {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        })
+        #expect(firstStart.status == .pending)
+        #expect(f.agents.state.execution.dispatches?[firstStart.commandId.uuidString] == nil,
+                "the online wake start never reached the wire")
+        #expect(f.agents.state.execution.pendingHumanDeliveries == nil,
+                "the online wake start is the only retained obligation before the restart")
+
+        try await commit { try domain.connectionClosed(old) }
+        let restarted = try await open(domain, f, epoch: "connection-2", daemon: "daemon-2", running: [])
+
+        let retained = try #require(f.agents.state.execution.pendingHumanDeliveries?.values.first {
+            $0.agentId == f.agent && $0.messageId == message
+        })
+        #expect(retained.serverId == f.server)
+        #expect(retained.channelId == channel)
+        #expect(retained.releasedCommandId == nil)
+        #expect(f.agents.state.execution.commands[firstStart.commandId.uuidString]?.status == .superseded)
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == nil)
+
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+        let wakeStarts = f.agents.state.execution.commands.values.filter {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        }
+        #expect(wakeStarts.count == 2,
+                "the retired start stays history and exactly one replacement start is staged")
+        let replacement = try #require(wakeStarts.first { $0.status != .superseded })
+        #expect(replacement.launchId != firstStart.launchId)
+        #expect(replacement.wakeMessage == .init(channelId: channel, messageId: message))
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false, "the same canonical message rides the wake start, never a second agent:deliver")
+        #expect(f.agents.state.execution.pendingHumanDeliveries?.values.first {
+            $0.agentId == f.agent && $0.messageId == message
+        }?.releasedCommandId == replacement.commandId)
+        let canonical = try #require(f.messages.state.humanMessageRows.first { $0.id == message })
+        #expect(canonical.channelId == channel)
+        #expect(canonical.seq == 42, "the re-obligation reuses the canonical message row and its seq")
+
+        // A repeated complete ready is not a second obligation: the linked
+        // pending fact and the one pending start absorb every further trigger.
+        try await commit {
+            try domain.observeReady(restarted, daemonInstanceId: "daemon-2", capabilities: capabilities(),
+                                    runtimes: ["codex"], runningAgentIds: [], detectionComplete: true,
+                                    unreliableAgentIds: [])
+        }
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+        #expect(f.agents.state.execution.commands.values.filter {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        }.count == 2)
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false)
+    }
+
+    /// The release after re-obligation is the ordinary strict path, not a
+    /// replay: current channel authority is rechecked first. Revoking the agent's
+    /// membership between retirement and release must drop only the queued fact
+    /// and stage nothing; the canonical message keeps its history.
+    @Test func revokedAuthorityPreventsTheReobligedWakeStartFromBeingReleased() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1", running: [])
+        let (channel, message) = conversation(domain, f, content: "Revoked before release")
+        _ = try await commit {
+            try domain.requestHumanMessageDelivery(.init(serverId: f.server, agentId: f.agent,
+                                                         channelId: channel, messageId: message))
+        }
+        let firstStart = try #require(f.agents.state.execution.commands.values.first {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        })
+        try await commit { try domain.connectionClosed(old) }
+        let restarted = try await open(domain, f, epoch: "connection-2", daemon: "daemon-2", running: [])
+        #expect(f.agents.state.execution.pendingHumanDeliveries?.values.contains {
+            $0.agentId == f.agent && $0.messageId == message
+        } == true)
+
+        domain.oauth.removeChannelAgent(channelId: channel, agentId: f.agent)
+        try await commit { try domain.releasePendingHumanDeliveries(restarted) }
+
+        #expect(f.agents.state.execution.commands[firstStart.commandId.uuidString]?.status == .superseded)
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+                && $0.status != .superseded
+        } == false, "the strict release must not stage a start without current authority")
+        #expect(f.agents.state.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false)
+        #expect((f.agents.state.execution.pendingHumanDeliveries?.values.contains {
+            $0.agentId == f.agent && $0.messageId == message
+        } ?? false) == false, "a revoked obligation is retired without inventing an attempt")
+        #expect(f.messages.state.humanMessageRows.contains { $0.id == message },
+                "the canonical message row is history, not delivery state")
+    }
+
+    /// A same-instance abandoned wake start is retired by the complete ready
+    /// that reports the resident process. It too carried the only obligation
+    /// for its message, so adoption must re-oblige the message before
+    /// superseding the start; the message then reaches the resident launch
+    /// through the ordinary delivery path, exactly once.
+    @Test func adoptedResidentProcessKeepsTheAbandonedWakeStartMessageObligation() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        let completed = try await residentProcessWithCompletedLaunches(domain, context: context, f)
+        let resident = try #require(completed.last)
+        let (channel, message) = conversation(domain, f, content: "Wake on the resident process")
+        let staged = try await commit {
+            try domain.requestStart(.init(serverId: f.server, agentId: f.agent,
+                                          wakeMessage: .init(channelId: channel, messageId: message)))
+        }
+        #expect(f.agents.state.execution.commands[staged.commandId.uuidString]?.status == .pending)
+        #expect(f.agents.state.execution.dispatches?[staged.commandId.uuidString] == nil)
+        #expect(f.agents.state.execution.pendingHumanDeliveries == nil)
+
+        try await commit {
+            try domain.observeReady(context, daemonInstanceId: "daemon-1", capabilities: capabilities(),
+                                    runtimes: ["codex"], runningAgentIds: [f.agent], detectionComplete: true,
+                                    unreliableAgentIds: [])
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.currentLaunchId == resident.launchId)
+        #expect(f.agents.state.execution.agents[f.agent]?.launches[staged.launchId]?.notSpawned == true)
+        #expect(f.agents.state.execution.pendingHumanDeliveries?.values.contains {
+            $0.agentId == f.agent && $0.messageId == message
+        } == true)
+
+        try await commit { try domain.releasePendingHumanDeliveries(context) }
+        let deliveries = f.agents.state.execution.commands.values.filter {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        }
+        #expect(deliveries.count == 1)
+        #expect(deliveries.first?.launchId == resident.launchId)
+        #expect(f.agents.state.execution.commands.values.filter {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+        }.count == 1, "the retired start is history; no second start is invented")
+    }
+
+    /// The other half of the same rule: an attempted wake start is not a lost
+    /// obligation. A server restart while its write is unacknowledged keeps the
+    /// persisted manual reason, and neither retirement nor release may re-oblige
+    /// or redrive the message behind the ambiguous write.
+    @Test func serverRestartKeepsAnAttemptedWakeStartManualAndUnreplayed() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1")
+        _ = try await startAndCompleteTurn(domain, context: old, f)
+        let (channel, message) = conversation(domain, f, content: "Written wake start")
+        let start = try await commit {
+            try domain.requestStart(.init(serverId: f.server, agentId: f.agent,
+                                          wakeMessage: .init(channelId: channel, messageId: message)))
+        }
+        try await commit {
+            let grant = try domain.beginDispatch(reference: .init(commandId: start.commandId),
+                                                 context: old, deliverySequence: nil)
+            #expect(grant == .granted)
+        }
+
+        let restoredAgents = AgentsRuntimeStore()
+        try restoredAgents.restorePersistenceData(f.agents.exportPersistenceData())
+        #expect(restoredAgents.state.execution.agents[f.agent]?.needsManual
+                    == "server_restarted_with_unsettled_dispatch")
+        let restored = makeDomain(f, agents: restoredAgents)
+        let reconnected = try await open(restored, f, epoch: "connection-2", daemon: "daemon-2", running: [])
+        try await commit { try restored.releasePendingHumanDeliveries(reconnected) }
+
+        let agent = try #require(restoredAgents.state.execution.agents[f.agent])
+        #expect(agent.needsManual != nil,
+                "an attempted wake start keeps manual recovery across the restart")
+        #expect(restoredAgents.state.execution.commands[start.commandId.uuidString]?.status != .superseded,
+                "a written wake start is history, never retired as never-attempted")
+        #expect((restoredAgents.state.execution.pendingHumanDeliveries?.values.contains {
+            $0.agentId == f.agent && $0.messageId == message
+        } ?? false) == false, "manual recovery must not re-oblige a message behind the ambiguous write")
+        #expect(restoredAgents.state.execution.commands.values.contains {
+            $0.kind == .start && $0.agentId == f.agent && $0.wakeMessage?.messageId == message
+                && $0.commandId != start.commandId
+        } == false, "the ambiguous start is not redriven blindly")
+        #expect(restoredAgents.state.execution.commands.values.contains {
+            $0.kind == .delivery && $0.agentId == f.agent && $0.messageId == message
+        } == false)
+    }
+
+    /// A ready frame can carry `runningAgents` without a daemon instance
+    /// identity (a legacy or partial frame). The identity is required before
+    /// the server may compare against tracked processes: a nil/empty identity
+    /// must not turn an existing live process into `untracked_running_process`,
+    /// and must never replace an unrelated recovery reason.
+    @Test func readyWithoutADaemonIdentityDoesNotFenceTheTrackedLiveProcess() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        _ = try await startAndCompleteTurn(domain, context: context, f)
+        for identity in [nil, ""] as [String?] {
+            try await commit {
+                try domain.observeReady(context, daemonInstanceId: identity, capabilities: capabilities(),
+                                        runtimes: ["codex"], runningAgentIds: [f.agent],
+                                        detectionComplete: true, unreliableAgentIds: [])
+            }
+            #expect(f.agents.state.execution.agents[f.agent]?.needsManual == nil,
+                    "a ready without a daemon identity cannot prove the tracked live process untracked")
+            #expect(f.agents.state.execution.agents[f.agent]?.processes["process-1"]?.exited == false)
+        }
+        f.agents.withState { $0.execution.agents[f.agent]?.needsManual = "daemon_outcome_storage_unreliable" }
+        try await commit {
+            try domain.observeReady(context, daemonInstanceId: nil, capabilities: capabilities(),
+                                    runtimes: ["codex"], runningAgentIds: [f.agent],
+                                    detectionComplete: true, unreliableAgentIds: [])
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == "daemon_outcome_storage_unreliable",
+                "an identity-less ready must not overwrite an existing recovery reason")
+    }
+
+    /// Only a complete inventory with a real daemon identity may declare a
+    /// reported running agent untracked. An incomplete detection pass from a
+    /// new instance leaves the reason alone; the complete pass marks it; and a
+    /// later same-instance inventory that omits the agent never clears it.
+    @Test func incompleteReadyLeavesUntrackedDetectionToTheCompleteIdentity() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let old = try await open(domain, f, epoch: "connection-1", daemon: "daemon-1")
+        _ = try await startAndCompleteTurn(domain, context: old, f)
+
+        try await commit {
+            try domain.observeReady(old, daemonInstanceId: "daemon-2", capabilities: capabilities(),
+                                    runtimes: ["codex"], runningAgentIds: [f.agent], detectionComplete: false,
+                                    unreliableAgentIds: [])
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == nil,
+                "an incomplete inventory cannot prove the old process is untracked")
+
+        try await commit {
+            try domain.observeReady(old, daemonInstanceId: "daemon-2", capabilities: capabilities(),
+                                    runtimes: ["codex"], runningAgentIds: [f.agent], detectionComplete: true,
+                                    unreliableAgentIds: [])
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == "untracked_running_process",
+                "a complete new-instance inventory still marks the genuinely untracked process")
+
+        try await commit {
+            try domain.observeReady(old, daemonInstanceId: "daemon-2", capabilities: capabilities(),
+                                    runtimes: ["codex"], runningAgentIds: [], detectionComplete: true,
+                                    unreliableAgentIds: [])
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == "untracked_running_process",
+                "the same instance's later absence report is not an automatic clear")
+    }
+
+    /// The legacy `connectionReady` admission follows the same rule: its
+    /// detection-complete flag gates the untracked marker, so a partial scan
+    /// from a new instance cannot fence a process the owner still tracks.
+    @Test func incompleteConnectionReadyDoesNotFenceTheTrackedProcess() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        _ = try await startAndCompleteTurn(domain, context: context, f)
+
+        try await commit {
+            try domain.connectionReady(context, daemonInstanceId: "daemon-2", runtimes: ["codex"],
+                                       runningAgentIds: [f.agent], detectionComplete: false)
+        }
+        #expect(f.agents.state.execution.agents[f.agent]?.needsManual == nil)
+        #expect(f.agents.state.execution.connections[f.machine]?.ready == false)
+    }
+
+    /// A snapshot written before `retiredAfterDaemonRestart` existed must restore
+    /// unchanged: the optional member decodes absent and the completed launch
+    /// keeps its meaning instead of failing the whole owner snapshot.
+    @Test func snapshotWithoutTheOptionalDaemonRetirementFieldRestores() async throws {
+        let f = fixture()
+        let domain = makeDomain(f)
+        let context = try await open(domain, f)
+        let admission = try await startAndCompleteTurn(domain, context: context, f)
+        f.agents.withState {
+            $0.execution.agents[f.agent]?.launches[admission.launchId]?.retiredAfterDaemonRestart = true
+        }
+        let exported = try f.agents.exportPersistenceData()
+        var root = try #require(try JSONSerialization.jsonObject(with: exported) as? [String: Any])
+        var payload = try #require(root["payload"] as? [String: Any])
+        var execution = try #require(payload["execution"] as? [String: Any])
+        var agents = try #require(execution["agents"] as? [String: Any])
+        var agent = try #require(agents[f.agent] as? [String: Any])
+        var launches = try #require(agent["launches"] as? [String: Any])
+        var launch = try #require(launches[admission.launchId] as? [String: Any])
+        launch.removeValue(forKey: "retiredAfterDaemonRestart")
+        launches[admission.launchId] = launch
+        agent["launches"] = launches
+        agents[f.agent] = agent
+        execution["agents"] = agents
+        payload["execution"] = execution
+        root["payload"] = payload
+        let legacy = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+
+        let restored = AgentsRuntimeStore()
+        try restored.restorePersistenceData(legacy)
+
+        let restoredLaunch = try #require(restored.state.execution.agents[f.agent]?.launches[admission.launchId])
+        #expect(restoredLaunch.retiredAfterDaemonRestart == nil,
+                "an older snapshot decodes the absent optional retirement fact")
+        #expect(restoredLaunch.completed == true)
+    }
 }

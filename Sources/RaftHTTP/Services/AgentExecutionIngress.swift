@@ -42,7 +42,13 @@ extension AgentExecutionDomain {
                 }
                 for agentId in runningAgentIds ?? [] where owned.contains(agentId) {
                     var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                    if !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
+                    // Comparing against the daemon's process map needs a real
+                    // identity and a complete, owned inventory. A nil/empty
+                    // identity or a partial detection pass cannot prove a
+                    // tracked live process belongs to some other instance, and
+                    // must not overwrite an existing recovery reason.
+                    if let daemonInstanceId, !daemonInstanceId.isEmpty, detectionComplete, inventoryOwned,
+                       !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
                         agent.needsManual = "untracked_running_process"
                     }
                     state.execution.agents[agentId] = agent
@@ -143,6 +149,11 @@ extension AgentExecutionDomain {
                       command.status == .pending || command.status == .dispatched,
                       state.dispatches?[key] == nil,
                       command.kind == .start || command.kind == .delivery || command.kind == .notice else { continue }
+                // A never-attempted start that carried a human message is the
+                // only durable record of that obligation; return it to the
+                // queued inbox before retiring the command. The strict release
+                // rechecks authority and emits the one replacement attempt.
+                state.reobligeNeverAttemptedMessage(command)
                 state.commands[key]?.status = .superseded
             }
         }
@@ -238,6 +249,7 @@ extension AgentExecutionDomain {
                   command.agentId == agentId, command.launchId == currentId,
                   command.status == .pending || command.status == .dispatched,
                   state.dispatches?[key] == nil else { continue }
+            state.reobligeNeverAttemptedMessage(command)
             state.commands[key]?.status = .superseded
         }
         state.agents[agentId] = agent

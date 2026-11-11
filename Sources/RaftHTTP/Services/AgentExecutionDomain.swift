@@ -475,7 +475,11 @@ struct AgentExecutionDomain: Sendable {
                 state.execution.connections[context.machineId]?.ready = detectionComplete && runtimes.contains("codex")
                 for agentId in runningAgentIds {
                     var agent = state.execution.agents[agentId] ?? AgentExecutionAgent(serverId: context.serverId, machineId: context.machineId)
-                    if !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
+                    // Only a complete detection pass may declare a reported
+                    // running agent untracked; a partial pass is not evidence
+                    // that the new process is missing from the owner's facts.
+                    if detectionComplete,
+                       !agent.processes.values.contains(where: { !$0.exited && $0.daemonInstanceId == daemonInstanceId }) {
                         agent.needsManual = "untracked_running_process"
                     }
                     state.execution.agents[agentId] = agent

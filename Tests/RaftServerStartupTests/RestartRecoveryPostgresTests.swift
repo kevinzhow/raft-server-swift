@@ -303,6 +303,8 @@ func postgresComputerRestartWithoutRunningAgentDeliversTheQueuedDMOnce() async t
                 "the queued DM is started exactly once")
         #expect(!wire.contains { $0.contains("\"agent:deliver\"") && $0.contains(offline.messageId) },
                 "the queued DM is never delivered twice")
+        #expect(!wire.contains { $0.contains(inFlight.messageId) },
+                "the old acknowledged delivery is historical and is never resent after retirement")
         phase("complete")
     } catch {
         await fixture.close(machine: machine)

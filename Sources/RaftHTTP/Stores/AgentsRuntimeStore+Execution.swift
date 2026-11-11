@@ -231,6 +231,40 @@ extension AgentExecutionState {
         pendingHumanDeliveries = pending.isEmpty ? nil : pending
     }
 
+    /// A start that never reached the wire carried the only durable obligation
+    /// for its human message when the send was accepted online (the readable-only
+    /// queue was never involved). Retiring that launch must hand the same
+    /// canonical identity back to the durable queued inbox before the command is
+    /// superseded; the ordinary strict release then rechecks current authority
+    /// and stages the one replacement. Identity-only, so it never queries another
+    /// owner inside an Agents borrow. Idempotent; a command with a dispatch row
+    /// or a live accepted status was attempted and keeps its manual history.
+    mutating func reobligeNeverAttemptedMessage(_ command: AgentExecutionCommand) {
+        guard command.status == .pending || command.status == .dispatched,
+              dispatches?[command.commandId.uuidString] == nil else { return }
+        let channelId: String
+        let messageId: String
+        switch command.kind {
+        case .start:
+            guard let wake = command.wakeMessage else { return }
+            channelId = wake.channelId
+            messageId = wake.messageId
+        case .delivery:
+            guard let channel = command.channelId, let message = command.messageId else { return }
+            channelId = channel
+            messageId = message
+        case .notice, .stop:
+            return
+        }
+        let key = Self.key(command.serverId, command.agentId, channelId, messageId)
+        var pending = pendingHumanDeliveries ?? [:]
+        guard pending[key] == nil else { return }
+        pending[key] = AgentExecutionPendingDelivery(
+            serverId: command.serverId, agentId: command.agentId, channelId: channelId,
+            messageId: messageId, createdAt: command.createdAt)
+        pendingHumanDeliveries = pending
+    }
+
     /// A delivery the daemon acknowledged on a launch whose turn the server has
     /// not observed complete. A resident runtime keeps one launch across turns,
     /// so this retained set (not `launch.completed`) is the in-flight-turn fact.
