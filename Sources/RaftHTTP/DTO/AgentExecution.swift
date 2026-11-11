@@ -60,6 +60,25 @@ public struct AgentExecutionStartRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// The frozen daemon identity a tracked mention delivery is checked against.
+/// Upstream `MentionDeliveryIdentitySnapshot`: the daemon rejects a frame whose
+/// occurrence/message/machine/launch/session do not match its own process.
+public struct MentionDeliveryIdentitySnapshot: Codable, Sendable, Equatable {
+    public let occurrenceId: String
+    public let messageId: String
+    public let machineId: String
+    public let launchId: String
+    public let sessionId: String
+    public init(occurrenceId: String, messageId: String, machineId: String,
+                launchId: String, sessionId: String) {
+        self.occurrenceId = occurrenceId
+        self.messageId = messageId
+        self.machineId = machineId
+        self.launchId = launchId
+        self.sessionId = sessionId
+    }
+}
+
 public struct AgentExecutionDeliveryRequest: Codable, Sendable, Equatable {
     public let commandId: UUID
     public let serverId: String
@@ -216,6 +235,12 @@ public struct AgentExecutionCommand: Codable, Sendable, Equatable {
     /// Transient notice body. Absent for start/delivery/stop commands and for
     /// every snapshot written before notices existed.
     public let notice: AgentExecutionNotice?
+    /// The formal agent mention this delivery is tracked against. Absent for
+    /// every non-mention delivery, for an untracked fallback (the occurrence was
+    /// abandoned because its daemon identity was unknown) and for every snapshot
+    /// written before the occurrence spine. The decision itself is recorded from
+    /// the materializer immediately before the wire send.
+    public var mentionDeliveryOccurrenceId: String? = nil
     public var status: Status
     public let createdAt: Date
 

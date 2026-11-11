@@ -41,6 +41,10 @@ extension EmailLoginDirectory {
                 terminalCode: terminalCode
             ))
         }
+        // The published projection reads the durable occurrence receipts. This
+        // fixture drives the same occurrence transitions the daemon would.
+        _ = ensureMentionDeliveryOccurrenceForTesting(messageId: messageId, agentId: agentId)
+        _ = advanceMentionDeliveryForTesting(messageId: messageId, agentId: agentId, outcome: terminalCode)
     }
 
     public func addMessageMention(

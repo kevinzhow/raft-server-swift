@@ -39,10 +39,30 @@ extension AgentExecutionDomain {
             // (machine ready, a settled start, a human start) releases it
             // exactly once. It is not a launch, process or receipt.
             try queuePendingHumanDelivery(request)
+            // RFC 071 §9: a manual/breaker suppression is shown to the Web as
+            // the typed offline activity, exactly like upstream's
+            // `projectTerminalBlock` wake-refusal projection.
+            if refusal == .recoveryRequired || refusal == .breakerPaused,
+               let recovery = agents.state.execution.agents[request.agentId],
+               let block = AgentPresenceSignal.terminalBlock(needsManual: recovery.needsManual,
+                                                             blockedUntil: recovery.blockedUntil, now: Date()) {
+                queueTerminalBlockFrame(serverId: request.serverId, agentId: request.agentId, block: block)
+            }
             return .readableOnly(refusal)
         }
-        if let admission = try requestDelivery(request) { return .staged(admission) }
-        return .held
+        switch try stageDelivery(request) {
+        case .staged(let admission):
+            return .staged(admission)
+        case .held:
+            return .held
+        case .deferred:
+            // The wake start (or an already admitted launch) plus the durable
+            // occurrence own the obligation; `agent:session` delivers it once
+            // the concrete session identity exists. The canonical message stays
+            // readable and a pending fact keeps a later ready retrying.
+            try queuePendingHumanDelivery(request)
+            return .readableOnly(.launchInProgress)
+        }
     }
 
     /// The read-only half of the wake decision: nil means the ordinary strict

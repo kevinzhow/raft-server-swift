@@ -189,6 +189,15 @@ public struct AgentExecutionService: Sendable {
                 try self.domain.releasePendingHumanDeliveries(context)
             }
         } catch {}
+        // Upstream `recoverDurableMentionDeliveriesForMachine` follows ready
+        // reconciliation in its own try/except: durable storage trouble must
+        // not take down the machine's return, and a later agent:session re-runs
+        // the authoritative pass.
+        do {
+            try await requirePersistence().execute {
+                try self.domain.recoverMentionDeliveriesForMachine(context)
+            }
+        } catch {}
     }
 
     public func connectionReady(_ context: AgentExecutionMachineContext, daemonInstanceId: String,
@@ -228,16 +237,38 @@ public struct AgentExecutionService: Sendable {
                 }
             }
         }
+        // Upstream re-arms the durable occurrence listing on every
+        // `agent:session` (each session_init and turn_end). The session identity
+        // that just committed is the fact a previously undecided row needed.
+        if case .committed = result, type == "agent:session",
+           let agentId = Self.sessionAgentId(payload: payload) {
+            if let persistence = self.persistence {
+                try? await persistence.execute {
+                    try self.domain.recoverMentionDeliveriesForAgent(
+                        serverId: context.serverId, agentId: agentId)
+                }
+            }
+        }
         return result
+    }
+
+    /// The `agent:session` frame's agent id, already validated by the ingress.
+    private static func sessionAgentId(payload: Data) -> String? {
+        guard let body = try? JSONDecoder().decode(JSONValue.self, from: payload),
+              case .object(let fields) = body, case .string(let agentId)? = fields["agentId"],
+              !agentId.isEmpty else { return nil }
+        return agentId
     }
 
     /// Frames whose committed application can make a previously refused wake
     /// deliverable: the start admission (with or without a rebind identity), the
-    /// outcomes that name the process, and its exit (which frees the next start).
-    /// The payload was already validated by the ingress; this only reads the
-    /// agent id for the release step.
+    /// outcomes that name the process, its exit (which frees the next start),
+    /// and a session for a resident launch an abandoned start was hiding. The
+    /// payload was already validated by the ingress; this only reads the agent
+    /// id for the release step.
     private static func wakeSettlingAgentId(type: String, payload: Data) -> String? {
-        guard ["agent:start:ack", "agent:process_spawned", "agent:start:outcome", "agent:process_exited"].contains(type),
+        guard ["agent:start:ack", "agent:process_spawned", "agent:start:outcome", "agent:process_exited",
+               "agent:session"].contains(type),
               let body = try? JSONDecoder().decode(JSONValue.self, from: payload),
               case .object(let fields) = body,
               case .string(let agentId)? = fields["agentId"], !agentId.isEmpty else { return nil }

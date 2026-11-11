@@ -70,8 +70,8 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let first) = try service.materializeInTransaction(command: command),
-              case .start(let retry) = try service.materializeInTransaction(command: command) else { Issue.record("Expected start configuration"); return }
+        guard case .start(let first, _, _) = try service.materializeInTransaction(command: command),
+              case .start(let retry, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected start configuration"); return }
         let body = try materializationObject(first)
         let again = try materializationObject(retry)
         let key = try #require(body["agentCredentialKey"] as? String)
@@ -122,7 +122,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let credentialId = try #require(try materializationObject(config)["agentCredentialId"] as? String)
         #expect(fixture.accounts.agentsRuntimeStore.revokeCredential(agentId: fixture.agentId, credentialId: credentialId, now: Date()))
         #expect(throws: AgentExecutionMaterializationError.credentialUnavailable) {
@@ -147,7 +147,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
             drafts: [TaskDraft(title: "Original immutable title", description: "actual canonical description")])
         let host = try #require(batch.messages.first)
         let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values.first { $0.messageId == host.id })
-        guard case .delivery(let data, let sequence) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
+        guard case .delivery(let data, let sequence, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
         let body = try materializationObject(data)
         #expect(body["channel_id"] as? String == fixture.channelId)
         #expect(body["message_id"] as? String == host.id)
@@ -169,7 +169,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         #expect(summary.causalActorId == fixture.userId)
         #expect(fixture.accounts.authProfileStore.account(userId: "system") == nil)
         let summaryCommand = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values.first { $0.messageId == summary.id })
-        guard case .delivery(let summaryData, let summarySeq) = try service.materializeInTransaction(command: summaryCommand) else { Issue.record("Expected system delivery"); return }
+        guard case .delivery(let summaryData, let summarySeq, _) = try service.materializeInTransaction(command: summaryCommand) else { Issue.record("Expected system delivery"); return }
         let system = try materializationObject(summaryData)
         #expect(system["sender_type"] as? String == "system")
         #expect(system["sender_id"] as? String == "system")
@@ -179,7 +179,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         let taskNumber = try #require(batch.tasks.first?.taskNumber)
         _ = try #require(fixture.accounts.tasksAndRemindersStore.amendTask(channelId: fixture.channelId, taskNumber: taskNumber,
             title: "Current amended task text", description: "current description", actorId: "materializer-agent", amendedByName: "materializer-agent", now: Date()))
-        guard case .delivery(let updated, let sameSeq) = try service.materializeInTransaction(command: command) else { Issue.record("Expected amended projection"); return }
+        guard case .delivery(let updated, let sameSeq, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected amended projection"); return }
         let amended = try materializationObject(updated)
         #expect(amended["content"] as? String == "Original immutable title")
         let current = try #require(amended["task_current_projection"] as? [String: Any])
@@ -234,7 +234,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
         let host = try #require(batch.messages.first)
         #expect(host.channelId == fixture.channelId)
         let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values.first { $0.messageId == host.id })
-        guard case .delivery(let data, let seq) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
+        guard case .delivery(let data, let seq, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected delivery"); return }
         let body = try materializationObject(data)
         #expect(body["channel_id"] as? String == localId)
         #expect(body["channel_name"] as? String == "local-joint")
@@ -254,7 +254,7 @@ private func materializationObject(_ data: Data) throws -> [String: Any] {
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let key = try #require(try materializationObject(config)["agentCredentialKey"] as? String)
         let machine = AgentExecutionMachineContext(machineId: fixture.machineId, serverId: fixture.serverId, connectionEpochId: command.connectionEpochId)
         func ingress(_ type: String, sequence: Int64, fields: [String: JSONValue]) throws {
@@ -299,7 +299,7 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
     try await withTransactionContext(context) {
         defer { context.discard() }
         let command = try fixture.stageStart()
-        guard case .start(let config) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
+        guard case .start(let config, _, _) = try service.materializeInTransaction(command: command) else { Issue.record("Expected configuration"); return }
         let key = try #require(try materializationObject(config)["agentCredentialKey"] as? String)
         let machine = AgentExecutionMachineContext(machineId: fixture.machineId, serverId: fixture.serverId, connectionEpochId: command.connectionEpochId)
         let reference = AgentExecutionIntentReference(commandId: command.commandId)

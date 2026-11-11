@@ -200,6 +200,15 @@ extension AgentExecutionState {
             if command.kind == .delivery {
                 guard command.deliveryId?.isEmpty == false, command.channelId?.isEmpty == false,
                       command.messageId?.isEmpty == false else { throw RuntimePersistenceError.invalidSnapshot }
+                // A tracked mention delivery is fenced to exactly one frozen
+                // occurrence, and that occurrence id IS the delivery id upstream.
+                if let occurrenceId = command.mentionDeliveryOccurrenceId {
+                    guard !occurrenceId.isEmpty, command.deliveryId == occurrenceId else {
+                        throw RuntimePersistenceError.invalidSnapshot
+                    }
+                }
+            } else if command.mentionDeliveryOccurrenceId != nil {
+                throw RuntimePersistenceError.invalidSnapshot
             }
             if command.kind == .notice {
                 guard command.deliveryId?.isEmpty == false, command.channelId?.isEmpty == false,

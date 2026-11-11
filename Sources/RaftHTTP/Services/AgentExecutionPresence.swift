@@ -152,6 +152,31 @@ extension AgentExecutionDomain {
         }
     }
 
+    /// RFC 071 §9 `projectTerminalBlock`: a wake suppressed by the manual /
+    /// breaker gate is shown to the Web as the typed offline activity. The
+    /// upstream server stores that snapshot; this port keeps the daemon's real
+    /// activity fact and serves the block from the retained recovery gate at
+    /// read time, so this only pushes the equivalent `agent:activity` notice.
+    func queueTerminalBlockFrame(serverId: String, agentId: String,
+                                 block: (detail: String, detailKind: String), now: Date = Date()) {
+        let milliseconds = Int((now.timeIntervalSince1970 * 1000).rounded(.down))
+        let fields: [OrderedJSONField] = [
+            OrderedJSONField("agentId", agentId),
+            OrderedJSONField("activity", "offline"),
+            OrderedJSONField("activityKind", "offline"),
+            OrderedJSONField("detail", block.detail),
+            OrderedJSONField("detailKind", block.detailKind),
+            OrderedJSONField("timestamp", milliseconds),
+            OrderedJSONField("serverSeq", milliseconds),
+        ]
+        let rendered = OrderedJSON.object(fields).render()
+        let room = "server:\(serverId)"
+        let messages = messages
+        DeferredEffects.emit {
+            RealtimeRelayService(messages: messages).emit(room, "agent:activity", rendered)
+        }
+    }
+
     /// Persist the ready-reconciled statuses in the same transaction as the
     /// activity projection. The local mirror is updated exactly like the daemon
     /// status signal path so both readers agree.

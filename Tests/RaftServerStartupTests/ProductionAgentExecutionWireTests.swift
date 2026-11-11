@@ -1,6 +1,7 @@
 import Foundation
 import RaftHTTP
 import RaftMachineSocket
+import RaftShared
 import Testing
 @testable import RaftServer
 
@@ -36,12 +37,12 @@ import Testing
             "extension": ["2": 2, "10": 10, "a": true, "B": NSNull(), "text": "é😀 a/b\n\u{1}", "fraction": 0.5]
         ]
         let config = try JSONSerialization.data(withJSONObject: configuration)
-        let data = try ProductionAgentExecutionWire.start(intent, configuration: config)
+        let data = try ProductionAgentExecutionWire.start(intent, configuration: config, resumeMessages: [], unreadSummary: nil)
         let expected: [String: Any] = ["type": "agent:start", "agentId": "agent", "config": configuration,
                                        "launchId": "launch", "startDispatchId": "dispatch", "breakerGeneration": 3,
                                        "takeoverEpoch": 2, "humanStart": true, "connectionEpochId": "epoch"]
         #expect(data == (try JSONSerialization.data(withJSONObject: expected, options: .sortedKeys)))
-        #expect(data == (try ProductionAgentExecutionWire.start(intent, configuration: config)))
+        #expect(data == (try ProductionAgentExecutionWire.start(intent, configuration: config, resumeMessages: [], unreadSummary: nil)))
         let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(frame["type"] as? String == "agent:start")
         #expect(frame["launchId"] as? String == "launch")
@@ -62,13 +63,13 @@ import Testing
         foreign["runtimeContext"] = ["agentId": "foreign", "serverId": "server", "machineId": "machine"]
         let invalid = try JSONSerialization.data(withJSONObject: foreign)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidConfiguration) {
-            try ProductionAgentExecutionWire.start(intent, configuration: invalid)
+            try ProductionAgentExecutionWire.start(intent, configuration: invalid, resumeMessages: [], unreadSummary: nil)
         }
         var unsupported = configuration
         unsupported["extension"] = UInt64.max
         let unrepresentable = try JSONSerialization.data(withJSONObject: unsupported)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidConfiguration) {
-            try ProductionAgentExecutionWire.start(intent, configuration: unrepresentable)
+            try ProductionAgentExecutionWire.start(intent, configuration: unrepresentable, resumeMessages: [], unreadSummary: nil)
         }
     }
 
@@ -122,7 +123,7 @@ import Testing
             "task_status": "todo", "task_number": 7
         ]
         let input = try JSONSerialization.data(withJSONObject: message)
-        let data = try ProductionAgentExecutionWire.delivery(intent, message: input, sequence: 42)
+        let data = try ProductionAgentExecutionWire.delivery(intent, message: input, sequence: 42, mentionDelivery: nil)
         let expected: [String: Any] = ["type": "agent:deliver", "agentId": "agent", "message": message, "seq": 42, "deliveryId": "delivery"]
         #expect(data == (try JSONSerialization.data(withJSONObject: expected, options: .sortedKeys)))
         let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -140,19 +141,99 @@ import Testing
         #expect(parsed.connectionEpochId == "epoch")
         #expect(parsed.deliverySequence == 42)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidMessage) {
-            try ProductionAgentExecutionWire.delivery(intent, message: input, sequence: 43)
+            try ProductionAgentExecutionWire.delivery(intent, message: input, sequence: 43, mentionDelivery: nil)
         }
         var foreign = message
         foreign["channel_id"] = "other-server-channel"
         let invalid = try JSONSerialization.data(withJSONObject: foreign)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidMessage) {
-            try ProductionAgentExecutionWire.delivery(intent, message: invalid, sequence: 42)
+            try ProductionAgentExecutionWire.delivery(intent, message: invalid, sequence: 42, mentionDelivery: nil)
         }
         var booleanSequence = message
         booleanSequence["seq"] = true
         let invalidSequence = try JSONSerialization.data(withJSONObject: booleanSequence)
         #expect(throws: ProductionAgentExecutionWire.Error.invalidMessage) {
-            try ProductionAgentExecutionWire.delivery(intent, message: invalidSequence, sequence: 42)
+            try ProductionAgentExecutionWire.delivery(intent, message: invalidSequence, sequence: 42, mentionDelivery: nil)
+        }
+    }
+    @Test func startCarriesTheUpstreamResumeContextFields() throws {
+        let intent = try command("start")
+        let configuration: [String: Any] = [
+            "name": "Codex", "displayName": NSNull(), "description": NSNull(), "model": "configured-model",
+            "runtime": "codex", "runtimeConfig": ["model": "configured-model"], "reasoningEffort": NSNull(),
+            "envVars": NSNull(), "sessionId": NSNull(), "serverUrl": "https://example.com", "authToken": "",
+            "agentCredentialKey": "sk_agent_fixture", "agentCredentialId": "fixture-row",
+            "runtimeContext": ["agentId": "agent", "serverId": "server", "machineId": "machine"],
+        ]
+        let config = try JSONSerialization.data(withJSONObject: configuration)
+        let resume: [JSONValue] = [.object(["message_id": .string("m1"), "seq": .integer(1)]),
+                                   .object(["message_id": .string("m2"), "seq": .integer(2)])]
+        let data = try ProductionAgentExecutionWire.start(
+            intent, configuration: config, resumeMessages: resume,
+            unreadSummary: ["#room": 2, "dm:@peer": 1])
+        let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let messages = try #require(frame["resumeMessages"] as? [[String: Any]])
+        #expect(messages.count == 2)
+        #expect(messages.first?["message_id"] as? String == "m1")
+        let summary = try #require(frame["unreadSummary"] as? [String: Int])
+        #expect(summary == ["#room": 2, "dm:@peer": 1])
+
+        // Both fields are omitted when there is nothing to resume, exactly as
+        // the Node producer omits undefined members.
+        let empty = try ProductionAgentExecutionWire.start(
+            intent, configuration: config, resumeMessages: [], unreadSummary: nil)
+        let emptyFrame = try #require(JSONSerialization.jsonObject(with: empty) as? [String: Any])
+        #expect(emptyFrame["resumeMessages"] == nil)
+        #expect(emptyFrame["unreadSummary"] == nil)
+    }
+
+    @Test func trackedMentionDeliveryCarriesTheFrozenIdentity() throws {
+        let occurrence = "11111111-1111-4111-8111-111111111777"
+        var body: [String: Any] = [
+            "commandId": "11111111-1111-4111-8111-111111111651", "kind": "delivery",
+            "serverId": "server", "machineId": "machine", "agentId": "agent",
+            "launchId": "launch", "connectionEpochId": "epoch", "takeoverEpoch": 2,
+            "breakerGeneration": 3, "humanStart": false, "status": "pending", "createdAt": 0,
+            "deliveryId": occurrence, "channelId": "room", "messageId": "message",
+            "mentionDeliveryOccurrenceId": occurrence,
+        ]
+        let intent = try JSONDecoder().decode(
+            AgentExecutionCommand.self, from: JSONSerialization.data(withJSONObject: body))
+        let message: [String: Any] = [
+            "channel_id": "room", "channel_name": "Room", "channel_type": "private",
+            "message_id": "message", "sender_id": "human", "sender_name": "Human", "sender_type": "human",
+            "content": "ping", "timestamp": "2026-01-01T00:00:00.000Z", "seq": 9,
+        ]
+        let input = try JSONSerialization.data(withJSONObject: message)
+        let identity = MentionDeliveryIdentitySnapshot(
+            occurrenceId: occurrence, messageId: "message", machineId: "machine",
+            launchId: "launch", sessionId: "session-1")
+        let data = try ProductionAgentExecutionWire.delivery(
+            intent, message: input, sequence: 9, mentionDelivery: identity)
+        let frame = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(frame["deliveryId"] as? String == occurrence)
+        let published = try #require(frame["mentionDelivery"] as? [String: Any])
+        #expect(published["occurrenceId"] as? String == occurrence)
+        #expect(published["messageId"] as? String == "message")
+        #expect(published["machineId"] as? String == "machine")
+        #expect(published["launchId"] as? String == "launch")
+        #expect(published["sessionId"] as? String == "session-1")
+
+        // A frame whose identity does not match the command's frozen
+        // occurrence/message is refused before the wire write.
+        let wrong = MentionDeliveryIdentitySnapshot(
+            occurrenceId: occurrence, messageId: "other-message", machineId: "machine",
+            launchId: "launch", sessionId: "session-1")
+        #expect(throws: ProductionAgentExecutionWire.Error.invalidCommandIdentity) {
+            try ProductionAgentExecutionWire.delivery(intent, message: input, sequence: 9,
+                                                      mentionDelivery: wrong)
+        }
+        body["mentionDeliveryOccurrenceId"] = nil
+        let untracked = try JSONDecoder().decode(
+            AgentExecutionCommand.self, from: JSONSerialization.data(withJSONObject: body))
+        #expect(throws: ProductionAgentExecutionWire.Error.invalidCommandIdentity) {
+            try ProductionAgentExecutionWire.delivery(untracked, message: input, sequence: 9,
+                                                      mentionDelivery: identity)
         }
     }
 }

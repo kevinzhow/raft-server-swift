@@ -1,14 +1,13 @@
 import Foundation
 
-/// Upstream `projectMentionDeliveryForSender` over the facts this port retains.
+/// Upstream `senderMentionDeliveryProjection.ts` over the durable occurrence
+/// spine. This is a projection of retained receipts, never a guess from
+/// unrelated delivery facts:
 ///
-/// The canonical message row is the durable agent inbox, so a formal mention is
-/// already readable once it is committed. The execution owner adds the real
-/// delivery facts: at most one strict attempt per (agent, message), the durable
-/// pending-delivery queue for an owed wake, and a held delivery behind a manual
-/// stop. A mention with none of those facts (and no terminal code) is `unknown`:
-/// the same state upstream reports as an instrumentation failure, never a
-/// fabricated `delivered` or `pending`.
+/// - `delivered` is the daemon ACK after `daemon_drained`.
+/// - `pending` is a broken hop (in flight; a terminal row would be `lost`).
+/// - `lost` is a terminal daemon/server code with its closed category.
+/// - `unknown` is an instrumentation failure or a missing occurrence.
 public enum MentionDeliveryOutcome: Equatable, Sendable {
     case delivered
     case pending
@@ -16,43 +15,10 @@ public enum MentionDeliveryOutcome: Equatable, Sendable {
     case unknown
 }
 
-struct MentionDeliveryOutcomeProjection: Sendable {
-    private let delivered: Set<String>
-    private let pending: Set<String>
-
-    init(execution: AgentExecutionState) {
-        var delivered: Set<String> = []
-        var pending: Set<String> = []
-        for command in execution.commands.values where command.kind == .delivery {
-            guard let messageId = command.messageId else { continue }
-            let key = Self.key(command.agentId, messageId)
-            if command.status == .accepted { delivered.insert(key) } else { pending.insert(key) }
-        }
-        for entry in (execution.pendingHumanDeliveries ?? [:]).values {
-            pending.insert(Self.key(entry.agentId, entry.messageId))
-        }
-        for entry in (execution.heldDeliveries ?? [:]).values where !entry.cancelled {
-            pending.insert(Self.key(entry.agentId, entry.messageId))
-        }
-        self.delivered = delivered
-        self.pending = pending
-    }
-
-    /// A terminal code is the daemon's real permanent refusal; it outranks an
-    /// earlier attempt. `INSTRUMENT_FAILED` answers "the instrument broke", so it
-    /// stays `unknown` rather than claiming the target's seat was lost.
-    func outcome(agentId: String, messageId: String, terminalCode: String?) -> MentionDeliveryOutcome {
-        if let terminalCode {
-            guard terminalCode != "INSTRUMENT_FAILED" else { return .unknown }
-            return .lost(reasonCategory: Self.category(terminalCode))
-        }
-        let key = Self.key(agentId, messageId)
-        if delivered.contains(key) { return .delivered }
-        if pending.contains(key) { return .pending }
-        return .unknown
-    }
-
-    /// The closed category table from `senderMentionDeliveryProjection.ts`.
+enum MentionDeliverySenderProjection {
+    /// The closed category table. A code that is not one of the three
+    /// seat-availability causes is deliberately `unclassified`: saying `quota`
+    /// would send the sender to wait for a reset that does not exist.
     static func category(_ terminalCode: String) -> String {
         switch terminalCode {
         case "QUOTA_LIMITED": "quota"
@@ -61,7 +27,27 @@ struct MentionDeliveryOutcomeProjection: Sendable {
         }
     }
 
-    private static func key(_ agentId: String, _ messageId: String) -> String {
-        "\(agentId)\u{0}\(messageId)"
+    /// `projectMentionDeliveryForSender(targetHandle, result)`.
+    static func outcome(_ result: MentionDeliveryLookupResult) -> MentionDeliveryOutcome {
+        switch result {
+        case .acked:
+            return .delivered
+        case .terminalError(let code, _):
+            // A terminal code that is itself "the instrument broke" must not be
+            // dressed as a statement about the target.
+            return code == "INSTRUMENT_FAILED" ? .unknown : .lost(reasonCategory: category(code))
+        case .brokenHop:
+            // A hop is missing but nothing is terminal: still in flight.
+            return .pending
+        case .instrumentFailed, .notJoinable:
+            return .unknown
+        }
+    }
+
+    /// Missing occurrence is upstream `{status: NOT_JOINABLE}` at the route's
+    /// join step, which the projection maps to `unknown`.
+    static func outcome(occurrence: MentionDeliveryOccurrence?) -> MentionDeliveryOutcome {
+        guard let occurrence else { return .unknown }
+        return outcome(MentionDeliveryOccurrenceEvaluation.evaluate(occurrence))
     }
 }
