@@ -343,7 +343,7 @@ func agentExecutionMaterializationOnlyRevokesCancelledStartsWithoutDispatchAttem
         let command = try #require(fixture.accounts.agentsRuntimeStore.state.execution.commands.values
             .first { $0.messageId == messageId })
         let materializer = fixture.materializer()
-        guard case .delivery(let data, let sequence) = try materializer.materializeInTransaction(command: command) else {
+        guard case .delivery(let data, let sequence, _) = try materializer.materializeInTransaction(command: command) else {
             Issue.record("Expected a delivery command for the asTask host message")
             return
         }

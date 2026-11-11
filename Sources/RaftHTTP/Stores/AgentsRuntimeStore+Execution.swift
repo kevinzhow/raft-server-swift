@@ -176,7 +176,13 @@ struct AgentExecutionAgent: Codable, Sendable {
     /// recovery merely because its long-lived process survived.
     var hasUnsettledExecution: Bool {
         launches.values.contains {
-            (!$0.completed && !$0.notSpawned) || $0.inFlightDeliveryCommandIds?.isEmpty == false
+            // A human takeover increments `takeoverEpoch` and thereby
+            // acknowledges every older epoch (the same rule
+            // `hasBlockingUnexitedExecution` applies). An abandoned turn from a
+            // previous epoch cannot complete after the takeover, so it must not
+            // fence the current runtime into manual recovery forever.
+            guard $0.takeoverEpoch == takeoverEpoch else { return false }
+            return (!$0.completed && !$0.notSpawned) || $0.inFlightDeliveryCommandIds?.isEmpty == false
         }
     }
 }
@@ -189,7 +195,8 @@ extension AgentExecutionState {
         guard let agent = agents[agentId] else { return false }
         return commands.values.contains { command in
             guard command.agentId == agentId, command.kind == .delivery, command.status == .accepted,
-                  let launch = agent.launches[command.launchId] else { return false }
+                  let launch = agent.launches[command.launchId],
+                  launch.takeoverEpoch == agent.takeoverEpoch else { return false }
             return launch.inFlightDeliveryCommandIds?.contains(command.commandId) == true
         }
     }
@@ -202,8 +209,13 @@ extension AgentExecutionState {
     /// delivery without a dispatch record is provably unsent, and the transient
     /// onboarding notice never blocks agent recovery.
     func hasUnsettledDeliveryWrite(agentId: String) -> Bool {
-        commands.contains { key, command in
-            guard command.agentId == agentId, command.kind == .delivery else { return false }
+        guard let agent = agents[agentId] else { return false }
+        return commands.contains { key, command in
+            // Only a delivery write can leave a message ambiguous, and a write
+            // from before the latest human takeover was acknowledged by that
+            // takeover, exactly like an older launch.
+            guard command.agentId == agentId, command.kind == .delivery,
+                  command.takeoverEpoch == agent.takeoverEpoch else { return false }
             if let dispatch = dispatches?[key] { return dispatch.phase != .accepted }
             return command.status == .dispatched
         }
