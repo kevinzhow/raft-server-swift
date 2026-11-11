@@ -21,12 +21,25 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
     case agentSearchMissingAuthorization
     /// The machine key does not belong to the requested agent.
     case agentSearchInvalidToken
-    /// A sender handle the caller may not see, or an unknown one.
-    case memberNotFound
+    /// A canonical sender handle that is unknown or invisible.
+    case memberNotFound(handle: String)
     /// An agent + human handle collision (`/internal/agent/:id/search`).
-    case ambiguousMemberHandle
+    case ambiguousMemberHandle(handle: String)
     /// A human + human or agent + human collision (`/internal/agent-api/search`).
-    case ambiguousMemberReference
+    case ambiguousMemberReference(handle: String)
+    /// A `sender` ref that is present but empty or only `@`
+    /// (`searchSenderFilterService.ts:36-47`, `invalid_member_ref`).
+    case invalidMemberRef(String)
+    /// A non-empty `channel` ref the agent cannot resolve. The pinned search
+    /// routes answer `{"error":"Channel not found: <ref>"}` rather than
+    /// silently dropping the filter.
+    case channelRefNotFound(String)
+    /// `dm:@name` resolves to both a human and an agent
+    /// (`DmTargetResolutionError.ambiguous`).
+    case dmTargetAmbiguous(peerName: String)
+    /// A `dm:@name~suffix` with an unknown peer kind
+    /// (`DmTargetResolutionError.invalidPeerKind`).
+    case dmTargetInvalidPeerKind(rawPeer: String, suffix: String)
     /// `after`/`before` without a timezone offset (machine-keyed search).
     case agentSearchMissingOffset(label: String)
     /// `after`/`before` that is not an ISO-8601 instant (machine-keyed search).
@@ -45,11 +58,12 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             401
         case .forbidden, .capabilityNotAuthorized:
             403
-        case .channelNotFound, .contextMessageNotFound, .memberNotFound:
+        case .channelNotFound, .contextMessageNotFound, .memberNotFound, .channelRefNotFound:
             404
-        case .ambiguousMemberHandle, .ambiguousMemberReference:
+        case .ambiguousMemberHandle, .ambiguousMemberReference, .dmTargetAmbiguous:
             409
         case .invalidSearchSort, .invalidSenderType, .invalidMentionTarget,
+             .invalidMemberRef, .dmTargetInvalidPeerKind,
              .agentSearchMissingOffset, .agentSearchInvalidInstant,
              .agentApiMissingOffset, .agentApiInvalidDate:
             400
@@ -64,6 +78,8 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             "Invalid or expired token"
         case .channelNotFound:
             "Channel not found"
+        case .channelRefNotFound(let ref):
+            "Channel not found: \(ref)"
         case .contextMessageNotFound:
             "Message not found"
         case .forbidden:
@@ -74,12 +90,16 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             "Invalid sender type"
         case .invalidMentionTarget:
             "Invalid mention target"
-        case .memberNotFound:
-            "Member not found"
-        case .ambiguousMemberHandle:
-            "Member handle is ambiguous"
-        case .ambiguousMemberReference:
-            "Member reference is ambiguous"
+        case .memberNotFound(let handle):
+            "Member not found: @\(handle)"
+        case .ambiguousMemberHandle(let handle), .ambiguousMemberReference(let handle):
+            "Member @\(handle) is ambiguous"
+        case .invalidMemberRef(let message):
+            message
+        case .dmTargetAmbiguous(let peerName):
+            DMTargetResolutionWire.ambiguous(peerName).message
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
         case .agentSearchMissingOffset(let label):
             "\(label) filter is missing a timezone offset; add an explicit offset such as +08:00 (raft CLI adds it automatically)"
         case .agentSearchInvalidInstant(let label):
@@ -101,8 +121,14 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             "auth_required"
         case .capabilityNotAuthorized:
             "capability_not_authorized"
-        case .channelNotFound, .contextMessageNotFound, .forbidden, .invalidSearchSort, .invalidSenderType,
-             .invalidMentionTarget, .memberNotFound, .ambiguousMemberHandle,
+        case .invalidMemberRef:
+            "invalid_member_ref"
+        case .dmTargetAmbiguous:
+            "DM_TARGET_AMBIGUOUS"
+        case .dmTargetInvalidPeerKind:
+            "DM_TARGET_INVALID_PEER_KIND"
+        case .channelNotFound, .channelRefNotFound, .contextMessageNotFound, .forbidden, .invalidSearchSort,
+             .invalidSenderType, .invalidMentionTarget, .memberNotFound, .ambiguousMemberHandle,
              .ambiguousMemberReference, .agentSearchMissingOffset,
              .agentSearchInvalidInstant, .agentApiMissingOffset, .agentApiInvalidDate:
             nil
@@ -113,16 +139,25 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
     /// machine-readable key as `errorCode`, not the default `code`.
     public var errorBody: OrderedJSON? {
         switch self {
-        case .memberNotFound:
+        case .memberNotFound(let handle):
             return .object([
                 OrderedJSONField("error", errorMessage),
                 OrderedJSONField("errorCode", "member_not_found"),
             ])
-        case .ambiguousMemberHandle, .ambiguousMemberReference:
+        case .ambiguousMemberHandle(let handle), .ambiguousMemberReference(let handle):
             return .object([
-                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("error", "Member @\(handle) is ambiguous"),
                 OrderedJSONField("errorCode", "ambiguous_member_ref"),
             ])
+        case .invalidMemberRef:
+            return .object([
+                OrderedJSONField("error", errorMessage),
+                OrderedJSONField("errorCode", "invalid_member_ref"),
+            ])
+        case .dmTargetAmbiguous(let peerName):
+            return DMTargetResolutionWire.ambiguous(peerName).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
         case .agentSearchMissingOffset, .agentApiMissingOffset,
              .agentSearchInvalidInstant, .agentApiInvalidDate:
             return .object([
@@ -131,8 +166,8 @@ public enum SearchMentionsError: DomainError, Equatable, Sendable {
             ])
         case .missingAuthorization, .invalidAccessToken,
              .agentSearchMissingAuthorization, .agentSearchInvalidToken,
-             .channelNotFound, .contextMessageNotFound, .forbidden, .invalidSearchSort, .invalidSenderType,
-             .invalidMentionTarget, .capabilityNotAuthorized:
+             .channelNotFound, .channelRefNotFound, .contextMessageNotFound, .forbidden, .invalidSearchSort,
+             .invalidSenderType, .invalidMentionTarget, .capabilityNotAuthorized:
             return nil
         }
     }
@@ -373,6 +408,160 @@ public struct SearchMentionsService: Sendable {
         return HumanMessageSearchResponse(results: results, hasMore: hasMore)
     }
 
+    // MARK: - Shared agent-facing search refs
+
+    /// Pinned `resolveSearchSenderFilter` (searchSenderFilterService.ts:36-115)
+    /// over the agent-facing handle grammar.
+    ///
+    /// - absent `sender` -> no filter;
+    /// - present-but-empty (`sender=`) or `sender=@` -> 400 `invalid_member_ref`,
+    ///   never a silently broadened search;
+    /// - otherwise the canonical `users.name` / `agents.name` of a member of the
+    ///   caller's server, exact and case-sensitive. A handle shared by a human
+    ///   and a live agent is the 409 `ambiguous_member_ref`; an unknown or
+    ///   hidden one is the 404 `member_not_found`.
+    ///
+    /// The pinned helper has no `~kind` member grammar: `~` cannot occur in a
+    /// canonical name, so `sender=@name~agent` is an unknown handle rather than
+    /// a typed member ref.
+    private func resolveAgentSenderScope(
+        raw: String?,
+        serverId: String,
+        agentId: String,
+        directoryHidden: Bool
+    ) throws -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw SearchMentionsError.invalidMemberRef("member ref must not be empty")
+        }
+        let handle = trimmed.hasPrefix("@")
+            ? String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            : trimmed
+        guard !handle.isEmpty else {
+            throw SearchMentionsError.invalidMemberRef("member handle must not be empty")
+        }
+        // Pinned `resolveUserByName` / `resolveAgentByName`: canonical handles
+        // only, exact and case-sensitive, humans restricted to server members.
+        let humans: [String] = directoryHidden ? [] : profiles.accounts.values.filter { account in
+            oauth.memberRole(serverId: serverId, userId: account.id) != nil && account.name == handle
+        }.map(\.id)
+        let agents: [String] = oauth.activeAgentIds(serverId: serverId).filter {
+            oauth.agentRuntimeInfo(id: $0)?.name == handle
+        }
+        if !humans.isEmpty && !agents.isEmpty {
+            throw SearchMentionsError.ambiguousMemberReference(handle: handle)
+        }
+        if humans.count > 1 || agents.count > 1 {
+            throw SearchMentionsError.ambiguousMemberReference(handle: handle)
+        }
+        if let senderId = humans.first ?? agents.first { return senderId }
+        throw SearchMentionsError.memberNotFound(handle: handle)
+    }
+
+    /// Resolves the `channel=` filter through `channelService.resolveChannelByName`
+    /// semantics. `nil` only when the ref was absent/empty (no filter); every
+    /// non-empty ref that cannot be resolved is the pinned 404
+    /// `{"error":"Channel not found: <ref>"}` instead of silently dropping the
+    /// filter and widening the result set.
+    ///
+    /// `#name` keeps the existing name projection the search surface already
+    /// published. `dm:@peer` uses the exact canonical DM resolver and its typed
+    /// membership/visibility, so a peer named only by a display-name or a case
+    /// variant (or a DM the agent is not part of) cannot select a conversation.
+    /// A valid 8-hex suffix selects the thread under that base; any other
+    /// `:...` stays in the base and therefore fails as an unknown target.
+    private func resolveAgentSearchChannel(
+        raw: String?,
+        serverId: String,
+        agentId: String,
+        postable: [String: PostableChannel]
+    ) throws -> String? {
+        guard let raw else { return nil }
+        let reference = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reference.isEmpty else { return nil }
+        let parsed = AgentChannelRef.parse(reference)
+
+        func accessible(_ channelId: String) -> Bool {
+            AgentChannelAccessQuery(channels: channels, messages: messages, oauth: oauth)
+                .canAccess(channelId: channelId, serverId: serverId, agentId: agentId)
+        }
+        func threadId(in parentId: String, suffix: String) -> String? {
+            let shortId = suffix.lowercased()
+            let rows = messages.humanMessageRows
+            let anchor = rows.first {
+                $0.channelId == parentId && $0.id.lowercased().hasPrefix(shortId)
+            }?.id
+            if let anchor {
+                return channels.historyThread(parentId: parentId, anchorMessageId: anchor)
+            }
+            return channels.historyThread(parentId: parentId, idPrefix: shortId)
+                ?? channels.historyThread(parentId: parentId, anchorPrefix: shortId)
+        }
+
+        if reference.hasPrefix("#") {
+            let name = String(parsed.baseRef.dropFirst())
+            guard let parentId = postable.first(where: { _, channel in
+                channel.serverId == serverId && channel.deletedAt == nil && channel.name == name
+                    && (channel.kind == "channel" || channel.kind == "private" || channel.kind == "joint")
+            })?.key else {
+                throw SearchMentionsError.channelRefNotFound(reference)
+            }
+            guard let suffix = parsed.threadShortId else { return parentId }
+            guard let resolved = threadId(in: parentId, suffix: suffix) else {
+                throw SearchMentionsError.channelRefNotFound(reference)
+            }
+            return resolved
+        }
+
+        if reference.hasPrefix("dm:@") || reference.hasPrefix("DM:@") {
+            let rawPeer = String(parsed.baseRef.dropFirst(4))
+            // The reserved handle is the exact raw peer, before `~kind`, and on
+            // the non-thread arm only (channelService.ts:7467-7471).
+            if parsed.threadShortId == nil, rawPeer.lowercased() == AgentChannelRef.remindersPeer {
+                guard let surface = feedback.agentReminderSurfaceChannels[agentId] else {
+                    throw SearchMentionsError.channelRefNotFound(reference)
+                }
+                return surface
+            }
+            let peer: (name: String, kind: String?)
+            switch AgentChannelRef.parsePeer(rawPeer) {
+            case .unknownKind(let invalid):
+                throw SearchMentionsError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: invalid)
+            case .emptyName:
+                throw SearchMentionsError.channelRefNotFound(reference)
+            case .ok(let name, let kind):
+                peer = (name, kind)
+            }
+            let resolver = AgentDMPeerResolver(oauth: oauth, channels: channels, accounts: profiles)
+            let resolution = resolver.resolvePeer(
+                serverId: serverId, agentId: agentId, name: peer.name, kind: peer.kind
+            )
+            switch resolution {
+            case .ambiguous(let name):
+                throw SearchMentionsError.dmTargetAmbiguous(peerName: name)
+            case .invalidKind(let kind, _):
+                throw SearchMentionsError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: kind)
+            case .notFound:
+                throw SearchMentionsError.channelRefNotFound(reference)
+            case .resolved(let peerId, let peerKind, let peerName):
+                guard let dmId = resolver.channelId(
+                    serverId: serverId, agentId: agentId, peerId: peerId,
+                    peerKind: peerKind, peerName: peerName
+                ), accessible(dmId) else {
+                    throw SearchMentionsError.channelRefNotFound(reference)
+                }
+                guard let suffix = parsed.threadShortId else { return dmId }
+                guard let resolved = threadId(in: dmId, suffix: suffix) else {
+                    throw SearchMentionsError.channelRefNotFound(reference)
+                }
+                return resolved
+            }
+        }
+
+        throw SearchMentionsError.channelRefNotFound(reference)
+    }
+
     // MARK: - GET /internal/agent/:agentId/search
 
     /// The machine key must belong to that agent. Public channels on its server
@@ -381,6 +570,7 @@ public struct SearchMentionsService: Sendable {
     public func searchAgentMessages(
         agentId: String,
         query: String?,
+        channelRef: String? = nil,
         limit: String?,
         authorization: String?,
         sender: String? = nil,
@@ -399,9 +589,6 @@ public struct SearchMentionsService: Sendable {
             pageLimit = 20
         }
         let queryTokens = MessageSearchText.searchTokens((query ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
-        if queryTokens.isEmpty {
-            return AgentMessageSearchResponse(results: [], hasMore: false)
-        }
         func parseBoundary(_ raw: String?, label: String) throws -> Date? {
             guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -433,32 +620,21 @@ public struct SearchMentionsService: Sendable {
         } else {
             throw SearchMentionsError.agentSearchInvalidToken
         }
-        var senderScope: String?
-        if let sender, !sender.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let trimmed = sender.trimmingCharacters(in: .whitespacesAndNewlines)
-            let handle = trimmed.hasPrefix("@")
-                ? String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
-                : trimmed
-            let directoryHidden = channelState.hideHumansFromMembers[serverId] == true
-                && oauth.agentRole(serverId: serverId, agentId: agentId) == "member"
-            // Pinned `resolveUserByName` / `resolveAgentByName`: canonical
-            // handles only, exact and case-sensitive, with humans restricted
-            // to members of this server. A display name is not a handle.
-            let humans = directoryHidden ? [] : profiles.accounts.values.filter { account in
-                oauth.memberRole(serverId: serverId, userId: account.id) != nil
-                    && account.name == handle
-            }.map(\.id)
-            let agents = oauth.activeAgentIds(serverId: serverId).filter {
-                oauth.agentRuntimeInfo(id: $0)?.name == handle
-            }
-            let matches = humans + agents
-            if matches.isEmpty {
-                throw SearchMentionsError.memberNotFound
-            }
-            if matches.count > 1 {
-                throw SearchMentionsError.ambiguousMemberHandle
-            }
-            senderScope = matches[0]
+        // Validate every present ref before deciding the query is empty: a
+        // malformed `sender` or `channel` must not become a broad empty search.
+        let directoryHidden = channelState.hideHumansFromMembers[serverId] == true
+            && oauth.agentRole(serverId: serverId, agentId: agentId) == "member"
+        // Pinned route order: the channel ref resolves before the sender ref.
+        let channelScope = try resolveAgentSearchChannel(
+            raw: channelRef, serverId: serverId, agentId: agentId,
+            postable: channelState.postableChannels
+        )
+        let senderScope = try resolveAgentSenderScope(
+            raw: sender, serverId: serverId, agentId: agentId, directoryHidden: directoryHidden
+        )
+        if queryTokens.isEmpty, channelScope == nil, senderScope == nil,
+           afterBoundary == nil, beforeBoundary == nil {
+            return AgentMessageSearchResponse(results: [], hasMore: false)
         }
         let channelAgentMembers = agents.channelAgentMembers
         var strict: [(StoredHumanMessage, Int)] = []
@@ -471,9 +647,14 @@ public struct SearchMentionsService: Sendable {
             channelAgentMembers: channelAgentMembers,
             oauth: oauth
         ) {
+            if let channelScope, message.channelId != channelScope { continue }
             if let senderScope, message.senderId != senderScope { continue }
             if let afterBoundary, message.createdAt <= afterBoundary { continue }
             if let beforeBoundary, message.createdAt >= beforeBoundary { continue }
+            if queryTokens.isEmpty {
+                strict.append((message, 0))
+                continue
+            }
             let counts = MessageSearchText.tokenCounts(message.content)
             if let score = MessageSearchText.matchScore(counts, queryTokens, requireAll: true) {
                 strict.append((message, score))
@@ -598,50 +779,22 @@ public struct SearchMentionsService: Sendable {
         let sortMode = sort == "recent" ? "recent" : "relevance"
         let channelState = channels.state
         let messageState = messages.state
-        let channelFilter: String? = {
-            guard let channelRef, !channelRef.isEmpty else { return nil }
-            if channelRef.lowercased().hasPrefix("dm:@reminders") {
-                return feedback.agentReminderSurfaceChannels[agent.id]
-            }
-            let name = channelRef.hasPrefix("#") ? String(channelRef.dropFirst()) : channelRef
-            return channelState.postableChannels.first { _, channel in
-                channel.serverId == agent.serverId && channel.name == name
-            }?.key
-        }()
-        // A sender filter resolves through the member directory first. A name
-        // the caller may not see is the same `member_not_found` as an unknown
-        // one, so the query cannot enumerate a hidden human directory.
-        var senderScope: String?
-        if let senderRef, !senderRef.isEmpty {
-            let trimmed = senderRef.trimmingCharacters(in: .whitespacesAndNewlines)
-            let handle = trimmed.hasPrefix("@")
-                ? String(trimmed.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
-                : trimmed
-            let directoryHidden = channelState.hideHumansFromMembers[agent.serverId] == true
-                && oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "member"
-            // Pinned `resolveUserByName` / `resolveAgentByName`: canonical
-            // handles only, exact and case-sensitive, with humans restricted
-            // to members of this server (never another tenant's account).
-            let agentMatch = oauth.activeAgentIds(serverId: agent.serverId).first {
-                oauth.agentRuntimeInfo(id: $0)?.name == handle
-            }
-            let humanMatches: [String] = directoryHidden
-                ? []
-                : profiles.accounts.values.filter { account in
-                    oauth.memberRole(serverId: agent.serverId, userId: account.id) != nil
-                        && account.name == handle
-                }.map(\.id)
-            if agentMatch != nil && !humanMatches.isEmpty {
-                throw SearchMentionsError.ambiguousMemberReference
-            }
-            if humanMatches.count > 1 {
-                throw SearchMentionsError.ambiguousMemberReference
-            }
-            let humanMatch = humanMatches.first
-            guard let resolvedSender = agentMatch ?? humanMatch else {
-                throw SearchMentionsError.memberNotFound
-            }
-            senderScope = resolvedSender
+        // Both refs are validated through the pinned grammar before the empty
+        // query shortcut, so a malformed `sender`/`channel` never widens a
+        // search into an unfiltered page.
+        let channelFilter = try resolveAgentSearchChannel(
+            raw: channelRef, serverId: agent.serverId, agentId: agent.id,
+            postable: channelState.postableChannels
+        )
+        let directoryHidden = channelState.hideHumansFromMembers[agent.serverId] == true
+            && oauth.agentRole(serverId: agent.serverId, agentId: agent.id) == "member"
+        let senderScope = try resolveAgentSenderScope(
+            raw: senderRef, serverId: agent.serverId, agentId: agent.id,
+            directoryHidden: directoryHidden
+        )
+        if tokens.isEmpty, channelFilter == nil, senderScope == nil,
+           afterDate == nil, beforeDate == nil {
+            return AgentApiSearchResponse(results: [], hasMore: false)
         }
         let channelAgentMembers = agents.channelAgentMembers
         var hits: [(message: StoredHumanMessage, score: Int)] = []

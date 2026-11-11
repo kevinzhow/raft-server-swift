@@ -3,7 +3,9 @@ import RaftShared
 
 /// Send operations supplied by their actual owners and domain capabilities.
 struct AgentSendDependencies: Sendable {
-    var assistantOwner: @Sendable (_ agentId: String, _ serverId: String) -> String?
+    /// The retained posting-owner binding (`agents.assistantOwnerUserId`), not
+    /// the live display/borrowing owner. Post authority uses this raw link.
+    var postingOwner: @Sendable (_ agentId: String, _ serverId: String) -> String?
     var threadByAnchor: @Sendable (_ parentId: String, _ anchorMessageId: String) -> String?
     var threadById: @Sendable (_ parentId: String, _ suffix: String) -> String?
     var threadByAnchorPrefix: @Sendable (_ parentId: String, _ suffix: String) -> String?
@@ -53,8 +55,8 @@ extension AgentSendDependencies {
         ledger: MessageLedgerPort
     ) {
         self.init(
-            assistantOwner: { agentId, serverId in
-                ownership.liveOwner(agentId: agentId, serverId: serverId)
+            postingOwner: { agentId, _ in
+                ownership.postingOwner(agentId: agentId)
             },
             threadByAnchor: { parentId, anchorMessageId in
                 channels.historyThread(parentId: parentId, anchorMessageId: anchorMessageId)

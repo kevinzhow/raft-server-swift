@@ -616,7 +616,7 @@ private func claimResults(_ response: ClientResponse) -> [[String: Any]] {
             #expect(tasks.first?.title == "convert me exactly")
             #expect(tasks.first?.status == "in_progress")
             #expect(tasks.first?.creatorId == f.agentId)
-            #expect(tasks.first.map { f.accounts.taskEventTypesForTesting(taskId: $0.id).filter { $0 == "created" }.count } == 1)
+            #expect(tasks.first.map { f.accounts.taskPublishedEventTypesForTesting(taskId: $0.id).filter { $0 == "created" }.count } == 1)
             #expect(f.accounts.messageTaskShadowForTesting(messageId: host) == nil, "conversion must not rewrite the host message")
 
             let repeated = try await claimPost(

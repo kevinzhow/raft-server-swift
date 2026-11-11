@@ -87,11 +87,37 @@ struct AgentResumeContext: Sendable {
         for entry in pending { byConversation[entry.conversationIndex, default: []].append(entry) }
 
         // Unread summary labels are the agent-facing target DSL. This port has
-        // no DM identity table; the peer face is the other DM member, exactly
-        // what the wake-hint projection already publishes.
+        // no DM identity table; the peer face is the typed peer, named by the
+        // canonical `users.name` / `agents.name` and carrying `~kind` when the
+        // server directory holds a cross-kind twin (pinned `agentFacingDmRef`).
+        // The directory rule is stable before the second DM exists.
+        let directory = AgentDMRefDirectory(
+            serverId: serverId, oauth: oauth,
+            humanName: { [profiles] userId in profiles.account(userId: userId)?.name }
+        )
+        func dmChannel(for conversation: Conversation) -> String? {
+            guard let channel = postable[conversation.id] else { return nil }
+            return AgentFacingDMRef.canonical(
+                serverId: serverId,
+                agentId: agentId,
+                channelId: conversation.id,
+                channel: channel,
+                humanIds: oauth.channelHumanIds(channelId: conversation.id),
+                agentIds: oauth.channelAgentIds(channelId: conversation.id),
+                reminderSurfaceId: nil,
+                labels: directory,
+                humanName: { [profiles] userId in profiles.account(userId: userId)?.name },
+                agentName: { [oauth] peerId in
+                    guard let peer = oauth.agentRuntimeInfo(id: peerId), !peer.deleted,
+                          peer.serverId == serverId else { return nil }
+                    return peer.name
+                }
+            )
+        }
         func target(_ conversation: Conversation) -> String {
             switch conversation.kind {
             case "dm":
+                if let ref = dmChannel(for: conversation) { return ref }
                 let peer = postable[conversation.id]?.memberIds.first { $0 != agentId }
                     .flatMap { profiles.account(userId: $0)?.name }
                 return "dm:@\(peer ?? conversation.name)"

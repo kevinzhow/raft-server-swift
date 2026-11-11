@@ -18,8 +18,14 @@ public enum AgentHistoryError: DomainError, Equatable {
     case anchorNotFound(String)
     case anchorAmbiguous(String)
     case anchorInvalid(String)
+    /// A bare `dm:@name` held by both a human member and a live agent, reported
+    /// through `DmTargetResolutionError.ambiguous`.
     case dmTargetAmbiguous(name: String)
-    case dmTargetInvalidPeerKind(kind: String)
+    /// A `dm:@rawPeer` whose `~suffix` is not the exact lowercase `agent` or
+    /// `human`, reported through `DmTargetResolutionError.invalidPeerKind`.
+    /// `rawPeer` is the whole peer spelling including the suffix (the pinned
+    /// error names it) and `suffix` is the rejected kind, if any.
+    case dmTargetInvalidPeerKind(rawPeer: String, suffix: String?)
 
     public var status: UInt {
         switch self {
@@ -47,8 +53,9 @@ public enum AgentHistoryError: DomainError, Equatable {
         case .unreadWithAnchor: "unread cannot be combined with an anchor"
         case .anchorNotFound(let message), .anchorAmbiguous(let message), .anchorInvalid(let message): message
         case .dmTargetAmbiguous(let name):
-            "More than one DM peer is named \(name). Address it as dm:@\(name)~agent or dm:@\(name)~human."
-        case .dmTargetInvalidPeerKind(let kind): "Unknown DM peer kind \(kind)."
+            DMTargetResolutionWire.ambiguous(name).message
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).message
         }
     }
 
@@ -109,14 +116,9 @@ public enum AgentHistoryError: DomainError, Equatable {
                 OrderedJSONField("errorCode", "INVALID_ARG"),
             ])
         case .dmTargetAmbiguous(let name):
-            // The legacy text printed the peer name unescaped.
-            return .raw(
-                "{\"error\":\"\(errorMessage)\",\"code\":\"DM_TARGET_AMBIGUOUS\",\"suggestedNextAction\":\"Retry with dm:@\(name)~agent for the agent or dm:@\(name)~human for the human.\"}"
-            )
-        case .dmTargetInvalidPeerKind:
-            return .raw(
-                "{\"error\":\"\(errorMessage)\",\"code\":\"DM_TARGET_INVALID_PEER_KIND\",\"suggestedNextAction\":\"Use dm:@<name>~human or dm:@<name>~agent.\"}"
-            )
+            return DMTargetResolutionWire.ambiguous(name).body
+        case .dmTargetInvalidPeerKind(let rawPeer, let suffix):
+            return DMTargetResolutionWire.invalidPeerKind(rawPeer: rawPeer, suffix: suffix).body
         default:
             return nil
         }

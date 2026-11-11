@@ -183,11 +183,13 @@ public struct AgentHistoryService: Sendable {
         postable: [String: PostableChannel]
     ) throws -> ResolvedChannel {
         var resolved = ResolvedChannel()
+        // The one suffix rule (pinned `parseChannelRef`): only a full 8-hex
+        // suffix is a thread id. Any other `:...` stays part of the base ref,
+        // so it fails as a channel/peer lookup instead of opening a thread.
+        let parsedRef = AgentChannelRef.parse(reference)
         if reference.hasPrefix("#") {
-            let raw = String(reference.dropFirst())
-            let segments = raw.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-            let name = segments.first ?? raw
-            let suffix = segments.count > 1 ? segments[1] : nil
+            let name = String(parsedRef.baseRef.dropFirst())
+            let suffix = parsedRef.threadShortId
             var parentId: String?
             let candidates = postable.filter { _, channel in
                 channel.serverId == agent.serverId
@@ -215,7 +217,10 @@ public struct AgentHistoryService: Sendable {
                 resolved.canonicalTarget = "#\(name)"
                 return resolved
             }
-            let anchor = oauth.historyMessages(channelId: parentId).first { $0.id.hasPrefix(suffix) }
+            let lowerSuffix = suffix.lowercased()
+            let anchor = oauth.historyMessages(channelId: parentId).first {
+                $0.id.lowercased().hasPrefix(lowerSuffix)
+            }
             var threadId: String?
             if let anchor {
                 threadId = dependencies.threadByAnchor(parentId, anchor.id)
@@ -223,80 +228,122 @@ public struct AgentHistoryService: Sendable {
                     throw AgentHistoryError.noThreadOnMessage(suffix: suffix, channelName: name)
                 }
             } else {
-                threadId = dependencies.threadById(parentId, suffix)
+                threadId = dependencies.threadById(parentId, lowerSuffix)
                 if threadId == nil {
-                    threadId = dependencies.threadByAnchorPrefix(parentId, suffix)
+                    threadId = dependencies.threadByAnchorPrefix(parentId, lowerSuffix)
                 }
                 if threadId == nil { throw AgentHistoryError.channelNotVisible }
             }
             if let threadId, let thread = postable[threadId] {
                 resolved.channelId = threadId
+                let parentName = postable[parentId]?.name ?? name
                 let anchorShort = thread.parentMessageId.map { String($0.prefix(8)) } ?? suffix
-                resolved.canonicalTarget = "#\(name):\(anchorShort)"
+                resolved.canonicalTarget = "#\(parentName):\(anchorShort)"
             }
             return resolved
         }
-        if reference.hasPrefix("dm:@") {
-            if reference.lowercased().hasPrefix("dm:@reminders") {
-                guard let surface = feedback.agentReminderSurfaceChannels[agent.id] else {
+        if reference.hasPrefix("dm:@") || reference.hasPrefix("DM:@") {
+            let rawPeer = String(parsedRef.baseRef.dropFirst(4))
+            let suffix = parsedRef.threadShortId
+            // Pinned `resolveDMByPeerName` checks the reserved reminders handle
+            // on the exact raw peer, case-insensitively, BEFORE parsing `~kind`
+            // and only on the non-thread arm. `dm:@remindersX` is an ordinary
+            // peer and `dm:@reminders~agent` is an agent named reminders; only
+            // the exact word names the agent's own private surface.
+            if suffix == nil, rawPeer.lowercased() == AgentChannelRef.remindersPeer {
+                guard let surface = feedback.agentReminderSurfaceChannels[agent.id],
+                      isVisible(surface, to: agent, postable: postable) else {
                     throw AgentHistoryError.channelNotVisible
                 }
+                let target = AgentChannelRef.dmRef(name: AgentChannelRef.remindersPeer, kind: nil)
                 resolved.channelId = surface
-                resolved.canonicalTarget = "dm:@reminders"
+                resolved.canonicalTarget = target
                 resolved.consumptionScope = AgentHistoryConsumptionScope(
-                    agentId: agent.id, channelId: surface, channelType: "dm", target: "dm:@reminders"
+                    agentId: agent.id, channelId: surface, channelType: "dm", target: target
                 )
                 return resolved
             }
-            var raw = String(reference.dropFirst("dm:@".count))
-            var suffix: String?
-            if let colon = raw.lastIndex(of: ":") {
-                suffix = String(raw[raw.index(after: colon)...])
-                raw = String(raw[..<colon])
-            }
-            var kind: String?
-            if let tilde = raw.firstIndex(of: "~") {
-                kind = String(raw[raw.index(after: tilde)...])
-                raw = String(raw[..<tilde])
+            let peer: (name: String, kind: String?)
+            switch AgentChannelRef.parsePeer(rawPeer) {
+            case .unknownKind(let invalid):
+                // Pinned `resolveChannelByName` refuses a malformed peer kind
+                // even when a thread suffix follows.
+                throw AgentHistoryError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: invalid)
+            case .emptyName:
+                throw AgentHistoryError.channelNotVisible
+            case .ok(let name, let kind):
+                peer = (name, kind)
             }
             let resolution = actionCardPrepare.resolveDMPeer(
-                serverId: agent.serverId, agentId: agent.id, name: raw, kind: kind
+                serverId: agent.serverId, agentId: agent.id, name: peer.name, kind: peer.kind
             )
             switch resolution {
             case .ambiguous(let name):
                 throw AgentHistoryError.dmTargetAmbiguous(name: name)
             case .invalidKind(let kind, _):
-                throw AgentHistoryError.dmTargetInvalidPeerKind(kind: kind)
+                throw AgentHistoryError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: kind)
             case .notFound:
                 throw AgentHistoryError.channelNotVisible
             case .resolved(let peerId, let peerKind, let peerName):
                 guard let dmId = actionCardPrepare.dmChannelId(
                     serverId: agent.serverId, agentId: agent.id, peerId: peerId, peerKind: peerKind, peerName: peerName
-                ) else { throw AgentHistoryError.channelNotVisible }
+                ), isVisible(dmId, to: agent, postable: postable) else {
+                    throw AgentHistoryError.channelNotVisible
+                }
+                // The published target is the DM's own canonical peer label,
+                // never the caller's spelling (pinned
+                // `resolveAgentFacingChannelRef`), so it carries `~kind` for a
+                // cross-kind twin and collapses case variants.
+                let dmTarget = canonicalDMRef(channelId: dmId, agent: agent, postable: postable)
+                    ?? parsedRef.baseRef
                 guard let suffix, !suffix.isEmpty else {
                     resolved.channelId = dmId
-                    resolved.canonicalTarget = reference
+                    resolved.canonicalTarget = dmTarget
                     resolved.consumptionScope = AgentHistoryConsumptionScope(
-                        agentId: agent.id, channelId: dmId, channelType: "dm", target: reference
+                        agentId: agent.id, channelId: dmId, channelType: "dm", target: dmTarget
                     )
                     return resolved
                 }
-                let anchor = oauth.historyMessages(channelId: dmId).first { $0.id.hasPrefix(suffix) }
+                let lowerSuffix = suffix.lowercased()
+                let anchor = oauth.historyMessages(channelId: dmId).first {
+                    $0.id.lowercased().hasPrefix(lowerSuffix)
+                }
                 var threadId = anchor.flatMap { found in
                     dependencies.threadByAnchor(dmId, found.id)
                 }
-                if threadId == nil { threadId = dependencies.threadById(dmId, suffix) }
+                if threadId == nil { threadId = dependencies.threadById(dmId, lowerSuffix) }
                 guard let threadId else { throw AgentHistoryError.channelNotVisible }
+                let anchorShort = postable[threadId]?.parentMessageId.map { String($0.prefix(8)) } ?? suffix
+                let threadTarget = "\(dmTarget):\(anchorShort)"
                 resolved.channelId = threadId
-                resolved.canonicalTarget = reference
+                resolved.canonicalTarget = threadTarget
                 resolved.consumptionScope = AgentHistoryConsumptionScope(
-                    agentId: agent.id, channelId: threadId, channelType: "thread", target: reference
+                    agentId: agent.id, channelId: threadId, channelType: "thread", target: threadTarget
                 )
                 return resolved
             }
         }
         resolved.channelId = postable.keys.first { $0 == reference }
         return resolved
+    }
+
+    /// The canonical agent-facing target of one DM channel. The pinned history
+    /// route publishes `resolveAgentFacingChannelRef(...)`, so a twinned peer
+    /// reads as `dm:@name~agent` / `dm:@name~human` and the reminder surface
+    /// reads as `dm:@reminders`.
+    private func canonicalDMRef(
+        channelId: String,
+        agent: OAuthLedger.AgentRuntimeInfo,
+        postable: [String: PostableChannel]
+    ) -> String? {
+        guard let channel = postable[channelId], channel.kind == "dm" else { return nil }
+        return actionCardPrepare.dmPeerResolver.canonicalRef(
+            serverId: agent.serverId,
+            agentId: agent.id,
+            channelId: channelId,
+            channel: channel,
+            reminderSurfaceId: feedback.agentReminderSurfaceChannels[agent.id]
+        )
     }
 
     private func isVisible(

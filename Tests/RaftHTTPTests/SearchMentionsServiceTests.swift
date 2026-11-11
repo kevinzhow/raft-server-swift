@@ -176,11 +176,15 @@ private func makeSearchMentionsFixture(ownerMention: Bool = false) -> SearchMent
 // MARK: - Special-order error bodies
 
 @Test func searchRefusalsKeepTheirPublishedErrorBodies() {
-    #expect(SearchMentionsError.memberNotFound.publishedErrorBody.render() == """
-    {"error":"Member not found","errorCode":"member_not_found"}
+    // Pinned `searchSenderFilterService.ts` echoes the canonical handle.
+    #expect(SearchMentionsError.memberNotFound(handle: "bob").publishedErrorBody.render() == """
+    {"error":"Member not found: @bob","errorCode":"member_not_found"}
     """)
-    #expect(SearchMentionsError.ambiguousMemberReference.publishedErrorBody.render() == """
-    {"error":"Member reference is ambiguous","errorCode":"ambiguous_member_ref"}
+    #expect(SearchMentionsError.ambiguousMemberReference(handle: "bob").publishedErrorBody.render() == """
+    {"error":"Member @bob is ambiguous","errorCode":"ambiguous_member_ref"}
+    """)
+    #expect(SearchMentionsError.invalidMemberRef("member ref must not be empty").publishedErrorBody.render() == """
+    {"error":"member ref must not be empty","errorCode":"invalid_member_ref"}
     """)
     #expect(SearchMentionsError.agentSearchMissingOffset(label: "after").publishedErrorBody.render() == """
     {"error":"after filter is missing a timezone offset; add an explicit offset such as +08:00 (raft CLI adds it automatically)","errorCode":"INVALID_DATE_FILTER"}
