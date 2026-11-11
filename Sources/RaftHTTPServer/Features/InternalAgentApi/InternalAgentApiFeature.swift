@@ -838,5 +838,153 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                 )
             }
         }
+
+        // MARK: - Direct attachment upload sessions
+
+        // The pinned server installs `attachmentUploadSessionService` only when
+        // the deployment offers presigned object uploads. This port's
+        // attachment pipeline is app-side encrypted and has no presigned PUT, so
+        // the capability route already publishes `directUploadEnabled: false`
+        // and every session verb is the contract's service-unavailable 404. The
+        // credential capability, the `attachment:upload` grant and the request
+        // validator still run first, exactly as they do upstream.
+        agentApi.post("attachment-upload-sessions") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let denial { return denial }
+            let body = await jsonRequestBody(LegacyJSONObjectBody.self, request)
+            let validated = AgentApiRequestContract.uploadSessionCreateBody(body)
+            guard validated.isValid else {
+                return try await respond(status: 400) {
+                    AgentApiContractInvalidResponse(
+                        routeKey: "attachmentUploadSessionCreate", part: "body", issues: validated.issues
+                    )
+                }
+            }
+            return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
+        }
+        agentApi.get("attachment-upload-sessions", ":uploadId") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let denial { return denial }
+            return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
+        }
+        agentApi.delete("attachment-upload-sessions", ":uploadId") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let denial { return denial }
+            return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
+        }
+        agentApi.post("attachment-upload-sessions", ":uploadId", "complete") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "send", grant: "attachment:upload")
+            if let denial { return denial }
+            return try await respond(status: 404) { AttachmentUploadSessionDisabledResponse() }
+        }
+
+        // MARK: - Task history and unclaim
+
+        agentApi.get("tasks", "history") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "tasks", grant: "task:read")
+            if let denial { return denial }
+            let validated = AgentApiRequestContract.taskHistoryQuery(rawQuery: request.url.query)
+            guard let query = validated.value else {
+                return try await respond(status: 400) {
+                    AgentApiContractInvalidResponse(
+                        routeKey: "taskHistory", part: "query", issues: validated.issues
+                    )
+                }
+            }
+            return try await respond {
+                try services.emailAccounts.tasksAndLabs.agentTaskHistory(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: nil,
+                    channelRef: query.channel,
+                    taskNumber: query.taskNumber
+                )
+            }
+        }
+        agentApi.post("tasks", "unclaim") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "tasks", grant: "task:write")
+            if let denial { return denial }
+            let body = await jsonRequestBody(LegacyJSONObjectBody.self, request)
+            let validated = AgentApiRequestContract.taskUnclaimBody(body)
+            guard let fields = validated.value else {
+                return try await respond(status: 400) {
+                    AgentApiContractInvalidResponse(
+                        routeKey: "taskUnclaim", part: "body", issues: validated.issues
+                    )
+                }
+            }
+            return try await respond {
+                try services.emailAccounts.actionCardExecute.agentTaskUnclaim(
+                    authorization: request.headers[.authorization],
+                    legacyAgentId: nil,
+                    channel: fields.channel,
+                    taskNumber: fields.taskNumber
+                )
+            }
+        }
+
+        // MARK: - Profile and server avatars
+
+        agentApi.post("profile", "avatar") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "send", grant: nil)
+            if let denial { return denial }
+            return try await respond {
+                let file = try await singleAvatarUploadFile(request)
+                _ = try services.agentSurface.uploadAgentProfileAvatar(
+                    authorization: request.headers[.authorization], byteCount: file.bytes.count
+                )
+                return try services.emailAccounts.joinLinksAndInvites.agentProfileShow(
+                    authorization: request.headers[.authorization], target: nil
+                )
+            }
+        }
+        agentApi.post("server", "avatar") { request async throws -> Response in
+            let (_, denial) = agentApiGate(request, capability: "server", grant: "server:update")
+            if let denial { return denial }
+            return try await respond {
+                let file = try await singleAvatarUploadFile(request)
+                return try services.emailAccounts.agentChannels.uploadServerAvatar(
+                    authorization: request.headers[.authorization], byteCount: file.bytes.count
+                )
+            }
+        }
+
+        registerIntegrationAppRoutes(routes: app)
     }
+
+    // MARK: - Agent API gates
+
+    /// `requireAgentCapability` + `requireAgentGrant`: a credential denial is
+    /// projected before the handler, as the published middleware chain does.
+    /// Returns the identity on success, or the exact refusal reply.
+    func agentApiGate(
+        _ request: Request,
+        capability: String,
+        grant: String?
+    ) -> (AgentApiIdentityDTO?, Response?) {
+        let identity: AgentApiIdentityDTO
+        do {
+            identity = try services.emailAccounts.agentsLifecycle.resolveAgentApiIdentity(
+                authorization: request.headers[.authorization]
+            )
+        } catch let error as any DomainError {
+            return (nil, domainErrorResponse(error))
+        } catch {
+            return (nil, domainErrorResponse(AgentsLifecycleError.invalidOrExpiredToken))
+        }
+        guard identity.scopes.contains(capability) else {
+            return (nil, domainErrorResponse(
+                FeedbackLocatorError.capabilityNotAuthorized(capability: capability)
+            ))
+        }
+        if let grant {
+            switch services.emailAccounts.feedbackLocators.grantDecision(agentId: identity.agentId, scope: grant) {
+            case .allowed:
+                break
+            case .missingScope(let scope):
+                return (nil, domainErrorResponse(FeedbackLocatorError.missingScope(scope: scope)))
+            }
+        }
+        return (identity, nil)
+    }
+
 }

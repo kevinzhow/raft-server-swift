@@ -244,6 +244,48 @@ public struct InternalAdminFeature: RouteCollection, Sendable {
                 )
             }
         }
+        agent.get("messages", ":messageId", "resolve") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.legacyAgentSurface.messageResolve(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    messageRef: request.parameters.get("messageId") ?? ""
+                )
+            }
+        }
+        agent.get("receive") { request async throws -> Response in
+            // `block` and `timeout` are accepted for daemon compatibility; the
+            // port has no queued orchestrator inbox, so a receive is empty.
+            try await respond {
+                try services.emailAccounts.legacyAgentSurface.receive(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+            }
+        }
+        agent.get("tasks") { request async throws -> Response in
+            try await respond {
+                try services.emailAccounts.legacyAgentSurface.tasks(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    channelRef: desktopQuery(request.url.query, "channel") ?? "",
+                    rawQuery: request.url.query
+                )
+            }
+        }
+        agent.post("server", "avatar") { request async throws -> Response in
+            try await respond {
+                let agent = try services.emailAccounts.legacyAgentSurface.actor(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? "",
+                    requiredScope: "server:update"
+                )
+                let file = try await singleAvatarUploadFile(request)
+                return try services.emailAccounts.agentChannels.uploadServerAvatar(
+                    agent: agent, byteCount: file.bytes.count
+                )
+            }
+        }
         agent.get("history") { request async throws -> Response in
             try await respond {
                 try services.emailAccounts.agentHistory.history(

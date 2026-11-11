@@ -889,6 +889,39 @@ public struct AgentPrivateSurfaceService: Sendable {
         return AgentAvatarResponse(avatarUrl: avatarUrl)
     }
 
+    // MARK: - POST /internal/agent-api/profile/avatar
+
+    /// The credential-surface profile avatar upload. The bound agent is the
+    /// credential's; the route's `send` capability is checked here, then the
+    /// upload limit. The stored URL uses the same namespace scheme as
+    /// `storeAgentAvatar` (the server id) and the response is the caller's full
+    /// profile projection, which the feature reads back after this write.
+    public func uploadAgentProfileAvatar(
+        authorization: String?,
+        byteCount: Int
+    ) throws -> AgentAvatarResponse {
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw AgentPrivateSurfaceError.authRequired
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let credential = dependencies.agents.agentCredential(token: token), credential.revokedAt == nil,
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            throw AgentPrivateSurfaceError.authRequired
+        }
+        guard credential.scopes.contains("send") else {
+            throw FeedbackLocatorError.capabilityNotAuthorized(capability: "send")
+        }
+        guard byteCount > 0 else { throw AgentAvatarUploadError.noAvatarFile }
+        guard byteCount <= AgentAvatarUploadError.maximumBytes else {
+            throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: AgentAvatarUploadError.maximumBytes)
+        }
+        let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+        let avatarUrl = "/api/avatars/\(agent.serverId)/\(key).webp"
+        oauth.updateAgentAvatar(id: agent.id, avatarUrl: avatarUrl)
+        return AgentAvatarResponse(avatarUrl: avatarUrl)
+    }
+
     // MARK: - Credential use and the push webhook
 
     /// Records one use of an agent credential and tells the server room when an

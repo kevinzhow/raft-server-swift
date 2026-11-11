@@ -86,6 +86,7 @@ public final class OAuthLedger: Sendable {
         var serverPushMutes: Set<String> = []
 
         var clients: [Client] = []
+        var clientShareLinks: [ClientShareLink] = []
         var integrationAuditEvents: [IntegrationAuditEvent] = []
         var requests: [AccessRequest] = []
         var tokens: [AccessToken] = []
