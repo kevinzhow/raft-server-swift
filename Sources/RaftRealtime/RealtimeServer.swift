@@ -283,12 +283,19 @@ public enum RealtimeServerError: Error {
 /// One TCP connection on the Socket.IO listener. It handles HTTP requests
 /// (polling GET/POST and the WebSocket handshake) and, after an upgrade, the
 /// WebSocket frame stream. Engine state lives in `EngineIOSession`, not here.
-private final class RealtimeConnectionHandler: ChannelInboundHandler {
+private final class RealtimeConnectionHandler: ChannelDuplexHandler {
     typealias InboundIn = ByteBuffer
+    typealias OutboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
 
     private enum Mode {
         case http
         case websocket
+    }
+
+    private struct HeldHTTPResponse {
+        var bytes: [UInt8]
+        var closeAfter: Bool
     }
 
     private let auth: any RealtimeAuthorizing
@@ -298,14 +305,23 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     private let registry: EngineIOSessionRegistry
     private let cors: EngineIOCORS
     private let connectionID = UUID()
-    private let maxPayload = 1_000_000
 
     private var mode: Mode = .http
-    private var httpBuffer: [UInt8] = []
+    private var httpFramer = EngineIOHTTPFramer(maxPayload: 1_000_000)
     private var websocketBuffer: [UInt8] = []
     private var engine: EngineIOSession?
     private var layer: RealtimeSocketIOSession?
     private var closed = false
+    private var engineCloseNotified = false
+
+    /// A polling GET that has not written its response yet owns the next
+    /// response position on this connection. Later pipelined responses are
+    /// held until the poll response flushes, matching Node's ordered
+    /// ServerResponse queue.
+    private var awaitingEngineResponse = false
+    private var heldResponses: [HeldHTTPResponse] = []
+    private var engineResponseFlushPending = false
+    private var stopReadingHTTP = false
 
     init(
         auth: any RealtimeAuthorizing,
@@ -331,7 +347,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         }
         switch mode {
         case .http:
-            httpBuffer.append(contentsOf: bytes)
+            httpFramer.append(bytes)
             drainHTTP(context: context)
         case .websocket:
             websocketBuffer.append(contentsOf: bytes)
@@ -341,8 +357,22 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
 
     func channelInactive(context: ChannelHandlerContext) {
         context.eventLoop.preconditionInEventLoop()
-        guard !closed else { return }
         closed = true
+        heldResponses.removeAll()
+        notifyEngineOfClose()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        context.eventLoop.preconditionInEventLoop()
+        closed = true
+        heldResponses.removeAll()
+        notifyEngineOfClose()
+        context.close(promise: nil)
+    }
+
+    private func notifyEngineOfClose() {
+        guard !engineCloseNotified else { return }
+        engineCloseNotified = true
         guard let engine else { return }
         if mode == .websocket {
             engine.websocketClosed(connectionID)
@@ -351,50 +381,58 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         }
     }
 
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        context.eventLoop.preconditionInEventLoop()
-        closed = true
-        if let engine {
-            if mode == .websocket { engine.websocketClosed(connectionID) }
-            else { engine.pollConnectionClosed(connectionID) }
-        }
-        context.close(promise: nil)
+    /// Engine poll writes reach this handler (`channel.writeAndFlush` starts at
+    /// the tail) while this handler's own writes use its context and skip the
+    /// interception. A flushed engine response releases held pipelined
+    /// responses in request order.
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        engineResponseFlushPending = true
+        context.write(data, promise: promise)
+    }
+
+    func flush(context: ChannelHandlerContext) {
+        context.flush()
+        guard engineResponseFlushPending else { return }
+        engineResponseFlushPending = false
+        guard awaitingEngineResponse else { return }
+        awaitingEngineResponse = false
+        flushHeldResponses(context: context)
     }
 
     // MARK: - HTTP
 
     private func drainHTTP(context: ChannelHandlerContext) {
-        let separator: [UInt8] = [13, 10, 13, 10]
-        while mode == .http, !closed {
-            guard let end = find(separator, in: httpBuffer) else { return }
-            let headBytes = Array(httpBuffer[..<end])
-            guard let head = String(bytes: headBytes, encoding: .utf8),
-                  let request = EngineIOHTTPRequest(head: head)
-            else {
+        while mode == .http, !closed, !stopReadingHTTP {
+            switch httpFramer.next() {
+            case .incomplete:
+                return
+            case .failure:
+                // Node's HTTP parser answers an invalid request head or body
+                // framing with 400 and closes that connection before any
+                // engine.io routing happens.
                 writeMalformed(context: context)
                 return
-            }
-            if request.method == "POST",
-               request.header("transfer-encoding")?.lowercased().contains("chunked") == true {
-                writeEmptyError(status: "400 Bad Request", context: context, closeAfter: true)
-                return
-            }
-            let bodyLength = request.contentLength ?? 0
-            if request.method == "POST", bodyLength > maxPayload {
+            case .oversized(let request):
                 // The unread body cannot be framed again on this connection,
                 // so every oversized response closes it regardless of whether
                 // the request itself was otherwise routable.
-                httpBuffer.removeAll()
                 handle(request, body: [], keepAlive: false, oversized: true, context: context)
                 return
+            case .upgrade(let request, let residual):
+                guard request.path == "/socket.io/" else {
+                    writeNotFound(request, context: context)
+                    return
+                }
+                handleWebSocket(
+                    request, sid: request.query["sid"], residual: residual,
+                    keepAlive: request.keepsConnectionAlive, context: context
+                )
+                return
+            case .request(let request, let body):
+                let keepAlive = request.keepsConnectionAlive
+                handle(request, body: body, keepAlive: keepAlive, context: context)
+                if mode == .websocket || closed || stopReadingHTTP { return }
             }
-            let total = end + 4 + bodyLength
-            guard httpBuffer.count >= total else { return }
-            let body = Array(httpBuffer[(end + 4)..<total])
-            httpBuffer.removeFirst(total)
-            let keepAlive = request.keepsConnectionAlive
-            handle(request, body: body, keepAlive: keepAlive, context: context)
-            if mode == .websocket || closed { return }
         }
     }
 
@@ -407,33 +445,22 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     ) {
         let origin = request.header("origin")
         guard request.path == "/socket.io/" else {
-            let bytes = engineIOHTTPResponseBytes(
-                status: "404 Not Found", headers: [], body: [], keepAlive: keepAlive,
-                chunked: false, contentLength: true
-            )
-            engineIOWrite(bytes, to: context.channel, closeAfterWrite: !keepAlive)
-            if !keepAlive { closed = true }
+            writeNotFound(request, context: context)
             return
         }
         if request.method == "OPTIONS", cors.isEnabled {
             let bytes = engineIOPreflightResponseBytes(
                 cors: cors, origin: origin, requestedHeaders: request.header("access-control-request-headers")
             )
-            engineIOWrite(bytes, to: context.channel, closeAfterWrite: false)
+            writeHTTPResponse(bytes, closeAfter: false, context: context)
             return
         }
         guard let transport = request.query["transport"], transport == "polling" || transport == "websocket" else {
             writeEngineError(code: 0, message: "Transport unknown", origin: origin, keepAlive: keepAlive, context: context)
             return
         }
-        let sid = request.query["sid"]
-        let isUpgrade = transport == "websocket"
-            && (request.header("upgrade")?.lowercased().contains("websocket") ?? false)
-        if isUpgrade {
-            handleWebSocket(request, sid: sid, keepAlive: keepAlive, context: context)
-            return
-        }
         if request.query["EIO"] != "4" {
+            let sid = request.query["sid"]
             if let sid, !sid.isEmpty {
                 writeEngineError(code: 3, message: "Bad request", origin: origin, keepAlive: keepAlive, context: context)
             } else {
@@ -447,6 +474,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
             writeEngineError(code: 3, message: "Bad request", origin: origin, keepAlive: keepAlive, context: context)
             return
         }
+        let sid = request.query["sid"]
         if let sid, !sid.isEmpty {
             guard let engine = registry.session(id: sid) else {
                 writeEngineError(code: 1, message: "Session ID unknown", origin: origin, keepAlive: keepAlive, context: context)
@@ -513,8 +541,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
                     cors: cors, origin: origin, userAgent: request.header("user-agent"),
                     keepAlive: keepAlive
                 )
-                engineIOWrite(bytes, to: context.channel, closeAfterWrite: !keepAlive)
-                if !keepAlive { closed = true }
+                writeHTTPResponse(bytes, closeAfter: !keepAlive, context: context)
             case .overlap:
                 writeEmptyError(
                     status: "400 Bad Request", origin: origin,
@@ -546,7 +573,9 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
             userAgent: userAgent, keepAlive: keepAlive
         ) {
         case .accepted:
-            break
+            // The poll response is produced on the engine's owner loop. Until
+            // it flushes, later pipelined responses stay queued behind it.
+            awaitingEngineResponse = true
         case .overlap:
             writeEmptyError(
                 status: "400 Bad Request", origin: origin,
@@ -592,34 +621,40 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
     private func handleWebSocket(
         _ request: EngineIOHTTPRequest,
         sid: String?,
+        residual: [UInt8],
         keepAlive: Bool,
         context: ChannelHandlerContext
     ) {
         guard let key = request.header("sec-websocket-key"), !key.isEmpty else {
-            writeEmptyError(status: "400 Bad Request", context: context, closeAfter: true)
+            writeUpgradeAbort(engineIOEmptyErrorResponseBytes(
+                status: "400 Bad Request", cors: cors, origin: request.header("origin"),
+                keepAlive: false
+            ), context: context)
             return
         }
         if let sid, !sid.isEmpty {
             guard registry.session(id: sid) != nil else {
-                engineIOWrite(engineIOWebSocketAbortBytes(message: "Session ID unknown"), to: context.channel, closeAfterWrite: true)
-                closed = true
+                writeUpgradeAbort(engineIOWebSocketAbortBytes(message: "Session ID unknown"), context: context)
                 return
             }
             if request.query["EIO"] != "4" {
-                engineIOWrite(engineIOWebSocketAbortBytes(message: "Bad request"), to: context.channel, closeAfterWrite: true)
-                closed = true
+                writeUpgradeAbort(engineIOWebSocketAbortBytes(message: "Bad request"), context: context)
                 return
             }
         } else if request.query["EIO"] != "4" {
-            engineIOWrite(engineIOWebSocketAbortBytes(message: "Unsupported protocol version"), to: context.channel, closeAfterWrite: true)
-            closed = true
+            writeUpgradeAbort(engineIOWebSocketAbortBytes(message: "Unsupported protocol version"), context: context)
             return
         }
         let prelude = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(secWebSocketAccept(key))\r\n\r\n"
-        engineIOWrite(Array(prelude.utf8), to: context.channel, closeAfterWrite: false)
+        writeRawResponse(Array(prelude.utf8), closeAfter: false, context: context)
         mode = .websocket
-        websocketBuffer = httpBuffer
-        httpBuffer = []
+        websocketBuffer = residual
+        // Any HTTP response still queued on the old transport would be written
+        // into the WebSocket frame stream; the upgrade request owns this
+        // connection from the 101 onward.
+        awaitingEngineResponse = false
+        heldResponses.removeAll()
+        stopReadingHTTP = false
         if let sid, !sid.isEmpty {
             guard let engine = registry.session(id: sid) else {
                 context.close(promise: nil)
@@ -648,7 +683,10 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
                 context.close(promise: nil)
                 return
             case 0x9:
-                engineIOWrite(websocketControlFrame(opcode: 0xA, payload: frame.payload), to: context.channel, closeAfterWrite: false)
+                writeRawResponse(
+                    websocketControlFrame(opcode: 0xA, payload: frame.payload),
+                    closeAfter: false, context: context
+                )
             case 0xA:
                 break
             default:
@@ -659,14 +697,62 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
 
     // MARK: - Responses
 
+    private func writeHTTPResponse(_ bytes: [UInt8], closeAfter: Bool, context: ChannelHandlerContext) {
+        guard !closed else { return }
+        if awaitingEngineResponse {
+            heldResponses.append(HeldHTTPResponse(bytes: bytes, closeAfter: closeAfter))
+            if closeAfter { stopReadingHTTP = true }
+            return
+        }
+        writeRawResponse(bytes, closeAfter: closeAfter, context: context)
+    }
+
+    private func writeRawResponse(_ bytes: [UInt8], closeAfter: Bool, context: ChannelHandlerContext) {
+        guard !closed else { return }
+        var buffer = context.channel.allocator.buffer(capacity: bytes.count)
+        buffer.writeBytes(bytes)
+        if closeAfter {
+            closed = true
+            let channel = context.channel
+            context.writeAndFlush(wrapOutboundOut(buffer)).whenComplete { _ in
+                channel.close(promise: nil)
+            }
+        } else {
+            context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
+        }
+    }
+
+    private func flushHeldResponses(context: ChannelHandlerContext) {
+        let responses = heldResponses
+        heldResponses.removeAll()
+        for response in responses {
+            writeRawResponse(response.bytes, closeAfter: response.closeAfter, context: context)
+            if response.closeAfter { return }
+        }
+    }
+
+    private func writeUpgradeAbort(_ bytes: [UInt8], context: ChannelHandlerContext) {
+        // An upgrade abort closes before the 101; it owns the connection and is
+        // never queued behind a polling response.
+        writeRawResponse(bytes, closeAfter: true, context: context)
+    }
+
+    private func writeNotFound(_ request: EngineIOHTTPRequest, context: ChannelHandlerContext) {
+        let keepAlive = request.keepsConnectionAlive
+        let bytes = engineIOHTTPResponseBytes(
+            status: "404 Not Found", headers: [], body: [], keepAlive: keepAlive,
+            chunked: false, contentLength: true
+        )
+        writeHTTPResponse(bytes, closeAfter: !keepAlive, context: context)
+    }
+
     private func writeEngineError(
         code: Int, message: String, origin: String?, keepAlive: Bool, context: ChannelHandlerContext
     ) {
         let bytes = engineIOErrorResponseBytes(
             code: code, message: message, cors: cors, origin: origin, keepAlive: keepAlive
         )
-        engineIOWrite(bytes, to: context.channel, closeAfterWrite: !keepAlive)
-        if !keepAlive { closed = true }
+        writeHTTPResponse(bytes, closeAfter: !keepAlive, context: context)
     }
 
     private func writeEmptyError(
@@ -676,8 +762,7 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
         let bytes = engineIOEmptyErrorResponseBytes(
             status: status, cors: cors, origin: origin, keepAlive: !closeAfter
         )
-        engineIOWrite(bytes, to: context.channel, closeAfterWrite: closeAfter)
-        if closeAfter { closed = true }
+        writeHTTPResponse(bytes, closeAfter: closeAfter, context: context)
     }
 
     private func writeMalformed(context: ChannelHandlerContext) {
@@ -685,16 +770,9 @@ private final class RealtimeConnectionHandler: ChannelInboundHandler {
             status: "400 Bad Request", headers: [], body: [], keepAlive: false,
             chunked: true, contentLength: false
         )
-        engineIOWrite(bytes, to: context.channel, closeAfterWrite: true)
-        closed = true
-    }
-
-    private func find(_ needle: [UInt8], in haystack: [UInt8]) -> Int? {
-        guard !needle.isEmpty, haystack.count >= needle.count else { return nil }
-        for index in 0...(haystack.count - needle.count) {
-            if Array(haystack[index..<(index + needle.count)]) == needle { return index }
-        }
-        return nil
+        // A parser error terminates the connection even if an earlier poll is
+        // still outstanding, exactly like Node destroying the socket.
+        writeRawResponse(bytes, closeAfter: true, context: context)
     }
 }
 

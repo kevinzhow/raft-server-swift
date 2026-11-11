@@ -1,21 +1,40 @@
 import Foundation
 import NIOCore
 
-/// HTTP/1.1 request head as seen by the SwiftNIO socket listener. The event
-/// parser only needs the request line and headers; bodies are framed by
-/// `Content-Length`, matching engine.io's polling transport.
+/// HTTP/1.1 request head as seen by the SwiftNIO socket listener. Header
+/// framing is parsed once: duplicate or invalid `Content-Length`, duplicate
+/// `Transfer-Encoding`, and `Content-Length`/`Transfer-Encoding` conflicts are
+/// parser errors, exactly like Node's llhttp-backed HTTP server.
+enum EngineIOHTTPBodyFraming: Equatable, Sendable {
+    case none
+    case contentLength(UInt64)
+    case chunked
+}
+
+enum EngineIOHTTPRequestError: Error, Equatable, Sendable {
+    case malformedHead
+    case duplicateContentLength
+    case invalidContentLength
+    case duplicateTransferEncoding
+    case contentLengthWithTransferEncoding
+    case unsupportedTransferEncoding
+}
+
 struct EngineIOHTTPRequest: Sendable {
     var method: String
     var path: String
     var query: [String: String]
     var version: String
+    var bodyFraming: EngineIOHTTPBodyFraming
     private var headers: [String: String]
 
-    init?(head: String) {
+    init(validatingHead head: String) throws {
         let lines = head.components(separatedBy: "\r\n")
-        guard let requestLine = lines.first else { return nil }
-        let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2 else { return nil }
+        guard let requestLine = lines.first, !requestLine.isEmpty else {
+            throw EngineIOHTTPRequestError.malformedHead
+        }
+        let parts = requestLine.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count >= 2 else { throw EngineIOHTTPRequestError.malformedHead }
         method = String(parts[0]).uppercased()
         version = parts.count > 2 ? String(parts[2]) : "HTTP/1.1"
         let target = String(parts[1])
@@ -31,23 +50,55 @@ struct EngineIOHTTPRequest: Sendable {
             }
         }
         self.query = query
+
         var headers: [String: String] = [:]
+        var contentLengths: [String] = []
+        var transferEncodings: [String] = []
         for line in lines.dropFirst() {
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            if line.isEmpty { continue }
+            guard let colon = line.firstIndex(of: ":") else {
+                throw EngineIOHTTPRequestError.malformedHead
+            }
+            let rawName = line[..<colon]
+            guard !rawName.isEmpty,
+                  rawName.utf8.allSatisfy(Self.isTokenByte)
+            else {
+                throw EngineIOHTTPRequestError.malformedHead
+            }
+            let name = String(rawName).lowercased()
             let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             headers[name] = value
+            if name == "content-length" { contentLengths.append(value) }
+            if name == "transfer-encoding" { transferEncodings.append(value) }
         }
         self.headers = headers
+
+        if contentLengths.count > 1 {
+            throw EngineIOHTTPRequestError.duplicateContentLength
+        }
+        if transferEncodings.count > 1 {
+            throw EngineIOHTTPRequestError.duplicateTransferEncoding
+        }
+        if !contentLengths.isEmpty && !transferEncodings.isEmpty {
+            throw EngineIOHTTPRequestError.contentLengthWithTransferEncoding
+        }
+        if let rawLength = contentLengths.first {
+            bodyFraming = .contentLength(try Self.parseContentLength(rawLength))
+        } else if let rawEncoding = transferEncodings.first {
+            try Self.validateTransferEncoding(rawEncoding)
+            bodyFraming = .chunked
+        } else {
+            bodyFraming = .none
+        }
     }
 
     func header(_ name: String) -> String? {
         headers[name.lowercased()]
     }
 
-    var contentLength: Int? {
-        guard let raw = header("content-length") else { return nil }
-        return Int(raw)
+    var isWebSocketUpgrade: Bool {
+        query["transport"] == "websocket"
+            && (header("upgrade")?.lowercased().contains("websocket") ?? false)
     }
 
     var keepsConnectionAlive: Bool {
@@ -55,6 +106,38 @@ struct EngineIOHTTPRequest: Sendable {
             return version != "HTTP/1.0"
         }
         return !connection.contains("close")
+    }
+
+    private static func isTokenByte(_ byte: UInt8) -> Bool {
+        switch byte {
+        case 33, 35...39, 42, 43, 45, 46, 48...57, 65...90, 94...96, 97...122, 124, 126:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func parseContentLength(_ raw: String) throws -> UInt64 {
+        guard !raw.isEmpty,
+              raw.utf8.allSatisfy({ $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }),
+              let value = UInt64(raw)
+        else {
+            throw EngineIOHTTPRequestError.invalidContentLength
+        }
+        return value
+    }
+
+    private static func validateTransferEncoding(_ raw: String) throws {
+        let tokens = raw.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        guard !tokens.isEmpty, tokens.allSatisfy({ !$0.isEmpty }) else {
+            throw EngineIOHTTPRequestError.unsupportedTransferEncoding
+        }
+        // Node accepts a final `chunked` coding, including a legal preceding
+        // coding such as `gzip, chunked`. `chunked` itself must be last.
+        guard tokens.last == "chunked" else {
+            throw EngineIOHTTPRequestError.unsupportedTransferEncoding
+        }
     }
 }
 
