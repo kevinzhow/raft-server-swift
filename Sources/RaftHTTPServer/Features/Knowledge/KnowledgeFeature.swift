@@ -30,6 +30,28 @@ struct KnowledgeFeature: RouteCollection, Sendable {
         knowledge.get("search") { request -> Response in
             routeResponse(Self.searchReply(request: request, services: services))
         }
+
+        // Legacy machine surface: the same content contract after the
+        // `/internal/agent/:id/*` machine authentication and `knowledge:read`
+        // gate. `services` is used for the gate only; the body rules are shared.
+        let legacyAgent = routes.grouped("internal", "agent", ":agentId")
+        legacyAgent.get("knowledge") { request -> Response in
+            do {
+                let agent = try services.emailAccounts.legacyAgentSurface.knowledgeAgent(
+                    authorization: request.headers[.authorization],
+                    agentId: request.parameters.get("agentId") ?? ""
+                )
+                return routeResponse(Self.getReply(
+                    request: request,
+                    services: services,
+                    identity: KnowledgeIdentity(agentId: agent.id, serverId: agent.serverId)
+                ))
+            } catch let error as any DomainError {
+                return domainErrorResponse(error)
+            } catch {
+                return domainErrorResponse(LegacyAgentMachineError.invalidAuthentication)
+            }
+        }
     }
 
     // MARK: - Identity and capability
@@ -109,13 +131,21 @@ struct KnowledgeFeature: RouteCollection, Sendable {
 
     // MARK: - GET /internal/agent-api/knowledge
 
-    private static func getReply(request: Request, services: FallbackServices) -> HTTPReply {
-        let startedAt = Date()
+    private static func getReply(
+        request: Request,
+        services: FallbackServices,
+        identity resolved: KnowledgeIdentity? = nil
+    ) -> HTTPReply {
         let identity: KnowledgeIdentity
-        switch resolveIdentity(request, services) {
-        case .identity(let value): identity = value
-        case .denial(let reply): return reply
+        if let resolved {
+            identity = resolved
+        } else {
+            switch resolveIdentity(request, services) {
+            case .identity(let value): identity = value
+            case .denial(let reply): return reply
+            }
         }
+        let startedAt = Date()
 
         guard let source = resolveSource(request) else {
             return KnowledgeDirectory.reply(
@@ -236,13 +266,21 @@ struct KnowledgeFeature: RouteCollection, Sendable {
 
     // MARK: - GET /internal/agent-api/knowledge/search
 
-    private static func searchReply(request: Request, services: FallbackServices) -> HTTPReply {
-        let startedAt = Date()
+    private static func searchReply(
+        request: Request,
+        services: FallbackServices,
+        identity resolved: KnowledgeIdentity? = nil
+    ) -> HTTPReply {
         let identity: KnowledgeIdentity
-        switch resolveIdentity(request, services) {
-        case .identity(let value): identity = value
-        case .denial(let reply): return reply
+        if let resolved {
+            identity = resolved
+        } else {
+            switch resolveIdentity(request, services) {
+            case .identity(let value): identity = value
+            case .denial(let reply): return reply
+            }
         }
+        let startedAt = Date()
 
         guard let source = resolveSource(request) else {
             return KnowledgeDirectory.reply(

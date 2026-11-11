@@ -29,6 +29,7 @@ extension OAuthLedger.Client: Codable {
         case setupUrl
         case setupDescription
         case setupRevision
+        case logoUrl
     }
 
     init(from decoder: any Decoder) throws {
@@ -59,6 +60,7 @@ extension OAuthLedger.Client: Codable {
         self.setupUrl = try values.decode(String?.self, forKey: .setupUrl)
         self.setupDescription = try values.decode(String?.self, forKey: .setupDescription)
         self.setupRevision = try values.decode(Int.self, forKey: .setupRevision)
+        self.logoUrl = try values.decodeIfPresent(String.self, forKey: .logoUrl)
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -89,11 +91,13 @@ extension OAuthLedger.Client: Codable {
         try values.encode(setupUrl, forKey: .setupUrl)
         try values.encode(setupDescription, forKey: .setupDescription)
         try values.encode(setupRevision, forKey: .setupRevision)
+        try values.encode(logoUrl, forKey: .logoUrl)
     }
 }
 
 extension OAuthLedger.IntegrationAuditEvent: Codable {
     private enum CodingKeys: String, CodingKey {
+        case id
         case eventType
         case clientRecordId
         case installationId
@@ -102,6 +106,7 @@ extension OAuthLedger.IntegrationAuditEvent: Codable {
 
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try values.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString.lowercased()
         self.eventType = try values.decode(String.self, forKey: .eventType)
         self.clientRecordId = try values.decode(String.self, forKey: .clientRecordId)
         self.installationId = try values.decode(String.self, forKey: .installationId)
@@ -110,6 +115,7 @@ extension OAuthLedger.IntegrationAuditEvent: Codable {
 
     func encode(to encoder: any Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
         try values.encode(eventType, forKey: .eventType)
         try values.encode(clientRecordId, forKey: .clientRecordId)
         try values.encode(installationId, forKey: .installationId)

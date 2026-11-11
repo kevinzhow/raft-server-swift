@@ -162,6 +162,7 @@ extension OAuthLedger.State: Codable {
         case serverAgreementRecords
         case serverPushMutes
         case clients
+        case clientShareLinks
         case integrationAuditEvents
         case requests
         case tokens
@@ -195,6 +196,7 @@ extension OAuthLedger.State: Codable {
         serverAgreementRecords = try values.decode([String: [OAuthLedger.ServerAgreementInfo]].self, forKey: .serverAgreementRecords)
         serverPushMutes = try values.decode(Set<String>.self, forKey: .serverPushMutes)
         clients = try values.decode([OAuthLedger.Client].self, forKey: .clients)
+        clientShareLinks = try values.decodeIfPresent([OAuthLedger.ClientShareLink].self, forKey: .clientShareLinks) ?? []
         integrationAuditEvents = try values.decode([OAuthLedger.IntegrationAuditEvent].self, forKey: .integrationAuditEvents)
         requests = try values.decode([OAuthLedger.AccessRequest].self, forKey: .requests)
         tokens = try values.decode([OAuthLedger.AccessToken].self, forKey: .tokens)
@@ -228,6 +230,7 @@ extension OAuthLedger.State: Codable {
         try values.encode(serverAgreementRecords, forKey: .serverAgreementRecords)
         try values.encode(serverPushMutes, forKey: .serverPushMutes)
         try values.encode(clients, forKey: .clients)
+        try values.encode(clientShareLinks, forKey: .clientShareLinks)
         try values.encode(integrationAuditEvents, forKey: .integrationAuditEvents)
         try values.encode(requests, forKey: .requests)
         try values.encode(tokens, forKey: .tokens)

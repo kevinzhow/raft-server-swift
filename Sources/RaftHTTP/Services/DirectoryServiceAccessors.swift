@@ -767,6 +767,21 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// The legacy machine-key agent surface (`/internal/agent/:id/*`): the
+    /// machine authentication and keyed-grant gates, then the task, message and
+    /// avatar operations the owning services already implement.
+    public var legacyAgentSurface: LegacyAgentSurfaceService {
+        LegacyAgentSurfaceService(
+            agents: agentsRuntimeStore,
+            machines: machinesAndComputersStore,
+            oauth: oauth,
+            cards: managedMCPAndCardsStore,
+            tasksAndLabs: tasksAndLabs,
+            messageLookup: agentMessageLookup,
+            agentChannels: agentChannels
+        )
+    }
+
     /// The notice, mirror and acting agent's born-read cursor share one
     /// Messages transaction; external effects run after that transaction returns.
     var systemNoticeAppender: @Sendable (StoredHumanMessage, String?) -> Int {

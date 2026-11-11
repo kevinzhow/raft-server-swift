@@ -169,6 +169,16 @@ public struct AgentMessageLookupService: Sendable {
         messageRef: String
     ) throws -> AgentMessageResolveResponse {
         let agent = try requireReadingAgent(authorization)
+        return try messageResolve(agent: agent, messageRef: messageRef)
+    }
+
+    /// The resolution itself, after an owner has established the acting agent.
+    /// The legacy machine route and the credential route publish the same body;
+    /// only the credential check in front of them differs.
+    func messageResolve(
+        agent: OAuthLedger.AgentRuntimeInfo,
+        messageRef: String
+    ) throws -> AgentMessageResolveResponse {
         let state = messages.state
         let channelState = channels.state
         let postableChannels = channelState.postableChannels

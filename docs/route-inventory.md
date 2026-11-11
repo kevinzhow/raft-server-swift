@@ -19,10 +19,10 @@ python3 scripts/route_inventory.py --swift-dump /tmp/swift-routes.tsv --write do
 | Metric | Count |
 | --- | ---: |
 | Upstream route registrations | 644 |
-| Swift route registrations | 545 |
-| Exact matches | 517 |
+| Swift route registrations | 562 |
+| Exact matches | 534 |
 | Parameter-variant matches | 1 |
-| Missing in Swift | 123 |
+| Missing in Swift | 106 |
 | Extra in Swift | 27 |
 
 A parameter-variant match means one side registers a literal path segment where
@@ -42,46 +42,29 @@ that reference the normalized call path (full `/api/...` form or the
 path after the API base). `0` means no pinned client reference was found; it
 does not prove no other consumer exists.
 
-### internal*.ts — 45 missing
+### internal*.ts — 28 missing
 
 | Method path | Web | CLI |
 | --- | ---: | ---: |
 | `POST /internal/agent-api/app-sources/ack` | 0 | 0 |
-| `POST /internal/agent-api/attachment-upload-sessions` | 0 | 5 |
-| `DELETE /internal/agent-api/attachment-upload-sessions/:param` | 0 | 3 |
-| `GET /internal/agent-api/attachment-upload-sessions/:param` | 0 | 3 |
-| `POST /internal/agent-api/attachment-upload-sessions/:param/complete` | 0 | 3 |
-| `POST /internal/agent-api/integrations/app/logo` | 0 | 2 |
-| `POST /internal/agent-api/integrations/app/manage` | 0 | 2 |
-| `POST /internal/agent-api/integrations/app/rotate-secret` | 0 | 1 |
-| `POST /internal/agent-api/integrations/app/transfer-owner` | 0 | 1 |
 | `GET /internal/agent-api/labs` | 0 | 0 |
 | `PUT /internal/agent-api/labs/:param` | 0 | 0 |
 | `PATCH /internal/agent-api/labs/access` | 0 | 0 |
 | `GET /internal/agent-api/mentions/:param/delivery` | 0 | 0 |
-| `POST /internal/agent-api/profile/avatar` | 0 | 1 |
 | `DELETE /internal/agent-api/push-webhook` | 0 | 0 |
 | `GET /internal/agent-api/push-webhook` | 0 | 0 |
 | `GET /internal/agent-api/raftbench/context` | 0 | 0 |
 | `POST /internal/agent-api/raftbench/submit` | 0 | 0 |
-| `POST /internal/agent-api/server/avatar` | 0 | 3 |
-| `GET /internal/agent-api/tasks/history` | 0 | 2 |
-| `POST /internal/agent-api/tasks/unclaim` | 0 | 3 |
 | `GET /internal/agent/:param/integrations` | 0 | 0 |
 | `POST /internal/agent/:param/integrations/app/prepare` | 0 | 0 |
 | `POST /internal/agent/:param/integrations/login` | 0 | 0 |
-| `GET /internal/agent/:param/knowledge` | 0 | 1 |
 | `GET /internal/agent/:param/knowledge/search` | 0 | 0 |
-| `GET /internal/agent/:param/messages/:param/resolve` | 0 | 1 |
 | `POST /internal/agent/:param/prepare-action` | 0 | 0 |
 | `GET /internal/agent/:param/profile` | 0 | 0 |
 | `POST /internal/agent/:param/profile` | 0 | 0 |
 | `POST /internal/agent/:param/profile/avatar` | 0 | 0 |
-| `GET /internal/agent/:param/receive` | 0 | 1 |
 | `POST /internal/agent/:param/resolve-channel` | 0 | 0 |
 | `GET /internal/agent/:param/scopes` | 0 | 0 |
-| `POST /internal/agent/:param/server/avatar` | 0 | 2 |
-| `GET /internal/agent/:param/tasks` | 0 | 1 |
 | `POST /internal/agent/:param/tasks/unclaim` | 0 | 0 |
 | `POST /internal/computer/agent-migrations/by-id/:param/resumable/stream-chunks/:param` | 0 | 0 |
 | `POST /internal/computer/probes/:param/materialize` | 0 | 0 |
@@ -653,10 +636,10 @@ does not prove no other consumer exists.
 | internal | `GET /internal/agent-api/assistant/owner-inbox` | matched |
 | internal | `GET /internal/agent-api/assistant/owner-messages` | matched |
 | internal | `GET /internal/agent-api/attachment-upload-capabilities` | matched |
-| internal | `POST /internal/agent-api/attachment-upload-sessions` | missing |
-| internal | `DELETE /internal/agent-api/attachment-upload-sessions/:param` | missing |
-| internal | `GET /internal/agent-api/attachment-upload-sessions/:param` | missing |
-| internal | `POST /internal/agent-api/attachment-upload-sessions/:param/complete` | missing |
+| internal | `POST /internal/agent-api/attachment-upload-sessions` | matched |
+| internal | `DELETE /internal/agent-api/attachment-upload-sessions/:param` | matched |
+| internal | `GET /internal/agent-api/attachment-upload-sessions/:param` | matched |
+| internal | `POST /internal/agent-api/attachment-upload-sessions/:param/complete` | matched |
 | internal | `GET /internal/agent-api/attachments/:param` | matched |
 | internal | `GET /internal/agent-api/attachments/:param/comments` | matched |
 | internal | `POST /internal/agent-api/attachments/:param/comments` | matched |
@@ -680,12 +663,12 @@ does not prove no other consumer exists.
 | internal | `GET /internal/agent-api/inbox/conversations` | matched |
 | internal | `GET /internal/agent-api/integrations` | matched |
 | internal | `GET /internal/agent-api/integrations/app` | matched |
-| internal | `POST /internal/agent-api/integrations/app/logo` | missing |
-| internal | `POST /internal/agent-api/integrations/app/manage` | missing |
+| internal | `POST /internal/agent-api/integrations/app/logo` | matched |
+| internal | `POST /internal/agent-api/integrations/app/manage` | matched |
 | internal | `POST /internal/agent-api/integrations/app/prepare` | matched |
-| internal | `POST /internal/agent-api/integrations/app/rotate-secret` | missing |
+| internal | `POST /internal/agent-api/integrations/app/rotate-secret` | matched |
 | internal | `GET /internal/agent-api/integrations/app/status` | matched |
-| internal | `POST /internal/agent-api/integrations/app/transfer-owner` | missing |
+| internal | `POST /internal/agent-api/integrations/app/transfer-owner` | matched |
 | internal | `POST /internal/agent-api/integrations/app/update` | matched |
 | internal | `POST /internal/agent-api/integrations/login` | matched |
 | internal | `GET /internal/agent-api/integrations/marketplace` | matched |
@@ -708,7 +691,7 @@ does not prove no other consumer exists.
 | internal | `POST /internal/agent-api/prepare-action` | matched |
 | internal | `GET /internal/agent-api/profile` | matched |
 | internal | `POST /internal/agent-api/profile` | matched |
-| internal | `POST /internal/agent-api/profile/avatar` | missing |
+| internal | `POST /internal/agent-api/profile/avatar` | matched |
 | internal | `DELETE /internal/agent-api/push-webhook` | missing |
 | internal | `GET /internal/agent-api/push-webhook` | missing |
 | internal | `PUT /internal/agent-api/push-webhook` | matched |
@@ -725,7 +708,7 @@ does not prove no other consumer exists.
 | internal | `POST /internal/agent-api/send` | matched |
 | internal | `GET /internal/agent-api/server` | matched |
 | internal | `PATCH /internal/agent-api/server` | matched |
-| internal | `POST /internal/agent-api/server/avatar` | missing |
+| internal | `POST /internal/agent-api/server/avatar` | matched |
 | internal | `GET /internal/agent-api/tasks` | matched |
 | internal | `POST /internal/agent-api/tasks` | matched |
 | internal | `POST /internal/agent-api/tasks/amend` | matched |
@@ -733,9 +716,9 @@ does not prove no other consumer exists.
 | internal | `POST /internal/agent-api/tasks/claim` | matched |
 | internal | `POST /internal/agent-api/tasks/convert` | matched |
 | internal | `POST /internal/agent-api/tasks/delete` | matched |
-| internal | `GET /internal/agent-api/tasks/history` | missing |
+| internal | `GET /internal/agent-api/tasks/history` | matched |
 | internal | `POST /internal/agent-api/tasks/resource-receipt` | matched |
-| internal | `POST /internal/agent-api/tasks/unclaim` | missing |
+| internal | `POST /internal/agent-api/tasks/unclaim` | matched |
 | internal | `POST /internal/agent-api/tasks/update-status` | matched |
 | internal | `POST /internal/agent-api/third-party-events/delivered` | matched |
 | internal | `GET /internal/agent-api/threads` | matched |
@@ -756,16 +739,16 @@ does not prove no other consumer exists.
 | internal | `GET /internal/agent/:param/integrations` | missing |
 | internal | `POST /internal/agent/:param/integrations/app/prepare` | missing |
 | internal | `POST /internal/agent/:param/integrations/login` | missing |
-| internal | `GET /internal/agent/:param/knowledge` | missing |
+| internal | `GET /internal/agent/:param/knowledge` | matched |
 | internal | `GET /internal/agent/:param/knowledge/search` | missing |
 | internal | `DELETE /internal/agent/:param/messages/:param/reactions` | matched |
 | internal | `POST /internal/agent/:param/messages/:param/reactions` | matched |
-| internal | `GET /internal/agent/:param/messages/:param/resolve` | missing |
+| internal | `GET /internal/agent/:param/messages/:param/resolve` | matched |
 | internal | `POST /internal/agent/:param/prepare-action` | missing |
 | internal | `GET /internal/agent/:param/profile` | missing |
 | internal | `POST /internal/agent/:param/profile` | missing |
 | internal | `POST /internal/agent/:param/profile/avatar` | missing |
-| internal | `GET /internal/agent/:param/receive` | missing |
+| internal | `GET /internal/agent/:param/receive` | matched |
 | internal | `POST /internal/agent/:param/receive-ack` | matched |
 | internal | `GET /internal/agent/:param/reminders` | matched |
 | internal | `POST /internal/agent/:param/reminders` | matched |
@@ -780,8 +763,8 @@ does not prove no other consumer exists.
 | internal | `POST /internal/agent/:param/send` | matched |
 | internal | `GET /internal/agent/:param/server` | matched |
 | internal | `PATCH /internal/agent/:param/server` | matched |
-| internal | `POST /internal/agent/:param/server/avatar` | missing |
-| internal | `GET /internal/agent/:param/tasks` | missing |
+| internal | `POST /internal/agent/:param/server/avatar` | matched |
+| internal | `GET /internal/agent/:param/tasks` | matched |
 | internal | `POST /internal/agent/:param/tasks` | matched |
 | internal | `POST /internal/agent/:param/tasks/claim` | matched |
 | internal | `POST /internal/agent/:param/tasks/unclaim` | missing |

@@ -89,9 +89,29 @@ extension OAuthLedger {
         var setupUrl: String? = nil
         var setupDescription: String? = nil
         var setupRevision: Int = 1
+        /// The stored App logo URL. The port keeps the URL projection only; the
+        /// image bytes are not retained (the avatar routes share this rule).
+        var logoUrl: String? = nil
+    }
+
+    /// One private integration-app share link. The token itself is never
+    /// retained, only its hash, so an issued URL cannot be re-read from the
+    /// ledger.
+    struct ClientShareLink: Codable, Sendable {
+        var id: String
+        var clientId: String
+        var tokenHash: String
+        var createdByUserId: String?
+        var createdByAgentId: String?
+        var expiresAt: Date?
+        var createdAt: Date
+        var updatedAt: Date
+        var revokedAt: Date?
+        var lastUsedAt: Date?
     }
 
     struct IntegrationAuditEvent: Sendable {
+        var id: String = UUID().uuidString.lowercased()
         var eventType: String
         var clientRecordId: String
         var installationId: String
