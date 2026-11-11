@@ -78,6 +78,38 @@ public struct ManagedMCPOAuthService: Sendable {
 
     private var oauth: OAuthLedger { dependencies.oauth }
 
+    /// Human read authority for this service's channel-scoped writes. A thread
+    /// resolves through its parent message's channel, like
+    /// `canUserAccessChannel` (`channelService.ts:4994-5016`).
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        var visited: Set<String> = []
+        func visit(_ id: String) -> Bool {
+            guard visited.count < 64, visited.insert(id).inserted,
+                  let channel = dependencies.channels.postableChannels[id],
+                  channel.serverId == serverId, channel.deletedAt == nil
+            else { return false }
+            switch channel.kind {
+            case "channel":
+                return true
+            case "thread":
+                if let parentId = channel.parentChannelId, visit(parentId) { return true }
+                guard let parentMessageId = channel.parentMessageId,
+                      let parentChannelId = dependencies.messages.humanMessageRows
+                          .first(where: { $0.id == parentMessageId })?.channelId
+                else { return false }
+                return visit(parentChannelId)
+            default:
+                return channel.memberIds.contains(userId)
+                    || oauth.channelType(id: id) == "channel"
+                    || oauth.isChannelParticipant(channelId: id, userId: userId)
+            }
+        }
+        if visit(channelId) { return true }
+        guard dependencies.channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     private func requireUser(_ authorization: String?) throws -> String {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw ManagedMCPOAuthError.unauthorized
@@ -214,14 +246,9 @@ public struct ManagedMCPOAuthService: Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             throw ManagedMCPOAuthError.channelNotFound
         }
-        let readableUnread: Bool
-        if let postable = dependencies.channels.postableMembership(channelId: channelId, userId: userId) {
-            readableUnread = postable.kind == "channel" || postable.isMember
-        } else {
-            readableUnread = oauth.channelType(id: channelId) == "channel"
-                || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ManagedMCPOAuthError.channelNotFound
         }
-        guard readableUnread else { throw ManagedMCPOAuthError.channelNotFound }
         let cursor = max(0, (oauth.latestPeerMessageSeq(channelId: channelId, excluding: userId) ?? 1) - 1)
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: cursor)
         let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)
@@ -386,7 +413,9 @@ public struct ManagedMCPOAuthService: Sendable {
     ) throws -> AgentUserChannelsResponse {
         let identity = try agentIdentity(authorization: authorization)
         guard Self.agentUserPageValues(limit: limit, offset: offset) != nil else {
-            throw ManagedMCPOAuthError.invalidPageWindow
+            throw ManagedMCPOAuthError.invalidPageWindow(
+                Self.agentUserPageIssues(limit: limit, offset: offset)
+            )
         }
         guard let payload = agentUserChannelsPayload(identity: identity, name: name, limit: limit, offset: offset) else {
             throw ManagedMCPOAuthError.userNotFound
@@ -415,13 +444,52 @@ public struct ManagedMCPOAuthService: Sendable {
         )
     }
 
+    /// Pinned `agentApiUserChannelsQuerySchema`: both members are trimmed
+    /// strings matched against a regular expression, so ` 200 ` is valid and
+    /// `01`, `0200`, `+1` and `200.0` are not.
+    private static let offsetPattern = #"^(0|[1-9][0-9]*)$"#
+    private static let limitPattern = #"^([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$"#
+
     private static func agentUserPageValues(limit: String?, offset: String?) -> (limit: Int, offset: Int)? {
-        if let limit, Int(limit) == nil { return nil }
-        if let offset, Int(offset) == nil { return nil }
-        let resolvedLimit = limit.flatMap(Int.init) ?? 50
-        let resolvedOffset = offset.flatMap(Int.init) ?? 0
-        guard (1...200).contains(resolvedLimit), resolvedOffset >= 0 else { return nil }
+        let resolvedLimit: Int
+        if let limit {
+            let trimmed = limit.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.range(of: limitPattern, options: .regularExpression) != nil,
+                  let value = Int(trimmed)
+            else { return nil }
+            resolvedLimit = value
+        } else {
+            resolvedLimit = 50
+        }
+        let resolvedOffset: Int
+        if let offset {
+            let trimmed = offset.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.range(of: offsetPattern, options: .regularExpression) != nil,
+                  let value = Int(trimmed)
+            else { return nil }
+            resolvedOffset = value
+        } else {
+            resolvedOffset = 0
+        }
         return (resolvedLimit, resolvedOffset)
+    }
+
+    /// The zod issues of the two optional query members, in shape order.
+    private static func agentUserPageIssues(limit: String?, offset: String?) -> [AuthRequestIssue] {
+        var issues: [AuthRequestIssue] = []
+        if let offset {
+            let trimmed = offset.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: offsetPattern, options: .regularExpression) == nil {
+                issues.append(AuthRequestIssue(path: "offset", message: "must be a non-negative integer"))
+            }
+        }
+        if let limit {
+            let trimmed = limit.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.range(of: limitPattern, options: .regularExpression) == nil {
+                issues.append(AuthRequestIssue(path: "limit", message: "must be an integer from 1 to 200"))
+            }
+        }
+        return issues
     }
 
     private func agentUserChannelsPayload(

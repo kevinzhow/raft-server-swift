@@ -87,9 +87,23 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
     let sender: Sender
     let attachments: [Attachment]
     let mentions: [StoredMessageMention]
+    /// Creation-time conversation identity. Only `message:new` carries it;
+    /// `message:updated` is the same canonical row without this member.
     let conversationContext: OrderedJSON?
     /// Canonical task facts for an `asTask` send; `nil` for every other row.
     let task: TaskFacts?
+    /// The retained forwarded-bundle / action-card metadata for an update
+    /// projection. A freshly persisted ordinary row has none.
+    var actionMetadata: OrderedJSON? = nil
+    /// Reaction buckets in first-reaction order; empty for a fresh row.
+    var reactions: [OrderedJSON] = []
+    /// The scoped attachment-comment reference. Shared broadcast frames scrub
+    /// it to null; only viewer-private reads carry the object.
+    var commentRef: OrderedJSON? = nil
+    var externalAuthor: OrderedJSON? = nil
+    /// The row's retained update time; a fresh row and a reaction-only update
+    /// both publish the creation time.
+    var updatedAt: Date? = nil
 
     init(
         message: StoredHumanMessage,
@@ -97,7 +111,12 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
         attachments: [Attachment],
         mentions: [StoredMessageMention],
         conversationContext: OrderedJSON?,
-        task: TaskFacts? = nil
+        task: TaskFacts? = nil,
+        actionMetadata: OrderedJSON? = nil,
+        reactions: [OrderedJSON] = [],
+        commentRef: OrderedJSON? = nil,
+        externalAuthor: OrderedJSON? = nil,
+        updatedAt: Date? = nil
     ) {
         self.message = message
         self.sender = sender
@@ -105,6 +124,11 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
         self.mentions = mentions
         self.conversationContext = conversationContext
         self.task = task
+        self.actionMetadata = actionMetadata
+        self.reactions = reactions
+        self.commentRef = commentRef
+        self.externalAuthor = externalAuthor
+        self.updatedAt = updatedAt
     }
 
     /// The same members `jsonBody` publishes, exposed so the thread-summary
@@ -126,7 +150,7 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
             OrderedJSONField("randomId", optional: message.randomId),
             OrderedJSONField("messageType", message.messageType),
             OrderedJSONField("content", message.content),
-            OrderedJSONField("actionMetadata", .null),
+            OrderedJSONField("actionMetadata", actionMetadata ?? .null),
             OrderedJSONField("threadId", .null),
             // The stored row is spread upstream, so the task-domain projection
             // keys are always present. A canonical `asTask` task wins over the
@@ -138,7 +162,7 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
             OrderedJSONField("taskClaimedAt", optional: taskClaimedAt),
             OrderedJSONField("taskCompletedAt", optional: taskCompletedAt),
             OrderedJSONField("createdAt", DateText.isoString(message.createdAt)),
-            OrderedJSONField("updatedAt", DateText.isoString(message.createdAt)),
+            OrderedJSONField("updatedAt", DateText.isoString(updatedAt ?? message.createdAt)),
             OrderedJSONField("senderName", sender.name),
             OrderedJSONField("senderDescription", optional: sender.description),
             OrderedJSONField("senderMembershipStatus", optional: sender.membershipStatus),
@@ -150,12 +174,13 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
                     OrderedJSONField("name", mention.name),
                 ])
             })),
-            // A freshly persisted row has no reactions, comment ref or external
-            // author; the persisted frontend payload publishes the explicit
-            // empty/null values.
-            OrderedJSONField("reactions", .array([])),
-            OrderedJSONField("commentRef", .null),
-            OrderedJSONField("externalAuthor", .null),
+            // The persisted frontend payload always publishes the aggregate
+            // members explicitly: a freshly persisted row has no reactions,
+            // comment ref or external author, while an update projection
+            // carries the retained values.
+            OrderedJSONField("reactions", .array(reactions)),
+            OrderedJSONField("commentRef", commentRef ?? .null),
+            OrderedJSONField("externalAuthor", externalAuthor ?? .null),
         ])
         if let conversationContext {
             body.append("conversationContext", conversationContext)

@@ -157,3 +157,15 @@ public struct ManagedMCPErrorBody: Codable, Sendable, Equatable {
         self.suggestedNextAction = suggestedNextAction
     }
 }
+
+/// The published `{"error": …, "errorCode": …}` object used by typed action-card
+/// errors (the conversion-frozen refusal).
+public struct ActionCardTypedErrorBody: Codable, Sendable, Equatable {
+    public var error: String
+    public var errorCode: String
+
+    public init(error: String, errorCode: String) {
+        self.error = error
+        self.errorCode = errorCode
+    }
+}

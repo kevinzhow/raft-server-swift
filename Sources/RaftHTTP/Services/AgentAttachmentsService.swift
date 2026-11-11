@@ -39,14 +39,10 @@ public struct AgentAttachmentsService: Sendable {
     /// agent was added to.
     func visibleAttachment(agentId: String, serverId: String, attachmentId: String) -> ChannelAttachment? {
         guard let attachment = messages.channelAttachments[attachmentId],
-              let channel = channels.postableChannels[attachment.channelId],
-              channel.serverId == serverId,
-              channel.deletedAt == nil
+              AgentChannelAccessQuery(channels: channels, messages: messages, oauth: oauth)
+                  .canAccess(channelId: attachment.channelId, serverId: serverId, agentId: agentId)
         else { return nil }
-        let visible = channel.kind == "channel"
-            || channel.memberIds.contains(agentId)
-            || oauth.channelAgentIds(channelId: attachment.channelId).contains(agentId)
-        return visible ? attachment : nil
+        return attachment
     }
 
     /// `GET /internal/agent-api/attachments/:attachmentId`.

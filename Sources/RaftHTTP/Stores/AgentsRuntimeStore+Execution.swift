@@ -176,12 +176,58 @@ struct AgentExecutionAgent: Codable, Sendable {
     /// recovery merely because its long-lived process survived.
     var hasUnsettledExecution: Bool {
         launches.values.contains {
-            (!$0.completed && !$0.notSpawned) || $0.inFlightDeliveryCommandIds?.isEmpty == false
+            // A human takeover increments `takeoverEpoch` and thereby
+            // acknowledges every older epoch (the same rule
+            // `hasBlockingUnexitedExecution` applies). An abandoned turn from a
+            // previous epoch cannot complete after the takeover, so it must not
+            // fence the current runtime into manual recovery forever.
+            guard $0.takeoverEpoch == takeoverEpoch else { return false }
+            return (!$0.completed && !$0.notSpawned) || $0.inFlightDeliveryCommandIds?.isEmpty == false
         }
     }
 }
 
 extension AgentExecutionState {
+    /// One message can be owed exactly one live attempt: a delivery command on
+    /// the agent's current usable launch, or a start that already carries the
+    /// message as its wake input. Every release authority (queued send, human
+    /// start, occurrence recovery) consults this before staging a frame.
+    func liveObligationCommand(serverId: String, agentId: String,
+                               channelId: String, messageId: String) -> AgentExecutionCommand? {
+        guard let agent = agents[agentId], agent.serverId == serverId else { return nil }
+        return commands.values
+            .filter { command in
+                guard command.serverId == serverId, command.agentId == agentId,
+                      command.status != .superseded, command.launchId == agent.currentLaunchId else { return false }
+                if command.kind == .delivery {
+                    return command.channelId == channelId && command.messageId == messageId
+                        && agent.launches[command.launchId].map {
+                            !$0.notSpawned && !$0.terminalFailure && !$0.stopRequested
+                        } == true
+                }
+                guard command.kind == .start else { return false }
+                return command.wakeMessage == AgentExecutionWakeMessage(channelId: channelId, messageId: messageId)
+            }
+            .sorted { ($0.createdAt, $0.commandId.uuidString) < ($1.createdAt, $1.commandId.uuidString) }
+            .first
+    }
+
+    /// Upstream removes a wake message from the server inbox once `agent:start`
+    /// carries it. This port records the same settlement durably when the start
+    /// is written or acknowledged: the carried queued fact ends, and the
+    /// canonical message row keeps its history. Idempotent; a start without a
+    /// wake message settles nothing.
+    mutating func settleCarriedWakeMessage(_ command: AgentExecutionCommand) {
+        guard command.kind == .start, let wake = command.wakeMessage else { return }
+        guard var pending = pendingHumanDeliveries else { return }
+        pending = pending.filter { _, row in
+            !(row.serverId == command.serverId && row.agentId == command.agentId
+                && (row.releasedCommandId == command.commandId
+                    || (row.channelId == wake.channelId && row.messageId == wake.messageId)))
+        }
+        pendingHumanDeliveries = pending.isEmpty ? nil : pending
+    }
+
     /// A delivery the daemon acknowledged on a launch whose turn the server has
     /// not observed complete. A resident runtime keeps one launch across turns,
     /// so this retained set (not `launch.completed`) is the in-flight-turn fact.
@@ -189,21 +235,29 @@ extension AgentExecutionState {
         guard let agent = agents[agentId] else { return false }
         return commands.values.contains { command in
             guard command.agentId == agentId, command.kind == .delivery, command.status == .accepted,
-                  let launch = agent.launches[command.launchId] else { return false }
+                  let launch = agent.launches[command.launchId],
+                  launch.takeoverEpoch == agent.takeoverEpoch else { return false }
             return launch.inFlightDeliveryCommandIds?.contains(command.commandId) == true
         }
     }
 
-    /// A command write was attempted without a durable daemon acknowledgement.
-    /// A `.pending` delivery without a dispatch record is provably unsent; it
-    /// is retryable rather than ambiguous.
+    /// A delivery write was attempted without a durable daemon acknowledgement.
+    /// Only the delivery itself makes the turn unresolved: a start or stop
+    /// dispatch whose launch the daemon's ready report has already ruled out is
+    /// obsolete bookkeeping (it is never redispatched once it is not current),
+    /// not evidence that a message may have reached a runtime. A `.pending`
+    /// delivery without a dispatch record is provably unsent, and the transient
+    /// onboarding notice never blocks agent recovery.
     func hasUnsettledDeliveryWrite(agentId: String) -> Bool {
-        commands.contains { key, command in
-            // A transient onboarding notice never blocks agent recovery: its
-            // own sent fact is stamped elsewhere and the wake is lost.
-            guard command.agentId == agentId, command.kind != .notice else { return false }
+        guard let agent = agents[agentId] else { return false }
+        return commands.contains { key, command in
+            // Only a delivery write can leave a message ambiguous, and a write
+            // from before the latest human takeover was acknowledged by that
+            // takeover, exactly like an older launch.
+            guard command.agentId == agentId, command.kind == .delivery,
+                  command.takeoverEpoch == agent.takeoverEpoch else { return false }
             if let dispatch = dispatches?[key] { return dispatch.phase != .accepted }
-            return command.kind == .delivery && command.status == .dispatched
+            return command.status == .dispatched
         }
     }
 }

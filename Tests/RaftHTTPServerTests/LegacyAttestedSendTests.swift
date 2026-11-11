@@ -251,6 +251,79 @@ struct LegacyAttestedSendTests {
         }
     }
 
+    @Test func legacySendBodyIssuesUsePinnedZod4WordingAndOrder() async throws {
+        let fixture = makeLegacyFixture("001z")
+        try await withApp { app in
+            configure(app, services: FallbackServices(
+                nodeEnv: "test",
+                tracker: DbLivenessTracker(ping: {}),
+                pingDatabase: {},
+                emailAccounts: fixture.accounts
+            ))
+            try await app.testing { client in
+                // Pinned `routes/internal.ts:680-690` validates the whole body
+                // with `legacyAgentSendBodySchema` (zod 4.3.6) before the
+                // handler and publishes `parsed.error.issues` as `{path,
+                // message}` in schema member order. Every expected body below
+                // was measured against the real zod 4.3.6.
+                let cases: [(body: String, expected: String)] = [
+                    (
+                        "[]",
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"","message":"Invalid input: expected object, received array"}]}"#
+                    ),
+                    (
+                        "{\"target\":{\"channel\":\"\(fixture.channelName)\"},\"content\":\"must not send\"}",
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"target","message":"Invalid input: expected string, received object"}]}"#
+                    ),
+                    (
+                        "{\"target\":\"#\(fixture.channelName)\",\"content\":{\"text\":\"must not send\"}}",
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"content","message":"Invalid input: expected string, received object"}]}"#
+                    ),
+                    (
+                        "{\"target\":\"#\(fixture.channelName)\",\"content\":\"must not send\",\"sendDraft\":\"true\"}",
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"sendDraft","message":"Invalid input: expected boolean, received string"}]}"#
+                    ),
+                    (
+                        #"{"target":1,"content":2,"attachmentIds":3,"idempotencyKey":4,"reconcileOnly":5,"continue":6,"sendDraft":7,"continueAnyway":8,"draftReholdCount":"x","draftReplacedExisting":"y","seenUpToSeq":"z","seenExactSeqs":"w","seenCards":9,"freshnessContextMode":10,"channel":11,"dm_to":12}"#,
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"target","message":"Invalid input: expected string, received number"},{"path":"content","message":"Invalid input: expected string, received number"},{"path":"attachmentIds","message":"Invalid input: expected array, received number"},{"path":"idempotencyKey","message":"Invalid input: expected string, received number"},{"path":"reconcileOnly","message":"Invalid input: expected boolean, received number"},{"path":"continue","message":"Invalid input: expected boolean, received number"},{"path":"sendDraft","message":"Invalid input: expected boolean, received number"},{"path":"continueAnyway","message":"Invalid input: expected boolean, received number"},{"path":"draftReholdCount","message":"Invalid input: expected number, received string"},{"path":"draftReplacedExisting","message":"Invalid input: expected boolean, received string"},{"path":"seenUpToSeq","message":"Invalid input: expected number, received string"},{"path":"seenExactSeqs","message":"Invalid input: expected array, received string"},{"path":"seenCards","message":"Invalid input: expected object, received number"},{"path":"freshnessContextMode","message":"Invalid option: expected one of \"inline\"|\"withheld\""},{"path":"channel","message":"Invalid input: expected string, received number"},{"path":"dm_to","message":"Invalid input: expected string, received number"}]}"#
+                    ),
+                    (
+                        #"{"attachmentIds":["","  ", [], 3]}"#,
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"attachmentIds.0","message":"Too small: expected string to have >=1 characters"},{"path":"attachmentIds.1","message":"Too small: expected string to have >=1 characters"},{"path":"attachmentIds.2","message":"Invalid input: expected string, received array"},{"path":"attachmentIds.2","message":"Too small: expected array to have >=1 items"},{"path":"attachmentIds.3","message":"Invalid input: expected string, received number"}]}"#
+                    ),
+                    (
+                        #"{"seenExactSeqs":[1.5,-1,0,"2",true,null]}"#,
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"seenExactSeqs.0","message":"Invalid input: expected int, received number"},{"path":"seenExactSeqs.1","message":"Too small: expected number to be >0"},{"path":"seenExactSeqs.2","message":"Too small: expected number to be >0"},{"path":"seenExactSeqs.3","message":"Invalid input: expected number, received string"},{"path":"seenExactSeqs.4","message":"Invalid input: expected number, received boolean"},{"path":"seenExactSeqs.5","message":"Invalid input: expected number, received null"}]}"#
+                    ),
+                    (
+                        #"{"seenCards":{"channel":"","peer":1}}"#,
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"seenCards.channel","message":"Too small: expected string to have >=1 characters"},{"path":"seenCards.peer","message":"Invalid input: expected string, received number"}]}"#
+                    ),
+                    (
+                        #"{"freshnessContextMode":"other"}"#,
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"freshnessContextMode","message":"Invalid option: expected one of \"inline\"|\"withheld\""}]}"#
+                    ),
+                    (
+                        "{\"seenExactSeqs\":[" + Array(repeating: "1", count: 2501).joined(separator: ",") + "]}",
+                        #"{"error":"Invalid legacy agent send body","code":"legacy_agent_send_contract_invalid","issues":[{"path":"seenExactSeqs","message":"Too big: expected array to have <=2500 items"}]}"#
+                    ),
+                ]
+                for entry in cases {
+                    let response = try await legacySend(client, key: fixture.machineKey, agentId: fixture.agentId, body: entry.body)
+                    #expect(response.status == .badRequest, "\(entry.body)")
+                    #expect(response.body.string == entry.expected, "\(entry.body)")
+                }
+
+                // `req.body ?? {}`: a JSON null body is the empty object, so the
+                // schema passes and the handler answers the first semantic
+                // refusal (content precedes target in the pinned route).
+                let nullBody = try await legacySend(client, key: fixture.machineKey, agentId: fixture.agentId, body: "null")
+                #expect(nullBody.status == .badRequest)
+                #expect(nullBody.body.string == #"{"error":"Content is required"}"#)
+            }
+        }
+    }
+
     // MARK: - #2/#3 mode semantics
 
     @Test func modeOffKeepsPlainSendAndRefusesMarkers() async throws {

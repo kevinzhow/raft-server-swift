@@ -610,20 +610,30 @@ public struct AgentPrivateSurfaceService: Sendable {
             reasoningEffort: AgentRuntimeConfigProjection.parse(agent.runtimeConfigJSON).reasoningEffort,
             avatarUrl: agent.avatarUrl,
             activity: facts.activity,
-            activityDetail: facts.detail
+            activityDetail: facts.detail,
+            activityDetailKind: facts.detailKind
         )
     }
 
     /// Upstream `getActivity`: a retained live observation wins; otherwise the
-    /// `active` + reachable-machine fallback is `online`. Both the full and the
-    /// guest projections read the same resolved facts.
-    private func presenceFacts(_ agent: OAuthLedger.AgentRuntimeInfo) -> (machineId: String?, activity: String, detail: String) {
+    /// `active` + reachable-machine fallback is `online`. A terminal-failure /
+    /// manual-recovery gate is a server-authored block (RFC 071 §9), served as
+    /// the typed offline `terminal_failure_paused` activity regardless of what
+    /// the daemon last reported. Both the full and the guest projections read
+    /// the same resolved facts.
+    private func presenceFacts(_ agent: OAuthLedger.AgentRuntimeInfo)
+        -> (machineId: String?, activity: String, detail: String, detailKind: String?) {
         let facts = dependencies.agents.presenceFacts(agentId: agent.id)
+        if agent.status != "stopped",
+           let block = AgentPresenceSignal.terminalBlock(needsManual: facts.needsManual,
+                                                         blockedUntil: facts.blockedUntil, now: Date()) {
+            return (facts.machineId, "offline", block.detail, block.detailKind)
+        }
         let reachable = facts.machineId.map {
             dependencies.machines.machineIsReachable(machineId: $0, serverId: agent.serverId)
         } ?? false
         let visible = AgentPresenceSignal.visiblePresence(recorded: facts.activity, status: agent.status, machineReachable: reachable)
-        return (facts.machineId, visible.activity, visible.detail)
+        return (facts.machineId, visible.activity, visible.detail, facts.detailKind)
     }
 
     private func guestSummary(_ agent: OAuthLedger.AgentRuntimeInfo) -> GuestAgentSummary {
@@ -878,14 +888,59 @@ public struct AgentPrivateSurfaceService: Sendable {
     public func uploadAgentAvatar(
         authorization: String?,
         agentId: String,
+        contentType: String?,
+        body: Data
+    ) async throws -> AgentAvatarResponse {
+        let actor = try authorizedActor(authorization: authorization, agentId: agentId)
+        guard let file = FormPayload.multipartFilePart(named: "avatar", contentType: contentType, body: body) else {
+            throw AgentPrivateSurfaceError.noAvatarProvided
+        }
+        let stored: AvatarStoredFile
+        do {
+            stored = try await AvatarService(storage: oauth.assets, oauth: oauth)
+                .storeAgentAvatar(serverId: actor.info.serverId, existingAvatarUrl: actor.info.avatarUrl, file: file)
+        } catch let error as AvatarStoreError {
+            switch error {
+            case .tooLarge(let maxBytes): throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: maxBytes)
+            case .badFormat: throw AgentPrivateSurfaceError.avatarBadFormat
+            case .notAnImage, .storageNotConfigured, .storageFailure:
+                throw AgentPrivateSurfaceError.avatarUploadFailed
+            }
+        }
+        oauth.updateAgentAvatar(id: agentId, avatarUrl: stored.url)
+        return AgentAvatarResponse(avatarUrl: stored.url)
+    }
+
+    // MARK: - POST /internal/agent-api/profile/avatar
+
+    /// The credential-surface profile avatar upload. The bound agent is the
+    /// credential's; the route's `send` capability is checked here, then the
+    /// upload limit. The stored URL uses the same namespace scheme as
+    /// `storeAgentAvatar` (the server id) and the response is the caller's full
+    /// profile projection, which the feature reads back after this write.
+    public func uploadAgentProfileAvatar(
+        authorization: String?,
         byteCount: Int
     ) throws -> AgentAvatarResponse {
-        _ = try authorizedActor(authorization: authorization, agentId: agentId)
-        let maxBytes = 5 * 1024 * 1024
-        guard byteCount <= maxBytes else { throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: maxBytes) }
+        guard let authorization, authorization.hasPrefix("Bearer ") else {
+            throw AgentPrivateSurfaceError.authRequired
+        }
+        let token = String(authorization.dropFirst("Bearer ".count))
+        guard let credential = dependencies.agents.agentCredential(token: token), credential.revokedAt == nil,
+              let agent = oauth.agentRuntimeInfo(id: credential.agentId), !agent.deleted
+        else {
+            throw AgentPrivateSurfaceError.authRequired
+        }
+        guard credential.scopes.contains("send") else {
+            throw FeedbackLocatorError.capabilityNotAuthorized(capability: "send")
+        }
+        guard byteCount > 0 else { throw AgentAvatarUploadError.noAvatarFile }
+        guard byteCount <= AgentAvatarUploadError.maximumBytes else {
+            throw AgentPrivateSurfaceError.avatarTooLarge(maxBytes: AgentAvatarUploadError.maximumBytes)
+        }
         let key = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
-        let avatarUrl = "/api/avatars/users/\(key).webp"
-        oauth.updateAgentAvatar(id: agentId, avatarUrl: avatarUrl)
+        let avatarUrl = "/api/avatars/\(agent.serverId)/\(key).webp"
+        oauth.updateAgentAvatar(id: agent.id, avatarUrl: avatarUrl)
         return AgentAvatarResponse(avatarUrl: avatarUrl)
     }
 

@@ -67,6 +67,8 @@ enum ChangePasswordOutcome: Equatable, Sendable {
 /// The validated `PATCH /api/auth/me` profile fields. A double optional is
 /// "leave alone" (outer `nil`), "clear" (`.some(nil)`) or "set".
 struct AccountProfileUpdate: Sendable {
+    /// Outer `nil` leaves the display name alone; `.some(nil)` clears it.
+    var displayName: String?? = nil
     /// Outer `nil` leaves the description alone; `.some(nil)` clears it.
     var description: String?? = nil
     var referralSource: String?? = nil

@@ -53,6 +53,11 @@ func postgresHumanChannelMessagesStageDeliveryOnceAndPreserveSuppressedMessages(
             $0.string("type") == "agent:start" && $0.string("agentId") == agentID
         }
         try await peer.acknowledgeControlledStart(start)
+        // The launch must name its process before it can receive a delivery:
+        // the daemon start window buffers deliveries and never acknowledges them
+        // there, so the port queues instead of writing into that window.
+        try await peer.sendProcessSpawned(agentId: agentID, launchId: try start.requireString("launchId"),
+                                          processInstanceId: "human-execution-process")
         let boundary = peer.socket.count
         let randomID = "human-execution-once"
         let post = try await fixture.http("POST", "/api/messages", token: owner,
@@ -127,7 +132,9 @@ func postgresHumanChannelMessagesStageDeliveryOnceAndPreserveSuppressedMessages(
         #expect(held.messages.contains { $0.string("id") == heldID })
         #expect(held.execution.heldDeliveries?.values.contains { $0.agentId == agentID && $0.messageId == heldID } == true)
         #expect(!held.execution.commands.values.contains { $0.messageId == heldID })
-        #expect(held.execution.agents[agentID]?.processes.isEmpty == true)
+        #expect(held.execution.agents[agentID]?.processes.count == 1,
+                "a manual stop invents no second process and no exit")
+        #expect(held.execution.agents[agentID]?.processes["human-execution-process"]?.exited == false)
     } catch {
         await fixture.close(machine: machine)
         throw error

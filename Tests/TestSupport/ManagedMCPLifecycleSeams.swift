@@ -38,6 +38,20 @@ extension EmailLoginDirectory {
         notificationsStore.webPushSubscriptions.filter { $0.userId == userId }.map { $0.endpoint }
     }
 
+    public func recordWebPushSubscriptionForTesting(userId: String, endpoint: String) {
+        notificationsStore.recordWebPushSubscription(userId: userId, endpoint: endpoint)
+    }
+
+    public func pushPromptEvents(userId: String)
+        -> [(event: String, trigger: String, serverId: String?, result: String?,
+             permissionBefore: String?, permissionAfter: String?, detail: String?)] {
+        notificationsStore.pushPromptEvents.filter { $0.userId == userId }.map {
+            (event: $0.event, trigger: $0.trigger, serverId: $0.serverId, result: $0.result,
+             permissionBefore: $0.permissionBefore, permissionAfter: $0.permissionAfter,
+             detail: $0.detail)
+        }
+    }
+
     public func pushFamilyStatus(capability: String) -> (revoked: Bool, reason: String?, retainUntil: Date?)? {
         let parts = capability.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
         guard parts.count == 2 else { return nil }

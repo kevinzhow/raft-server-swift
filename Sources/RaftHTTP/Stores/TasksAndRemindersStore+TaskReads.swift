@@ -133,6 +133,54 @@ extension TasksAndRemindersStore {
         }
     }
 
+    /// `POST /internal/agent-api/tasks/unclaim`: upstream `writeCanonicalUnclaim`.
+    /// The read, the guards and the write are one critical section; unclaim is
+    /// member-level (any agent that can post may release the task), so the
+    /// current assignee is not part of the predicate. The event records the
+    /// requester as actor and the displaced assignee in the payload.
+    enum AgentUnclaimOutcome: Sendable {
+        case notFound
+        case done
+        case unassigned
+        case changedConcurrently
+        case unclaimed(TaskRecord)
+    }
+
+    func unclaimForAgent(taskId: String, agentId: String, now: Date = Date()) -> AgentUnclaimOutcome {
+        mutex.withLock { storage in
+            guard let index = storage.taskRecords.firstIndex(where: { $0.id == taskId }) else {
+                return .notFound
+            }
+            guard storage.taskRecords[index].status != "done" else { return .done }
+            guard storage.taskRecords[index].assigneeId != nil else { return .unassigned }
+            // `canonicalRevisionCas` + `claimedById IS NOT NULL` + status guard:
+            // any of them missing would mean the row moved after the read, but
+            // the whole decision is inside this lock so the predicates hold.
+            let previousAssigneeId = storage.taskRecords[index].assigneeId
+            let previousAssigneeType = storage.taskRecords[index].assigneeType
+            storage.taskRecords[index].assigneeId = nil
+            storage.taskRecords[index].assigneeType = nil
+            storage.taskRecords[index].claimedAt = nil
+            storage.taskRecords[index].updatedAt = now
+            storage.taskRecords[index].revision += 1
+            storage.assigneeChangeEvents.append((
+                taskId: taskId, assigneeId: nil, assigneeType: nil,
+                previousAssigneeId: previousAssigneeId, previousAssigneeType: previousAssigneeType,
+                actorType: "agent", actorId: agentId
+            ))
+            Self.appendTaskEventLocked(state: &storage, taskId: taskId, eventType: "assignee_changed",
+                actorType: "agent", actorId: agentId,
+                payloadJSON: OrderedJSON.object([
+                    .init("assigneeType", .null),
+                    .init("assigneeId", .null),
+                    .init("previousAssigneeType", optional: previousAssigneeType),
+                    .init("previousAssigneeId", optional: previousAssigneeId),
+                ]).render(),
+                now: now)
+            return .unclaimed(storage.taskRecords[index])
+        }
+    }
+
     /// `POST /internal/agent-api/tasks/amend`: the row lookup, the title and
     /// description write, the revision bump and the amend markers are one
     /// critical section. `nil` means the task does not exist.

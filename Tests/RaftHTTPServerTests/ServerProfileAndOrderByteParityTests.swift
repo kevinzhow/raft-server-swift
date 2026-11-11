@@ -212,7 +212,17 @@ import VaporTesting
             let denied = try await client.send(.post, headers: scopedMemberHeaders, to: "/api/servers/\(serverA)/avatar")
             #expect(denied.status == .forbidden)
             assertStandard(denied, body: "{\"error\":\"Forbidden\"}")
-            let avatar = try await client.send(.post, headers: scopedHeaders, to: "/api/servers/\(serverA)/avatar")
+            var avatarHeaders = scopedHeaders
+            avatarHeaders[.contentType] = "multipart/form-data; boundary=server-avatar"
+            var avatarBytes = Data()
+            avatarBytes.append(Data("--server-avatar\r\n".utf8))
+            avatarBytes.append(Data("Content-Disposition: form-data; name=\"avatar\"; filename=\"server.gif\"\r\n".utf8))
+            avatarBytes.append(Data("Content-Type: image/gif\r\n\r\n".utf8))
+            avatarBytes.append(Data(base64Encoded: "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")!)
+            avatarBytes.append(Data("\r\n--server-avatar--\r\n".utf8))
+            let avatar = try await client.send(.post, headers: avatarHeaders, to: "/api/servers/\(serverA)/avatar") { request in
+                request.body = .init(data: avatarBytes)
+            }
             #expect(avatar.status == .ok)
             let avatarBody = avatar.body.string ?? ""
             #expect(avatarBody.hasPrefix("{\"avatarUrl\":\"/api/avatars/server-\(serverA)/"))

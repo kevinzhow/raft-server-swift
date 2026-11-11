@@ -29,13 +29,21 @@ extension MessagesAndThreadsStore {
             guard hosts.count == 1, let host = hosts.first else { return }
             var existing = Set(state.storedMentions.filter { $0.messageId == messageId }
                 .map { "\($0.targetType):\($0.targetId)" })
+            let now = Date()
             for row in registrations where existing.insert("\(row.mention.type):\(row.mention.id)").inserted {
-                state.storedMentions.append(StoredMention(
+                let mention = StoredMention(
                     id: UUID().uuidString.lowercased(), messageId: messageId, channelId: channelId,
                     senderId: host.senderId, targetType: row.mention.type, targetId: row.mention.id,
                     handle: row.mention.name, notifiableAtSend: row.notifiableAtSend,
                     notifiedAt: nil, notifiedByType: nil,
-                    notifiedById: nil, notifiedAction: nil))
+                    notifiedById: nil, notifiedAction: nil)
+                // Upstream inserts the occurrence atomically with the mention
+                // facts, so "recorded but never delivered" is recoverable while
+                // "delivered but never recorded" is not.
+                var stored = mention
+                stored.mentionDeliveryOccurrence = Self.initialMentionDeliveryOccurrence(
+                    for: mention, host: host, at: now)
+                state.storedMentions.append(stored)
             }
         }
     }

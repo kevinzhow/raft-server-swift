@@ -68,7 +68,7 @@ private let onboardingPGEnabled =
         // the same fixture seam an in-process mailbox test uses; it is redeemed
         // by the real POST /api/auth/verify-email handler.
         let registration = try await onboardingPGHTTP(baseURL, "POST", "/api/auth/register", body: .init([
-            "email": .string(email), "password": .string(password), "name": .string("Onboarding PG Owner"),
+            "email": .string(email), "password": .string(password), "name": .string("onboarding-pg-owner"),
             "acceptTerms": .bool(true), "termsVersion": .string("2026-05-12"),
             "privacyVersion": .string("2026-05-12"),
         ]))

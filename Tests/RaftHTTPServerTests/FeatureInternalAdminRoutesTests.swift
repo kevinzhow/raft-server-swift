@@ -5,10 +5,10 @@ import Testing
 import Vapor
 import VaporTesting
 
-/// Complete `method path` table owned by `InternalAdminFeature`: the 49 static
+/// Complete `method path` table owned by `InternalAdminFeature`: the 53 static
 /// `app.<verb>("internal", "agent" | "computer" | "machine", ...)` registrations
-/// that used to be inline in `FallbackApplication.configure` (29 agent, 19
-/// computer, 1 machine). The two five-method policy catch-alls
+/// (33 agent, 19 computer, 1 machine). The legacy knowledge route is owned by
+/// `KnowledgeFeature` because it renders the knowledge corpus. The two five-method policy catch-alls
 /// (`app.on(method, "internal", "computer", "**")` and the
 /// `internal/agent/**` line of the shared loop with `internal/agent-api/**`)
 /// intentionally stay in `configure` and are therefore absent here.
@@ -32,6 +32,10 @@ private let expectedInternalAdminRoutes: [String] = [
     "POST /internal/agent/:agentId/channels/:channelId/leave",
     "GET /internal/agent/:agentId/channel-members",
     "GET /internal/agent/:agentId/history",
+    "GET /internal/agent/:agentId/messages/:messageId/resolve",
+    "GET /internal/agent/:agentId/receive",
+    "GET /internal/agent/:agentId/tasks",
+    "POST /internal/agent/:agentId/server/avatar",
     "POST /internal/agent/:agentId/tasks",
     "POST /internal/agent/:agentId/tasks/claim",
     "POST /internal/agent/:agentId/tasks/update-status",
@@ -85,11 +89,11 @@ private func internalAdminRouteKey(_ route: Route) -> String {
 
         // The table is authoritative: reject an accidental duplicate or gap in
         // the table itself before comparing it to the router.
-        #expect(expectedInternalAdminRoutes.count == 49)
-        #expect(expectedInternalAdminRoutes.filter { $0.hasSuffix("/internal/agent") || $0.contains(" /internal/agent/") }.count == 29)
+        #expect(expectedInternalAdminRoutes.count == 53)
+        #expect(expectedInternalAdminRoutes.filter { $0.hasSuffix("/internal/agent") || $0.contains(" /internal/agent/") }.count == 33)
         #expect(expectedInternalAdminRoutes.filter { $0.contains(" /internal/computer/") }.count == 19)
         #expect(expectedInternalAdminRoutes.filter { $0.contains(" /internal/machine/") }.count == 1)
-        #expect(Set(expectedInternalAdminRoutes).count == 49)
+        #expect(Set(expectedInternalAdminRoutes).count == 53)
 
         // One route per table entry, no route outside the three prefixes, and
         // no wildcard policy catch-all leaked into the collection.

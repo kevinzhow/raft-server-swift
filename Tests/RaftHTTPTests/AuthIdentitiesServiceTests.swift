@@ -77,9 +77,9 @@ private func render(_ error: AuthIdentitiesError) -> String {
         == #"{"error":"App login request expired","code":"request_expired","redirectUrl":"raft:\/\/login\/callback?requestId=r&error=expired"}"#
         .replacingOccurrences(of: "\\/", with: "/"))
     #expect(render(.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Required"),
-        AuthRequestIssue(path: "password", message: "Expected string, received boolean"),
-    ])) == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Required"},{"path":"password","message":"Expected string, received boolean"}]}"#)
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received undefined"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received number"),
+    ])) == #"{"error":"Invalid email login body","code":"email_login_body_invalid","issues":[{"path":"email","message":"Invalid input: expected string, received undefined"},{"path":"password","message":"Invalid input: expected string, received number"}]}"#)
     #expect(AuthIdentitiesError.requestNotFound.status == 404)
     #expect(AuthIdentitiesError.codeConsumed.status == 410)
     #expect(AuthIdentitiesError.requestNotApproved.status == 409)
@@ -94,21 +94,27 @@ private func render(_ error: AuthIdentitiesError) -> String {
     }
 
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "", message: "Expected object, received string"),
+        AuthRequestIssue(path: "", message: "Invalid input: expected object, received array"),
     ])) { try service.login(decode("[1]")) }
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Required"),
-        AuthRequestIssue(path: "password", message: "String must contain at least 1 character(s)"),
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received undefined"),
+        AuthRequestIssue(path: "password", message: "Too small: expected string to have >=1 characters"),
     ])) { try service.login(decode(#"{"password":""}"#)) }
-    // A JSON 0 or 1 read as a boolean through the old number bridge.
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Expected string, received number"),
-        AuthRequestIssue(path: "password", message: "Expected string, received boolean"),
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received number"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received number"),
     ])) { try service.login(decode(#"{"email":5,"password":1}"#)) }
     #expect(throws: AuthIdentitiesError.invalidLoginBody([
-        AuthRequestIssue(path: "email", message: "Expected string, received null"),
-        AuthRequestIssue(path: "password", message: "Expected string, received object"),
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received null"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received object"),
     ])) { try service.login(decode(#"{"email":null,"password":{}}"#)) }
+    // zod 4 also runs the string length check on a received array, so an empty
+    // array reports both the type and the minimum.
+    #expect(throws: AuthIdentitiesError.invalidLoginBody([
+        AuthRequestIssue(path: "email", message: "Invalid input: expected string, received array"),
+        AuthRequestIssue(path: "email", message: "Too small: expected array to have >=1 items"),
+        AuthRequestIssue(path: "password", message: "Invalid input: expected string, received undefined"),
+    ])) { try service.login(decode(#"{"email":[]}"#)) }
     #expect(throws: AuthIdentitiesError.invalidCredentials) {
         try service.login(LoginRequest(email: "identity-02@slock.test", password: "wrong"))
     }
@@ -206,6 +212,36 @@ private func render(_ error: AuthIdentitiesError) -> String {
     #expect(scene.analyticsId(userId: userId) == nil)
     _ = try patch(#"{"shareUsageData":true}"#)
     #expect(scene.analyticsId(userId: userId) != nil && scene.analyticsId(userId: userId) != before)
+}
+
+@Test func authIdentitiesPatchWritesDisplayNameVerbatimAndNeverDerivesItFromTheHandle() throws {
+    let (scene, _, bearer) = makeFixture("12")
+    let service = scene.identities
+    let auth = "Bearer \(bearer)"
+    func patch(_ json: String) throws -> AuthProfileUserResponse {
+        try service.updateProfile(
+            authorization: auth,
+            try? JSONDecoder().decode(UpdateProfileRequest.self, from: Data(json.utf8))
+        )
+    }
+
+    // A fresh completed row has no display name. The public body prints null;
+    // it is not back-filled from `name`.
+    #expect(try service.me(authorization: auth).user.displayName == nil)
+
+    // Upstream copies a present string verbatim: no trim and no validation.
+    #expect(try patch(#"{"displayName":"  Kevin  "}"#).user.displayName == "  Kevin  ")
+    #expect(try service.me(authorization: auth).user.displayName == "  Kevin  ")
+
+    // An absent key leaves the stored value alone.
+    #expect(try patch(#"{"shareUsageData":true}"#).user.displayName == "  Kevin  ")
+
+    // The empty string is a present string, so it is stored as sent.
+    #expect(try patch(#"{"displayName":""}"#).user.displayName == "")
+
+    // JSON null clears it; the published body goes back to null.
+    #expect(try patch(#"{"displayName":null}"#).user.displayName == nil)
+    #expect(try service.me(authorization: auth).user.displayName == nil)
 }
 
 @Test func authIdentitiesPatchWritesThePasswordBeforeLaterFieldsAreValidated() throws {
@@ -565,7 +601,7 @@ private func startedRequest(_ service: AuthIdentitiesService, challenge: String)
     #expect(IntegrationSettingsClientsResponse(clients: [IntegrationSettingsClient(
         id: "1", clientId: "c", name: "n", appType: "t", description: nil, homepageUrl: "https://x.test", publishStatus: "draft"
     )]).jsonBody.render()
-        == #"[{"id":"1","clientId":"c","name":"n","appType":"t","description":null,"homepageUrl":"https://x.test","publishStatus":"draft"}]"#)
+        == #"[{"id":"1","clientId":"c","name":"n","appType":"t","description":null,"homepageUrl":"https://x.test","publishStatus":"draft","logoUrl":null}]"#)
 }
 
 @Test func oauthSessionIgnoresRevokedFamiliesLikeTheRetiredLookup() {

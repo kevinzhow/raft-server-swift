@@ -246,6 +246,7 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 public func configure(_ app: Application, services: FallbackServices) {
     if services.nodeEnv == "production" {
         services.emailAccounts.requireDurableAttachmentStorage()
+        services.emailAccounts.requireDurableAvatarStorage()
     }
     let internalSurface = InternalSurfaceBox()
     InternalAgentApiFeature(services: services).register(routes: app)
@@ -254,6 +255,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         controlPlane: services.emailAccounts.managedMCPControlPlane,
         identities: services.emailAccounts.authIdentities,
         apps: services.emailAccounts.integrationsAndAppAccess,
+        appManagement: services.emailAccounts.integrationAppManagement,
         cardPrepare: services.emailAccounts.actionCardPrepare,
         agentsLifecycle: services.emailAccounts.agentsLifecycle,
         providerConnections: services.emailAccounts.managedMCPProviderConnections,
@@ -263,6 +265,9 @@ public func configure(_ app: Application, services: FallbackServices) {
     ComputersFeature(services: services).register(routes: app)
     RemindersFeature(services: services).register(routes: app)
     NotificationsFeature(services: services).register(routes: app)
+    // Upstream mounts the capability-addressed profile assets at the app level,
+    // beside (not inside) the authenticated route families.
+    AvatarObjectRoutes(services: services).register(routes: app)
     ServersFeature(services: services).register(routes: app)
     let hostMessaging = services.channelMessaging
     ChannelsFeature(
@@ -289,6 +294,7 @@ public func configure(_ app: Application, services: FallbackServices) {
         socketMembership: services.emailAccounts.socketMembership,
         channelRoutes: services.emailAccounts.managedMCPChannelRoutes,
         channelMessaging: hostMessaging,
+        runtimeControl: services.agentMachineMigrationControl,
         realtime: services.realtime
     ).register(routes: app)
     MessagingFeature(services: services).register(routes: app)
@@ -302,6 +308,8 @@ public func configure(_ app: Application, services: FallbackServices) {
     FeedbackFeature(services: services).register(routes: app)
     TranslationFeature(services: services).register(routes: app)
     PublicFeature(services: services).register(routes: app)
+    BillingFeature(services: services).register(routes: app)
+    RaftBenchFeature(services: services).register(routes: app)
     AuthFeature(
         core: services.emailAccounts.authCore.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
         identities: services.emailAccounts.authIdentities,

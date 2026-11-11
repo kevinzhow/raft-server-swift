@@ -23,6 +23,23 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// Developer-platform App management: client CRUD, private share links and
+    /// invites, App Notifications permissions/webhook, installation grants,
+    /// overview and request deny. Every row lives in the OAuth ledger.
+    public var integrationAppManagement: IntegrationAppManagementService {
+        let profiles = authProfileStore
+        return IntegrationAppManagementService(
+            oauth: oauth,
+            sessionUserId: { [self] authorization in
+                sessionUserId(authorization: authorization)
+            },
+            userDisplayName: { userId in
+                guard let account = profiles.account(userId: userId) else { return nil }
+                return account.displayName ?? account.name
+            }
+        )
+    }
+
     /// Scoped attachment comments. The session, the agent credential, the
     /// feature-flag gate, the attachment visibility rules, the thread lookup and
     /// the mention-row writer belong to unmigrated domains and enter as closures.
@@ -60,6 +77,9 @@ extension EmailLoginDirectory {
                 },
                 recordMemberMentionRows: { [self] messageId, channelId, resolution in
                     messageMentions.register(messageId: messageId, channelId: channelId, resolution: resolution)
+                },
+                emitRealtime: { [self] room, event, payload in
+                    realtimeRelay.emit(room, event, payload)
                 }
             )
         )

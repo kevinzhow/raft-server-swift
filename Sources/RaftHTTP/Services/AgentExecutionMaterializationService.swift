@@ -62,7 +62,34 @@ public struct AgentExecutionMaterializationService: Sendable {
                 throw AgentExecutionMaterializationError.commandUnavailable
             }
             switch command.kind {
-            case .start: return .start(configuration: try start(command: command, agent: agent))
+            case .start:
+                let configuration = try start(command: command, agent: agent)
+                // Upstream `attempt-wake`: the message that caused this start is
+                // the exact agent-visible body, delivered inside `agent:start`.
+                var wakeMessage: JSONValue?
+                if let wake = command.wakeMessage {
+                    let body = try deliveryBody(serverId: command.serverId, agentId: command.agentId,
+                                                channelId: wake.channelId, messageId: wake.messageId,
+                                                domain: domain)
+                    guard let decoded = try? JSONDecoder().decode(JSONValue.self, from: body.data),
+                          case .object = decoded else { throw AgentExecutionMaterializationError.messageUnavailable }
+                    wakeMessage = decoded
+                }
+                // Upstream computes the resume catch-up only when the agent has
+                // a session and no resume prompt already gives the start
+                // something to act on. A wake message replaces the catch-up
+                // rows, but the unread summary is still published.
+                var resumeMessages: [JSONValue] = []
+                var unreadSummary: [String: Int]?
+                if command.resumePrompt == nil, command.sessionId != nil {
+                    let context = AgentResumeContext(messages: messages, channels: channels, oauth: oauth,
+                                                     tasks: tasks, profiles: profiles)
+                    let built = context.build(serverId: command.serverId, agentId: command.agentId)
+                    if wakeMessage == nil { resumeMessages = built.resumeMessages }
+                    unreadSummary = built.unreadSummary
+                }
+                return .start(configuration: configuration, wakeMessage: wakeMessage,
+                              resumeMessages: resumeMessages, unreadSummary: unreadSummary)
             case .delivery: return try delivery(command: command, domain: domain)
             case .notice: return .notice(message: try bounded(notice(command: command)))
             case .stop: throw AgentExecutionMaterializationError.commandUnavailable
@@ -125,20 +152,33 @@ public struct AgentExecutionMaterializationService: Sendable {
     }
 
     private func delivery(command: AgentExecutionCommand, domain: AgentExecutionDomain) throws -> AgentExecutionMaterializedPayload {
-        guard let localId = command.channelId, let messageId = command.messageId,
-              domain.deliveryIsAuthorized(serverId: command.serverId, agentId: command.agentId, channelId: localId, messageId: messageId) else {
+        guard let localId = command.channelId, let messageId = command.messageId else {
+            throw AgentExecutionMaterializationError.messageUnavailable
+        }
+        let built = try deliveryBody(serverId: command.serverId, agentId: command.agentId,
+                                     channelId: localId, messageId: messageId, domain: domain)
+        return .delivery(message: built.data, sequence: built.sequence,
+                         mentionDelivery: try trackMentionDelivery(command: command, message: built.message,
+                                                                   payloadJSON: String(decoding: built.data, as: UTF8.self)))
+    }
+
+    /// One retained-message projection shared by a live delivery and the
+    /// `agent:start` wake input, so both surfaces render byte-identically.
+    private func deliveryBody(serverId: String, agentId: String, channelId localId: String, messageId: String,
+                              domain: AgentExecutionDomain) throws -> (data: Data, sequence: Int64, message: StoredHumanMessage) {
+        guard domain.deliveryIsAuthorized(serverId: serverId, agentId: agentId, channelId: localId, messageId: messageId) else {
             throw AgentExecutionMaterializationError.messageUnavailable
         }
         let snapshot = channels.deliveryAckChannelSnapshot()
         guard let local = snapshot.channels[localId], local.deletedAt == nil,
-              local.serverId == command.serverId, ["channel", "private", "joint", "dm", "thread"].contains(local.kind) else {
+              local.serverId == serverId, ["channel", "private", "joint", "dm", "thread"].contains(local.kind) else {
             throw AgentExecutionMaterializationError.messageUnavailable
         }
         let links = snapshot.jointProjections.filter { $0.localChannelId == localId }
         let canonical: String
         if links.isEmpty { canonical = localId }
         else {
-            let active = links.filter { $0.status == "active" && $0.serverId == command.serverId }
+            let active = links.filter { $0.status == "active" && $0.serverId == serverId }
             guard active.count == 1 else { throw AgentExecutionMaterializationError.messageUnavailable }
             canonical = active[0].canonicalChannelId
         }
@@ -169,9 +209,8 @@ public struct AgentExecutionMaterializationService: Sendable {
         let assigneeName = assigneeId.map { id in
             assigneeType == "agent" ? oauth.agentRuntimeInfo(id: id).map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? "Unknown" : humanName(id)
         }
-        let attachments = try message.attachmentIds.map { id -> ChannelAttachment in
-            guard let row = messages.attachmentDownloadRecord(attachmentId: id)?.attachment,
-                  row.messageId == messageId, row.channelId == canonical, row.mimeType?.isEmpty == false else {
+        let attachments = try messages.orderedAttachmentRows(for: message).map { entry -> ChannelAttachment in
+            guard let row = entry.row, row.messageId == messageId, row.channelId == canonical else {
                 throw AgentExecutionMaterializationError.messageUnavailable
             }
             return row
@@ -179,16 +218,50 @@ public struct AgentExecutionMaterializationService: Sendable {
         var parent: (id: String, name: String, type: String)?
         if local.kind == "thread" {
             guard let parentId = local.parentChannelId, let channel = snapshot.channels[parentId], channel.deletedAt == nil,
-                  channel.serverId == command.serverId, ["channel", "private", "joint", "dm"].contains(channel.kind) else {
+                  channel.serverId == serverId, ["channel", "private", "joint", "dm"].contains(channel.kind) else {
                 throw AgentExecutionMaterializationError.messageUnavailable
             }
             parent = (parentId, oauth.channelInfo(id: parentId)?.name ?? channel.name, channel.kind)
         }
         let projected = MaterializedAgentDelivery(message: message, localChannelId: localId,
             channelName: oauth.channelInfo(id: localId)?.name ?? local.name, channelType: local.kind,
-            senderName: sender.name, senderDescription: sender.description, recipientId: command.agentId,
+            senderName: sender.name, senderDescription: sender.description, recipientId: agentId,
             task: task, taskAssigneeName: assigneeName, attachments: attachments, parent: parent)
-        return .delivery(message: try bounded(projected.encoded()), sequence: sequence)
+        return (try bounded(projected.encoded()), sequence, message)
+    }
+
+    /// Upstream `applyDirectDelivery`'s tracked-mention spine, executed in the
+    /// same business transaction that materializes the frame:
+    ///
+    /// 1. persist the exact payload on the occurrence (recovery requires it);
+    /// 2. freeze the daemon identity (machine/launch/session) on a server
+    ///    decision — only a decision that wins the CAS may send;
+    /// 3. when the session identity is unavailable, abandon the occurrence
+    ///    one-shot and fall back to the ordinary untracked delivery, so the
+    ///    mention is delayed, never lost and never doubled.
+    ///
+    /// A nil return is the untracked frame; a thrown error means another path
+    /// already owns the occurrence, so no second copy may be emitted.
+    private func trackMentionDelivery(command: AgentExecutionCommand, message: StoredHumanMessage,
+                                      payloadJSON: String) throws -> MentionDeliveryIdentitySnapshot? {
+        guard let occurrenceId = command.mentionDeliveryOccurrenceId else { return nil }
+        guard let sessionId = agents.state.execution.agents[command.agentId]?.sessionId else {
+            guard messages.abandonMentionDeliveryWithoutInstrumentation(occurrenceId: occurrenceId) != nil else {
+                throw AgentExecutionMaterializationError.messageUnavailable
+            }
+            return nil
+        }
+        let identity = MentionDeliveryOccurrenceEvaluation.Identity(
+            machineId: command.machineId, launchId: command.launchId, sessionId: sessionId)
+        guard messages.attachMentionDeliveryPayload(occurrenceId: occurrenceId, payloadJSON: payloadJSON),
+              messages.recordMentionDeliveryServerDecision(
+                occurrenceId: occurrenceId, payloadJSON: payloadJSON, messageId: message.id,
+                identity: identity) != nil else {
+            throw AgentExecutionMaterializationError.messageUnavailable
+        }
+        return MentionDeliveryIdentitySnapshot(
+            occurrenceId: occurrenceId, messageId: command.messageId ?? message.id,
+            machineId: identity.machineId, launchId: identity.launchId, sessionId: identity.sessionId)
     }
 
     /// A notice is materialized only from its own admitted command: no
@@ -206,7 +279,7 @@ public struct AgentExecutionMaterializationService: Sendable {
     }
 
     private func humanName(_ id: String) -> String {
-        profiles.account(userId: id).map { ($0.displayName?.isEmpty == false ? $0.displayName : nil) ?? $0.name } ?? "Unknown"
+        AgentSenderNaming.humanName(profiles.account(userId: id))
     }
 
     private func bounded(_ data: Data) throws -> Data {

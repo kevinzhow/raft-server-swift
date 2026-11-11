@@ -64,6 +64,7 @@ import VaporTesting
             #expect(firstMessage?["createdAt"] is String)
 
             let machine = accounts.registerMachine(serverId: serverId, userId: ownerId, name: "history-machine")
+            accounts.assignAgentMachineForTesting(agentId: agent, machineId: machine)
             let machineKey = accounts.machineAPIKey(machineId: machine) ?? ""
             var legacyHeaders = HTTPFields()
             legacyHeaders[.authorization] = "Bearer \(machineKey)"

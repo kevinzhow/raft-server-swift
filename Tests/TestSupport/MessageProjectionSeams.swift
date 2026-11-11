@@ -41,6 +41,10 @@ extension EmailLoginDirectory {
                 terminalCode: terminalCode
             ))
         }
+        // The published projection reads the durable occurrence receipts. This
+        // fixture drives the same occurrence transitions the daemon would.
+        _ = ensureMentionDeliveryOccurrenceForTesting(messageId: messageId, agentId: agentId)
+        _ = advanceMentionDeliveryForTesting(messageId: messageId, agentId: agentId, outcome: terminalCode)
     }
 
     public func addMessageMention(
@@ -183,6 +187,28 @@ extension EmailLoginDirectory {
     public func addServerAgent(serverId: String, id: String, name: String, avatarUrl: String?, status: String = "inactive") {
         agentsRuntimeStore.withState { state in
             state.serverAgents[id] = ServerAgent(id: id, serverId: serverId, name: name, avatarUrl: avatarUrl, status: status)
+        }
+    }
+
+    /// A message-domain server agent that also exists in the OAuth agent ledger.
+    /// The machine-authenticated legacy routes resolve the canonical agent row
+    /// before applying machine ownership, so fixtures that exercise those
+    /// routes seed both projections with the same id.
+    public func addLedgerServerAgent(
+        serverId: String, id: String, name: String, avatarUrl: String?, status: String = "inactive"
+    ) {
+        addServerAgent(serverId: serverId, id: id, name: name, avatarUrl: avatarUrl, status: status)
+        oauth.state.withLock { state in
+            state.agents[id] = OAuthLedger.Agent(
+                id: id,
+                serverId: serverId,
+                name: name,
+                displayName: name,
+                avatarUrl: avatarUrl,
+                description: nil,
+                status: status
+            )
+            state.agentRoles["\(serverId)\n\(id)"] = "member"
         }
     }
 

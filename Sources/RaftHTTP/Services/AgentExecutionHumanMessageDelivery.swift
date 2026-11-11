@@ -14,6 +14,26 @@ enum HumanMessageWakeRefusal: Sendable, Equatable {
     case unassigned, offline, recoveryRequired, breakerPaused, launchInProgress
 }
 
+/// The durable queued-send facts share one release path. Pending deliveries are
+/// sends refused while the recipient was not deliverable; held deliveries are
+/// real pending commands held across a manual stop/reset. Both are obligations,
+/// never attempts: one message gets exactly one live attempt.
+enum QueuedDeliveryQueue: Sendable, Equatable {
+    case pending(key: String)
+    case held(key: String)
+}
+
+struct QueuedDeliveryObligation: Sendable, Equatable {
+    let queue: QueuedDeliveryQueue
+    let serverId: String
+    let agentId: String
+    let channelId: String
+    let messageId: String
+    let createdAt: Date
+    let releasedCommandId: UUID?
+    let cancelled: Bool
+}
+
 extension AgentExecutionDomain {
     /// Read-only preflight of known wake conditions. Never catch a mutating
     /// strict request's error and turn its rollback-only UoW into a success.
@@ -39,21 +59,48 @@ extension AgentExecutionDomain {
             // (machine ready, a settled start, a human start) releases it
             // exactly once. It is not a launch, process or receipt.
             try queuePendingHumanDelivery(request)
+            // RFC 071 §9: a manual/breaker suppression is shown to the Web as
+            // the typed offline activity, exactly like upstream's
+            // `projectTerminalBlock` wake-refusal projection.
+            if refusal == .recoveryRequired || refusal == .breakerPaused,
+               let recovery = agents.state.execution.agents[request.agentId],
+               let block = AgentPresenceSignal.terminalBlock(needsManual: recovery.needsManual,
+                                                             blockedUntil: recovery.blockedUntil, now: Date()) {
+                queueTerminalBlockFrame(serverId: request.serverId, agentId: request.agentId, block: block)
+            }
             return .readableOnly(refusal)
         }
-        if let admission = try requestDelivery(request) { return .staged(admission) }
-        return .held
+        switch try stageDelivery(request) {
+        case .staged(let admission):
+            return .staged(admission)
+        case .held:
+            return .held
+        case .deferred:
+            // The wake start (or an already admitted launch) plus the durable
+            // occurrence own the obligation; `agent:session` delivers it once
+            // the concrete session identity exists. The canonical message stays
+            // readable and a pending fact keeps a later ready retrying.
+            try queuePendingHumanDelivery(request)
+            return .readableOnly(.launchInProgress)
+        }
     }
 
     /// The read-only half of the wake decision: nil means the ordinary strict
     /// delivery path may run now. Any other value is a known refusal that keeps
     /// the committed message readable and durably queued.
     ///
-    /// Upstream `planWakeAction` delivers directly whenever the daemon reports a
-    /// runtime: a resident process that finished a turn is still running, and an
-    /// in-flight launch accepts the delivery (the daemon buffers it during
+    /// Upstream `planWakeAction` delivers directly whenever the daemon holds a
+    /// runtime: a resident process that finished a turn is still running, and
+    /// an in-flight launch accepts the delivery (the daemon buffers it during
     /// startup and queues it while busy). A start is only needed when the daemon
     /// has no process, and only its automatic-start guards can refuse that.
+    ///
+    /// This port settles a delivery attempt on the daemon's `agent:deliver:ack`.
+    /// The official daemon does not acknowledge a frame it buffered during the
+    /// start window (`buffered-for-start`), so writing into that window would
+    /// leave the send with no settlement at all. A launch that has not reported
+    /// a process yet is therefore queued like any other not-yet-deliverable
+    /// recipient and released on the start identity / session trigger.
     func humanMessageWakeRefusal(serverId: String, agentId: String) throws -> HumanMessageWakeRefusal? {
         guard let machineId = agents.agentMachineIds[agentId],
               machines.machines.contains(where: { $0.id == machineId && $0.serverId == serverId }) else {
@@ -81,8 +128,12 @@ extension AgentExecutionDomain {
                 }) else { return .launchInProgress }
                 return nil
             }
-            // An admitted launch that is still starting buffers the delivery.
-            if let current, launchIsInFlight(current) { return nil }
+            // An admitted launch that has not reported its process yet cannot
+            // acknowledge a delivery (the daemon buffers it for the start). The
+            // queued fact is released as soon as the launch names its process.
+            if let current, launchIsInFlight(current) {
+                return current.processInstanceId == nil && !current.completed ? .launchInProgress : nil
+            }
             // No runtime and no in-flight launch: requestDelivery stages a start.
             // Mirror that start's automatic guards before any message effect.
             guard !hasBlockingUnexitedExecution(agentId: agentId, agent: agent, state: state) else { return .launchInProgress }
@@ -115,22 +166,20 @@ extension AgentExecutionDomain {
         }
     }
 
-    /// Release every durable pending human delivery for agents bound to this
-    /// machine once its ready connection is committed. Each entry stages at
-    /// most one strict delivery attempt; a superseded attempt is retried later,
-    /// an accepted one is removed by the delivery ACK.
+    /// Release every durable queued delivery for agents bound to this machine
+    /// once its ready connection is committed. Each obligation stages at most
+    /// one strict attempt; a superseded attempt is retried later, an accepted
+    /// one is removed by the delivery ACK (or by its carrying start's ACK).
     func releasePendingHumanDeliveries(_ context: AgentExecutionMachineContext) throws {
         try requireTransaction()
         guard let connection = agents.state.execution.connections[context.machineId], connection.online,
               connection.ready, connection.serverId == context.serverId,
               connection.connectionEpochId == context.connectionEpochId else { return }
         let binding = agents.agentMachineIds
-        let pending = (agents.state.execution.pendingHumanDeliveries ?? [:])
-            .sorted { $0.key < $1.key }
-            .filter { $0.value.serverId == context.serverId && binding[$0.value.agentId] == context.machineId }
-        for (key, entry) in pending {
-            try releasePendingHumanDelivery(entry, key: key)
+        let obligations = queuedDeliveryObligations(serverId: context.serverId) {
+            binding[$0.agentId] == context.machineId
         }
+        for obligation in obligations { try releaseQueuedDelivery(obligation) }
     }
 
     /// Release the durable wake obligations of one agent whose runtime just
@@ -143,40 +192,143 @@ extension AgentExecutionDomain {
               let machineId = agents.agentMachineIds[agentId],
               let connection = agents.state.execution.connections[machineId], connection.online,
               connection.ready, connection.serverId == serverId, connection.daemonInstanceId != nil else { return }
-        let pending = (agents.state.execution.pendingHumanDeliveries ?? [:])
-            .sorted { $0.key < $1.key }
-            .filter { $0.value.serverId == serverId && $0.value.agentId == agentId }
-        for (key, entry) in pending {
-            try releasePendingHumanDelivery(entry, key: key)
+        let obligations = queuedDeliveryObligations(serverId: serverId) { $0.agentId == agentId }
+        for obligation in obligations { try releaseQueuedDelivery(obligation) }
+    }
+
+    /// A human start revalidates every queued send's current authority before
+    /// the launch can release anything. An obligation whose access is gone is
+    /// retired here (the canonical message keeps its history) instead of waiting
+    /// for the next delivery-capable trigger to rediscover it.
+    func cancelUnauthorizedQueuedDeliveries(serverId: String, agentId: String) throws {
+        try requireTransaction()
+        let obligations = queuedDeliveryObligations(serverId: serverId) { $0.agentId == agentId }
+        for obligation in obligations {
+            guard !deliveryIsAuthorized(serverId: obligation.serverId, agentId: obligation.agentId,
+                                        channelId: obligation.channelId, messageId: obligation.messageId) else { continue }
+            try mutate { state in unlink(obligation.queue, state: &state) }
         }
     }
 
-    /// Stage at most one strict attempt for one pending entry. An entry whose
-    /// attempt was accepted is removed by the delivery ACK; one whose attempt was
-    /// superseded is retried on a later deliverable moment.
-    private func releasePendingHumanDelivery(_ entry: AgentExecutionPendingDelivery, key: String) throws {
-        if let released = entry.releasedCommandId,
-           let command = agents.state.execution.commands[released.uuidString], command.status != .superseded {
+    /// The strict settlement predicate shared by every release authority: a
+    /// start carrying the message, or a delivery command, that is still live on
+    /// the agent's current launch. A second authority must link to it instead of
+    /// staging a second frame.
+    func liveObligationCommand(serverId: String, agentId: String,
+                               channelId: String, messageId: String) -> AgentExecutionCommand? {
+        agents.state.execution.liveObligationCommand(serverId: serverId, agentId: agentId,
+                                                     channelId: channelId, messageId: messageId)
+    }
+
+    /// Upstream `attempt-wake`/`maybeWakePendingInboxAfterReady`: the oldest
+    /// owed message rides the start itself as the first input. A tracked mention
+    /// is never embedded (its occurrence needs the concrete session identity).
+    /// Returns the updated start when it now carries a message.
+    func carryQueuedWakeMessage(on start: AgentExecutionCommand) throws -> AgentExecutionCommand? {
+        try requireTransaction()
+        guard start.kind == .start, start.wakeMessage == nil else { return nil }
+        let obligations = queuedDeliveryObligations(serverId: start.serverId) { $0.agentId == start.agentId }
+        for obligation in obligations {
+            if let released = obligation.releasedCommandId, !isSuperseded(released) { continue }
+            guard deliveryIsAuthorized(serverId: obligation.serverId, agentId: obligation.agentId,
+                                       channelId: obligation.channelId, messageId: obligation.messageId) else { continue }
+            // A formal mention is delivered as a tracked occurrence once the
+            // daemon reports the session identity; embedding it would lose that.
+            guard messages.ensureMentionDeliveryOccurrence(
+                messageId: obligation.messageId, agentId: obligation.agentId) == nil else { continue }
+            let wake = AgentExecutionWakeMessage(channelId: obligation.channelId, messageId: obligation.messageId)
+            var carried: AgentExecutionCommand?
+            try mutate { state in
+                guard var command = state.commands[start.commandId.uuidString],
+                      command.kind == .start, command.wakeMessage == nil else { return }
+                command.wakeMessage = wake
+                state.commands[start.commandId.uuidString] = command
+                link(obligation.queue, to: start.commandId, state: &state)
+                carried = command
+            }
+            if let carried { return carried }
+        }
+        return nil
+    }
+
+    private func isSuperseded(_ commandId: UUID) -> Bool {
+        agents.state.execution.commands[commandId.uuidString]?.status == .superseded
+    }
+
+    private func queuedDeliveryObligations(
+        serverId: String, filter: (QueuedDeliveryObligation) -> Bool
+    ) -> [QueuedDeliveryObligation] {
+        let state = agents.state.execution
+        var obligations: [QueuedDeliveryObligation] = []
+        for (key, row) in state.pendingHumanDeliveries ?? [:] where row.serverId == serverId {
+            obligations.append(QueuedDeliveryObligation(
+                queue: .pending(key: key), serverId: row.serverId, agentId: row.agentId,
+                channelId: row.channelId, messageId: row.messageId, createdAt: row.createdAt,
+                releasedCommandId: row.releasedCommandId, cancelled: false))
+        }
+        for (key, row) in state.heldDeliveries ?? [:] where row.serverId == serverId && !row.cancelled {
+            obligations.append(QueuedDeliveryObligation(
+                queue: .held(key: key), serverId: row.serverId, agentId: row.agentId,
+                channelId: row.channelId, messageId: row.messageId, createdAt: row.createdAt,
+                releasedCommandId: row.releasedCommandId, cancelled: row.cancelled))
+        }
+        return obligations
+            .filter(filter)
+            .sorted { ($0.createdAt, $0.messageId) < ($1.createdAt, $1.messageId) }
+    }
+
+    /// Stage at most one strict attempt for one queued obligation. The release
+    /// link is committed with the attempt so a second trigger (a start ACK, a
+    /// process report, a session, a ready) can never stage the same message
+    /// again, whichever authority reaches it first.
+    private func releaseQueuedDelivery(_ obligation: QueuedDeliveryObligation) throws {
+        try requireTransaction()
+        let state = agents.state.execution
+        if let released = obligation.releasedCommandId,
+           let command = state.commands[released.uuidString], command.status != .superseded {
             return
         }
-        guard deliveryIsAuthorized(serverId: entry.serverId, agentId: entry.agentId,
-                                   channelId: entry.channelId, messageId: entry.messageId) else {
-            // The message or the agent's access is gone: drop only the
-            // pending delivery; the canonical message keeps its history.
-            try mutate { state in _ = state.pendingHumanDeliveries?.removeValue(forKey: key) }
+        if let live = liveObligationCommand(serverId: obligation.serverId, agentId: obligation.agentId,
+                                            channelId: obligation.channelId, messageId: obligation.messageId) {
+            try mutate { state in link(obligation.queue, to: live.commandId, state: &state) }
             return
         }
-        if manuallyStopped(serverId: entry.serverId, agentId: entry.agentId)
-            || hasActiveReset(serverId: entry.serverId, agentId: entry.agentId) { return }
-        guard try humanMessageWakeRefusal(serverId: entry.serverId, agentId: entry.agentId) == nil else { return }
-        let request = AgentExecutionDeliveryRequest(serverId: entry.serverId, agentId: entry.agentId,
-                                                    channelId: entry.channelId, messageId: entry.messageId)
+        guard deliveryIsAuthorized(serverId: obligation.serverId, agentId: obligation.agentId,
+                                   channelId: obligation.channelId, messageId: obligation.messageId) else {
+            // The message or the agent's access is gone: drop only the queued
+            // fact; the canonical message keeps its history.
+            try mutate { state in unlink(obligation.queue, state: &state) }
+            return
+        }
+        if manuallyStopped(serverId: obligation.serverId, agentId: obligation.agentId)
+            || hasActiveReset(serverId: obligation.serverId, agentId: obligation.agentId) { return }
+        guard try humanMessageWakeRefusal(serverId: obligation.serverId, agentId: obligation.agentId) == nil else { return }
+        let request = AgentExecutionDeliveryRequest(serverId: obligation.serverId, agentId: obligation.agentId,
+                                                    channelId: obligation.channelId, messageId: obligation.messageId)
         let disposition = try requestHumanMessageDelivery(request)
         guard case .staged(let admission) = disposition else { return }
-        try mutate { state in
-            guard var current = state.pendingHumanDeliveries?[key] else { return }
-            current.releasedCommandId = admission.commandId
-            state.pendingHumanDeliveries?[key] = current
+        try mutate { state in link(obligation.queue, to: admission.commandId, state: &state) }
+    }
+
+    private func link(_ queue: QueuedDeliveryQueue, to commandId: UUID, state: inout AgentExecutionState) {
+        switch queue {
+        case .pending(let key):
+            guard var row = state.pendingHumanDeliveries?[key] else { return }
+            row.releasedCommandId = commandId
+            state.pendingHumanDeliveries?[key] = row
+        case .held(let key):
+            guard var row = state.heldDeliveries?[key] else { return }
+            row.releasedCommandId = commandId
+            state.heldDeliveries?[key] = row
+        }
+    }
+
+    private func unlink(_ queue: QueuedDeliveryQueue, state: inout AgentExecutionState) {
+        switch queue {
+        case .pending(let key):
+            _ = state.pendingHumanDeliveries?.removeValue(forKey: key)
+        case .held(let key):
+            state.heldDeliveries?[key]?.cancelled = true
         }
     }
 }

@@ -328,35 +328,22 @@ public struct AgentSendDeliveryService: Sendable {
         agentId: String,
         body: AgentSendRequest?
     ) throws -> any JSONBodyConvertible {
-        guard let authorization, authorization.hasPrefix("Bearer ") else {
-            throw AgentSendDeliveryError.machineAuthenticationRequired
-        }
-        let apiKey = String(authorization.dropFirst("Bearer ".count))
-        let credential = machines.machineCredential(apiKey: apiKey, agentId: nil)
-        guard let serverId = credential.machine?.serverId ?? credential.legacy?.serverId else {
-            throw AgentSendDeliveryError.invalidMachineAPIKey
-        }
+        // Upstream mounts `validateLegacyAgentSendBody` before
+        // `requireAgentScope`, so the shared gate is entered in two phases:
+        // machine authentication first, body validation second, then the
+        // agent/server/ownership/grant half.
+        let principal = try legacyMachineGate.machinePrincipal(authorization: authorization)
         let request = body ?? AgentSendRequest()
         guard request.issues.isEmpty else {
             throw AgentSendDeliveryError.legacyBodyInvalid(request.issues)
         }
-        guard let agent = oauth.agentRuntimeInfo(id: agentId), !agent.deleted, agent.serverId == serverId else {
-            throw AgentSendDeliveryError.agentNotFound
-        }
-        let ownsAgent: Bool
-        if let machine = credential.machine {
-            ownsAgent = agents.agentMachineIds[agentId] == machine.id
-        } else if let legacy = credential.legacy {
-            ownsAgent = legacy.agentId == agentId
-        } else {
-            ownsAgent = false
-        }
-        guard ownsAgent else {
-            throw AgentSendDeliveryError.agentNotAssignedToMachine
-        }
-        if let grants = managedMCP.agentGrantSets[agentId], !grants.contains("message:send") {
-            throw AgentSendDeliveryError.missingAgentScope(scope: "message:send")
-        }
+        let actor = try legacyMachineGate.actor(
+            principal: principal,
+            agentId: agentId,
+            requiredScope: "message:send"
+        )
+        let agent = actor.agent
+        let serverId = actor.serverId
 
         if request.continueFlag {
             throw AgentSendError.continueUnsupported
@@ -1053,6 +1040,17 @@ public struct AgentSendDeliveryService: Sendable {
     }
 
     // MARK: - Credentials
+
+    /// The shared legacy machine/agent-ownership gate. The send route uses the
+    /// two-phase form to keep body validation between machine auth and scope.
+    private var legacyMachineGate: LegacyAgentMachineGate {
+        LegacyAgentMachineGate(
+            agents: agents,
+            machines: machines,
+            oauth: oauth,
+            cards: managedMCP
+        )
+    }
 
     /// The shared `sk_agent_*` credential check: revoked or absent credentials
     /// are `nil`, a live one is marked used by the store in one critical section.

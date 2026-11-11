@@ -3,7 +3,7 @@ PYTHON ?= python3
 SHARDS ?= 6
 
 .PHONY: test check test-sharded test-pg test-e2e gate \
-	pg-up pg-down pg-url parity parity-check architecture deploy
+	pg-up pg-down pg-url parity parity-check architecture route-inventory deploy
 
 # Full suite, single serialized process. Kept for compatibility; prefer
 # `make test-sharded` for the same coverage in minutes.
@@ -44,6 +44,11 @@ parity-check:
 
 architecture:
 	$(PYTHON) scripts/check_architecture.py
+
+# Boot the FallbackApplication route table through the pinned toolchain and
+# regenerate the committed upstream/Swift route diff.
+route-inventory:
+	$(PYTHON) scripts/route_inventory.py --swift $(SWIFT) --write docs/route-inventory.md
 
 pg-up:
 	docker compose -f docker-compose.pg.yml up -d --wait

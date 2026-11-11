@@ -97,19 +97,38 @@ final class AuthProfileStore: Sendable {
     /// account lookup and the insert are one critical section, so the token
     /// always names a row that existed when it was written. An unknown
     /// address stays a silent no-op and returns `false`.
+    ///
+    /// Mirrors `requestPasswordReset` (`services/userService.ts:1168-1199`):
+    /// at most `limit` tokens still live in the trailing hour, older rows are
+    /// replaced, and a call at the limit is a silent no-op.
     @discardableResult
     func insertResetTokenIfAccountExists(
         email: String,
         tokenHash: String,
         now: Date,
-        ttl: TimeInterval
+        ttl: TimeInterval,
+        limit: Int = 5
     ) -> Bool {
         return state.withLock { state in
             guard let account = state.accountSurface.accounts[AccountNaming.normalize(email)] else {
                 return false
             }
+            let recent = state.passwordResetTokens.filter { $0.value.userId == account.id && $0.value.expiresAt > now }
+            guard recent.count < limit else { return false }
+            state.passwordResetTokens = state.passwordResetTokens.filter { $0.value.userId != account.id }
             state.passwordResetTokens[tokenHash] = (account.id, now.addingTimeInterval(ttl))
             return true
+        }
+    }
+
+    /// Exact, case-sensitive handle uniqueness (`userService.ts:179-190`). The
+    /// authoritative check remains `completeProfile`; this is the advisory
+    /// precheck behind `GET /api/auth/me/username-available`.
+    func isUsernameAvailable(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return state.withLock { state in
+            !state.accountSurface.accounts.values.contains { $0.name == trimmed }
         }
     }
 
