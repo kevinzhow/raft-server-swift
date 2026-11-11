@@ -44,6 +44,12 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         #expect(try await f.http("POST", "/api/agents/\(aId)/start", token: owner).status == 200)
         let start = try await peer.socket.nextObject(since: startBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == aId }
         try await peer.acknowledgeControlledStart(start)
+        // The real daemon attributes the accepted start to its process and
+        // reports the codex session; a formal mention's tracked delivery needs
+        // that identity before the occurrence may leave its recorded state.
+        let aLaunchId = try start.requireString("launchId")
+        try await peer.sendProcessSpawned(agentId: aId, launchId: aLaunchId, processInstanceId: "conversation-a-process")
+        try await peer.sendSession(agentId: aId, launchId: aLaunchId, sessionId: "conversation-a-session")
 
         // RED on the old producer: HTTP200/message exists but no durable delivery.
         let dmBoundary = peer.socket.count
@@ -181,6 +187,9 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         #expect(try await f.http("POST", "/api/agents/\(bId)/start", token: owner).status == 200)
         let bStart = try await peer.socket.nextObject(since: bStartBoundary) { $0.string("type") == "agent:start" && $0.string("agentId") == bId }
         try await peer.acknowledgeControlledStart(bStart)
+        let bLaunchId = try bStart.requireString("launchId")
+        try await peer.sendProcessSpawned(agentId: bId, launchId: bLaunchId, processInstanceId: "conversation-b-process")
+        try await peer.sendSession(agentId: bId, launchId: bLaunchId, sessionId: "conversation-b-session")
         let bRunner = try #require(bStart.object("config")).requireString("agentCredentialKey")
         let agentMention = try await f.http("POST", "/internal/agent-api/v2/send", token: bRunner,
             body: .init(["target": .string("#conversation-parent:\(parentMessage.prefix(8))"),
@@ -207,7 +216,7 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
                 let actualAgent = try frame.requireString("agentId")
                 let matched = remaining.remove(actualAgent)
                 #expect(matched != nil)
-                try await peer.acknowledgeControlledDelivery(frame)
+                try await acknowledgeConversationDelivery(peer, frame)
             }
         } catch {
             let failed = try await f.audit()
@@ -244,13 +253,17 @@ func postgresHumanDMAndThreadDeliveryUsesActualParticipantsAndFollows() async th
         // Runtime completion is its own durable ingress fact, never a chat reply.
         let beforeOutcome = try await f.audit()
         let outcomeBoundary = peer.socket.count
+        // The peer already sent sequenced process/session facts, so this
+        // outcome must continue the daemon's monotonic client sequence rather
+        // than restart it at zero.
+        let outcomeSequence = peer.sequence.next()
         try await peer.socket.send(.init(["type": .string("agent:runtime:outcome"), "v": .integer(1), "agentId": .string(aId),
-            "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(0), "launchId": .string(try start.requireString("launchId")),
+            "daemonInstanceId": .string(peer.daemonId), "clientSeq": .integer(outcomeSequence), "launchId": .string(try start.requireString("launchId")),
             "sessionId": .null, "outcome": .object(["kind": .string("turn_completed")])]))
         do {
             _ = try await peer.socket.nextObject(since: outcomeBoundary) {
                 $0.string("type") == "agent:outcome:ack" && $0.string("agentId") == aId
-                    && $0.string("daemonInstanceId") == peer.daemonId && $0.integer("clientSeq") == 0
+                    && $0.string("daemonInstanceId") == peer.daemonId && $0.integer("clientSeq") == outcomeSequence
             }
         } catch {
             let failed = try await f.audit()
@@ -366,12 +379,24 @@ private func conversationAssertNoDelivery(_ f: AgentExecutionPostgresFixture, me
     #expect(!audit.execution.commands.values.contains { $0.messageId == messageId }, detail, sourceLocation: sourceLocation)
     #expect(audit.execution.heldDeliveries?.values.contains { $0.messageId == messageId } != true, detail, sourceLocation: sourceLocation)
 }
+/// A tracked formal mention carries the occurrence identity; the daemon must
+/// send its receipt transitions and the identity-bearing final ACK. An ordinary
+/// (DM/follow) delivery has no occurrence and keeps the plain ACK.
+private func acknowledgeConversationDelivery(_ peer: ControlledMachineProtocolPeer,
+                                             _ frame: ProtocolPGObject) async throws {
+    if frame.object("mentionDelivery") != nil {
+        try await peer.acknowledgeControlledMentionDelivery(frame)
+    } else {
+        try await peer.acknowledgeControlledDelivery(frame)
+    }
+}
+
 private func conversationDelivery(_ f: AgentExecutionPostgresFixture, _ peer: ControlledMachineProtocolPeer, since: Int, messageId: String, agentId: String,
     sourceLocation: SourceLocation = #_sourceLocation) async throws -> ProtocolPGObject {
     do {
         let frame = try await peer.socket.nextObject(since: since) { $0.string("type") == "agent:deliver" && $0.object("message")?.string("message_id") == messageId && $0.string("agentId") == agentId }
         #expect(frame.string("agentId") == agentId, sourceLocation: sourceLocation)
-        try await peer.acknowledgeControlledDelivery(frame)
+        try await acknowledgeConversationDelivery(peer, frame)
         return frame
     } catch {
         let audit = try await f.audit()

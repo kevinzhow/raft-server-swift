@@ -263,7 +263,7 @@ struct AgentExecutionDomain: Sendable {
         // A formal notifiable mention carries a durable occurrence from the send
         // transaction; a mention resolved later (the sender's notify/add action)
         // gains it here, before any delivery is prepared.
-        var occurrence = messages.ensureMentionDeliveryOccurrence(
+        let occurrence = messages.ensureMentionDeliveryOccurrence(
             messageId: request.messageId, agentId: request.agentId).flatMap {
                 messages.mentionDeliveryOccurrence(occurrenceId: $0)
             }
@@ -286,18 +286,12 @@ struct AgentExecutionDomain: Sendable {
         // yet. Start the runtime, then `agent:session` rebuilds the acknowledgement
         // obligation from the durable occurrence.
         if occurrence != nil, startsRuntime { return .deferred }
-        // `applyDirectDelivery`'s identity gate, with upstream's instrumentation
-        // fallback (mention-push incident 2026-08-27): a delivery on an already
-        // in-flight launch has no daemon session to freeze yet. Abandon the
-        // occurrence once as INSTRUMENT_FAILED and continue through the ordinary
-        // untracked path, so the mention is delayed rather than lost and never
-        // doubled. If another path already owns the occurrence, emit nothing.
-        if let activeOccurrence = occurrence,
-           agents.state.execution.agents[request.agentId]?.sessionId == nil {
-            guard messages.abandonMentionDeliveryWithoutInstrumentation(
-                occurrenceId: activeOccurrence.occurrenceId) != nil else { return .held }
-            occurrence = nil
-        }
+        // `applyDirectDelivery`'s identity gate: without the daemon's current
+        // session there is nothing to track against, so the durable occurrence
+        // defers to the `agent:session` that rebuilds the acknowledgement
+        // obligation. Waiting is the branch's tracked-mention contract: the
+        // ordinary untracked delivery would lose the receipt chain.
+        if occurrence != nil, agents.state.execution.agents[request.agentId]?.sessionId == nil { return .deferred }
         do {
             let command = try mutate { state -> AgentExecutionCommand in
                 guard let connection = state.connections[machineId], connection.online, connection.ready,
