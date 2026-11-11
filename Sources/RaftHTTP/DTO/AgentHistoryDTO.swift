@@ -6,6 +6,31 @@ import Foundation
 
 /// One message row of a history page.
 public struct AgentHistoryMessage: Sendable, Equatable {
+    /// The agent-facing attachment envelope: the same members the pinned
+    /// message service projects for `agent:deliver` and history reads.
+    public struct Attachment: Sendable, Equatable {
+        public var id: String
+        public var filename: String
+        public var mimeType: String
+        public var sizeBytes: Int?
+
+        public init(id: String, filename: String, mimeType: String, sizeBytes: Int?) {
+            self.id = id
+            self.filename = filename
+            self.mimeType = mimeType
+            self.sizeBytes = sizeBytes
+        }
+
+        var jsonBody: OrderedJSON {
+            var body = OrderedJSONObject()
+            body.append("id", id)
+            body.append("filename", filename)
+            body.append("mimeType", mimeType)
+            body.append("sizeBytes", ifPresent: sizeBytes)
+            return body.json
+        }
+    }
+
     /// The external-projection facts a third-party-app row carries.
     public struct External: Sendable, Equatable {
         public var messageId: String?
@@ -22,6 +47,7 @@ public struct AgentHistoryMessage: Sendable, Equatable {
     public var senderName: String
     public var senderTimezone: String?
     public var createdAt: Date
+    public var attachments: [Attachment]
     /// Present only in the regular page layout.
     public var mentioned: Bool?
     public var external: External?
@@ -37,7 +63,7 @@ public struct AgentHistoryMessage: Sendable, Equatable {
         row.append("senderName", senderName)
         row.append("senderTimezone", optional: senderTimezone)
         row.append("createdAt", AgentHistoryFormat.timestamp(createdAt))
-        row.append("attachments", .array([]))
+        row.append("attachments", .array(attachments.map(\.jsonBody)))
         if let mentioned { row.append("mentioned", mentioned) }
         if let external {
             row.append("external_message", .object([

@@ -69,7 +69,14 @@ extension EmailLoginDirectory {
         ManagedMCPChannelRoutesService(
             sessionUserId: { [self] in sessionUserId(authorization: $0) },
             channelActorCanSee: { [self] channelId, userId in
-                channelActorCanSee(channelId: channelId, userId: userId)
+                guard let serverId = serversAndChannelsStore.postableChannels[channelId]?.serverId
+                    ?? oauth.channelInfo(id: channelId)?.serverId else { return false }
+                if HumanChannelReadAccessQuery(channels: serversAndChannelsStore,
+                    messages: messagesAndThreadsStore, oauth: oauth, flags: agentsRuntimeStore)
+                    .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
+                guard serversAndChannelsStore.postableChannel(id: channelId) == nil else { return false }
+                return LedgerChannelReadFallback.canReadHuman(
+                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
             },
             oauth: oauth,
             channels: serversAndChannelsStore,

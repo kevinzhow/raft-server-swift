@@ -302,16 +302,9 @@ public struct AgentHistoryService: Sendable {
     private func isVisible(
         _ channelId: String, to agent: OAuthLedger.AgentRuntimeInfo, postable: [String: PostableChannel]
     ) -> Bool {
-        guard let channel = postable[channelId] else { return false }
-        if channel.kind == "dm" {
-            return channel.memberIds.contains(agent.id)
-        }
-        if channel.kind == "thread", let parentId = channel.parentChannelId,
-           let parent = postable[parentId], parent.kind == "dm" {
-            return parent.memberIds.contains(agent.id)
-        }
-        return channel.kind == "channel" || channel.memberIds.contains(agent.id)
-            || oauth.channelAgentIds(channelId: channelId).contains(agent.id)
+        _ = postable
+        return AgentChannelAccessQuery(channels: channels, messages: messages, oauth: oauth)
+            .canAccess(channelId: channelId, serverId: agent.serverId, agentId: agent.id)
     }
 
     private func channelCard(channelId: String, postable: [String: PostableChannel]) -> AgentHistoryChannelCard? {
@@ -336,7 +329,24 @@ public struct AgentHistoryService: Sendable {
 
     private func senderName(_ senderId: String, isAgent: Bool) -> String {
         if isAgent { return oauth.agentRuntimeInfo(id: senderId)?.name ?? senderId }
-        return accounts.account(userId: senderId)?.name ?? senderId
+        guard let account = accounts.account(userId: senderId) else { return senderId }
+        return AgentSenderNaming.humanName(account)
+    }
+
+    /// The agent-facing attachment envelope for one stored message. The row's
+    /// link order is the published order; MIME follows the same filename
+    /// fallback the pinned server applies to a stored attachment.
+    private func attachments(for message: OAuthLedger.HistoryMessage) -> [AgentHistoryMessage.Attachment] {
+        guard let stored = messages.humanMessageRows.first(where: { $0.id == message.id }) else { return [] }
+        return messages.orderedAttachmentRows(for: stored).compactMap { entry in
+            guard let row = entry.row, row.channelId == stored.channelId else { return nil }
+            return AgentHistoryMessage.Attachment(
+                id: row.id,
+                filename: row.filename,
+                mimeType: ChannelFileRules.resolveAttachmentMimeType(filename: row.filename, stored: row.mimeType),
+                sizeBytes: row.sizeBytes
+            )
+        }
     }
 
     private func unreadPage(
@@ -389,6 +399,7 @@ public struct AgentHistoryService: Sendable {
                 senderName: senderName(message.senderId, isAgent: isAgent),
                 senderTimezone: nil,
                 createdAt: message.createdAt,
+                attachments: self.attachments(for: message),
                 mentioned: nil,
                 external: nil
             )
@@ -504,6 +515,7 @@ public struct AgentHistoryService: Sendable {
                 senderName: senderName(message.senderId, isAgent: senderType == "agent"),
                 senderTimezone: message.senderTimezone,
                 createdAt: message.createdAt,
+                attachments: self.attachments(for: message),
                 mentioned: annotations.mentionedIds.contains(message.id),
                 external: external
             )

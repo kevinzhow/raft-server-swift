@@ -167,6 +167,7 @@ extension ReactionsRealtimeService {
                 channelName: conversation.name,
                 channelType: conversation.kind == "dm" ? "dm" : "channel",
                 timestamp: DateText.isoString(message.createdAt),
+                attachments: attachments(for: message),
                 external: senderType == "third_party_app"
                     ? AgentEventEntry.ExternalMessage(
                         messageId: message.externalMessageId,
@@ -263,5 +264,20 @@ extension ReactionsRealtimeService {
             with: "user:$1",
             options: .regularExpression
         )
+    }
+}
+
+extension ReactionsRealtimeService {
+    /// The agent-facing attachment envelope for one drained message.
+    func attachments(for message: StoredHumanMessage) -> [AgentHistoryMessage.Attachment] {
+        messages.orderedAttachmentRows(for: message).compactMap { entry in
+            guard let row = entry.row, row.channelId == message.channelId else { return nil }
+            return AgentHistoryMessage.Attachment(
+                id: row.id,
+                filename: row.filename,
+                mimeType: ChannelFileRules.resolveAttachmentMimeType(filename: row.filename, stored: row.mimeType),
+                sizeBytes: row.sizeBytes
+            )
+        }
     }
 }

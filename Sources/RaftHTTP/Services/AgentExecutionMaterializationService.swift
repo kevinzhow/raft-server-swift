@@ -184,9 +184,8 @@ public struct AgentExecutionMaterializationService: Sendable {
         let assigneeName = assigneeId.map { id in
             assigneeType == "agent" ? oauth.agentRuntimeInfo(id: id).map { $0.displayName.isEmpty ? $0.name : $0.displayName } ?? "Unknown" : humanName(id)
         }
-        let attachments = try message.attachmentIds.map { id -> ChannelAttachment in
-            guard let row = messages.attachmentDownloadRecord(attachmentId: id)?.attachment,
-                  row.messageId == messageId, row.channelId == canonical, row.mimeType?.isEmpty == false else {
+        let attachments = try messages.orderedAttachmentRows(for: message).map { entry -> ChannelAttachment in
+            guard let row = entry.row, row.messageId == messageId, row.channelId == canonical else {
                 throw AgentExecutionMaterializationError.messageUnavailable
             }
             return row
@@ -258,7 +257,7 @@ public struct AgentExecutionMaterializationService: Sendable {
     }
 
     private func humanName(_ id: String) -> String {
-        profiles.account(userId: id).map { ($0.displayName?.isEmpty == false ? $0.displayName : nil) ?? $0.name } ?? "Unknown"
+        AgentSenderNaming.humanName(profiles.account(userId: id))
     }
 
     private func bounded(_ data: Data) throws -> Data {

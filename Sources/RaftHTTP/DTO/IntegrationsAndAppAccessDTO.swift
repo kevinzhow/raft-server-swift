@@ -979,6 +979,7 @@ public struct AgentMessageResolveResponse: Sendable, Equatable, JSONBodyConverti
     public var createdAt: String
     public var senderTimezone: String?
     public var mentioned: Bool
+    public var attachments: [AgentHistoryMessage.Attachment]
     public var externalMessage: ExternalMessage?
 
     public init(
@@ -992,6 +993,7 @@ public struct AgentMessageResolveResponse: Sendable, Equatable, JSONBodyConverti
         createdAt: String,
         senderTimezone: String?,
         mentioned: Bool,
+        attachments: [AgentHistoryMessage.Attachment] = [],
         externalMessage: ExternalMessage?
     ) {
         self.messageId = messageId
@@ -1004,6 +1006,7 @@ public struct AgentMessageResolveResponse: Sendable, Equatable, JSONBodyConverti
         self.createdAt = createdAt
         self.senderTimezone = senderTimezone
         self.mentioned = mentioned
+        self.attachments = attachments
         self.externalMessage = externalMessage
     }
 
@@ -1020,6 +1023,7 @@ public struct AgentMessageResolveResponse: Sendable, Equatable, JSONBodyConverti
         message.append("created_at", createdAt)
         message.append("sender_timezone", optional: senderTimezone)
         message.append("mentioned", mentioned)
+        message.append("attachments", .array(attachments.map(\.jsonBody)))
         if let externalMessage {
             message.append("external_message", .object([
                 OrderedJSONField("message_id", optional: externalMessage.messageId),

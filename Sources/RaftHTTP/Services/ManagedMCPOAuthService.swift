@@ -78,6 +78,38 @@ public struct ManagedMCPOAuthService: Sendable {
 
     private var oauth: OAuthLedger { dependencies.oauth }
 
+    /// Human read authority for this service's channel-scoped writes. A thread
+    /// resolves through its parent message's channel, like
+    /// `canUserAccessChannel` (`channelService.ts:4994-5016`).
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        var visited: Set<String> = []
+        func visit(_ id: String) -> Bool {
+            guard visited.count < 64, visited.insert(id).inserted,
+                  let channel = dependencies.channels.postableChannels[id],
+                  channel.serverId == serverId, channel.deletedAt == nil
+            else { return false }
+            switch channel.kind {
+            case "channel":
+                return true
+            case "thread":
+                if let parentId = channel.parentChannelId, visit(parentId) { return true }
+                guard let parentMessageId = channel.parentMessageId,
+                      let parentChannelId = dependencies.messages.humanMessageRows
+                          .first(where: { $0.id == parentMessageId })?.channelId
+                else { return false }
+                return visit(parentChannelId)
+            default:
+                return channel.memberIds.contains(userId)
+                    || oauth.channelType(id: id) == "channel"
+                    || oauth.isChannelParticipant(channelId: id, userId: userId)
+            }
+        }
+        if visit(channelId) { return true }
+        guard dependencies.channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     private func requireUser(_ authorization: String?) throws -> String {
         guard let userId = dependencies.sessionUserId(authorization) else {
             throw ManagedMCPOAuthError.unauthorized
@@ -214,14 +246,9 @@ public struct ManagedMCPOAuthService: Sendable {
         guard let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId else {
             throw ManagedMCPOAuthError.channelNotFound
         }
-        let readableUnread: Bool
-        if let postable = dependencies.channels.postableMembership(channelId: channelId, userId: userId) {
-            readableUnread = postable.kind == "channel" || postable.isMember
-        } else {
-            readableUnread = oauth.channelType(id: channelId) == "channel"
-                || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ManagedMCPOAuthError.channelNotFound
         }
-        guard readableUnread else { throw ManagedMCPOAuthError.channelNotFound }
         let cursor = max(0, (oauth.latestPeerMessageSeq(channelId: channelId, excluding: userId) ?? 1) - 1)
         oauth.setChannelReadCursor(channelId: channelId, userId: userId, seq: cursor)
         let info = oauth.channelUnreadInfo(channelId: channelId, userId: userId)

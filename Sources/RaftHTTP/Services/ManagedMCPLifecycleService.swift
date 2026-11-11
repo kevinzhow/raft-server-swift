@@ -44,6 +44,38 @@ public struct ManagedMCPLifecycleService: Sendable {
         return userId
     }
 
+    /// A thread is visible through its parent message's channel. This mirrors
+    /// the pinned `canUserAccessChannel` recursion (`channelService.ts:4994-5016`)
+    /// for the read-state writes owned here.
+    private func canReadChannel(channelId: String, serverId: String, userId: String) -> Bool {
+        var visited: Set<String> = []
+        func visit(_ id: String) -> Bool {
+            guard visited.count < 64, visited.insert(id).inserted,
+                  let channel = channels.postableChannels[id],
+                  channel.serverId == serverId, channel.deletedAt == nil
+            else { return false }
+            switch channel.kind {
+            case "channel":
+                return true
+            case "thread":
+                if let parentId = channel.parentChannelId, visit(parentId) { return true }
+                guard let parentMessageId = channel.parentMessageId,
+                      let parentChannelId = messages.humanMessageRows
+                          .first(where: { $0.id == parentMessageId })?.channelId
+                else { return false }
+                return visit(parentChannelId)
+            default:
+                return channel.memberIds.contains(userId)
+                    || oauth.channelHumanIds(channelId: id).contains(userId)
+                    || oauth.isChannelParticipant(channelId: id, userId: userId)
+            }
+        }
+        if visit(channelId) { return true }
+        guard channels.postableChannel(id: channelId) == nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+    }
+
     // MARK: - POST /api/channels/:id/conversation-read-all
 
     public func conversationReadAll(
@@ -56,10 +88,9 @@ public struct ManagedMCPLifecycleService: Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil,
               let channel = oauth.channelInfo(id: channelId), channel.serverId == serverId
         else { throw ManagedMCPLifecycleError.channelNotFound }
-        let hasAccess = channels.isPostableMember(channelId: channelId, userId: userId)
-            || oauth.channelHumanIds(channelId: channelId).contains(userId)
-            || oauth.channelType(id: channelId) == "channel"
-        guard hasAccess else { throw ManagedMCPLifecycleError.channelNotFound }
+        guard canReadChannel(channelId: channelId, serverId: serverId, userId: userId) else {
+            throw ManagedMCPLifecycleError.channelNotFound
+        }
         return ConversationReadAllResponse(
             serverId: serverId,
             scopes: messages.advanceConversationReadAll(userId: userId, channelId: channelId)
@@ -100,8 +131,7 @@ public struct ManagedMCPLifecycleService: Sendable {
             }
             let hasOwnedCursor = messages.hasUserReadCursor(userId: userId, scopeId: rawScope)
             let isMember = oauth.memberRole(serverId: serverId, userId: userId) != nil
-            let visible = channels.isPostableMember(channelId: rawScope, userId: userId)
-                || oauth.channelHumanIds(channelId: rawScope).contains(userId)
+            let visible = canReadChannel(channelId: rawScope, serverId: serverId, userId: userId)
                 || (channelType == "channel" && isMember)
                 || (hasOwnedCursor && isMember)
             guard visible else { throw ManagedMCPLifecycleError.channelNotFound }

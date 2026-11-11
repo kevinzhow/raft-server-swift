@@ -257,6 +257,7 @@ public struct AgentMessageLookupService: Sendable {
             createdAt: formatter.string(from: message.createdAt),
             senderTimezone: message.senderTimezone,
             mentioned: mentioned,
+            attachments: attachments(for: message),
             externalMessage: message.senderType == "external_projection"
                 ? AgentMessageResolveResponse.ExternalMessage(
                     messageId: message.externalMessageId,
@@ -265,6 +266,18 @@ public struct AgentMessageLookupService: Sendable {
                 )
                 : nil
         )
+    }
+
+    private func attachments(for message: StoredHumanMessage) -> [AgentHistoryMessage.Attachment] {
+        messages.orderedAttachmentRows(for: message).compactMap { entry in
+            guard let row = entry.row, row.channelId == message.channelId else { return nil }
+            return AgentHistoryMessage.Attachment(
+                id: row.id,
+                filename: row.filename,
+                mimeType: ChannelFileRules.resolveAttachmentMimeType(filename: row.filename, stored: row.mimeType),
+                sizeBytes: row.sizeBytes
+            )
+        }
     }
 
     /// The local channel of a joint canonical channel the agent can act in.

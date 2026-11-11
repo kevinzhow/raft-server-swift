@@ -116,7 +116,8 @@ struct MaterializedAgentDelivery: Sendable {
         if !attachments.isEmpty {
             body["attachments"] = .array(attachments.map { attachment in
                 var result: [String: JSONValue] = ["id": .string(attachment.id), "filename": .string(attachment.filename),
-                    "mimeType": MaterializedCodexConfiguration.nullable(attachment.mimeType)]
+                    "mimeType": .string(ChannelFileRules.resolveAttachmentMimeType(
+                        filename: attachment.filename, stored: attachment.mimeType))]
                 if let size = attachment.sizeBytes { result["sizeBytes"] = .integer(Int64(size)) }
                 return .object(result)
             })

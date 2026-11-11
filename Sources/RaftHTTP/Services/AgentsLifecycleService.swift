@@ -415,13 +415,15 @@ public struct AgentsLifecycleService: Sendable {
         guard oauth.memberRole(serverId: serverId, userId: userId) != nil else {
             throw AgentsLifecycleError.notAMember
         }
-        let access = channelProbeAccess(channelId: channelId, serverId: serverId, userId: userId)
-        let channel = channels.postableChannels[channelId]
-        if access == .residue { throw AgentsLifecycleError.forbidden }
-        guard access == .allowed, let channel, channel.deletedAt == nil else {
-            throw AgentsLifecycleError.channelNotFound
-        }
-        guard channel.kind == "channel" || channel.memberIds.contains(userId) else {
+        let readAccess = HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+        let readable = readAccess.authority(channelId: channelId, serverId: serverId, userId: userId) != nil
+            || (channels.postableChannel(id: channelId) == nil
+                && LedgerChannelReadFallback.canReadHuman(
+                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth))
+        guard readable else {
+            if readAccess.hasPriorRelationship(channelId: channelId, serverId: serverId, userId: userId) {
+                throw AgentsLifecycleError.forbidden
+            }
             throw AgentsLifecycleError.channelNotFound
         }
         let limit = ChannelFileRules.channelFilesLimit(rawLimit)
