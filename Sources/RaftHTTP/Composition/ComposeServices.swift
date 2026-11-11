@@ -50,7 +50,11 @@ func composeServices(
     let ledger = MessageLedgerPort(oauth: oauth)
     let ownership = AssistantOwnershipQuery(agents: agents, oauth: oauth)
     let suppression = MessageSuppressionService(messages: messages, oauth: oauth)
-    let taskCredentials = AgentTaskCredentials(agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth, accounts: profiles)
+    let taskCredentials = AgentTaskCredentials(
+        agents: agents, machines: machines, channels: channels, cards: cards, oauth: oauth,
+        accounts: profiles,
+        reminderSurface: { agentId in feedback.agentReminderSurfaceChannelId(agentId: agentId) }
+    )
     let visibility = ManagedMCPChannelVisibility(oauth: oauth, channels: channels)
     let probe = ChannelProbeAccessQuery(channels: channels, messages: messages, inboxFacts: inboxFacts, oauth: oauth)
     let projection = MessageReadProjection(messages: messages, channels: channels, profiles: profiles, agents: agents, oauth: oauth, tasks: tasks)
@@ -336,6 +340,7 @@ func composeServices(
         feedbackLocators: locators,
         cards: cards,
         prepare: prepare,
+        catalog: catalog,
         ownership: ownership,
         suppression: suppression,
         mentions: mentions,

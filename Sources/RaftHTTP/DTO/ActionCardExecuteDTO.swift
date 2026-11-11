@@ -219,7 +219,7 @@ public enum AgentTaskClaimResult: Sendable, Equatable {
             return .object([
                 OrderedJSONField("messageId", prefix),
                 OrderedJSONField("success", false),
-                OrderedJSONField("reason", "not found"),
+                OrderedJSONField("reason", "message not found"),
             ])
         case .messageAlreadyClaimedByYou(let messageId, let taskNumber):
             return .object([

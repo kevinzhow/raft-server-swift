@@ -28,6 +28,7 @@ extension TasksAndRemindersStore {
         channelId: String,
         messageId: String,
         title: String,
+        convertedByType: String = "user",
         creatorId: String,
         legacyMessageMaxNumber: Int,
         now: Date
@@ -43,7 +44,7 @@ extension TasksAndRemindersStore {
                 createdAt: now, updatedAt: now, creatorId: creatorId)
             storage.taskRecords.append(task)
             TasksAndRemindersStore.appendTaskEventLocked(state: &storage, taskId: task.id,
-                eventType: "created", actorType: "user", actorId: creatorId,
+                eventType: "created", actorType: convertedByType, actorId: creatorId,
                 payloadJSON: OrderedJSON.object([
                     .init("taskNumber", task.taskNumber),
                     .init("status", task.status),
