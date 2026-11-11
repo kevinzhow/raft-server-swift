@@ -13,104 +13,110 @@ existing deployment. Parity tests evidence the contract, not a complete user pat
 
 ## Current stage
 
-Deployed Main is `15219ef09061068e29194843f5b431e8d30377ac` on
-`deploy-linux-docker` (writer epoch 14), staged-verified before the upgrade, with
-`7b4cd3c8` and the pre-upgrade `pg_dump` retained. The owner is a real verified
-profiled user with one server; the restricted public profile is active and
-full-static is unpublished.
+Deployed Main is `db2ebc71013db8c6cc89a84e68d59c43ecbe5bcb` (`db2ebc71`) on
+`deploy-linux-docker`, upgraded at 2026-11-11 22:39 JST. The upgrade took the
+quick `pg_dump` backup (130,281 bytes), swapped the release, verified private
+health/version/PID mappings and restored the restricted gateway. Main PID at the
+upgrade was 2659883; writer epoch 17 was observed at the upgrade. The acceptance
+then restarted Main, so 17 is the upgrade observation, not an immutable
+current value. `15219ef` and the dump are retained at
+`/mnt/data/services/raft-swift/production/provision/upgrade-db2ebc71/`.
 
-The deployed release still exhibits G11: with the official Computer stopped, an
-offline DM got no correlated reply within 180 s after the restart; the
-connection reported online and ready while recovery stayed in
-`connection_lost_with_unsettled_execution`. The one pending DM, its
-`needsManual` state and the services are retained deliberately with no reset;
-the owner account and Codex login are untouched.
+Trunk is the no-ff merge `3be7bcc`, whose tree `fd58f0aa...` matches the tested
+candidate `db2ebc71`. The release selector and tested artifact are `db2ebc71`,
+not the merge SHA.
 
-The integration tree now carries all source fixes. The restart-recovery fix
-(`a402d31`, `f67b876`, merged as `8449894`) retires a previous daemon instance's
-launches on a complete new-instance ready, re-obliges a never-attempted wake
-start through the durable pending-delivery inbox, releases exactly one
-`agent:start` carrying the wake message, and keeps manual recovery for
-unacknowledged writes and written/ambiguous starts. Peer-review P2 (wake-start
-re-obligation) and P3 (nil/empty daemon identity must not fence a tracked live
-process) are red→green, and the ambiguity guards (repeated ready, revoked
-authority, old snapshot) are preserved. Evidence: 23/23 recovery unit tests,
-90/90 affected tests in 9 suites, 2/2 HTTP-server visibility tests, 2/2 gated
-real-PostgreSQL restarts, `make architecture` 22/0 and `make parity-check` green.
-This closes the implementation review, not production and not G11.
+The code is frozen; this commit changes only these docs. The original G11
+pending DM `54eef20e` was carried by the accepted start `E59E2966` with
+`needsManual` null, 0 pending deliveries, a completed launch, no inflight command
+and no manual reset (`.../qualification-db2ebc71/original-pending-recovery.json`).
+Owner login/refresh passed in the acceptance, and no owner account or Codex
+login reset was performed.
 
-Other merged slices are source and evidence only: contract validator (`b05e0fb`
-via `8cbf1d5`) 32/32 focused; auth/schema (`01ce15a`, `d355cbd` via `37607c5`)
-14 AuthCore plus 17 targeted; task history (`405a447` via `3f3fc33`) 3
-TaskHistory plus 13 AgentApiContract; correlated attachment read (`a94b05e` via
-`0568eb2`) 11 network-free tests; scripted Computer/keep-session acceptance
-(`d73ae84` via `300f451`) 27 Python tests plus a 14-check dry run.
+The actual 14-check acceptance finished at 22:55 JST: 12 PASS, 2 FAIL, 0
+blocked/skipped, 497.0 s (`.../qualification-db2ebc71/acceptance-full.json`,
+exit 1). `attachment-read` failed at 13:50:14Z with no agent reply carrying the
+hidden nonce within 180 s. `restart-main` failed at 13:53:18Z with no
+post-restart agent reply within 180 s. The other checks passed, including
+`restart-computer` (new instance; queued reply seq 100, resident reply seq 102)
+and `restart-agent` (reset HTTP 202; replies seq 104, 106). Do not claim a
+passed 14-check run or a clean browser pass.
 
-All of this awaits one full `make gate` and `make test-pg` on the frozen
-candidate; nothing above is qualified, deployable or deployed. After this docs
-refresh the tree is frozen and the Lead runs both gates. The last full gate
-(3144 tests, one isolated retry) and the 46/46 fresh-database run predate these
-merges and do not qualify them.
+## Qualified gates
+
+- **Full gate.** PASS on the frozen candidate: 3,161 tests in 6 shards, 561.0 s
+  (build 181.1 s, test 372.3 s). One isolated retry passed for the pre-existing
+  Kimi `knownGapLogin...` test, which records its documented known issue; no
+  product-test failure. E2E 48 s, smoke 25 s (26 checks), architecture 1 s
+  (22/0), parity-check 2 s. Logs:
+  `/mnt/data/raft-swift-development/batch/integrate-4/.build/gate-logs/20261111T131259Z/`.
+- **Persistence gate.** Serial `make test-pg` PASS: 47 gated startup tests
+  (0 failed), database-health 4/4, infrastructure checks. Logs:
+  `/mnt/data/raft-swift-development/tmp/qualification-db2ebc71/pg-serial/`.
+- **Qualification limits.** The first parallel `make test-pg` collided with the
+  gate build on the same worktree's build database; that was an infrastructure
+  failure, not a product test failure. The serial rerun qualifies. The Kimi
+  retry was pre-existing and isolated.
+- **Release proof.** The release build took 687 s; `make deploy` reused the same
+  binary `97a0f0c...` in 25 s and passed staged verification. Tracked source was
+  unchanged before and after the build; candidate and trunk trees match; the
+  9-pattern privacy scan found no Git match (`candidate.json`, `trunk.json`,
+  `privacy-scan.json`).
 
 ## What works
 
-- **Parity ledger.** 406 modules (219 route, 7 socket, 180 daemon), route
-  2000/2000, socket 16/16, daemon 2616/2616, with the exclusions in
-  `docs/PARITY.tsv`; `make parity-check` validates status, commits and case
-  accounting. Test mapping covers 230/406 modules, which does not mean all
-  upstream tests were ported.
-- **Gates.** `make test-sharded`, `make test-e2e` (isolated `RaftServer`
-  processes plus `RaftDaemon`), `scripts/smoke-server.sh` (26 live checks) and
-  `make architecture` (22/0) are the gate path; `make test-pg` runs the gated
-  real-PostgreSQL suites on one throwaway PostgreSQL 17 + Redis pair.
-- **Delivery paths.** Human auth, server/channel/DM/task/thread/attachment
-  routes, owner onboarding, resident delivery, presence/restart reconciliation,
-  mentions, task history/`asTask`, canonical payloads and `message:updated`,
-  notices and Socket.IO frames, activity visibility, attachment preview,
-  internal and ownership-gated machine routes, developer-platform routes,
-  avatar/logo storage, and account/billing/push/raftbench routes. The shared
-  contract validator and latest auth/task-history fixes are integration-only.
-- **Route inventory.** Upstream 644, Swift 611, missing 57, extra 27
-  (`docs/route-inventory.md`); the channels family is complete. Most missing
-  families are unported external services covered by DEVIATIONS or unreferenced
-  by the pinned Web/CLI; zero static references is not proof of unreachability.
-- **Deployed acceptance.** Scripted acceptance on `15219ef` passes 11/11 in
-  67 s: health/version, owner login/refresh, server collection, read-only sweep,
-  DM/mention replies, Task, attachment preview, thread reply with
-  `thread:updated`, and a Main restart with socket reconnect and a Codex reply.
-  The expanded 14-check plan passed only as a dry run.
+- **Parity ledger.** 406 modules (219 route, 7 socket, 180 daemon); route
+  2000/2000, socket 16/16, daemon 2616/2616; test mapping 230/406. A locked
+  ledger is contract evidence, not upstream test coverage.
+- **Deployed service.** `/health` and `/api/version` report 1.21.23 at
+  `db2ebc71`; PID mappings and the restricted gateway are verified. The
+  rollback release and dump remain.
+- **Route audit.** 644 upstream / 611 Swift registrations: 583 exact, 1
+  parameter-variant, 57 raw missing, 27 raw extra. The 57 are 5 Class A false
+  positives, 15 Class B and 37 Class B* documented exclusions, 0 Class C
+  reachable missing; all 52 intentional exclusions are in DEVIATIONS. The 37 B*
+  rows are actual existing unsupported App, OAuth, legacy-agent/machine,
+  SDK-only and migration features, not new decisions. The 27 extras are 15
+  fail-closed wildcards, 5 parser misses and 7 compatibility/refusal endpoints;
+  the channel family is 64/64.
+- **G1.** Real-PostgreSQL proof is complete: `OnboardingPostgresAcceptanceTests`
+  lines 105-123, run among the 47 gated tests, shows normal HTTP login and
+  refresh 200 and the empty `[]` server collection before membership. This does
+  not claim a fresh production UI account was created.
+- **G11.** `restart-computer` passed live: the Computer stopped, a DM queued
+  offline, a new instance started, and both replies arrived (seq 100, 102). The
+  original pending DM was carried with no manual reset (Current stage).
+- **Full-static.** The public-profile candidate is prepared privately at
+  `/mnt/data/raft-swift-development/tmp/full-static-publication-candidate`
+  (SHA-256 `1b0fd817...`), with Caddy adapt/validate and 41/41 structural checks
+  passing. It is not applied; the live gateway remains restricted and
+  full-static remains unpublished.
 
 ## Open items
 
-- **G11.** Fixed in the integration tree; the deployed release still fails the
-  direct Computer-stop case until the fixed release is gated, deployed and accepted.
-- **Qualification.** No full gate or full `make test-pg` has run on the frozen
-  candidate; do not call it qualified until both pass.
-- **G1.** The verified-owner-with-no-server 200 `[]` path is fixed and real-PG
-  locked; live proof remains on a controlled disposable account or a real-PG check.
-- **G3.** Confirm live agent status/activity after the next Computer ready and
-  after a Main restart; reconciliation and terminal-failure projection are deployed.
-- **G10.** The remaining 57 missing and 27 extra route registrations need a
-  read-only audit outside Git before the public profile; record accepted exclusions.
-- **G5.** Full-static is unpublished; publish only after the browser and provider checks.
-- **D5 console.** Audited Web pages log the allowlisted
-  `/api/product-feedback/tickets` 404 from the intentionally unported Hands proxy;
-  the zero-console condition stays open.
+- **Failed acceptance checks.** `attachment-read` (no agent reply with the
+  hidden nonce in 180 s) and `restart-main` (no post-restart reply in 180 s)
+  remain open; the run is 12 PASS / 2 FAIL, not accepted.
+- **G3.** Final live agent presence/activity after the restarts is pending.
+- **Full-static publication.** Not applied; public publication, canary and
+  cleanup remain. The previous release and dump keep rollback available.
+- **D5 console.** Five authenticated pages were captured; only the allowlisted
+  `/api/product-feedback/tickets` 404 appears. This is a baseline; the
+  zero-console condition remains open.
 
 ## Next steps
 
-1. Freeze after this docs commit; the Lead runs `make gate` and `make test-pg`,
-   keeping the logs.
-2. On green, build, stage and verify, take the quick `pg_dump` during the
-   maintenance-ordered upgrade, deploy, and keep `15219ef` plus its dump.
-3. Run the 14-check actual acceptance, including the hidden-file attachment read,
-   the Computer stop/offline/new-instance path, the keep-session restart and the
-   Main restart.
-4. Run the full authenticated Web/browser pass, confirm G1/G3 live, and require
-   a clean console except D5.
-5. Finish the read-only route-exclusion review, publish full-static and run the
-   public canary.
-6. Clean up the release stage; keep the documented D5 404.
+1. Root-cause the `attachment-read` and `restart-main` failures, fix or
+   adjudicate them, and rerun the affected checks; do not accept the release
+   until the run passes or records reviewed skips.
+2. Keep G11's passed Computer-stop path and confirm G3 live presence after the
+   restart-agent run; keep the Main-restart delivery failure open.
+3. Run the full authenticated browser pass after the scripted failures are
+   resolved or adjudicated, keeping D5 as the allowed defect.
+4. Publish full-static after review, run the public canary, clean the release
+   stage and keep the documented D5 404.
+5. Keep the previous release, dump, owner account and Codex login until normal
+   operation is verified.
 
 ## Completion conditions
 
@@ -118,7 +124,7 @@ Complete only when all of these hold on one qualified release:
 
 - `make gate` and `make test-pg` pass on the deployed commit.
 - The 14-check actual acceptance passes (or records reviewed skips), including
-  the real attachment read and both restart paths.
+  the hidden-file attachment read and all restart paths.
 - The deployed Web path has no console errors on audited pages except DEVIATIONS.
 - The official Computer/Codex path survives Main restart and Computer stop/start
   without manual intervention.
@@ -129,8 +135,9 @@ Complete only when all of these hold on one qualified release:
 
 ## Evidence and reporting
 
-Evidence stays on the data disk under `/mnt/data/raft-swift-development/tmp/`
-(`recovery-review-followup/logs/`, `task6-acceptance/`) and under `.build/`
-(`gate-logs/`, `test-sharded/`, `test-pg/`). Quote paths instead of pasting logs
-and cite the deployed commit's acceptance report. Swift test counts are not
-upstream coverage; a locked ledger or unit test is not the production path.
+Evidence stays on the data disk under
+`/mnt/data/raft-swift-development/tmp/qualification-db2ebc71/` (gate, PG and
+acceptance logs, browser baseline, original pending recovery), under the gate
+leaf above and under the upgrade provision directory. Quote paths instead of
+pasting logs. Swift test counts are not upstream coverage; a locked ledger or
+unit test is not the production path.

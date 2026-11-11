@@ -48,6 +48,12 @@ the target layering in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 path above is the expected one. Never treat a locked parity ledger, a passing
 unit test, or a smoke check as a complete user path.
 
+One Swift build runs at a time per worktree; parallel sharded test runners are
+fine because they run tests against one build. `make gate` and `make test-pg`
+both launch their own build, so run them sequentially in the same worktree. A
+separate warm build area is fine as long as it stays on the data disk. All build
+artifacts, logs, caches and temporary files stay on the data disk and outside Git.
+
 ## Acceptance
 
 - Scripted first: `scripts/acceptance/acceptance.py` runs the API checks against

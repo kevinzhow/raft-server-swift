@@ -66,7 +66,8 @@ attachment, thread, history, event, send and restart routes are matched.
 
 This conclusion is **not** based on the inventory's `0` Web/CLI source-hit
 columns. Those columns only scan literal path text and are not proof that no
-consumer exists. The audit checked the pinned call sites dynamically:
+consumer exists. The source audit traced the dynamically constructed paths to
+their pinned consumers:
 
 - The only pinned-Web family that calls a missing route is Slack Bridge
   provisioning. Its loader is gated by the server feature flag and then by the
@@ -84,7 +85,9 @@ consumer exists. The audit checked the pinned call sites dynamically:
   the legacy `/internal/agent/:id/*` helper is unused. The SDK-only operations
   are not exposed by the pinned CLI surface client (D35).
 - The missing OAuth/App-installation routes are App-backend, reviewer or
-  hosted-provider routes with no configured App, reviewer or provider (D34).
+  hosted-provider routes with no configured App, reviewer or provider, except
+  `GET /api/integrations/built-in`, an unused retired compatibility route that
+  is deliberately omitted (D34).
 
 This is the existing capability scope, not a new feature decision. The audit
 did not turn a missing upstream feature into a parity exception by static `0`
@@ -217,11 +220,11 @@ The sibling `PUT /internal/agent-api/push-webhook` is registered
 `GET /internal/agent-api/messages/:id/mention-deliveries` is registered and
 matched; those are not missing.
 
-### App-backend, scoped-OAuth and hosted-callback routes (13) — D34
+### App-backend, scoped-OAuth, hosted and retired-compat routes (13) — D34
 
-These are not owner-Web routes. The owner-Web app-management routes are
+These are not owner-Web app-management routes. The app-management routes are
 registered; the App-backend, marketplace-reviewer and hosted-provider routes
-are not.
+are not, and one retired compatibility route is deliberately omitted.
 
 | # | Method path | Swift actual | Pinned upstream expected | Adjudication |
 | ---: | --- | --- | --- | --- |
@@ -238,6 +241,13 @@ are not.
 | B\*33 | `GET /api/integrations/built-in` | 404 fallback | 200 `[]` compatibility route (`integrations.ts:144-150`) | **D34** |
 | B\*34 | `POST /api/integrations/clients/:param/review-publish` | 404 fallback | 403 non-reviewer; 400 invalid review; 404 missing; 200 reviewer (`integrations.ts:625-650`) | **D34** |
 | B\*35 | `GET /api/connections/callback/:param/:param` | 404 fallback | Unauthenticated 302 to the Web landing page, or 404 unknown (`agentConnectionCallback.ts:1-25`; `app.ts:783`) | **D34**; D5 records the absent provider relay |
+
+`GET /api/integrations/built-in` (B\*33) is the one row here that needs no
+external identity: upstream answers an unconditional `200 []` for a retired
+compatibility class, and no current client queries it
+(`integrations.ts:144-150`). Its omission is intentional and unused, not a claim
+that returning `[]` would fabricate state. The other twelve rows need an
+installed App, a marketplace reviewer or a hosted provider.
 
 The Swift scoped mount registers only discovery, agents, jwks, userinfo,
 serverinfo, authorize and token

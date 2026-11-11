@@ -609,8 +609,9 @@ the alias cases above to `TimezoneObservationTests`.
 ### D34. App-backend, scoped-OAuth and marketplace-reviewer routes are partial
 
 **What.** The owner-Web app-management subset is implemented; the App-backend,
-scoped-OAuth and marketplace-reviewer subset is not. These 13 routes are not
-registered and answer the fallback 404 (`{"error":"Not found","code":"not_found","path":...}`):
+scoped-OAuth and marketplace-reviewer subset is not, and one retired
+compatibility route is deliberately omitted. These 13 routes are not registered
+and answer the fallback 404 (`{"error":"Not found","code":"not_found","path":...}`):
 
 ```text
 PUT  /api/oauth/installations/:installationId/subscriptions
@@ -653,7 +654,9 @@ the `server` and `channels` projections
 (`Sources/RaftHTTPServer/Features/Integrations/InstallationCredentialRoutes.swift:26-40`).
 `GET /api/integrations/built-in` is a compatibility-only `200 []`; upstream says
 the retired class is never queried and new clients do not call it
-(`packages/server/src/routes/integrations.ts:144-150`).
+(`packages/server/src/routes/integrations.ts:144-150`). Swift omits it
+deliberately as an unused retired compatibility route; see the exception in
+**Why** below.
 `POST /api/integrations/clients/:clientId/review-publish` is
 marketplace-reviewer-only: 403 for everyone else, 400 for an invalid review,
 404 for a missing publish request, 200 for a reviewer
@@ -671,12 +674,16 @@ The App-side bot routes (`POST /api/app-bot/token`,
 `POST /api/integrations/clients/:id/install/bot`) are already covered by D5 and
 `docs/PARITY.tsv` `integrations.api`; they are not part of this 13-route count.
 
-**Why.** These routes need an installed App, a marketplace reviewer or a hosted
-runtime provider. None is configured in this deployment; the owner-Web routes
-that manage Apps are implemented. Returning an App installation, a review
+**Why.** Twelve of these routes need an installed App, a marketplace reviewer or
+a hosted runtime provider. None is configured in this deployment; the owner-Web
+routes that manage Apps are implemented. Returning an App installation, a review
 decision or a provider redirect without the external identity would fabricate
-state. This is the existing `integrations.api`/`oauth.api` scope, not a new
-capability decision.
+state. The thirteenth, `GET /api/integrations/built-in`, is the explicit
+exception: upstream answers an unconditional `200 []` for a retired
+compatibility class, and no current client queries it. Swift omits it
+intentionally as an unused retired compatibility route, not because returning
+`[]` would fabricate state. This is the existing `integrations.api`/`oauth.api`
+scope, not a new capability decision.
 **Upstream.** `docs/PARITY.tsv` `integrations.api` and `oauth.api`; D5;
 `packages/server/src/routes/oauth.ts:300-313,565-596`,
 `packages/server/src/app.ts:380-385`,
@@ -684,9 +691,10 @@ capability decision.
 `packages/server/src/routes/integrations.ts:144-150,625-650`,
 `packages/server/src/routes/agentConnectionCallback.ts:1-25`.
 **Re-evaluate.** When an installed App, a marketplace reviewer or a hosted
-provider is configured. Add the real route with its own acceptance rail; add the
-callback route before enabling the hosted provider. Do not add fabricated
-App/reviewer responses to satisfy a route-name check.
+provider is configured; or when a pinned consumer starts using the retired
+built-in compatibility route. Add the real route with its own acceptance rail;
+add the callback route before enabling the hosted provider. Do not add
+fabricated App/reviewer responses to satisfy a route-name check.
 
 ### D35. Agent-SDK-only operations are not registered
 
