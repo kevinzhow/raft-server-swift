@@ -212,7 +212,7 @@ private func executePost(
             #expect(reminders.status == .forbidden)
             #expect(
                 reminders.body.string
-                    == "{\"error\":\"dm:@reminders is your private reminder conversation; nobody else reads it. Act at the reminder's anchor instead.\",\"code\":\"DM_TARGET_NOT_SENDABLE\"}"
+                    == "{\"error\":\"dm:@reminders is your private reminder conversation; nobody else reads it. Act at the reminder's anchor instead.\",\"code\":\"DM_TARGET_NOT_SENDABLE\",\"suggestedNextAction\":\"send to the reminder's anchor target instead of dm:@reminders\"}"
             )
 
             let reconcile = try await executePost(

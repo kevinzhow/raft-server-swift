@@ -392,7 +392,9 @@ public struct ActionCardExecuteService: Sendable {
         }
         let content = body.content ?? ""
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.lowercased().hasPrefix("dm:@reminders") {
+        let parsedTarget = Self.parseSendTarget(trimmed)
+        if let parsedTarget, parsedTarget.isDM,
+           Self.isReservedReminderPeer(parsedTarget.peerPart) {
             throw AgentSendError.reminderTargetNotSendable
         }
         let isSendDraft = body.sendDraft
@@ -403,20 +405,36 @@ public struct ActionCardExecuteService: Sendable {
         if isContinueAnyway && !isSendDraft {
             throw AgentSendError.continueAnywayRequiresDraft
         }
-        if let assistantOwner = dependencies.assistantOwner(identity.agentId, identity.serverId) {
-            guard trimmed.hasPrefix("dm:@") else {
+        if let assistantOwner = dependencies.postingOwner(identity.agentId, identity.serverId) {
+            // Upstream checks the assistant's raw owner binding after resolving
+            // the DM target's explicit kind. Do not strip `~kind` or a
+            // non-8-hex colon suffix first: either would turn a different
+            // conversation into the owner's DM (or the reverse) and answer the
+            // wrong 403.
+            guard let parsedTarget, parsedTarget.isDM else {
                 throw AgentSendError.assistantChannelForbidden
             }
-            var raw = String(trimmed.dropFirst("dm:@".count))
-            if let suffixStart = raw.lastIndex(of: ":") { raw = String(raw[..<suffixStart]) }
-            if let tilde = raw.firstIndex(of: "~") { raw = String(raw[..<tilde]) }
+            let peer = parsedTarget.peer
+            guard !peer.name.isEmpty else {
+                throw Self.dmTargetMiss(parsedTarget)
+            }
             let resolution = prepare.resolveDMPeer(
                 serverId: identity.serverId,
                 agentId: identity.agentId,
-                name: raw,
-                kind: nil
+                name: peer.name,
+                kind: peer.kind
             )
-            guard case .resolved(let peerId, _, _) = resolution, peerId == assistantOwner else {
+            switch resolution {
+            case .resolved(let peerId, _, _):
+                guard peerId == assistantOwner else {
+                    throw AgentSendError.assistantChannelForbidden
+                }
+            case .ambiguous(let name):
+                throw AgentSendError.dmTargetAmbiguous(name: name)
+            case .invalidKind(let kind, let rawName):
+                let rawPeer = peer.kind.map { "\(peer.name)~\($0)" } ?? rawName
+                throw AgentSendError.dmTargetInvalidPeerKind(rawPeer: rawPeer, suffix: kind)
+            case .notFound:
                 throw AgentSendError.assistantChannelForbidden
             }
         }
@@ -685,18 +703,82 @@ public struct ActionCardExecuteService: Sendable {
         }
     }
 
-    /// `#channel[:shortId]` and `dm:@name[~kind][:shortId]` target resolution.
+    /// A parsed send target. The suffix rule is the pinned `parseChannelRef`:
+    /// exactly eight hex characters after a non-leading colon. A colon that is
+    /// not an eight-hex suffix is part of the channel or peer name, never a
+    /// thread marker. `DM:@` is accepted exactly like `dm:@`.
+    private struct ParsedSendTarget {
+        enum Prefix { case channel, dm }
+        let prefix: Prefix
+        let base: String
+        let shortId: String?
+
+        var isDM: Bool { prefix == .dm }
+        var peerPart: String { base }
+
+        var peer: (name: String, kind: String?) {
+            guard let tilde = base.firstIndex(of: "~") else { return (base, nil) }
+            return (String(base[..<tilde]), String(base[base.index(after: tilde)...]))
+        }
+    }
+
+    private static func parseSendTarget(_ trimmed: String) -> ParsedSendTarget? {
+        if trimmed.hasPrefix("dm:@") || trimmed.hasPrefix("DM:@") {
+            let split = splitShortId(String(trimmed.dropFirst(4)))
+            return ParsedSendTarget(prefix: .dm, base: split.base, shortId: split.shortId)
+        }
+        if trimmed.hasPrefix("#") {
+            let split = splitShortId(String(trimmed.dropFirst()))
+            return ParsedSendTarget(prefix: .channel, base: split.base, shortId: split.shortId)
+        }
+        return nil
+    }
+
+    private static func splitShortId(_ rest: String) -> (base: String, shortId: String?) {
+        guard let colon = rest.lastIndex(of: ":"),
+              rest.distance(from: rest.startIndex, to: colon) > 0 else {
+            return (rest, nil)
+        }
+        let shortId = String(rest[rest.index(after: colon)...])
+        guard shortId.count == 8, shortId.allSatisfy({ $0.isHexDigit }) else {
+            return (rest, nil)
+        }
+        return (String(rest[..<colon]), shortId.lowercased())
+    }
+
+    /// The pinned reserved-handle check strips only a final `~agent`/`~human`
+    /// (case-insensitive) before the exact `reminders` comparison. A longer
+    /// handle that merely starts with the reserved word stays an ordinary peer.
+    private static func dmTargetMiss(_ parsed: ParsedSendTarget) -> AgentSendError {
+        parsed.shortId == nil
+            ? .dmTargetNotFound(peer: parsed.base)
+            : .threadTargetNotFound(detail: "the parent message must exist in this DM")
+    }
+
+    private static func isReservedReminderPeer(_ peerPart: String) -> Bool {
+        var name = peerPart
+        if let tilde = name.firstIndex(of: "~") {
+            let suffix = String(name[name.index(after: tilde)...]).lowercased()
+            if suffix == "agent" || suffix == "human" {
+                name = String(name[..<tilde])
+            }
+        }
+        return name.lowercased() == "reminders"
+    }
+
+    /// `#channel[:shortId]` and `dm:@name[~kind][:shortId]` target resolution
+    /// with the pinned grammar: an 8-hex suffix only, explicit `~kind` retained
+    /// through peer resolution, and the uppercase `DM:@` prefix accepted.
     private func resolveSendChannel(
         trimmed: String,
         identity: (agentId: String, serverId: String)
     ) throws -> String {
-        if trimmed.hasPrefix("#") {
-            var raw = String(trimmed.dropFirst())
-            var suffix: String?
-            if let colon = raw.lastIndex(of: ":") {
-                suffix = String(raw[raw.index(after: colon)...])
-                raw = String(raw[..<colon])
-            }
+        guard let parsed = Self.parseSendTarget(trimmed) else {
+            throw AgentSendError.channelNotFound
+        }
+        if parsed.prefix == .channel {
+            let raw = parsed.base
+            let suffix = parsed.shortId
             var parentId: String?
             for (id, channel) in channels.postableChannels {
                 guard channel.serverId == identity.serverId, channel.name == raw,
@@ -713,7 +795,7 @@ public struct ActionCardExecuteService: Sendable {
             var resolved: String?
             var pendingAnchorId: String?
             if let parentId {
-                if let suffix, !suffix.isEmpty {
+                if let suffix {
                     let isMember = channels.postableChannels[parentId]?.memberIds.contains(identity.agentId) == true
                         || oauth.channelAgentIds(channelId: parentId).contains(identity.agentId)
                     guard isMember else {
@@ -766,98 +848,98 @@ public struct ActionCardExecuteService: Sendable {
             }
             return resolved
         }
-        if trimmed.hasPrefix("dm:@") {
-            var raw = String(trimmed.dropFirst("dm:@".count))
-            var suffix: String?
-            if let colon = raw.lastIndex(of: ":") {
-                suffix = String(raw[raw.index(after: colon)...])
-                raw = String(raw[..<colon])
-            }
-            var kind: String?
-            if let tilde = raw.firstIndex(of: "~") {
-                kind = String(raw[raw.index(after: tilde)...])
-                raw = String(raw[..<tilde])
-            }
-            let resolution = prepare.resolveDMPeer(
-                serverId: identity.serverId,
-                agentId: identity.agentId,
-                name: raw,
-                kind: kind
-            )
-            switch resolution {
-            case .resolved:
-                break
-            case .ambiguous(let name):
-                throw AgentSendError.dmTargetAmbiguous(name: name)
-            case .invalidKind(let kind, _):
-                throw AgentSendError.dmTargetInvalidKind(kind: kind)
-            case .notFound:
-                throw AgentSendError.dmTargetNotFound
-            }
-            guard case .resolved(let peerId, let peerKind, let peerName) = resolution else {
-                throw AgentSendError.channelNotFound
-            }
-            let existing = prepare.dmChannelId(
-                serverId: identity.serverId,
-                agentId: identity.agentId,
-                peerId: peerId,
-                peerKind: peerKind,
-                peerName: peerName
-            )
-            let dmChannelId: String
-            if let existing {
-                dmChannelId = existing
-            } else {
-                dmChannelId = oauth.createDirectChannel(
-                    serverId: identity.serverId,
-                    firstUserId: identity.agentId,
-                    secondUserId: peerId,
-                    firstKind: .agent,
-                    secondKind: peerKind == "agent" ? .agent : .human
-                )
-                dependencies.addPostableChannel(
-                    identity.serverId, dmChannelId, identity.agentId, "dm", nil, nil, "dm"
-                )
-                dependencies.addPostableChannel(
-                    identity.serverId, dmChannelId, peerId, "dm", nil, nil, "dm"
-                )
-                if peerKind == "human" { oauth.addChannelHuman(channelId: dmChannelId, userId: peerId) }
-            }
-            if let suffix, !suffix.isEmpty {
-                let anchorId = oauth.historyMessages(channelId: dmChannelId).first {
-                    $0.id.hasPrefix(suffix)
-                }?.id
-                    ?? messages.humanMessageRows.first {
-                        $0.channelId == dmChannelId && $0.id.hasPrefix(suffix)
-                    }?.id
-                var resolved = dependencies.threadByAnchor(dmChannelId, anchorId ?? "")
-                    ?? dependencies.threadById(dmChannelId, suffix)
-                    ?? dependencies.threadByAnchorPrefix(dmChannelId, suffix)
-                if resolved == nil, let anchorId {
-                    let threadId = oauth.createThreadChannel(
-                        parentChannelId: dmChannelId,
-                        parentMessageId: anchorId
-                    )
-                    dependencies.addPostableChannel(
-                        identity.serverId, threadId, identity.agentId, "thread",
-                        dmChannelId, anchorId, "thread"
-                    )
-                    dependencies.addPostableChannel(
-                        identity.serverId, threadId, peerId, "thread",
-                        dmChannelId, anchorId, "thread"
-                    )
-                    resolved = threadId
-                }
-                guard let resolved else {
-                    throw AgentSendError.threadTargetNotFound(
-                        detail: "the parent message must exist in this DM"
-                    )
-                }
-                return resolved
-            }
-            return dmChannelId
+
+        let rawPeer = parsed.base
+        let peer = parsed.peer
+        guard !peer.name.isEmpty else {
+            throw Self.dmTargetMiss(parsed)
         }
-        throw AgentSendError.channelNotFound
+        let resolution = prepare.resolveDMPeer(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            name: peer.name,
+            kind: peer.kind
+        )
+        switch resolution {
+        case .resolved:
+            break
+        case .ambiguous(let name):
+            throw AgentSendError.dmTargetAmbiguous(name: name)
+        case .invalidKind(let kind, let rawName):
+            let rawSpelling = peer.kind.map { "\(peer.name)~\($0)" } ?? rawName
+            throw AgentSendError.dmTargetInvalidPeerKind(rawPeer: rawSpelling, suffix: kind)
+        case .notFound:
+            // A DM thread target is a thread miss, not a peer miss: upstream
+            // resolves the thread independently of the named peer.
+            if parsed.shortId != nil {
+                throw AgentSendError.threadTargetNotFound(
+                    detail: "the parent message must exist in this DM"
+                )
+            }
+            throw AgentSendError.dmTargetNotFound(peer: rawPeer)
+        }
+        guard case .resolved(let peerId, let peerKind, let peerName) = resolution else {
+            throw AgentSendError.channelNotFound
+        }
+        let existing = prepare.dmChannelId(
+            serverId: identity.serverId,
+            agentId: identity.agentId,
+            peerId: peerId,
+            peerKind: peerKind,
+            peerName: peerName
+        )
+        let dmChannelId: String
+        if let existing {
+            dmChannelId = existing
+        } else {
+            dmChannelId = oauth.createDirectChannel(
+                serverId: identity.serverId,
+                firstUserId: identity.agentId,
+                secondUserId: peerId,
+                firstKind: .agent,
+                secondKind: peerKind == "agent" ? .agent : .human
+            )
+            dependencies.addPostableChannel(
+                identity.serverId, dmChannelId, identity.agentId, "dm", nil, nil, "dm"
+            )
+            dependencies.addPostableChannel(
+                identity.serverId, dmChannelId, peerId, "dm", nil, nil, "dm"
+            )
+            if peerKind == "human" { oauth.addChannelHuman(channelId: dmChannelId, userId: peerId) }
+        }
+        if let suffix = parsed.shortId {
+            let anchorId = oauth.historyMessages(channelId: dmChannelId).first {
+                $0.id.hasPrefix(suffix)
+            }?.id
+                ?? messages.humanMessageRows.first {
+                    $0.channelId == dmChannelId && $0.id.hasPrefix(suffix)
+                }?.id
+            var resolved = dependencies.threadByAnchor(dmChannelId, anchorId ?? "")
+                ?? dependencies.threadById(dmChannelId, suffix)
+                ?? dependencies.threadByAnchorPrefix(dmChannelId, suffix)
+            if resolved == nil, let anchorId {
+                let threadId = oauth.createThreadChannel(
+                    parentChannelId: dmChannelId,
+                    parentMessageId: anchorId
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId, threadId, identity.agentId, "thread",
+                    dmChannelId, anchorId, "thread"
+                )
+                dependencies.addPostableChannel(
+                    identity.serverId, threadId, peerId, "thread",
+                    dmChannelId, anchorId, "thread"
+                )
+                resolved = threadId
+            }
+            guard let resolved else {
+                throw AgentSendError.threadTargetNotFound(
+                    detail: "the parent message must exist in this DM"
+                )
+            }
+            return resolved
+        }
+        return dmChannelId
     }
 
     private func isString(_ value: JSONValue) -> Bool {

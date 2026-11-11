@@ -903,29 +903,37 @@ public struct ActionCardMarketplaceService: Sendable {
         credentials.writer(authorization: authorization, legacyAgentId: legacyAgentId)
     }
 
-    /// Resolves `@handle` to exactly one visible agent or human channel member.
-    /// Both matches or neither is the published `assignee_not_assignable`.
+    /// Resolves `@handle` to exactly one channel-visible agent or human by its
+    /// canonical `users.name` / `agents.name`, exactly and case-sensitively.
+    ///
+    /// This is the pinned `resolveTaskAssignAssignee`: build the deduped id set
+    /// for each kind, fail closed unless the union holds exactly one id, and
+    /// never consult `displayName`. A display-name collision or a case variant
+    /// is therefore `assignee_not_assignable`, not a wrong assignment. The
+    /// pinned resolver has no `~kind` assignee syntax; a typed string stays an
+    /// unknown handle and fails closed too.
     private func resolveAssignee(
         channelId: String,
         rawAssignee: String
     ) -> (id: String, type: String, name: String)? {
         let handle = rawAssignee.hasPrefix("@") ? String(rawAssignee.dropFirst()) : rawAssignee
-        let lowered = handle.lowercased()
-        let agentMatch = oauth.channelAgentIds(channelId: channelId)
-            .compactMap { oauth.agentRuntimeInfo(id: $0) }
-            .first { $0.name.lowercased() == lowered || $0.displayName.lowercased() == lowered }
-        let channelHumans = oauth.channelHumanIds(channelId: channelId)
-        let humanMatch = channelHumans.compactMap { userId in
-            accounts.accounts.values.first { $0.id == userId }
-        }.first { $0.name.lowercased() == lowered }
-        guard (agentMatch == nil) != (humanMatch == nil) else { return nil }
-        if let agentMatch {
-            return (agentMatch.id, "agent", agentMatch.name)
+        guard !handle.isEmpty else { return nil }
+        let agentIds = Set(
+            oauth.channelAgentIds(channelId: channelId).filter { agentId in
+                oauth.agentRuntimeInfo(id: agentId)?.name == handle
+            }
+        )
+        let humanIds = Set(
+            oauth.channelHumanIds(channelId: channelId).filter { userId in
+                accounts.accounts.values.contains { $0.id == userId && $0.name == handle }
+            }
+        )
+        guard agentIds.count + humanIds.count == 1 else { return nil }
+        if let agentId = agentIds.first {
+            return (agentId, "agent", handle)
         }
-        if let humanMatch {
-            return (humanMatch.id, "user", humanMatch.name)
-        }
-        return nil
+        guard let userId = humanIds.first else { return nil }
+        return (userId, "user", handle)
     }
 
     /// The legacy idempotency lookup, which runs after the request shape check

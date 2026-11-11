@@ -272,8 +272,15 @@ struct AgentTaskCredentials: Sendable {
 
     /// RFC 074 §2 / upstream `assistantMayPostTo`: an agent with an owner may
     /// post only in the DM between itself and that owner, or a thread under
-    /// that DM. Nil when the agent is not a live assistant, so the ordinary
-    /// channel rules apply. The send path uses the same live-ownership query.
+    /// that DM. Nil when the agent has no retained owner link, so the ordinary
+    /// channel rules apply.
+    ///
+    /// Upstream reads the raw `agents.assistantOwnerUserId` here. The link is
+    /// retained independently of `identity_borrowing` and of the owner's
+    /// current server membership; only the channel's own participant rows
+    /// (owner in `channel_humans`, assistant in `channel_agents`) are required.
+    /// Using the live owner here would silently let an owned assistant post as
+    /// an ordinary member whenever borrowing is off or the owner left.
     private func assistantMayPost(
         serverId: String,
         agentId: String,
@@ -281,7 +288,7 @@ struct AgentTaskCredentials: Sendable {
         type: String
     ) -> Bool? {
         guard let ownerId = AssistantOwnershipQuery(agents: agents, oauth: oauth)
-            .liveOwner(agentId: agentId, serverId: serverId) else {
+            .postingOwner(agentId: agentId) else {
             return nil
         }
         let dmChannelId: String
