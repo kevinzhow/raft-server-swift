@@ -16,7 +16,8 @@ private func agentHistoryHeaders(_ key: String) -> HTTPFields {
     return headers
 }
 
-@Test func agentHistoryListsAttachmentMetadataAndDownloadUsesTheAgentCredential() async throws {
+@Test(arguments: [false, true])
+func agentHistoryListsAttachmentMetadataAndDownloadUsesTheAgentCredential(binary: Bool) async throws {
     let fixture = try AttachmentPreviewStorageFixture()
     do {
         let setup = AttachmentPreviewAccounts(storage: fixture.storage)
@@ -28,9 +29,14 @@ private func agentHistoryHeaders(_ key: String) -> HTTPFields {
             agentId: agentId, scopes: ["read"], name: "attachment-reader")
         setup.accounts.setAccountProfileForTesting(
             id: setup.userId, name: "kevinchou-c", displayName: "pending_7808a39c4efb92d4cb34")
-        let bytes = Data("agent must be able to read this attachment\n".utf8)
+        // A real PNG exercises the object-store -> Agent HTTP response boundary.
+        let bytes = binary ? try #require(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+            : Data("agent must be able to read this attachment\n".utf8)
+        let filename = binary ? "acceptance.png" : "acceptance.txt"
+        let mime = binary ? "image/png" : "text/plain"
         let attachmentId = try await setup.upload(
-            bytes, filename: "acceptance.txt", mime: "text/plain")
+            bytes, filename: filename, mime: mime)
 
         try await withApp { app in
             configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}),
@@ -60,8 +66,8 @@ private func agentHistoryHeaders(_ key: String) -> HTTPFields {
                 let attachments = try #require(row["attachments"] as? [[String: Any]])
                 #expect(attachments.count == 1)
                 #expect(attachments.first?["id"] as? String == attachmentId)
-                #expect(attachments.first?["filename"] as? String == "acceptance.txt")
-                #expect(attachments.first?["mimeType"] as? String == "text/plain")
+                #expect(attachments.first?["filename"] as? String == filename)
+                #expect(attachments.first?["mimeType"] as? String == mime)
                 #expect(attachments.first?["sizeBytes"] as? Int == bytes.count)
 
                 let download = try await client.get(
@@ -69,7 +75,8 @@ private func agentHistoryHeaders(_ key: String) -> HTTPFields {
                     headers: agentHistoryHeaders(readKey))
                 #expect(download.status == .ok)
                 #expect(download.body.data == bytes)
-                #expect(download.headers[.contentType] == "text/plain")
+                #expect(download.headers[.contentType] == mime)
+                #expect(download.headers[.contentLength] == String(bytes.count))
             }
         }
         await fixture.stop()

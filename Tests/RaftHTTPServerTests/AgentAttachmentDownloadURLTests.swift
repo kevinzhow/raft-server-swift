@@ -34,7 +34,10 @@ private struct AgentAttachmentFixture {
     let sendKey: String
 }
 
-private func makeAgentAttachmentFixture(suffix: String) -> AgentAttachmentFixture {
+private func makeAgentAttachmentFixture(
+    suffix: String, bytes: Data = Data("local bytes".utf8),
+    filename: String = "quarterly report.pdf", mimeType: String = "application/pdf"
+) -> AgentAttachmentFixture {
     let accounts = EmailLoginDirectory()
     let number = Int(suffix) ?? 0
     let serverId = String(format: "33333333-3333-4333-8333-%012d", 140_000 + number)
@@ -59,10 +62,10 @@ private func makeAgentAttachmentFixture(suffix: String) -> AgentAttachmentFixtur
         channelId: visibleChannel,
         id: visibleId,
         uploaderId: ownerId,
-        filename: "quarterly report.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: 11,
-        bytes: Data("local bytes".utf8)
+        filename: filename,
+        mimeType: mimeType,
+        sizeBytes: bytes.count,
+        bytes: bytes
     )
     accounts.addAgentAttachmentForTesting(
         channelId: privateChannel,
@@ -83,6 +86,32 @@ private func makeAgentAttachmentFixture(suffix: String) -> AgentAttachmentFixtur
         readKey: readKey,
         sendKey: sendKey
     )
+}
+
+@Test(arguments: [false, true])
+func agentAttachmentDownloadPreservesEveryByteAndContentLength(empty: Bool) async throws {
+    // Invalid UTF-8, NULs and every high byte must survive HTTP serialization.
+    let bytes = empty ? Data() : Data((0..<4096).map { UInt8($0 % 256) })
+    let fixture = makeAgentAttachmentFixture(
+        suffix: empty ? "804" : "803", bytes: bytes,
+        filename: "binary payload.bin", mimeType: "application/octet-stream")
+    try await withApp { app in
+        configure(app, services: FallbackServices(
+            nodeEnv: "test", tracker: DbLivenessTracker(ping: {}),
+            pingDatabase: {}, emailAccounts: fixture.accounts))
+        try await app.testing { client in
+            let response = try await agentAttachmentGet(
+                client, key: fixture.readKey,
+                path: "/internal/agent-api/attachments/\(fixture.visibleId)")
+            #expect(response.status == .ok)
+            #expect(response.body.data == bytes)
+            #expect(response.headers[.contentLength] == String(bytes.count))
+            #expect(response.headers[.contentType] == "application/octet-stream")
+            #expect(response.headers[.cacheControl] == "private, no-store")
+            #expect(response.headers[.contentDisposition] ==
+                "attachment; filename=\"binary payload.bin\"; filename*=UTF-8''binary%20payload.bin")
+        }
+    }
 }
 
 private func agentAttachmentGet(_ client: any Client, key: String, path: String) async throws -> ClientResponse {

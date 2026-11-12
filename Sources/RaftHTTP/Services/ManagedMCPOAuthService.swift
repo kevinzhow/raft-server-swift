@@ -119,14 +119,15 @@ public struct ManagedMCPOAuthService: Sendable {
 
     // MARK: - GET /api/external-avatars/:file
 
-    public func externalAvatar(file: String) throws -> ManagedMCPAssetResponse {
+    public func externalAvatar(file: String) throws -> BinaryBodyResponse {
         guard file.hasSuffix(".webp") else { throw ManagedMCPOAuthError.avatarNotFound }
         let id = String(file.dropLast(".webp".count))
         guard ServerScope.isUUID(id) else { throw ManagedMCPOAuthError.avatarNotFound }
         let snapshot = dependencies.messages.externalAvatarSnapshot(id: id)
         guard let asset = snapshot.asset, asset.active else { throw ManagedMCPOAuthError.avatarNotFound }
         guard snapshot.storageAvailable else { throw ManagedMCPOAuthError.avatarStorageUnavailable }
-        return ManagedMCPAssetResponse(
+        return BinaryBodyResponse(
+            bytes: asset.bytes,
             headers: .exact([
                 "Content-Type": asset.contentType,
                 "Content-Disposition": "inline",
@@ -134,14 +135,13 @@ public struct ManagedMCPOAuthService: Sendable {
                 "ETag": "\"sha256-\(asset.sourceDigest)\"",
                 "X-Content-Type-Options": "nosniff",
                 "Cross-Origin-Resource-Policy": "cross-origin",
-            ]),
-            text: String(decoding: asset.bytes, as: UTF8.self)
+            ])
         )
     }
 
     // MARK: - GET /api/announcements/images/:id
 
-    public func announcementImage(id: String) throws -> ManagedMCPAssetResponse {
+    public func announcementImage(id: String) throws -> BinaryBodyResponse {
         guard ServerScope.isUUID(id) else { throw ManagedMCPOAuthError.announcementImageNotFound }
         let snapshot = dependencies.notifications.announcementImageSnapshot(imageId: id)
         guard let asset = snapshot.asset, let announcement = snapshot.announcement,
@@ -150,13 +150,13 @@ public struct ManagedMCPOAuthService: Sendable {
               announcement.startsAt <= dependencies.now()
         else { throw ManagedMCPOAuthError.announcementImageNotFound }
         guard snapshot.storageAvailable else { throw ManagedMCPOAuthError.announcementImageStorageUnavailable }
-        return ManagedMCPAssetResponse(
+        return BinaryBodyResponse(
+            bytes: asset.bytes,
             headers: .exact([
                 "Content-Type": asset.contentType,
                 "Cache-Control": "public, max-age=31536000, immutable",
                 "Cross-Origin-Resource-Policy": "cross-origin",
-            ]),
-            text: String(decoding: asset.bytes, as: UTF8.self)
+            ])
         )
     }
 
