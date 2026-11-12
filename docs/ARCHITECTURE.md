@@ -1,16 +1,10 @@
 # Architecture: modular single-process Main
 
-**Status (2026-11-12):** This describes the accepted source architecture, not a
-deployed release. Production still runs `ab04cacf8e0cb45252eb379f08bcc7274242d11d`.
-The integration root `integrate-architecture-1` at `1b929920` contains the
-canonical snapshot cache (`dcbb5a05`), the explicit production Auth/OAuth/
-Integrations graph (`13960787`) and the attachment transfer budget (`1b929920`).
-The bounded attachment transaction slice is staged on
-`arch-attachment-transactions` (`44ff3bb0`, budget merge `3db87eeb`, plus an
-uncommitted strict-HEAD hook), not integrated. No full `make gate`, serial
-`make test-pg` or deployment has accepted this candidate. Deployment and final
-acceptance remain outside this document; this file owns the target layering and
-the architecture guardrail numbers.
+**Status (2026-11-12):** This describes the candidate source and integration
+architecture of the modular single-process Main, not a deployed release. Current
+release identity, gate acceptance, task state and acceptance evidence are tracked
+in [PLAN.md](PLAN.md). This file owns the target layering, persistence invariants
+and architecture guardrail numbers.
 
 **Specification:** observable HTTP status codes, JSON bytes, response headers
 and socket frames from `raft-source` tag `v1.21.23-source.1`. Refactoring keeps
@@ -35,7 +29,10 @@ Main is one stateful process with three listeners on separate ports:
 | Socket.IO | SwiftNIO `RealtimeServer` | Engine.IO v4 polling, upgrade, socket frames |
 | `/daemon/connect` | SwiftNIO `MachineConnectServer` | Raw machine upgrade and `machine:context` |
 
-A port set to `0` disables that listener. Vapor does not host the Socket.IO
+`SOCKET_PORT=0` disables the Socket.IO listener and `DAEMON_CONNECT_PORT=0`
+disables `/daemon/connect`. `PORT=0` does not disable HTTP: the entrypoint only
+applies the configured port when it is greater than zero, so zero retains
+Vapor's default HTTP port. Vapor does not host the Socket.IO
 upgrade; the pinned Vapor snapshot has no WebSocket upgrade, so both socket
 surfaces stay on SwiftNIO. HTTP remains a stateful service: one process owns the
 retained domain owners, the realtime hub and the single PostgreSQL writer. A
@@ -157,7 +154,7 @@ scaling model.
 
 The attachment change moves selected slow object I/O and multipart collection
 out of the global writer FIFO without changing the contract family. It is staged
-on `arch-attachment-transactions`; it is not in the integration root.
+and under review; it is not in the accepted source root.
 
 `AttachmentBodyPlanePolicy` classifies the exact raw request target, without
 percent decoding or route reconstruction. Only these shapes use the bounded
@@ -195,9 +192,9 @@ and response preparation only. It does not bound buffers retained by slow
 clients while responses drain, connection memory or overall heap, and separate
 instances do not coordinate.
 
-Current stage: the staged focused suite reports 23 unit cases passing. The nine
-real-PostgreSQL attachment cases have not run, the branch is not integrated and
-no deployment or full gate covers it.
+Current stage: the transaction plane is staged and under review. It is not
+integrated into the accepted source root, and no deployment or full gate covers
+it.
 
 ## 5. Target layers
 
@@ -249,12 +246,12 @@ operational error.
 
 The latest recorded 22-PASS static run is
 `/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/integrated-snapshot-composition-static.log`.
-It predates the task-19 transfer-budget merge: the current integration tree has
-190 Service files because `AttachmentTransferBudget.swift` is present. The
-largest Service file remains 1,174, so the 26-line headroom still applies. The
-staged attachment branch would add a not-yet-integrated
-`AttachmentTransactionPort.swift`; this document does not count it or claim a
-future total. A fresh 22-PASS record for the current tree is still pending.
+It predates the transfer-budget helper now present in the current integration
+tree, which has 190 Service files because `AttachmentTransferBudget.swift` is
+present. The largest Service file remains 1,174, so the 26-line headroom still
+applies. A not-yet-integrated `AttachmentTransactionPort.swift` is not counted,
+and this document does not claim a future total. A fresh 22-PASS record for the
+current tree is still pending.
 
 Ratchet state from the same recorded run: six directory extension occurrences
 across six files, zero directory forwarders, zero Service reply tokens, one
@@ -270,29 +267,19 @@ or type resolver. They do not prove shared owner identity, free-function purity,
 all alias chains, macro expansion or construction DAGs; regex literals are
 outside the tokenizer's supported subset.
 
-## 7. Gates, evidence stage and open proof
+## 7. Gates and open proof
 
 Every accepted slice runs its focused tests and affected published-path
 regressions. The Lead then runs `make gate` on the integration commit and, for
 persistence or transaction changes, serial `make test-pg`. Smoke is supplemental
 real-process wiring evidence, not proof of every locked module. Integration uses
-real merge commits.
+real merge commits. Detailed gate results, acceptance evidence, the current
+release identity and rollout status live in [PLAN.md](PLAN.md); this document
+does not duplicate that record and makes no deployment or acceptance claim for
+the staged attachment plane.
 
-Current evidence is intentionally incomplete:
-
-- The attachment branch at `/mnt/data/raft-swift-development/batch/attachments`
-  is not the integration root; the accepted source root is
-  `/mnt/data/raft-swift-development/batch/integrate-4` at `1b929920`.
-- The 22-PASS log cited above covers the pre-budget tree and is a static
-  architecture/parity record, not a full gate.
-- Task 13 and task 14 have integration merges and focused evidence; task 19 has
-  its helper merge. None of those is a deployed release.
-- Task 17 remains staged with 23 passing unit cases and nine unrun real-PG cases.
-- Production remains `ab04` until a full gate, serial `make test-pg`, deployment
-  with the quick `pg_dump`, and affected-boundary API/authenticated-Web checks
-  pass. This document makes no new performance or acceptance claim.
-
-Remaining documentation debt is tied to those final facts: the post-budget
-architecture count and PASS record, task 17 integration and real-PG results, and
-the final deployment identity. The target layering, owner graph, persistence
-invariants and exclusions above are expected to stay stable through those gates.
+Remaining architecture debt is the unmigrated Feature factories and old root in
+section 2, raw Feature ledger operations, the daemon concurrency inventory, and
+the staged attachment transaction plane until the Lead qualifies and integrates
+it. The target layering, owner graph, persistence invariants and exclusions above
+are expected to stay stable through that qualification.
