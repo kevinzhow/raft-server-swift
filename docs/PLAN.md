@@ -11,125 +11,90 @@ HTTP/socket contract, fixed Web/CLI consumers, PostgreSQL persistence, the
 daemon/Computer path and deployment. Parity tests evidence the contract, not a
 complete user path.
 
-## Delivered runtime
+## Delivered runtime baseline
 
 Production runs `ab04cacf` from the real upgrade off `b23b2516`; `/health` and
-`/api/version` answer 200 at `1.21.23`/`ab04cacf`. The release selector stays
-immutable at `ab04`; documentation commits never become the runtime. The b23
-release, its 175,278-byte dump (checksum `b6599ade…`) and the 223,640-byte public
-backup remain for rollback; gateway config `1b0fd817…` and manifest `c4ebd84a…`
-are pinned.
+`/api/version` answer 200 at `1.21.23`/`ab04cacf`. The runtime remains
+`ab04cacf8e0cb45252eb379f08bcc7274242d11d` through this documentation round;
+the release selector stays immutable at `ab04`. The b23 release, its
+175,278-byte dump (checksum `b6599ade…`) and the 223,640-byte public backup
+remain rollback; gateway config `1b0fd817…` and manifest `c4ebd84a…` are pinned.
 
-The qualified source was landed by the no-ff merge
+The qualified source landed by no-ff merge
 `d244fe30d8840f56fe679c37e229538069179964`; later documentation commits leave
-`Sources/` and `Tests/` unchanged.
+`Sources/` and `Tests/` unchanged. `ab04` carries Engine.IO v4 polling and
+ordered responses; its commits remain the behavior record.
 
-## Durable-state clearance
+## ab04 final evidence
 
-The original comparison kept `post-deploy-verification.json` `passed: false`;
-reviewed `post-deploy-reviewed.json` records `passed: true` as expected lifecycle
-writes, not corruption; 11 of 14 payloads were identical. `agents_runtime`
-re-encoded Set-backed values, added a connection epoch and one synthetic notice
-(not a messages row) plus dispatch; `auth_profiles` had two owner-family refresh
-rotations; `machines_and_computers` changed detection metadata, per-kind model
-`updatedAt` and status-version increments (the two presence transitions).
+This qualifies `ab04` only, not the current round.
 
-Owner, password hash, roles, secrets, rights, session families and business lists stayed
-unchanged; no message, task, OAuth, server or domain was lost. Raw payloads are
-not claimed identical during the upgrade.
-
-## Qualified candidate
-
-`ab04cacf` is fully qualified on its frozen tree:
-
-- **Gate.** All five steps PASS: 3,250 tests in 6 shards (485.5 s), the known
-  Kimi retry passed, and `failures[]` is empty; E2E, smoke, architecture and
-  parity-check passed. Logs: `/mnt/data/raft-swift-development/batch/integrate-4/.build/gate-logs/20261111T200430Z/`.
-- **Persistence.** Full serial `make test-pg` PASS: 49 cases, 0 failed.
-- **Release.** Initial build 423 s produced `5f69c8bc…`; 1,700 tracked files kept
-  hash `9c98039d…`; deployment reused it in 12 s (cached no-op, not a build); artifacts stay on the data disk.
-- **Deployment.** Build/stage/verify, `pg_dump`, upgrade and gateway restore ended `UPGRADE OK`/`DEPLOY OK`; `actualObserved: true`.
-- **Privacy.** Two production JSON env files parsed; four configured private patterns
-  plus one host pattern had zero matches. Searched scope only, not every key/config.
-
-## Behavior delivered in ab04
-
-`ab04` carries the completed Engine.IO v4 polling transport (auth, hub, default
-client), Content-Length/chunked framing including illegal framing and the
-negative-Range defect, late GET with close and final-Probe cleanup, probe pings
-answered with probe pongs, and per-request response slots fixing the synchronous
-noop response hang (noop6 still required). Responses remain ordered under
-multi-SID failure; header overflow answers 431 like Node. D2 only separates
-listeners; fixed WebSocket client transport is not server parity, and this is
-not a full upstream semantic test-suite port.
-
-## Acceptance, Web and soak
-
-The actual ab04 14-check acceptance passed: 14 PASS, 0 FAIL/BLOCKED/SKIP in
-204.7 s; attachment nonces at seq 170/173, Computer restart at 180/182, keep at
-184/186, 14 durable rows. Reproduce: `scripts/acceptance/acceptance.py --full --restart-main --restart-computer --computer-service-unit raft-swift-production-computer.service --restart-agent keep-session --reply-timeout 180`.
-
-The five-page authenticated Web round and post-cleanup Node Web job both passed:
-five pages at HTTP 200, only the known D5 `/api/product-feedback/tickets` 404,
-`alerts` empty — zero monitored regressions (errors, status, performance), not
-page-content identity; messages and tasks differ. Lead inspected the five screens;
-layout was normal. The gateway rehearsal kept Main on ab04 at the same PID, config
-inode, root 503/503/200 and five authenticated pages.
-
-`postload-origin-final.json`/`postload-public-final.json` each pass 36/36 on ab04.
-The 600 s monitor finalized `HEALTHY`: 600.373 s, exit 0, 10 rounds, 50
-authenticated pages at HTTP 200, zero alerts/changes; `canary-completed.json`
-selects the monitor and reports.
-
-## Cleanup execution
-
-The read-only preflight was `READY_TO_EXECUTE`: 19 objects, 18 READY, one KEEP
-(`B-ccf41374`, qualified copy absent). Execution handled exactly 18: 2 scopes
-STOPPED, 3 containers removed (images and bind data kept), 13 directories
-(7 scratch, 6 release) removed; 0 failures, no abort. Six stage ports gone;
-production units, gateway config and DB were unmodified during cleanup; no production deploy/API/message/login change.
-
-The postcheck is clean: `noExtraDeletions` true, 63 KEEP, stage images, restore containers,
-four backups, owner/Codex, tunnel and ab04/b23/db2/152/94a/1c40/f70 unchanged; disk fell 21,745,786,880 bytes (~20.25 GiB), apparent removal 21,206,786,882.
+- **Gate and persistence.** All five gate steps PASS with 3,250 tests in 6
+  shards and empty `failures[]`; serial `make test-pg` PASS with 49 cases.
+- **Deployment and acceptance.** Build/stage/verify, `pg_dump`, upgrade and
+  restore ended `UPGRADE OK`/`DEPLOY OK`; 14-check acceptance passed 14 PASS,
+  0 FAIL/BLOCKED/SKIP in 204.7 s including attachment, restart and keep-session.
+- **Web and soak.** Five authenticated pages returned HTTP 200 with only the
+  known D5 404; origin/public reports each passed 36/36; the 600 s monitor
+  finalized `HEALTHY` with 10 rounds and zero monitored regressions.
+- **State and cleanup.** Durable-state review found lifecycle writes, not
+  corruption, with owner data and business lists intact; cleanup executed the
+  18 READY objects with 0 failures, and `B-ccf41374` remains the one KEEP.
 
 ## Route and module limits
 
-Route baseline C0: 644 upstream versus 611 Swift, 583 exact, 1 variant, 57 raw
-missing (5 false positives, 52 exclusions) and 27 extra; 0 reachable Class C.
-`PARITY.tsv` has 406 modules, 230 mapped — explicit limits, not full parity.
+The original agreed limits remain binding: route baseline C0 has 644 upstream
+versus 611 Swift routes, 583 exact, 1 variant, 57 raw missing (5 false
+positives, 52 exclusions) and 27 extra, with 0 reachable Class C.
+`PARITY.tsv` has 406 modules, 230 mapped. These are explicit limits, not full
+parity, and this round does not widen them.
 
-## Delivery status and next steps
+## Current architecture optimization round
 
-Delivery is COMPLETE within the agreed scope. Remaining operations: keep the b23
-rollback release and dumps available, and leave the `B-ccf41374` scratch until its
-qualified copy is available; no new work without need.
+The user cancelled the Computer setup and authorized a new architecture
+optimization round; the user's separate Computer home is not touched. The Lead
+created `integrate-architecture-1` from trunk `03132e6b`; it is clean and no
+source slice is integrated yet. Runtime is still `ab04`.
 
-## Completed checks
+Active slices, all unshipped:
 
-All completion checks are MET. The gate, PostgreSQL and 14-check acceptance
-passed on ab04 with 14 PASS, 0 FAIL/BLOCKED/SKIP, real nonce reads, correlated
-restart replies, and Computer/Codex keep-session intact. The five-page Web round,
-gateway-closed restricted rehearsal and both 36-case origin/public reports passed
-with only the known D5 404; the 600 s monitor passed with 10 rounds, 50
-authenticated pages and zero monitored regressions. The rollback release, dump
-and path stay intact.
+- **Task 13, snapshot encoding.** In implementation on `arch-snapshot-encoding`
+  (test-pg worktree), not committed or integrated. Design counts are 28 encodes
+  per transaction, 42 effects-only and 14 with the proposed canonical
+  post-wiring committed cache. The implementation seeds the comparison base
+  from wired live owners at activation and advances it only on confirmed
+  commit; effects-only commits reuse pending snapshots.
+- **Task 14, production Auth/OAuth/Integrations composition.** In
+  implementation on `arch-production-composition` in the auth-identities
+  worktree, not committed or integrated. One same-owner
+  `ProductionFeatureGraph` supplies the Auth, OAuth and Integrations mounts; its
+  focused test covers `/api/auth/me`, `/api/auth/providers` and
+  `/api/integrations/clients` from the explicit graph.
+- **Task 15, attachment slow-I/O short-transaction design.** Read-only design
+  still; no attachment source, test or deployment change.
 
-Cleanup executed only the unchanged 18 READY objects of the 19-object whitelist
-after the pinned manifest, final canary and read-only preflight, with one KEEP,
-0 failures and a clean postcheck. Only intentional differences remain in
-`docs/DEVIATIONS.md`: D5 leaves the `/api/product-feedback/tickets` UI path at
-404, D12 leaves built-in app conversations/DM absent, and the route/module
-limits stay explicit. No new deviation, widened exclusion, full test-suite port
-or route match is claimed.
+The 28/42/14 counts are design measurements, not shipped performance or
+acceptance claims.
+
+## Completion criteria
+
+Each accepted source slice passes its focused tests. The Lead then runs
+`make gate` on the integration commit, followed by serial `make test-pg`;
+integration uses real merge commits. This round is complete only when every
+accepted slice is integrated into `integrate-architecture-1`; gate and test-pg
+pass on that commit; deployment takes the quick `pg_dump` and keeps rollback
+intact; and actual use-case API checks plus the authenticated Web are verified
+on the affected boundaries. Evidence must be current, with no domain, IP or
+credential in Git. Until then no performance or new acceptance result is claimed.
 
 ## Evidence
 
-The ab04 qualification root
-`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/` holds the
-candidate, gate/PG logs, build proof, deployment log, browser baseline,
-`browser-canary/`, monitor/canary/acceptance JSON, both 36-case reports, gateway
-publication, verification/reviewed JSON and deployment-state facts. The cleanup root
-`/mnt/data/raft-swift-development/tmp/stage-cleanup-execution-ab04cacf/` has the
-manifest, preflight, execution result and postcheck; its prior `REPORT.md` stays
-historical. Upgrade provision holds the record, dump and launch specs; keep the
-owner environment, data disk and credentials intact.
+The round baseline root
+`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/`
+holds `baseline-runtime.json` (health 200, version `ab04`, both units active,
+integration clean) and `architecture-baseline.log` (22 PASS); these baseline
+the round only. The ab04 final root
+`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/` and cleanup
+root `/mnt/data/raft-swift-development/tmp/stage-cleanup-execution-ab04cacf/`
+remain historical evidence. All artifacts stay on the data disk; domains, IPs
+and credentials stay out of Git.
