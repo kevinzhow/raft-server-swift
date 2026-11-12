@@ -44,7 +44,6 @@ enum LedgerChannelReadFallback {
                 return visit(parentId)
             default:
                 return oauth.channelAgentIds(channelId: id).contains(agentId)
-                    || oauth.isChannelParticipant(channelId: id, userId: agentId)
             }
         }
         return visit(channelId)
