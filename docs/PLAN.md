@@ -53,28 +53,31 @@ parity, and this round does not widen them.
 
 The user cancelled the Computer setup and authorized a new architecture
 optimization round; the user's separate Computer home is not touched. The Lead
-created `integrate-architecture-1` from trunk `03132e6b`; it is clean and no
-source slice is integrated yet. Runtime is still `ab04`.
+created `integrate-architecture-1` from trunk `03132e6b`; Task 14 is integrated
+at merge `13960787`. Runtime is still `ab04`; no optimization candidate is deployed.
 
 Active slices, all unshipped:
 
 - **Task 13, snapshot encoding.** In implementation on `arch-snapshot-encoding`
-  (test-pg worktree), not committed or integrated. Design counts are 28 encodes
+  (test-pg worktree), not yet accepted or integrated. Design counts are 28 encodes
   per transaction, 42 effects-only and 14 with the proposed canonical
   post-wiring committed cache. The implementation seeds the comparison base
   from wired live owners at activation and advances it only on confirmed
   commit; effects-only commits reuse pending snapshots.
-- **Task 14, production Auth/OAuth/Integrations composition.** In
-  implementation on `arch-production-composition` in the auth-identities
-  worktree, not committed or integrated. The proposed same-owner
-  `ProductionFeatureGraph` supplies the Auth, OAuth and Integrations mounts;
-  planned focused coverage includes `/api/auth/me`, `/api/auth/providers` and
-  `/api/integrations/clients` from the explicit graph.
-- **Task 15, attachment slow-I/O short-transaction design.** Read-only design
-  still; no attachment source, test or deployment change.
+- **Task 14, production Auth/OAuth/Integrations composition.** Reviewed commits
+  `37ce070d` and `363b714e` integrated with the same retained owners. The actual
+  mounts consume `ProductionFeatureGraph`; 2 targeted graph tests, 71 related
+  regressions and the later 19-test OAuth run passed (overlapping runs, not a
+  unique-test total). OAuth proof includes scoped discovery, tenant isolation,
+  exact issuer/endpoint/cache fields and live deployment updates.
+- **Task 15/17, attachment I/O.** Design reviewed; implementation is active on
+  `arch-attachment-transactions`. Selected raw UUID body routes and human upload
+  get short committed phases around storage I/O; legacy paths stay unchanged.
+  Required proof includes real-PG progress while storage blocks, revocation,
+  original errors and retaining objects after unknown commits. Not yet accepted.
 
-The 28/42/14 counts are design measurements, not shipped performance or
-acceptance claims.
+The 28/42/14 values are encode-call counts from the control flow, not shipped
+latency/throughput or acceptance measurements.
 
 ## Completion criteria
 
