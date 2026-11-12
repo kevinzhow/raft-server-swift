@@ -34,6 +34,9 @@ public struct FallbackServices: Sendable {
     public var publicAttachmentBudget: PublicAttachmentBudget
     public var publicTranslationBudget: PublicAttachmentBudget
     public var emailAccounts: EmailLoginDirectory
+    /// Explicit services over the same owner graph, assembled once from
+    /// `emailAccounts` unless a host injects an equivalent retained graph.
+    public var featureGraph: ProductionFeatureGraph
     public var persistence: BusinessPersistenceRuntime?
     public var transactionalEmail: TransactionalEmailIntentPort?
     public var realtime: RealtimeHub?
@@ -66,6 +69,7 @@ public struct FallbackServices: Sendable {
         publicAttachmentBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         publicTranslationBudget: PublicAttachmentBudget = PublicAttachmentBudget(),
         emailAccounts: EmailLoginDirectory = EmailLoginDirectory(),
+        featureGraph: ProductionFeatureGraph? = nil,
         persistence: BusinessPersistenceRuntime? = nil,
         transactionalEmail: TransactionalEmailIntentPort? = nil,
         realtime: RealtimeHub? = nil,
@@ -94,6 +98,7 @@ public struct FallbackServices: Sendable {
         self.publicAttachmentBudget = publicAttachmentBudget
         self.publicTranslationBudget = publicTranslationBudget
         self.emailAccounts = emailAccounts
+        self.featureGraph = featureGraph ?? emailAccounts.productionFeatureGraph()
         self.persistence = persistence
         self.transactionalEmail = transactionalEmail
         self.realtime = realtime
@@ -244,6 +249,9 @@ private func parseShareArtifactMultipart(data: Data, boundary: String) -> (chann
 }
 
 public func configure(_ app: Application, services: FallbackServices) {
+    // The production Feature mounts below take explicit service values from the
+    // same retained owner graph as the directory, never a second owner set.
+    let graph = services.featureGraph
     if services.nodeEnv == "production" {
         services.emailAccounts.requireDurableAttachmentStorage()
         services.emailAccounts.requireDurableAvatarStorage()
@@ -252,14 +260,14 @@ public func configure(_ app: Application, services: FallbackServices) {
     InternalAgentApiFeature(services: services).register(routes: app)
     InternalAdminFeature(services: services, internalSurface: internalSurface).register(routes: app)
     IntegrationsFeature(
-        controlPlane: services.emailAccounts.managedMCPControlPlane,
-        identities: services.emailAccounts.authIdentities,
-        apps: services.emailAccounts.integrationsAndAppAccess,
-        appManagement: services.emailAccounts.integrationAppManagement,
-        cardPrepare: services.emailAccounts.actionCardPrepare,
-        agentsLifecycle: services.emailAccounts.agentsLifecycle,
-        providerConnections: services.emailAccounts.managedMCPProviderConnections,
-        actionCards: services.emailAccounts.actionCards
+        controlPlane: graph.services.integrations.control,
+        identities: graph.services.identity.identities,
+        apps: graph.services.integrations.apps,
+        appManagement: graph.services.integrations.appManagement,
+        cardPrepare: graph.services.integrations.prepare,
+        agentsLifecycle: graph.services.agents.lifecycle,
+        providerConnections: graph.services.integrations.providers,
+        actionCards: graph.services.integrations.cards
     ).register(routes: app)
     AgentsFeature(services: services).register(routes: app)
     ComputersFeature(services: services).register(routes: app)
@@ -299,11 +307,11 @@ public func configure(_ app: Application, services: FallbackServices) {
     ).register(routes: app)
     MessagingFeature(services: services).register(routes: app)
     OAuthFeature(
-        oauthFlows: services.emailAccounts.oauthFlows,
-        issuerMetadata: services.emailAccounts.oauthIssuerMetadata,
-        authorization: services.emailAccounts.oauthAuthorization,
-        principal: services.emailAccounts.oauthPrincipal,
-        apps: services.emailAccounts.integrationsAndAppAccess
+        oauthFlows: graph.services.identity.oauthFlows,
+        issuerMetadata: graph.services.identity.issuerMetadata,
+        authorization: graph.services.identity.authorization,
+        principal: graph.services.identity.principal,
+        apps: graph.services.integrations.apps
     ).register(routes: app)
     FeedbackFeature(services: services).register(routes: app)
     TranslationFeature(services: services).register(routes: app)
@@ -311,19 +319,19 @@ public func configure(_ app: Application, services: FallbackServices) {
     BillingFeature(services: services).register(routes: app)
     RaftBenchFeature(services: services).register(routes: app)
     AuthFeature(
-        core: services.emailAccounts.authCore.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
-        identities: services.emailAccounts.authIdentities,
-        oauthFlows: services.emailAccounts.oauthFlows,
-        verification: services.emailAccounts.authVerification.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
-        profile: services.emailAccounts.authProfile.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
-        invites: services.emailAccounts.joinLinksAndInvites,
-        managedLifecycle: services.emailAccounts.managedMCPLifecycle,
+        core: graph.services.identity.core.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
+        identities: graph.services.identity.identities,
+        oauthFlows: graph.services.identity.oauthFlows,
+        verification: graph.services.identity.verification.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
+        profile: graph.services.identity.profile.bindingTransactionalEmail(services.transactionalEmail ?? .developmentOnly),
+        invites: graph.services.channels.invites,
+        managedLifecycle: graph.services.integrations.lifecycle,
         publicServerDirectory: services.publicServerDirectory,
         realtime: services.realtime,
-        onboardingBriefing: services.emailAccounts.onboardingBriefing
+        onboardingBriefing: graph.onboardingBriefing
     ).register(routes: app)
     KnowledgeFeature(services: services).register(routes: app)
-    let readReceipts = services.emailAccounts.managedMCPToolExecution
+    let readReceipts = graph.services.integrations.tools
     readReceipts.installReadUpdateObserver { serverId, channelId, agentId, maxReadSeq in
         readReceipts.emitAgentScopeRead(
             serverId: serverId,
@@ -337,7 +345,7 @@ public func configure(_ app: Application, services: FallbackServices) {
     for method in [HTTPRequest.Method.get, .post, .put, .patch, .delete] {
         app.on(method, "internal", "computer", "**") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentsLifecycle.unregisteredInternalComputerSurface(
+                try graph.services.agents.lifecycle.unregisteredInternalComputerSurface(
                     authorization: request.headers[.authorization]
                 )
             }
@@ -348,14 +356,14 @@ public func configure(_ app: Application, services: FallbackServices) {
     for method in [HTTPRequest.Method.get, .post, .put, .patch, .delete] {
         app.on(method, "internal", "agent-api", "**") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentsLifecycle.unregisteredInternalAgentSurface(
+                try graph.services.agents.lifecycle.unregisteredInternalAgentSurface(
                     authorization: request.headers[.authorization]
                 )
             }
         }
         app.on(method, "internal", "agent", "**") { request async throws -> Response in
             try await respond {
-                try services.emailAccounts.agentsLifecycle.unregisteredInternalAgentSurface(
+                try graph.services.agents.lifecycle.unregisteredInternalAgentSurface(
                     authorization: request.headers[.authorization]
                 )
             }
@@ -382,14 +390,14 @@ public func configure(_ app: Application, services: FallbackServices) {
     // boundary lets normal API failures pass through the Node cache defaults.
     middleware.use(JSONErrorBoundaryMiddleware())
     middleware.use(HumanAdmissionMiddleware(
-        auth: services.emailAccounts.authCore,
-        nativeNotifications: services.emailAccounts.nativeNotifications
+        auth: graph.services.identity.core,
+        nativeNotifications: graph.services.notifications.native
     ))
-    middleware.use(RequestBodyLimitMiddleware(runtimeForms: services.emailAccounts.runtimeFormsAndProbes))
+    middleware.use(RequestBodyLimitMiddleware(runtimeForms: graph.services.machines.forms))
     middleware.use(JSONErrorBoundaryMiddleware())
-    middleware.use(ExperimentalSurfaceGate(policy: DirectoryRuntimePolicy(auth: services.emailAccounts.authCore)))
+    middleware.use(ExperimentalSurfaceGate(policy: graph.services.identity.runtimePolicy))
     middleware.use(CorsMiddleware(origins: services.corsOrigins))
-    middleware.use(AttachmentFlexAdmissionMiddleware(lifecycle: services.emailAccounts.agentsLifecycle))
+    middleware.use(AttachmentFlexAdmissionMiddleware(lifecycle: graph.services.agents.lifecycle))
     middleware.use(PublicSearchMiddleware(
         indexEnabled: services.publicSearchIndexEnabled,
         catalog: services.publicSearch,
