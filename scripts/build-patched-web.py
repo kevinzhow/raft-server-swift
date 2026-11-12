@@ -147,6 +147,46 @@ def validate_allowlist(manifest: dict) -> list[str]:
     return sorted(allowlisted)
 
 
+def source_proof_hashes(root: Path, names: list[str]) -> dict[str, str | None]:
+    hashes: dict[str, str | None] = {}
+    for name in sorted(names):
+        path = root / name
+        hashes[name] = sha256_file(path) if path.is_file() else None
+    return hashes
+
+
+def verify_source_proof(
+    root: Path,
+    phase: str,
+    baseline: dict[str, str],
+    patched: dict[str, str],
+    allowlisted: list[str],
+) -> dict[str, object]:
+    """Every baseline/allowlisted file must still hash to its post-patch value.
+
+    The allowlist authorizes *what the patch changes*, not drift after it: a
+    dependency install or the build itself mutating an allowlisted file (for
+    example the reviewed authStore change or its regression test) must fail the
+    build just like mutating any other tracked file.
+    """
+    keys = sorted(set(baseline) | set(patched) | set(allowlisted))
+    actual = source_proof_hashes(root, keys)
+    problems = []
+    base_changed = {name for name in set(baseline) | set(patched) if baseline.get(name) != patched.get(name)}
+    if base_changed != set(allowlisted):
+        problems.append(f"baseline/patch diff is not exactly the allowlist: {sorted(base_changed)}")
+    for name in keys:
+        expected = patched.get(name)
+        if actual.get(name) != expected:
+            problems.append(f"{name}: expected post-patch {expected}, found {actual.get(name)}")
+    if problems:
+        raise RuntimeError(f"source proof failed ({phase}): {'; '.join(problems[:8])}")
+    digest = hashlib.sha256()
+    for name in keys:
+        digest.update(f"{name}:{actual[name]}\n".encode())
+    return {"phase": phase, "keys": len(keys), "hash": digest.hexdigest(), "hashes": actual}
+
+
 def ancestor_ignore_files(path: Path) -> list[str]:
     found: list[str] = []
     current = path.resolve()
@@ -302,6 +342,12 @@ def main() -> int:
 
         run("node-version", [str(node), "--version"], stage)
         run("pnpm-version", [str(pnpm), "--version"], stage)
+        node_version_output = (stage / "node-version.log").read_text().strip()
+        pnpm_version_output = (stage / "pnpm-version.log").read_text().strip()
+        if node_version_output != NODE_VERSION:
+            raise RuntimeError(f"node version mismatch: expected {NODE_VERSION}, got {node_version_output!r}")
+        if pnpm_version_output != PNPM_VERSION:
+            raise RuntimeError(f"pnpm version mismatch: expected {PNPM_VERSION}, got {pnpm_version_output!r}")
         status["tools"] = {
             "node": {"version": NODE_VERSION, "binarySHA256": sha256_file(node)},
             "pnpm": {"version": PNPM_VERSION, "packageJSONSHA256": sha256_file(
@@ -316,6 +362,10 @@ def main() -> int:
              "--frozen-lockfile", "--offline", "--store-dir", str(args.store), "--reporter=append-only"],
             source,
         )
+
+        # 5a. Dependency install must not touch any pinned/allowlisted source file.
+        install_proof = verify_source_proof(source, "post-install", baseline, patched, allowlisted)
+        status["sourceProof"] = {"post-install": {key: install_proof[key] for key in ("keys", "hash")}}
 
         # 5. Tailwind candidate scan probe. A blinded scan ships missing utilities;
         #    fail here with the ancestor-include diagnosis instead.
@@ -425,17 +475,14 @@ def main() -> int:
                 f"built CSS ({audit['missingUsedClassCount']} classes, e.g. {audit['missingUsedClasses'][:5]})"
             )
 
-        # 8. Post-build source verification: only allowlisted tracked files may change.
-        final_hashes = {}
-        for name in sorted(set(baseline) | set(allowlisted)):
-            path = source / name
-            final_hashes[name] = sha256_file(path) if path.is_file() else None
-        unexpected = sorted(
-            name for name in final_hashes
-            if name not in allowlisted and final_hashes[name] != baseline.get(name)
-        )
-        if unexpected:
-            raise RuntimeError(f"build changed tracked source outside the overlay: {unexpected[:10]}")
+        # 8. Post-build source verification: every baseline/allowlisted file must
+        #    still hash to its post-patch value (allowlist authorizes the patch,
+        #    never drift after it).
+        build_proof = verify_source_proof(source, "post-build", baseline, patched, allowlisted)
+        status["sourceProof"]["post-build"] = {
+            key: build_proof[key] for key in ("keys", "hash", "hashes")
+        }
+        (stage / "source-proof.json").write_text(json.dumps(status["sourceProof"], indent=2) + "\n")
         status["outcome"] = "passed"
         print(f"PASS {stage}")
         return 0

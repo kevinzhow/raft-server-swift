@@ -10,8 +10,13 @@
   },
   "overlay": {
     "patch": "web/patches/v1.21.23-source.1/avatar-member-cache.patch",
-    "patchSHA256": "e8be6ecbf9b1ae87e738eb21547ddc1afb38d0cfef34266d3072d39e97fd429a",
+    "patchSHA256": "f0fd594ef84df38f3ac2314bf5bf5b95e476e0610257da92e42c69609096248c",
     "changedFiles": {
+      "packages/web/src/hooks/useChannelMembers.ts": {
+        "fromBaseSHA256": "07ca2bf2929f0d60a8605c2cd75409e1530e1a81f652257088491559e38f2c3a",
+        "afterPatchSHA256": "6b14ab12209dfe6f2602ff6a6b3893aa37b051ccc50dd6c72df6d276f2b2dcfd",
+        "change": "modified"
+      },
       "packages/web/src/store/authStore.ts": {
         "fromBaseSHA256": "ed7dbed4cfd700a75a2be908dd4acc1895de31d985f65c36844ee5db236a5f0c",
         "afterPatchSHA256": "8ac950ad5b4130d7a77b18d0676eb0e8710bc1667c7df6af073df57636769865",
@@ -21,15 +26,22 @@
         "fromBaseSHA256": null,
         "afterPatchSHA256": "2428c4001169151ff06a21f02ba3705412ba5a2383285edf9c04c31f67295c2d",
         "change": "added"
+      },
+      "packages/web/tests/useChannelMembersAvatarRace.behavior.test.tsx": {
+        "fromBaseSHA256": null,
+        "afterPatchSHA256": "58fd69fe0c25d01a15cc7e198969fb31794abc47997a484cb3900d42677b5e19",
+        "change": "added"
       }
     },
     "allowlistedSourceChanges": [
+      "packages/web/src/hooks/useChannelMembers.ts",
       "packages/web/src/store/authStore.ts",
-      "packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts"
+      "packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts",
+      "packages/web/tests/useChannelMembersAvatarRace.behavior.test.tsx"
     ],
     "lockfileUnchanged": true,
-    "sourceCommit": "edafc723cf6c21938acd3c232a6e5f773f3b4c6c",
-    "sourceCommitNote": "Local Web-area commit for review; the reproducible deliverable is this patch against the pinned base, not the local commit."
+    "sourceCommit": "7113e503190ae57debd3f14bcf45e7a0bd9c7471",
+    "sourceCommitNote": "Local Web-area development commit for review; the reproducible deliverable is this patch against the pinned base, not the local commit."
   },
   "build": {
     "sameOriginAPI": true,
@@ -37,7 +49,7 @@
     "deploymentEnvironment": "production",
     "identity": {
       "commitSha": "pinned base commit",
-      "releaseBranch": "v1.21.23-source.1+overlay.<patch-sha-prefix>",
+      "releaseBranch": "v1.21.23-source.1+overlay.<overlay-commit-or-patch-prefix>",
       "releaseId": "generated per build; recorded in build-status.json"
     }
   }

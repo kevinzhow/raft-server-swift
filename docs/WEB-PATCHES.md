@@ -45,7 +45,10 @@ re-read on membership events. Uploading from Settings or the member panel
 therefore left the previous avatar in an already-open channel until a reload.
 
 The overlay makes `updateProfile` and `uploadAvatar` re-read the server roster and
-broadcast the existing channel-member invalidation after the write succeeds. It
+broadcast the existing channel-member invalidation after the write succeeds. The
+invalidation also drops a coalesced roster request that started before it, so the
+reload issues a fresh GET instead of adopting a pre-write response that may land
+after the write; the per-hook request version discards the late old response. It
 adds no WebSocket frame and no server change; the refresh is best-effort so a
 failed roster read cannot turn a successful write into a failed action. The
 backend roster payloads (`avatarUrl`/`gravatarHash` on channel members) are a
@@ -68,7 +71,12 @@ The script asserts:
 - after applying, the extracted tree differs from the base only in the
   allowlisted files, each with the manifest's expected post-patch hash;
 - `pnpm-lock.yaml` is byte-identical to the base;
-- the build leaves tracked source unchanged outside the overlay.
+- after the dependency install and again after the build, every
+  baseline/allowlisted source file still hashes to its post-patch value
+  (the allowlist authorizes the patch, never later drift), and the
+  baseline-vs-patch difference is exactly the allowlist;
+- the `node --version` / `pnpm --version` outputs equal the expected versions,
+  not just the configured tool names.
 
 Verifiability scope: the **inputs** are byte-verifiable (pinned archive hash +
 patch hash + allowlisted source delta + unchanged lockfile). Produced artifact
@@ -95,11 +103,14 @@ present and known source-used utilities are candidates) and fails closed with th
 ancestor-ignore diagnosis. Pick `--out` on the data disk outside any tree hidden
 by an ancestor `.gitignore`.
 
-After the build, `class-presence-audit.json` records the CSS class-set difference
-against `--reference-css`; the build fails if a class used by the built JS is
-missing from the built CSS. Reusing already-qualified CSS by concatenation is not
-used: this overlay changes no class usage, so a correct rebuild reproduces the
-released CSS exactly.
+After the build, `class-presence-audit.json` records the difference between the
+reference release CSS classes and the built CSS classes; the build fails if a
+class that is both present in the reference CSS and used as a literal in the
+built JS is missing from the built CSS (reference-class ∩ built-JS-literal
+guard). It is not a proof over every dynamically constructed class name. For this
+overlay the built `app-shell` CSS is additionally byte-identical to the released
+pinned CSS, which is stronger evidence than the class audit alone. Reusing
+already-qualified CSS by concatenation is not used.
 
 ## Verification performed for this overlay
 
@@ -109,14 +120,21 @@ released CSS exactly.
   the overlay. As a **control**, the same test source executed against the
   unpatched pinned archive tree fails 4 of 6 (the two cache-neutrality cases pass
   because they assert the absence of invalidation).
+- Roster race: two DOM cases hold a channel-roster GET pending, then deliver an
+  avatar upload / channel-member invalidation, then release the old response.
+  The overlay passes 2/2 (a fresh GET is issued and the final roster avatar is
+  the new URL). As a **control**, the same tests against the unpatched hook fail
+  2/2: no fresh GET is issued (the invalidation reuses the in-flight request).
 - Focused/affected Web suites (Node and DOM selections) and `typecheck` pass.
 - Release build from the replayed archive + patch: `tsc --noEmit`, `vite build`
-  and the four bundle guards pass from a scan-safe staging path; `app-shell`
-  CSS is byte-identical to the released pinned CSS and the class-presence audit
-  reports zero missing classes.
+  and the four bundle guards pass from a scan-safe staging path; the post-install
+  and post-build source proofs pass for every baseline/allowlisted file;
+  `app-shell` CSS is byte-identical to the released pinned CSS and the
+  class-presence audit reports zero missing classes.
 - Artifact delta against the pinned release: identical CSS, 19 renamed JS chunks
   from content-hash propagation, 5 changed metadata files (`index.html`,
-  `.vite` manifests, `desktop-manifest.json`, `_headers`), total +144 bytes.
+  `.vite` manifests, `desktop-manifest.json`, `_headers`); total bytes differ
+  only by the overlay JS delta.
 - Status: **private build candidate only, not qualified for deployment.** Root
   owns integration gate, release metadata, static publish and activation.
 
