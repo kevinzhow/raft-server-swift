@@ -46,23 +46,36 @@ struct AttachmentFlexAdmissionMiddleware: Middleware {
               !AttachmentFlexRoutePolicy.isNarrow(method: request.method, path: request.url.path) else {
             return try await next.respond(to: request)
         }
+        let input = AttachmentFlexRequest(
+            authorization: request.headers[.authorization],
+            queryToken: AttachmentQueryScalars.value(request.url.query, named: "token"),
+            previewToken: AttachmentQueryScalars.value(request.url.query, named: "previewToken"),
+            headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
+            queryServerId: AttachmentQueryScalars.value(request.url.query, named: "serverId"),
+            relativePath: relativePath
+        )
+        let authorization = request.headers[.authorization]
+        let headerServerId = request.headers[HTTPField.Name("X-Server-Id")!]
+        let serving = AttachmentFlexRoutePolicy.isServing(method: request.method, relativePath: relativePath)
         do {
-            let admission = try await lifecycle.admitAttachmentFlex(AttachmentFlexRequest(
-                authorization: request.headers[.authorization],
-                queryToken: AttachmentQueryScalars.value(request.url.query, named: "token"),
-                previewToken: AttachmentQueryScalars.value(request.url.query, named: "previewToken"),
-                headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
-                queryServerId: AttachmentQueryScalars.value(request.url.query, named: "serverId"),
-                relativePath: relativePath
-            ))
-            request.auth.login(AttachmentFlexContext(admission: admission))
-            if !AttachmentFlexRoutePolicy.isServing(method: request.method, relativePath: relativePath) {
-                _ = try lifecycle.authorizeLegacyAttachmentWrite(
-                    authorization: request.headers[.authorization],
-                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
-                    flexAdmission: admission
-                )
+            // The admission and the legacy write gate are one committed phase
+            // for a classified request. A scheduled non-domain error is rethrown
+            // to the JSON boundary; typed refusals keep their exact bytes.
+            let transaction = try AttachmentTransactionScope.mode()
+            let admission = try await transaction.committedAsyncValue {
+                let admission = try await lifecycle.admitAttachmentFlex(input)
+                if !serving {
+                    _ = try lifecycle.authorizeLegacyAttachmentWrite(
+                        authorization: authorization,
+                        headerServerId: headerServerId,
+                        flexAdmission: admission
+                    )
+                }
+                return admission
             }
+            // Request-authentication mutation happens only after the committed
+            // phase; it is not part of the durable admission.
+            request.auth.login(AttachmentFlexContext(admission: admission))
         } catch let error as any DomainError {
             var response = RaftHTTPServer.respond(status: error.status, headers: error.errorHeaders,
                 rawJSON: error.publishedErrorBody.render())
