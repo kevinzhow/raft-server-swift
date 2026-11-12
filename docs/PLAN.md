@@ -13,72 +13,73 @@ complete user path.
 
 ## Current deployment
 
-`57b6775fe5d90e4f1f48b21ceefa7b2e3c33a545` is deployed with native Markdown.
-Build 427 s, stage, verification, `pg_dump`, upgrade and gateway passed; version
-is `57b6775f` at `1.21.23`, health 200. The 282,914-byte dump is SHA-verified;
-`a6bf8699` remains rollback. Web remains `d4`; no avatar overlay is activated.
+`1b456511c825105a290895192dc9ff4f6f59663b` is deployed from `57b6775f`. Build
+372 s; stage/verify/backup/upgrade/restore passed; version `1.21.23`/`1b4565` and
+health 200. Binary `207e62f4…`; staged verification mapped 52 files (48 staged +
+4 host) with native parser and JSC false; 1,736 tracked files kept the same hash.
+The new 297,448-byte dump matches SHA `90b7c0e1…`; `57b6775f` release, dump and
+launch are immediate rollback, with older `a6bf8699` still retained.
 
 ## Native Markdown
 
-`88cfc840` is integrated and deployed. Pinned MD4C replaces JavaScriptCore;
-parser/sanitizer matrices, focused mention/startup tests and 14 public canary
-cases passed; the gate at `57b6775f` passed five steps with 3,277 entries and no
-production process maps JSC. No full browser/agent/attachment rerun is claimed.
+Native MD4C `88cfc840` remains deployed; no production process maps
+JavaScriptCore. Parser/sanitizer matrices, focused mention/startup tests and 14
+public canary cases passed. No parser-specific full browser/agent rerun is claimed.
 
 ## Avatar defect
 
-Two confirmed causes keep a new avatar stale in an open channel: Swift channel
-roster human rows omit `avatarUrl`, `gravatarHash`, `displayName`, `description`
-and related fields, and the Web channel overlay replaces the server row with that
-incomplete payload; the pinned Web `authStore` updates only the signed-in user
+Two confirmed causes kept a new avatar stale in an open channel: Swift channel
+roster human rows omitted `avatarUrl`, `gravatarHash`, `displayName`, `description`
+and related fields, and the Web channel overlay replaced the server row with that
+incomplete payload; the pinned Web `authStore` updated only the signed-in user
 after a successful avatar/profile write, without reloading the server roster or
-invalidating channel-member caches, and previews prefer the cached sender row.
+invalidating channel-member caches, and previews preferred the cached sender row.
 
-## Final source candidate
+## Qualification
 
-Backend `c84588c6` (including `db99367b`) is frozen and real-merged as
-`f92ced289e9cff2d683053afb6233015c40bcfe7`, along with native `1a60`, Web overlay
-`1225166d` and docs `2a0a2194`. Seven review items are clear; the last A/B
-boundary verification remains, with Source frozen.
+Backend `c84588c6` is final; the A/B review is clear and `c84588c6` to
+`f92ced28` is seven files byte-identical. Full gate on f92 passed 5/5 exit 0:
+3,286 entries in six shards (build 201.7 s, test 343.7 s, elapsed 547.8 s),
+empty `failures[]`, one known Kimi isolated retry; E2E 32 s, smoke 17 s,
+architecture 1 s and parity 5 s passed.
 
-Root `make gate` is RUNNING on the exact f92 tree; no gate PASS is claimed.
-Backend local focused 1 DTO + 11 HTTP and affected 26 are final-green; the 214
-broad WIP run predates final A/B and is not f92 evidence. No full test-PG gate is
-planned: no PG schema, runtime-adapter or transaction change.
+Real trunk `1b456511` merges `45051ae3` with tree `c645e9e6`, identical to
+integration. Source/full-test inputs match f92; only PLAN/PARITY docs changed,
+parity-check PASS and equivalence recorded. No full test-PG was required: no PG
+schema/runtime-adapter/transaction change.
 
 ## Web overlay
 
-The client overlay is an allowlisted patch against the pinned
-`v1.21.23-source.1` base, changing `authStore`, `useChannelMembers` and two
-behavior tests (6 cache-invalidation + 2 roster-race). A successful write reloads
-server members and invalidates all channel-member caches. The pinned reference is
-untouched; archive/patch replay, source proof, lockfile, Node 24, pnpm 12.11.2 and
-safe-stage CSS are verified; Root hash-verified the 210-file candidate and staged
-it at release `587a197b…/web-assets`.
-Nothing is activated: old `d4` remains active with 19 old immutable chunks from
-its verified manifest; CSS unchanged. No server route/WS is added; other clients
-refresh on next roster read. D23 bytes/MIME and upstream image pipeline unchanged.
+The pinned-base overlay is qualified and active at Web release `587a197b…`
+(index `ee169020…`); hashes, build proof and D38 are unchanged. The old `d4`
+release and 19 old immutable chunks remain, the Caddy inode is retained and CSS
+bytes are unchanged. No server route or WebSocket frame is added; other clients
+refresh on their next roster read, and D23 original bytes/MIME remain unchanged.
 
 ## Validation
 
-The isolated E2E RED on old `a6bf` + old `d4` Web ran 33 assertions: 5/5 predicted
-failures, 0 unexpected, report
-`/mnt/data/raft-swift-development/tmp/avatar-channel-fix-20261112/acceptance/RED-RESULT.md`.
-It confirms missing channel avatar/hash/gravatar and the old UI fallback; it is
-not green and does not prove full refresh. GREEN on f92 and production read-only
-API/UI/monitor remain pending. The isolated stack uses in-memory ledger/avatar
-bytes and PG health only; it proves no SQL/S3 durability.
+Production read-only passed 5 checks with 9 explicit read-only SKIP, 0
+FAIL/BLOCKED, and all 14 durable rows stayed unchanged. Read-only avatar/profile/
+roster/graph/history probes passed 52/52 with 0 failures; owner avatar remains
+null and was never modified. No production R2 upload or durability claim is made.
+
+Isolated GREEN passed 52/52 (2 setup, 20 API, 3 bundle proof, 19 UI, 8 post-UI
+API): no-reload A→B→C (naturalWidth 32), bad-format 400 keeps C, and fresh
+observer/rosters show C; in-memory adapters only, not PG/S3 durability evidence.
+
+The 600 s monitor completed in 600.55 s: 10 rounds x 5 pages = 50 authenticated
+HTTP 200 checks, `HEALTHY`, 0 confirmed alerts and 0 uncaught errors; every page
+loaded the new app-shell `L_alVVAg.js` and 10 home checks reported Main `1b4565`.
+Only the known D5 feedback 404 remains. Root reviewed the production channel
+screenshot: layout normal, Cindy online, human avatar normal. No general
+performance claim is made.
 
 ## Residuals
 
 Saved-item and comment avatars and unknown `joinedAt` remain unfixed. The server
 store's `loadMembers` coalescing retains the same race for non-primary channel
-search/favorites consumers. No cross-device real-time avatar sync is promised.
-
-## Prior architecture
-
-The `a6bf8699` rollout remains prior evidence and rollback; its campaigns did not
-rerun against `57b6775f`. Detail stays in [ARCHITECTURE.md](ARCHITECTURE.md).
+search/favorites consumers. No global real-time avatar push or cross-device sync
+is promised.
 
 ## Route and module limits
 
@@ -88,13 +89,12 @@ with 0 reachable Class C. `PARITY.tsv` has 406 modules, 230 mapped.
 
 ## Completion criteria
 
-Complete only after f92 passes gate/final E2E, the staged Web activates with full
-CSS/provenance, deployment takes a verified backup, and read-only production
-API/UI monitoring passes. Compile artifact/binary/deploy SHA remain Root's;
-`57b6775f`/rollback stay intact. No owner avatar mutation, performance or
-cross-device claim.
+This avatar rollout is complete within the agreed scope. The `57b6775f` rollback
+and all listed assets remain, and no owner avatar mutation, global real-time sync
+or production R2-upload claim is made.
 
 ## Evidence
 
-Avatar evidence: `/mnt/data/raft-swift-development/tmp/avatar-channel-fix-20261112/`
-and `/mnt/data/raft-swift-development/tmp/avatar-web-overlay-20261112/`; no domains/IPs/credentials in Git.
+Final evidence is under `/mnt/data/raft-swift-development/tmp/avatar-channel-fix-20261112/`:
+`production-browser-qualification.json`, `monitor-report.json`,
+`production-avatar-readonly-acceptance.json`, `rollback-verification.json`, `GREEN-FINAL.json`; no domains, IPs or tokens enter Git.
