@@ -22,6 +22,7 @@ import VaporTesting
     accounts.addPostableChannel(serverId: serverId, channelId: publicChannel, memberId: outsiderId, name: "thread-info-public")
     let privateChannel = accounts.oauth.createChannel(serverId: serverId, name: "thread-info-private", creatorUserId: ownerId, type: "private")
     accounts.oauth.setChannelType(id: privateChannel, type: "private")
+    accounts.oauth.addChannelHuman(channelId: privateChannel, userId: ownerId)
     accounts.addPostableChannel(serverId: serverId, channelId: privateChannel, memberId: ownerId, kind: "private", name: "thread-info-private")
     let privateParent = accounts.oauth.createMessageRecord(channelId: privateChannel, content: "private parent", senderId: ownerId)
     let privateThread = accounts.oauth.createThreadChannel(parentChannelId: privateChannel, parentMessageId: privateParent.id)

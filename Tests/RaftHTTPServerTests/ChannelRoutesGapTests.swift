@@ -48,7 +48,7 @@ private func gapHeaders(_ token: String, _ serverId: String) -> HTTPFields {
     accounts.oauth.addMember(serverId: serverId, userId: memberId, role: "member")
     accounts.oauth.addMember(serverId: serverId, userId: outsiderId, role: "member")
 
-    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "thread-members-room", creatorUserId: ownerId)
+    let channelId = accounts.oauth.createChannel(serverId: serverId, name: "thread-members-room", creatorUserId: ownerId, type: "private")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: ownerId, kind: "private", name: "thread-members-room")
     accounts.addPostableChannel(serverId: serverId, channelId: channelId, memberId: memberId, kind: "private", name: "thread-members-room")
     for id in [ownerId, memberId] {

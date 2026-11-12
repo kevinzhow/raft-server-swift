@@ -270,7 +270,7 @@ private func jsonField(_ body: String, _ key: String) -> String {
             #expect(text(agentEmptyUpdate) == "{\"error\":\"no update fields\"}")
             let noToken = try await client.get("/internal/agent-api/reminders")
             #expect(noToken.status == .unauthorized)
-            #expect(text(noToken) == "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            #expect(text(noToken) == "{\"error\":\"Missing agent credential\"}")
 
             let owner = bearer(fixture.ownerToken, serverId: fixture.serverId)
             let ownerList = try await client.get(URI(string: "/api/reminders?ownerAgentId=\(fixture.agentId)"), headers: owner)
