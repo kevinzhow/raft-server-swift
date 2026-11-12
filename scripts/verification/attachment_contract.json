@@ -1,0 +1,1331 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "source_commit": "db5e399f017d584e49597e3a28757645d6807893",
+    "source_tag": "v1.21.23-source.1"
+  },
+  "purpose": "Reviewed source traceability; execution results belong to per-baseline reports. Additional groups remain outside the implemented pilot denominator.",
+  "profiles": {
+    "streaming_durable": {
+      "storage": "Configured durable original-object backend without getPresignedUrl; durable data/object directories retained across both owned server restarts.",
+      "database": "Persistent database, correct fixed-version migrations, actual required attachment authority read/write runtime installed; a stub or read-only authority installation is not proof of production write behavior.",
+      "identity": "Verified human owner is server member and private-channel member; external Agent has active bound credential with read capability and relevant grants and is initially a member of both new private channels.",
+      "private_channel_prerequisite": "Require attachment.channel.private_established: for both files and revocation channels, POST create and GET readback at the returned ID must both report type=private. An id/name-only response or requested visibility alone does not establish the profile. On failure stop dependent target writes, preserve observations, and do not PATCH to repair the fixture.",
+      "features": "Direct-upload session service disabled. Original-storage-v2, public-derived-v2, CDN availability, quota plan and other flags must be recorded independently for both targets; do not infer equality from route names.",
+      "isolation": "Distinct equivalent databases, objects and queues; no other message-sending campaign shares these environments; no owner account mutation beyond the expressly configured isolated seed.",
+      "metadata_comparison": "Pin equivalent preview generation/CDN settings, or report resulting thumbnail/width/height differences explicitly. Do not delete these fields to force equality. IDs use one-to-one aliases."
+    },
+    "streaming_durable_after_restart": {
+      "inherits": "streaming_durable",
+      "restart": "Restart each owned server process with the same retained database/object state and baseline; do not reset, reseed, restore or re-upload. Preserve unrevoked channel and separate revoked witness channel.",
+      "identity": "Saved human session and Agent credential remain valid according to fixed-version lifetime. If expired, classify prerequisite and reauthenticate only in an explicit separately recorded variant."
+    },
+    "presign": {
+      "execution_status": "NOT_RUN",
+      "storage": "Configured original storage with actual getPresignedUrl and externally usable HTTPS object endpoint; distinguish initial API response from object response."
+    },
+    "enabled_upload_sessions": {
+      "execution_status": "NOT_RUN",
+      "storage": "Real enabled upload-session service and provider, not fake-service injection; exact authority and quota settings recorded."
+    },
+    "any_recorded_profile": {
+      "execution_status": "NOT_RUN",
+      "condition": "Apply in each applicable explicitly recorded storage, identity and feature configuration; do not assume all branches are equivalent."
+    }
+  },
+  "cases": {
+    "png": {
+      "filename": "pilot.png",
+      "mime_type": "image/png",
+      "bytes": "Exact PNG constant at runner:29; equality to uploaded bytes plus known PNG chunk/CRC/deflate decoding."
+    },
+    "all_bytes": {
+      "filename": "pilot.bin",
+      "mime_type": "application/octet-stream",
+      "bytes": "Exactly byte values 0 through 255 once, in ascending order; 256 bytes."
+    },
+    "text": {
+      "filename": "pilot.txt",
+      "mime_type": "text/plain",
+      "bytes": "UTF-8 encoding of paired attachment: 文件字节 followed by newline, exactly runner:33."
+    }
+  },
+  "required_rules": [
+    {
+      "behavior_id": "attachment.upload.metadata.png",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:887-967",
+        "packages/server/src/routes/attachments.ts:440-464",
+        "packages/server/src/routes/attachments.ts:656-676",
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Profile identity/storage/quota prerequisites hold",
+        "One multipart files part containing case png and channelId of the unrevoked private channel"
+      ],
+      "expected": {
+        "status": 200,
+        "attachment_count": 1,
+        "id": "new attachment UUID",
+        "filename": "pilot.png",
+        "mimeType": "image/png",
+        "sizeBytes": "exact uploaded PNG length; integer",
+        "state": "Original bytes durably published; returned ID can subsequently be associated with a message"
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.upload.metadata.png (runner:257-289)",
+      "runner_assertions": "One string ID, original filename/MIME/integer size; compares normalized full returned row. No UUID-format, atomicity or durable-state assertion here.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.history.association.png",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1733-1819",
+        "packages/server/src/routes/internalAgentApi.ts:2773-2783",
+        "packages/server/src/routes/internalAgentApi.ts:3124-3140",
+        "packages/server/src/routes/internalAgentApi.ts:1132-1168",
+        "packages/server/src/services/messageService.ts:6465-6474"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "png upload succeeded",
+        "Owner sends exactly that attachment ID in one message",
+        "Agent remains a private-channel member"
+      ],
+      "expected": {
+        "status": 200,
+        "message": "Returned history contains the exact created message ID",
+        "attachments": "Exactly one matching ID with pilot.png, image/png and original integer byte length",
+        "read_state": "consume=false does not execute the consume branch; read-position invariance requires additional rule"
+      },
+      "test_or_scenario_id": "Pilot.history/attachment.history.association.png (runner:308-331)",
+      "runner_assertions": "Associated ID/filename/MIME/size and full attachment envelope comparison, not entire message schema or read-state effects.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.human.bytes.png",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:1510-1535",
+        "packages/server/src/routes/attachments.ts:1551-1592",
+        "packages/server/src/routes/attachments.ts:756-789"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "png upload/message association succeeded",
+        "Verified owner bearer plus X-Server-Id; no Range header"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Original uploaded PNG bytes exactly; known PNG remains decodable"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.human.bytes.png (runner:333-345)",
+      "runner_assertions": "Final status, byte equality, PNG decoder, byte length/hash observation; human response headers are not locked.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.bytes.png",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/shared/src/agentApiContract.ts:3095-3104",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4890-4917"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "png upload succeeded",
+        "Active read-capable Agent credential with private-channel access"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Original PNG bytes exactly; decoder succeeds"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.agent.bytes.png (runner:333-345)",
+      "runner_assertions": "Final status, original bytes, decode, length/hash; separate protocol rule locks only selected headers.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.protocol.png",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:4846-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917",
+        "packages/server/src/routes/attachments.ts:502-507",
+        "packages/server/src/routes/attachments.ts:568-575"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "png exists and Agent can read it",
+        "Storage cannot presign; metadata length matches stored bytes"
+      ],
+      "expected": {
+        "status": 200,
+        "Content-Length": "original PNG byte count",
+        "Cache-Control": "private, immutable, max-age=31536000",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Type": "image/png",
+        "Content-Disposition": "inline; filename=\"pilot.png\"; filename*=UTF-8''pilot.png"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.agent.protocol.png (runner:346-358)",
+      "runner_assertions": "Status, original length, cache, nosniff, exact Content-Type and inline PNG Content-Disposition are independently asserted against official source.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload.metadata.all_bytes",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:887-967",
+        "packages/server/src/routes/attachments.ts:440-455",
+        "packages/server/src/routes/attachments.ts:656-676",
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Profile prerequisites hold",
+        "One multipart files part containing case all_bytes"
+      ],
+      "expected": {
+        "status": 200,
+        "attachment_count": 1,
+        "id": "new attachment UUID",
+        "filename": "pilot.bin",
+        "mimeType": "application/octet-stream",
+        "sizeBytes": 256,
+        "state": "Returned ID identifies original bytes available for later message association"
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.upload.metadata.all_bytes (runner:257-289)",
+      "runner_assertions": "One string ID, filename/MIME/integer size and full normalized row comparison; no isolated object publication audit.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.history.association.all_bytes",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1733-1819",
+        "packages/server/src/routes/internalAgentApi.ts:2773-2783",
+        "packages/server/src/routes/internalAgentApi.ts:3124-3140",
+        "packages/server/src/services/messageService.ts:6465-6474"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "all_bytes upload succeeded",
+        "Owner sent message with exactly that ID; Agent remains a member"
+      ],
+      "expected": {
+        "status": 200,
+        "message": "Exact created message ID present",
+        "attachments": "Exactly one matching ID with pilot.bin, application/octet-stream and integer sizeBytes 256"
+      },
+      "test_or_scenario_id": "Pilot.history/attachment.history.association.all_bytes (runner:308-331)",
+      "runner_assertions": "Attachment association/envelope only, not cursor or delivery side effects.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.human.bytes.all_bytes",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:1510-1535",
+        "packages/server/src/routes/attachments.ts:1551-1592"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "all_bytes uploaded/associated",
+        "Owner bearer plus correct server scope; no Range header"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exactly bytes 0..255 in order; 256 bytes"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.human.bytes.all_bytes (runner:333-345)",
+      "runner_assertions": "Final status, equality and length/hash, not human header contract.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.bytes.all_bytes",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/shared/src/agentApiContract.ts:3095-3104",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "all_bytes uploaded",
+        "Read-capable Agent is private-channel member"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exactly bytes 0..255 in order; preserve invalid UTF-8 and NUL"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.agent.bytes.all_bytes (runner:333-345)",
+      "runner_assertions": "Original-byte equality and length/hash; no text conversion is permitted.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.protocol.all_bytes",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:4846-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917",
+        "packages/server/src/routes/attachments.ts:502-511",
+        "packages/server/src/routes/attachments.ts:568-575"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "all_bytes exists and is readable",
+        "No presign capability"
+      ],
+      "expected": {
+        "status": 200,
+        "Content-Length": "256",
+        "Cache-Control": "private, immutable, max-age=31536000",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": "attachment; filename=\"pilot.bin\"; filename*=UTF-8''pilot.bin"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.agent.protocol.all_bytes (runner:346-358)",
+      "runner_assertions": "Status, original length, cache, nosniff, exact application/octet-stream Content-Type and attachment Content-Disposition are independently asserted.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload.metadata.text",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:887-967",
+        "packages/server/src/routes/attachments.ts:440-455",
+        "packages/server/src/routes/attachments.ts:656-676",
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Profile prerequisites hold",
+        "One files multipart part containing exact UTF-8 case text"
+      ],
+      "expected": {
+        "status": 200,
+        "attachment_count": 1,
+        "id": "new attachment UUID",
+        "filename": "pilot.txt",
+        "mimeType": "text/plain",
+        "sizeBytes": "UTF-8 byte count, not character count; integer"
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.upload.metadata.text (runner:257-289)",
+      "runner_assertions": "One string ID and original filename/MIME/integer size; full normalized returned row compared.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.history.association.text",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1733-1819",
+        "packages/server/src/routes/internalAgentApi.ts:2773-2783",
+        "packages/server/src/routes/internalAgentApi.ts:3124-3140",
+        "packages/server/src/services/messageService.ts:6465-6474"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "text upload succeeded",
+        "Owner sent exact ID in one message; Agent has access"
+      ],
+      "expected": {
+        "status": 200,
+        "message": "Exact created message ID present",
+        "attachments": "Exactly one matching ID with pilot.txt, text/plain and original integer UTF-8 byte count"
+      },
+      "test_or_scenario_id": "Pilot.history/attachment.history.association.text (runner:308-331)",
+      "runner_assertions": "Attachment envelope only; no read-state/delivery assertions.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.human.bytes.text",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:1510-1535",
+        "packages/server/src/routes/attachments.ts:1551-1592"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "text uploaded/associated",
+        "Owner bearer and correct server scope"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exact UTF-8 text input including newline, no normalization"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.human.bytes.text (runner:333-345)",
+      "runner_assertions": "Final status/equality/length/hash, not Content-Type charset.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.bytes.text",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/shared/src/agentApiContract.ts:3095-3104",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "text uploaded",
+        "Active read-capable member Agent"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exact original UTF-8 text bytes and newline"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.agent.bytes.text (runner:333-345)",
+      "runner_assertions": "Final status/equality/length/hash.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.protocol.text",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:4846-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917",
+        "packages/server/src/routes/attachments.ts:467-511",
+        "packages/server/src/routes/attachments.ts:568-575"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Readable text attachment",
+        "Storage cannot presign"
+      ],
+      "expected": {
+        "status": 200,
+        "Content-Length": "UTF-8 byte count as decimal string",
+        "Cache-Control": "private, immutable, max-age=31536000",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Type": "text/plain; charset=utf-8",
+        "Content-Disposition": "attachment; filename=\"pilot.txt\"; filename*=UTF-8''pilot.txt"
+      },
+      "test_or_scenario_id": "Pilot.read_case/attachment.agent.protocol.text (runner:346-358)",
+      "runner_assertions": "Status, original length, cache, nosniff, exact text/plain; charset=utf-8 Content-Type and attachment Content-Disposition are independently asserted.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.channel.private_established",
+      "operation_ids": [
+        "HTTP POST /api/channels",
+        "HTTP GET /api/channels/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/channels.ts:935-947",
+        "packages/server/src/routes/channels.ts:973-1029",
+        "packages/server/src/routes/channels.ts:1033-1067",
+        "packages/server/src/routes/channels.ts:2902-2941",
+        "packages/server/src/routes/channels.ts:2958-2973"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Verified owner authenticated with correct X-Server-Id and createChannels capability",
+        "Selected external Agent exists in same server",
+        "Two distinct new channels, roles files and revocation, requested with visibility=private and agentIds containing the selected Agent"
+      ],
+      "expected": {
+        "create": "HTTP 200, concrete ID, type=private for each requested channel; selected initial Agent and creator are passed through official atomic creation bootstrap",
+        "readback": "GET /api/channels/<that returned ID> with same owner/server succeeds and publishes persisted type=private",
+        "failure_policy": "Record private_established FAIL if either channel create or readback fails to establish type=private. Stop this target's subsequent attachment/message/revocation writes; preserve both observations; no corrective PATCH or silent fixture substitution",
+        "scope": "Creation/authoritative readback prerequisite for interpreting all private attachment and revocation results; not a claim that all channel membership effects were checked"
+      },
+      "test_or_scenario_id": "Pilot.setup.establish_private_channels/attachment.channel.private_established (current runner:250-289); Pilot.initial returns when setup gives None (runner:298-302)",
+      "runner_assertions": "For each channel in sequence: POST status200/nonempty returned ID/create type private; GET at that ID status200/readback type private. Captures observations and evidence on failure; no target context published after failure. Does not separately compare readback JSON id or enumerate selected member arrays.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload.empty_rejected",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:887-900",
+        "packages/server/src/routes/attachments.ts:935-967"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Valid owner, server, writable private channel and multipart syntax",
+        "One zero-byte empty.txt part"
+      ],
+      "expected": {
+        "status": 400,
+        "body": {
+          "error": "Empty files are not allowed"
+        },
+        "state": "Rejected before uploadAttachmentBuffers; no attachment publication or uploaded object for this request"
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.upload.empty_rejected (runner:292-294)",
+      "runner_assertions": "Exact status/error body; no state/quota/object absence witness.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.cli.bytes",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/cli/src/commands/attachment/view.ts:62-91",
+        "packages/cli/src/client.ts:457-538",
+        "packages/server/src/routes/internalAgentApi.ts:4890-4917"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Exact fixed real CLI executable/source/config recorded",
+        "Isolated CLI profile, actual login succeeds with bound Agent credential",
+        "Readable png attachment; writable isolated output directory"
+      ],
+      "expected": {
+        "exit_code": 0,
+        "output": "Actual CLI-created file equals PNG input byte-for-byte and passes PNG decode"
+      },
+      "test_or_scenario_id": "Pilot.run_cli/attachment.cli.bytes (runner:362-386)",
+      "runner_assertions": "Real login/view subprocess exit, file existence, bytes/decode/hash. PNG only; no managed Agent/Computer execution or presign CLI branch.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.url_unavailable",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:4932-4960",
+        "packages/shared/src/agentApiContract.ts:108-117"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Readable png attachment",
+        "Configured storage has no getPresignedUrl"
+      ],
+      "expected": {
+        "status": 409,
+        "body": "Exactly AGENT_API_ATTACHMENT_DOWNLOAD_URL_UNAVAILABLE_RESPONSE, including error/code/suggestedNextAction",
+        "retry": "Switch to binary route; not a retriable 5xx"
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.agent.url_unavailable (runner:295-298)",
+      "runner_assertions": "Exact status 409 and complete URL_UNAVAILABLE body independently asserted, matching pinned shared constant.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.missing_cloaked",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:372-374",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4839",
+        "packages/shared/src/agentApiContract.ts:84-100"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Valid read-capable Agent",
+        "Fresh well-formed UUID absent from attachment store"
+      ],
+      "expected": {
+        "status": 404,
+        "body": "Exactly AGENT_API_ATTACHMENT_DOWNLOAD_UNAVAILABLE_RESPONSE; no requested ID or private metadata"
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.agent.missing_cloaked (runner:304-305)",
+      "runner_assertions": "Absent UUID status 404 and complete pinned UNAVAILABLE body independently asserted; malformed, inaccessible, wrong-subsystem and cross-server indistinguishability remain untested.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.unauthenticated",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/app.ts:809",
+        "packages/server/src/middleware/authFromRegistry.ts:82-85",
+        "packages/server/src/middleware/authFromRegistry.ts:94-135",
+        "packages/server/src/middleware/auth.ts:734-743"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Existing png attachment",
+        "No Authorization header or alternate credential"
+      ],
+      "expected": {
+        "status": 401,
+        "body": {
+          "error": "Missing agent credential"
+        }
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.agent.unauthenticated (runner:299-302)",
+      "runner_assertions": "Exact 401 status and complete pinned middleware body independently asserted.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.human.unauthenticated",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/app.ts:578",
+        "packages/server/src/middleware/auth.ts:256-332"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Existing png attachment",
+        "No bearer, query token, machine key or accepted preview token"
+      ],
+      "expected": {
+        "status": 401,
+        "body": {
+          "error": "Authentication required"
+        }
+      },
+      "test_or_scenario_id": "Pilot.initial/attachment.human.unauthenticated (runner:299-302)",
+      "runner_assertions": "Exact 401 status and complete pinned middleware body independently asserted.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.revoked",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload",
+        "HTTP POST /api/messages",
+        "HTTP DELETE /api/channels/:id/members/agent/:memberId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1803-1819",
+        "packages/server/src/services/attachmentProjectionWriterService.ts:114-132",
+        "packages/server/src/services/attachmentLinkingService.ts:216-251",
+        "packages/server/src/services/attachmentAuthorityService.ts:81-149",
+        "packages/server/src/routes/channels.ts:4085-4146",
+        "packages/server/src/routes/internalAgentApi.ts:612-649",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4839",
+        "packages/shared/src/agentApiContract.ts:84-100"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Separate revokedChannelId passed attachment.channel.private_established with POST and GET same-ID type=private; initially contains owner and Agent",
+        "Normal typed revoke.bin upload is associated by owner POST /api/messages before Agent positive read; same attachmentId and original bytes retained",
+        "Owner removes membership successfully while credential stays valid"
+      ],
+      "expected": {
+        "remove_status": 200,
+        "remove_body": {
+          "ok": true
+        },
+        "new_download_status": 404,
+        "new_download_body": "Exactly uniform unavailable constant",
+        "boundary": "New server request; this does not assert revocation of a previously minted bearer URL"
+      },
+      "test_or_scenario_id": "Pilot.revoke/attachment.agent.revoked (follow-up runner:403-425)",
+      "runner_assertions": "Before-access after successful message association, original bytes, removal status, after-read 404 and exact UNAVAILABLE body; explicit pending-before-link denial, removal response body and notice/event/purge effects remain unasserted.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.owner.revocation_witness",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id",
+        "HTTP DELETE /api/channels/:id/members/agent/:memberId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/channels.ts:4085-4146",
+        "packages/server/src/routes/attachments.ts:727-789",
+        "packages/server/src/routes/attachments.ts:1510-1592"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Same revoke.bin ID as revoked Agent request",
+        "Owner remains member with same authority after only Agent membership removal"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Original 0..255 bytes still accessible to owner; Agent denial is not explained by attachment deletion"
+      },
+      "test_or_scenario_id": "Pilot.revoke/attachment.owner.revocation_witness (runner:403-404)",
+      "runner_assertions": "Owner status/byte identity after revocation only, not after restart.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.revoked_after_restart",
+      "operation_ids": [
+        "HTTP DELETE /api/channels/:id/members/agent/:memberId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/channels.ts:4114-4139",
+        "packages/server/src/routes/internalAgentApi.ts:624-649",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4839"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Initial membership removal completed and checkpoint retained",
+        "Same revokedAttachmentId and active credential; no re-upload/reseed"
+      ],
+      "expected": {
+        "status": 404,
+        "body": "Uniform unavailable constant after retained-data process restart",
+        "proof_limit": "Interpret with required companion attachment.owner.revocation_witness_after_restart, which positively checks the same object after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart/attachment.agent.revoked_after_restart (runner:410-419)",
+      "runner_assertions": "404 and complete pinned UNAVAILABLE body; same-ID owner positive witness is a separate required rule below.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.owner.revocation_witness_after_restart",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:727-789",
+        "packages/server/src/routes/attachments.ts:1510-1592",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4839"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Same revokedAttachmentId as Agent denial after retained-data process restart",
+        "Owner remains allowed and credential valid; no replacement upload"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Original exact bytes 0..255 of revoke.bin",
+        "purpose": "Positive same-object witness distinguishes persisted Agent membership denial from lost revoked object"
+      },
+      "test_or_scenario_id": "Pilot.after_restart/attachment.owner.revocation_witness_after_restart (runner:414-419)",
+      "runner_assertions": "Same-ID owner status 200 and exact 256 bytes, privately retained body evidence and public hash; process restart evidence is attached by record().",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.human.png",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183",
+        "packages/server/src/routes/attachments.ts:1510-1592"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Retained png ID/object/message and owner identity",
+        "Unrevoked private channel; no fixture reset"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Same original PNG bytes and successful decode after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.read_case/attachment.restart.human.png (runner:406-409,333-345)",
+      "runner_assertions": "Original bytes and hash/decode; metadata/headers outside this rule.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.agent.png",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Retained png and membership/credential in unrevoked private channel"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Same uploaded PNG bytes, decodable after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.read_case/attachment.restart.agent.png (runner:406-409,333-345)",
+      "runner_assertions": "Bytes/hash/decode, not post-restart protocol headers.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.history.png",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1803-1819",
+        "packages/server/src/routes/internalAgentApi.ts:2773-2783",
+        "packages/server/src/routes/internalAgentApi.ts:3124-3140",
+        "packages/server/src/services/messageService.ts:6465-6474"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Same retained messageId/attachmentId and Agent access",
+        "No message re-send or upload"
+      ],
+      "expected": {
+        "status": 200,
+        "attachments": "Same original message contains exactly retained png ID, pilot.png, image/png and integer byte count"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.history/attachment.restart.history.png (runner:406-409,308-331)",
+      "runner_assertions": "Association/envelope only, not complete message persistence or cursor invariance.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.human.all_bytes",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183",
+        "packages/server/src/routes/attachments.ts:1510-1592"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Same retained all_bytes attachment and valid owner/server scope"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exactly the same 256 bytes 0..255 after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.read_case/attachment.restart.human.all_bytes (runner:406-409,333-345)",
+      "runner_assertions": "Original bytes/hash.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.agent.all_bytes",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Same retained all_bytes ID; live read credential and unrevoked private membership"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exactly the same 256 bytes 0..255 after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.read_case/attachment.restart.agent.all_bytes (runner:406-409,333-345)",
+      "runner_assertions": "Original bytes/hash, not protocol recheck.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.history.all_bytes",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1803-1819",
+        "packages/server/src/routes/internalAgentApi.ts:3124-3140",
+        "packages/server/src/services/messageService.ts:6465-6474"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Original all_bytes message/attachment IDs retained; Agent remains authorized"
+      ],
+      "expected": {
+        "status": 200,
+        "attachments": "Exact original message contains exactly the same ID, pilot.bin, application/octet-stream and integer sizeBytes 256"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.history/attachment.restart.history.all_bytes (runner:406-409,308-331)",
+      "runner_assertions": "Association/envelope only.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.human.text",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183",
+        "packages/server/src/routes/attachments.ts:1510-1592"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Original text attachment retained; valid owner bearer/server scope"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exact original UTF-8 text and newline after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.read_case/attachment.restart.human.text (runner:406-409,333-345)",
+      "runner_assertions": "Original bytes/hash.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.agent.text",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-183",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4917"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Original text retained; valid read credential and membership"
+      ],
+      "expected": {
+        "status": 200,
+        "body": "Exact original UTF-8 text and newline after restart"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.read_case/attachment.restart.agent.text (runner:406-409,333-345)",
+      "runner_assertions": "Bytes/hash, not charset/header recheck.",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.restart.history.text",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1803-1819",
+        "packages/server/src/routes/internalAgentApi.ts:3124-3140",
+        "packages/server/src/services/messageService.ts:6465-6474"
+      ],
+      "profile": "streaming_durable_after_restart",
+      "preconditions": [
+        "Original text message/attachment IDs retained; Agent authorized"
+      ],
+      "expected": {
+        "status": 200,
+        "attachments": "Exact original message contains exactly retained text ID, pilot.txt, text/plain and original UTF-8 integer byte count"
+      },
+      "test_or_scenario_id": "Pilot.after_restart -> Pilot.history/attachment.restart.history.text (runner:406-409,308-331)",
+      "runner_assertions": "Association/envelope only.",
+      "status": "NOT_RUN"
+    }
+  ],
+  "additional_required_rules": [
+    {
+      "behavior_id": "attachment.permission.identity_tenant_scope_matrix",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url"
+      ],
+      "source_refs": [
+        "packages/server/src/middleware/auth.ts:256-332",
+        "packages/server/src/middleware/auth.ts:335-354",
+        "packages/server/src/middleware/auth.ts:734-769",
+        "packages/server/src/routes/internalAgentApi.ts:981-1007",
+        "packages/server/src/routes/attachments.ts:727-789"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Member/nonmember, wrong credential principal, missing read capability/grant, cross-server and human server-scope variants"
+      ],
+      "expected": "Pinned per-identity 401/403/404/body semantics and no cross-server bytes; denial occurs before storage access without relying on private spies.",
+      "test_or_scenario_id": "missing matrix",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.permission.thread_joint_linked_authority",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload",
+        "HTTP POST /api/messages",
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url",
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:935-967",
+        "packages/server/src/services/attachmentUploadWriterService.ts:163-180",
+        "packages/server/src/services/attachmentProjectionWriterService.ts:61-69",
+        "packages/server/src/services/attachmentProjectionWriterService.ts:114-132",
+        "packages/server/src/routes/internalAgentApi.ts:624-649",
+        "packages/server/src/services/attachmentAuthorityService.ts:69-115",
+        "packages/server/src/services/attachmentAuthorityService.ts:118-149",
+        "packages/server/src/routes/internalAgentApi.ts:372-374",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4839",
+        "packages/server/src/services/attachmentLinkingService.ts:153-183",
+        "packages/server/src/services/attachmentLinkingService.ts:216-260",
+        "packages/server/src/services/attachmentAuthorityService.test.ts:275-330",
+        "packages/server/src/routes/attachments.ts:696-789",
+        "packages/server/src/routes/internalAgentApi.ts:590-649",
+        "packages/server/src/routes/internalAgentApi.ts:2755-2762"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Actual linked message, private thread parent and applicable joint projections; exact authority resolver installed",
+        "For pending-to-linked transition use normal human HTTP upload producing a typed projection with non-null objectId; preserve the same attachment ID, file bytes, Agent credential and channel membership across linking",
+        "Keep legacy objectId=null projections as a distinct compatibility profile; do not use their channel-only behavior to infer current normal-upload behavior"
+      ],
+      "expected": "Visibility follows authoritative linked message/local host channel and parent/thread semantics. New typed human upload is pending: messageId=null and pendingChannelId is set. It is not Agent-readable even if Agent belongs to upload channel. Agent download and URL return the exact uniform unavailable 404 until successful canonical message linking sets messageId and clears pendingChannelId. After linking, authorized Agent reads the same original bytes; after membership removal it receives uniform 404 while allowed owner retains same bytes. Test typed and legacy projections separately.",
+      "subrules": [
+        {
+          "behavior_id": "attachment.permission.pending_human_upload_not_agent_readable",
+          "status": "NOT_RUN",
+          "stimulus": "Normal human multipart upload; GET Agent download and URL before POST message association with otherwise valid read credential and membership",
+          "expected": "Both routes resolve typed authority to null and return 404 AGENT_API_ATTACHMENT_DOWNLOAD_UNAVAILABLE_RESPONSE; channel membership alone is insufficient",
+          "source_refs": [
+            "packages/server/src/services/attachmentProjectionWriterService.ts:114-120",
+            "packages/server/src/routes/internalAgentApi.ts:624-637",
+            "packages/server/src/services/attachmentAuthorityService.ts:81-99",
+            "packages/server/src/routes/internalAgentApi.ts:4835-4839",
+            "packages/server/src/routes/internalAgentApi.ts:372-374"
+          ]
+        },
+        {
+          "behavior_id": "attachment.permission.pending_to_linked_same_id",
+          "status": "NOT_RUN",
+          "stimulus": "Owner sends exactly the pending attachment ID through POST /api/messages; read the same ID with unchanged authorized Agent",
+          "expected": "Canonical linking validates sender and reservation, sets messageId and pendingChannelId:null, consumes reservation; visible linked attachment yields original bytes under selected storage profile",
+          "source_refs": [
+            "packages/server/src/routes/messages.ts:1803-1819",
+            "packages/server/src/services/attachmentLinkingService.ts:176-183",
+            "packages/server/src/services/attachmentLinkingService.ts:216-251",
+            "packages/server/src/services/attachmentAuthorityService.ts:91-115",
+            "packages/server/src/services/attachmentAuthorityService.ts:118-149"
+          ]
+        },
+        {
+          "behavior_id": "attachment.permission.legacy_projection_boundary",
+          "status": "NOT_RUN",
+          "stimulus": "Separately seed a genuine retained legacy objectId=null projection under recorded compatibility scope",
+          "expected": "Agent takes legacy canAgentAccessAttachment branch at internalAgentApi.ts:629-630; do not impose typed pending-message gate on this branch without separately tracing legacy channel/joint permission",
+          "source_refs": [
+            "packages/server/src/routes/internalAgentApi.ts:590-637"
+          ]
+        }
+      ],
+      "test_or_scenario_id": "Current Pilot.revoke covers positive linked-before-revocation setup; explicit before-link denial, same-ID transition and thread/joint/legacy matrix remain additional scenarios",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.agent.cloaking_input_equivalence",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:363-374",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4839",
+        "packages/shared/src/agentApiContract.ts:84-100"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Malformed ID, missing UUID, inaccessible private attachment, wrong subsystem UUID"
+      ],
+      "expected": "Same exact neutral 404 response across causes and both Agent download surfaces; unknown UUID alone does not prove cloaking.",
+      "test_or_scenario_id": "missing equivalence class scenario",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.presign.protocol_and_cli",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url",
+        "HTTP GET /api/attachments/:id"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:4854-4865",
+        "packages/server/src/routes/internalAgentApi.ts:4890-4905",
+        "packages/server/src/routes/internalAgentApi.ts:4932-4960",
+        "packages/server/src/routes/attachments.ts:1538-1548",
+        "packages/cli/src/client.ts:457-513"
+      ],
+      "profile": "presign",
+      "preconditions": [
+        "Actual presign-capable backend and reachable HTTPS object target"
+      ],
+      "expected": "Capture API 302 separately, Location privately, correct cache/length/nosniff, JSON URL response and 300-second expiry; actual CLI accepts only permitted target, omits credentials, saves exact bytes; object failure does not produce success/file.",
+      "test_or_scenario_id": "missing presign profile",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.presign.revocation_and_expiry",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:4816-4865",
+        "packages/server/src/routes/internalAgentApi.ts:4938-4955",
+        "packages/shared/src/agentApiContract.ts:102-117"
+      ],
+      "profile": "presign",
+      "preconditions": [
+        "Mint URL before private membership removal, retain privately, then revoke and test fresh routes and old URL separately"
+      ],
+      "expected": "New application requests reauthorize; old URL is a bearer capability with provider TTL, not presumed instantly revoked by membership removal; verify actual expiry and before-mint timestamp bound.",
+      "test_or_scenario_id": "missing bearer lifecycle scenario",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload.filename_mime_binary_matrix",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload",
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:440-511",
+        "packages/server/src/routes/attachments.ts:946-953"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Space/Unicode/quotes filename, MIME sniff mismatch, actual PDF and ZIP inputs, byte boundaries"
+      ],
+      "expected": "Official MIME precedence, repaired filename, safe ASCII fallback and RFC5987; exact original bytes for each real file type. Current text Unicode content does not cover Unicode filename.",
+      "test_or_scenario_id": "missing metadata/file matrix",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload.validation_and_no_publication",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:887-938",
+        "packages/server/src/services/attachmentUploadWriterService.ts:74-127",
+        "packages/server/src/services/attachmentUploadWriterService.ts:163-188"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Empty/missing file, oversize, invalid channel, archived/quota/read-only/unauthorized inputs"
+      ],
+      "expected": "Exact official errors and no new usable attachment or business publication on rejected upload; multi-file partial failures preserve defined atomic publication/cleanup obligations. Use observable state rather than internal query-count spies.",
+      "test_or_scenario_id": "missing boundary and side-effect witnesses",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.history.consume_false_read_state",
+      "operation_ids": [
+        "HTTP GET /internal/agent-api/history"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/internalAgentApi.ts:2780-2783",
+        "packages/server/src/routes/internalAgentApi.ts:3008-3073"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Unread messages and observable read cursor before history"
+      ],
+      "expected": "consume=false returns attachment envelope without advancing read boundary or scheduling consume-branch deferred advancement; inspect read-state through public behavior.",
+      "test_or_scenario_id": "current history chooses consume=false but lacks state witness",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.membership_removal.side_effect_order",
+      "operation_ids": [
+        "HTTP DELETE /api/channels/:id/members/agent/:memberId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/channels.ts:4114-4146"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Agent was private-channel member; durable notices, inbox and socket consumers are real and inspectable"
+      ],
+      "expected": "Durable removal notice audience while Agent is still member, then membership removal, private channel-tree inbox purge, membersUpdated notification, exact ok response; do not assert fake orchestrator equivalence.",
+      "test_or_scenario_id": "missing effects and ordering scenario",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.storage.failure_matrix",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload",
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId/url"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:935-978",
+        "packages/server/src/routes/attachments.ts:1532-1535",
+        "packages/server/src/routes/attachments.ts:1593-1600",
+        "packages/server/src/routes/internalAgentApi.ts:4841-4844",
+        "packages/server/src/routes/internalAgentApi.ts:4918-4922",
+        "packages/server/src/routes/internalAgentApi.ts:4957-4960"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Bounded isolated actual storage unavailable/object missing/read failure/timeout/presign failure variants"
+      ],
+      "expected": "Lock each official 503/404/500/504 or post-headers stream termination separately; Agent missing stored object is not automatically equivalent to missing projection. No leaked provider detail or signed URL.",
+      "test_or_scenario_id": "missing real adapter fault profile",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.human.headers_head_range_preview",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /api/attachments/:id/preview",
+        "HTTP GET /api/attachments/:id/html-preview",
+        "HTTP GET /api/attachments/:id/html-preview-url"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:467-653",
+        "packages/server/src/routes/attachments.ts:1180-1233",
+        "packages/server/src/routes/attachments.ts:1375-1507",
+        "packages/server/src/routes/attachments.ts:1551-1592",
+        "packages/server/src/app.ts:578"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Applicable MIME/preview config; getRange capability recorded; authenticated and token-bound requests"
+      ],
+      "expected": "Human disposition/MIME/cache/length/nosniff, implicit HEAD, valid and invalid Range 206/416, actual preview bytes and HTML sandbox/token constraints; actual Web download/preview confirmation is separate from API success.",
+      "test_or_scenario_id": "missing human protocol/real Web profile",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload_sessions.disabled_surface",
+      "operation_ids": [
+        "HTTP GET /api/attachments/upload-capabilities",
+        "HTTP POST /api/attachments/upload-sessions",
+        "HTTP GET /api/attachments/upload-sessions/:channelId/active",
+        "HTTP GET /api/attachments/upload-sessions/{uploadId}",
+        "HTTP POST /api/attachments/upload-sessions/{uploadId}/complete",
+        "HTTP DELETE /api/attachments/upload-sessions/{uploadId}",
+        "HTTP GET /internal/agent-api/attachment-upload-capabilities",
+        "HTTP POST /internal/agent-api/attachment-upload-sessions",
+        "HTTP GET /internal/agent-api/attachment-upload-sessions/:uploadId",
+        "HTTP POST /internal/agent-api/attachment-upload-sessions/:uploadId/complete",
+        "HTTP DELETE /internal/agent-api/attachment-upload-sessions/:uploadId"
+      ],
+      "source_refs": [
+        "packages/server/src/app.ts:553-562",
+        "packages/server/src/routes/attachmentUploadSessions.ts:176-295",
+        "packages/server/src/routes/internalAgentApi.ts:5663-5755"
+      ],
+      "profile": "streaming_durable",
+      "preconditions": [
+        "Session service absent but valid auth/server/profile; use valid UUID regex paths"
+      ],
+      "expected": "Capability routes remain registered; human active list returns uploads:[]; human disabled mutation/status paths return 403 UPLOAD_FORBIDDEN while Agent disabled session paths return 404 UPLOAD_SESSION_NOT_FOUND. Malformed IDs may fail route regex and fall through; do not flatten these distinct surfaces.",
+      "test_or_scenario_id": "missing disabled capability/session checks",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.upload_sessions.enabled_lifecycle",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload-sessions",
+        "HTTP POST /api/attachments/upload-sessions/{uploadId}/complete",
+        "HTTP DELETE /api/attachments/upload-sessions/{uploadId}",
+        "HTTP GET /api/attachments/upload-sessions/{uploadId}",
+        "HTTP GET /api/attachments/upload-sessions/:channelId/active"
+      ],
+      "source_refs": [
+        "packages/shared/src/attachmentUploadContract.ts:20-111",
+        "packages/server/src/routes/attachmentUploadSessions.ts:210-295"
+      ],
+      "profile": "enabled_upload_sessions",
+      "preconditions": [
+        "Actual service/provider, owner/Agent variants, recorded lease/quota config"
+      ],
+      "expected": "State transitions, ownership, idempotent create/complete/cancel, expiry, concurrent completion, object verification and retained recovery obey full shared contract and actual service; detailed expected branches must be traced before execution.",
+      "test_or_scenario_id": "missing enabled profile; further service analysis required",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.streaming.cancel_timeout_resource_bounds",
+      "operation_ids": [
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId",
+        "HTTP POST /api/attachments/upload"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:1557-1600",
+        "packages/server/src/routes/internalAgentApi.ts:4908-4922",
+        "packages/server/src/services/attachmentUploadWriterService.ts:129-188"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Large allowed files, slow storage, client disconnect/cancel, configured timeouts"
+      ],
+      "expected": "Determine and lock externally observable stream termination, cancellation and resource/size behavior from actual stream helper and runtime; do not invent retry/atomic guarantees. Detailed stream helper trace remains required.",
+      "test_or_scenario_id": "missing stream-state analysis/scenario",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.concurrent_revoke_reassociate_retry",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /api/attachments/:id",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/attachments.ts:727-789",
+        "packages/server/src/routes/internalAgentApi.ts:612-649",
+        "packages/server/src/routes/messages.ts:1803-1819"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Concurrent reads/membership changes/message linking or retry in isolated environment"
+      ],
+      "expected": "Trace linearization and duplicate-link/publication semantics from actual authority/message writer before asserting; preserve sequential scenario as a subset, not proof of all interleavings.",
+      "test_or_scenario_id": "missing concurrency semantics/scenario",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.product.managed_agent_computer_read",
+      "operation_ids": [
+        "HTTP POST /api/messages",
+        "HTTP GET /internal/agent-api/history",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/server/src/routes/messages.ts:1803-1819",
+        "packages/cli/src/commands/attachment/view.ts:62-91",
+        "packages/cli/src/client.ts:457-538"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Actual Web upload/message, fixed managed Agent/Computer execution and CLI profile"
+      ],
+      "expected": "User-visible file send reaches actual runtime, runtime obtains attachment ID from real delivery/history, downloads and reads exact original bytes; do not promote external credential plus subprocess to full managed-runtime parity.",
+      "test_or_scenario_id": "missing actual runtime path",
+      "status": "NOT_RUN"
+    },
+    {
+      "behavior_id": "attachment.validation.counterexample_detection",
+      "operation_ids": [
+        "HTTP POST /api/attachments/upload",
+        "HTTP GET /internal/agent-api/attachments/:attachmentId"
+      ],
+      "source_refs": [
+        "packages/shared/src/agentApiContract.ts:3095-3104",
+        "packages/server/src/routes/internalAgentApi.ts:4816-4851",
+        "packages/server/src/routes/internalAgentApi.ts:4890-4917"
+      ],
+      "profile": "any_recorded_profile",
+      "preconditions": [
+        "Owned isolated pre-fix or intentional counterexample build; no production mutation"
+      ],
+      "expected": "Known lossy UTF-8 implementation, omitted route and removed authorization are detected by appropriate scenarios; record undetected counterexamples. Historical claim is not newly executed evidence.",
+      "test_or_scenario_id": "missing current counterexample campaign",
+      "status": "NOT_RUN"
+    }
+  ]
+}
