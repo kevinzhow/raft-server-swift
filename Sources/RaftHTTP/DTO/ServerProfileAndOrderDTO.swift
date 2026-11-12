@@ -499,82 +499,154 @@ public struct ServerProfilePatchResponse: Sendable, Equatable, JSONBodyConvertib
 
 /// `GET /api/servers/:id/members/:memberId/profile` body. A removed member and
 /// a current member publish different shapes.
+///
+/// Pinned `serverService.getServerMemberProfile` returns the account row
+/// (`serverId`, `serverName`, `serverSlug`, `name`, `displayName`,
+/// `description`, `avatarUrl`, `email`, `gravatarHash`), the membership role and
+/// `membershipStatus`, then the agents the member created. The Swift ledger has
+/// no retained human server-join timestamp, so `joinedAt` is not published; see
+/// the slice report. Every other member field is the live account fact.
 public enum ServerMemberProfileResponse: Sendable, Equatable, JSONBodyConvertible {
+    /// One agent the profile's member created, as the pinned select publishes it.
     public struct CreatedAgent: Sendable, Equatable {
         public var id: String
         public var name: String
         public var displayName: String
+        public var avatarUrl: String?
+        public var runtime: String
+        public var status: String
 
-        public init(id: String, name: String, displayName: String) {
+        public init(
+            id: String, name: String, displayName: String,
+            avatarUrl: String?, runtime: String, status: String
+        ) {
             self.id = id
             self.name = name
             self.displayName = displayName
+            self.avatarUrl = avatarUrl
+            self.runtime = runtime
+            self.status = status
         }
     }
 
-    case removed(userId: String, name: String, email: String, avatarUrl: String?)
-    case current(
-        userId: String,
-        name: String,
-        email: String?,
-        avatarUrl: String?,
-        createdAgents: [CreatedAgent]
-    )
+    /// The account and server facts both shapes publish.
+    public struct MemberFacts: Sendable, Equatable {
+        public var userId: String
+        public var serverId: String
+        public var serverName: String
+        public var serverSlug: String
+        public var name: String
+        public var displayName: String?
+        public var description: String?
+        public var avatarUrl: String?
+        public var email: String?
+        public var gravatarHash: String
+
+        public init(
+            userId: String, serverId: String, serverName: String, serverSlug: String,
+            name: String, displayName: String?, description: String?, avatarUrl: String?,
+            email: String?, gravatarHash: String
+        ) {
+            self.userId = userId
+            self.serverId = serverId
+            self.serverName = serverName
+            self.serverSlug = serverSlug
+            self.name = name
+            self.displayName = displayName
+            self.description = description
+            self.avatarUrl = avatarUrl
+            self.email = email
+            self.gravatarHash = gravatarHash
+        }
+
+        fileprivate var jsonFields: [OrderedJSONField] {
+            [
+                OrderedJSONField("userId", userId),
+                OrderedJSONField("serverId", serverId),
+                OrderedJSONField("serverName", serverName),
+                OrderedJSONField("serverSlug", serverSlug),
+                OrderedJSONField("name", name),
+                OrderedJSONField("displayName", optional: displayName),
+                OrderedJSONField("description", optional: description),
+                OrderedJSONField("avatarUrl", optional: avatarUrl),
+                OrderedJSONField("email", optional: email),
+                OrderedJSONField("gravatarHash", gravatarHash),
+            ]
+        }
+    }
+
+    case removed(MemberFacts)
+    case current(MemberFacts, role: String, createdAgents: [CreatedAgent])
 
     public var jsonBody: OrderedJSON {
         switch self {
-        case .removed(let userId, let name, let email, let avatarUrl):
-            return .object([
-                OrderedJSONField("userId", userId),
-                OrderedJSONField("name", name),
-                OrderedJSONField("displayName", name),
-                OrderedJSONField("email", email),
-                OrderedJSONField("avatarUrl", optional: avatarUrl),
-                OrderedJSONField("membershipStatus", "removed"),
-            ])
-        case .current(let userId, let name, let email, let avatarUrl, let createdAgents):
-            return .object([
-                OrderedJSONField("userId", userId),
-                OrderedJSONField("name", name),
-                OrderedJSONField("displayName", name),
-                OrderedJSONField("email", optional: email),
-                OrderedJSONField("avatarUrl", optional: avatarUrl),
-                OrderedJSONField("createdAgents", .array(createdAgents.map { agent in
-                    .object([
-                        OrderedJSONField("id", agent.id),
-                        OrderedJSONField("name", agent.name),
-                        OrderedJSONField("displayName", agent.displayName),
-                    ])
-                })),
-            ])
+        case .removed(let facts):
+            // The ledger records only that the membership was removed; it does
+            // not retain the departure reason, so the published status stays
+            // the pinned fallback rather than an invented value.
+            var fields = facts.jsonFields
+            fields.append(OrderedJSONField("role", .null))
+            fields.append(OrderedJSONField("membershipStatus", "removed"))
+            return .object(fields)
+        case .current(let facts, let role, let createdAgents):
+            var fields = facts.jsonFields
+            fields.append(OrderedJSONField("role", role))
+            fields.append(OrderedJSONField("membershipStatus", "active"))
+            fields.append(OrderedJSONField("createdAgents", .array(createdAgents.map { agent in
+                .object([
+                    OrderedJSONField("id", agent.id),
+                    OrderedJSONField("name", agent.name),
+                    OrderedJSONField("displayName", agent.displayName),
+                    OrderedJSONField("avatarUrl", optional: agent.avatarUrl),
+                    OrderedJSONField("runtime", agent.runtime),
+                    OrderedJSONField("status", agent.status),
+                ])
+            })))
+            return .object(fields)
         }
     }
 }
 
 /// One `GET /api/servers/:id/members` row.
+///
+/// Pinned `serverService.getServerMembers` publishes `userId`, `name`,
+/// `displayName`, `description`, `avatarUrl`, `role`, `email` (admin/self only)
+/// and `gravatarHash`. The ledger has no retained join timestamp, so `joinedAt`
+/// is not published; every other member field is the live account fact.
 public struct ServerMemberListEntry: Sendable, Equatable, JSONBodyConvertible {
     public var userId: String
-    public var role: String
     public var name: String
-    public var email: String?
+    public var displayName: String?
+    public var description: String?
     public var avatarUrl: String?
+    public var role: String
+    public var email: String?
+    public var gravatarHash: String
 
-    public init(userId: String, role: String, name: String, email: String?, avatarUrl: String?) {
+    public init(
+        userId: String, name: String, displayName: String?, description: String?,
+        avatarUrl: String?, role: String, email: String?, gravatarHash: String
+    ) {
         self.userId = userId
-        self.role = role
         self.name = name
-        self.email = email
+        self.displayName = displayName
+        self.description = description
         self.avatarUrl = avatarUrl
+        self.role = role
+        self.email = email
+        self.gravatarHash = gravatarHash
     }
 
     public var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("userId", userId),
-            OrderedJSONField("role", role),
             OrderedJSONField("name", name),
-            OrderedJSONField("displayName", name),
-            OrderedJSONField("email", optional: email),
+            OrderedJSONField("displayName", optional: displayName),
+            OrderedJSONField("description", optional: description),
             OrderedJSONField("avatarUrl", optional: avatarUrl),
+            OrderedJSONField("role", role),
+            OrderedJSONField("email", optional: email),
+            OrderedJSONField("gravatarHash", gravatarHash),
         ])
     }
 }
@@ -593,22 +665,80 @@ public struct ServerMembersListResponse: Sendable, Equatable, JSONBodyConvertibl
 }
 
 /// `GET /api/servers/:id/member-graph` body.
+///
+/// Pinned `routes/servers.ts` publishes each human's live identity
+/// (`type`, `id`, `name`, `displayName`, `avatarUrl`, `gravatarHash`, `role`,
+/// `channelIds`) and each agent's live identity (`type`, `id`, `name`,
+/// `displayName`, `avatarUrl`, `status`, `runtime`, `channelIds`), plus each
+/// visible channel's type, archive state and member counts.
 public struct ServerMemberGraphResponse: Sendable, Equatable, JSONBodyConvertible {
     public struct Human: Sendable, Equatable {
         public var id: String
+        public var name: String
+        public var displayName: String?
+        public var avatarUrl: String?
+        public var gravatarHash: String
+        public var role: String
         public var channelIds: [String]
+
+        public init(
+            id: String, name: String, displayName: String?, avatarUrl: String?,
+            gravatarHash: String, role: String, channelIds: [String]
+        ) {
+            self.id = id
+            self.name = name
+            self.displayName = displayName
+            self.avatarUrl = avatarUrl
+            self.gravatarHash = gravatarHash
+            self.role = role
+            self.channelIds = channelIds
+        }
     }
 
     public struct Agent: Sendable, Equatable {
         public var id: String
         public var name: String
+        public var displayName: String?
+        public var avatarUrl: String?
+        public var status: String
+        public var runtime: String
         public var channelIds: [String]
+
+        public init(
+            id: String, name: String, displayName: String?, avatarUrl: String?,
+            status: String, runtime: String, channelIds: [String]
+        ) {
+            self.id = id
+            self.name = name
+            self.displayName = displayName
+            self.avatarUrl = avatarUrl
+            self.status = status
+            self.runtime = runtime
+            self.channelIds = channelIds
+        }
     }
 
     public struct Channel: Sendable, Equatable {
         public var id: String
         public var name: String
+        public var type: String
+        public var archivedAt: String?
+        public var humanCount: Int
+        public var agentCount: Int
         public var memberCount: Int
+
+        public init(
+            id: String, name: String, type: String, archivedAt: String?,
+            humanCount: Int, agentCount: Int, memberCount: Int
+        ) {
+            self.id = id
+            self.name = name
+            self.type = type
+            self.archivedAt = archivedAt
+            self.humanCount = humanCount
+            self.agentCount = agentCount
+            self.memberCount = memberCount
+        }
     }
 
     public struct Edge: Sendable, Equatable {
@@ -634,14 +764,25 @@ public struct ServerMemberGraphResponse: Sendable, Equatable, JSONBodyConvertibl
         return .object([
             OrderedJSONField("humans", .array(humans.map { human in
                 .object([
+                    OrderedJSONField("type", "human"),
                     OrderedJSONField("id", human.id),
+                    OrderedJSONField("name", human.name),
+                    OrderedJSONField("displayName", optional: human.displayName),
+                    OrderedJSONField("avatarUrl", optional: human.avatarUrl),
+                    OrderedJSONField("gravatarHash", human.gravatarHash),
+                    OrderedJSONField("role", human.role),
                     OrderedJSONField("channelIds", strings(human.channelIds)),
                 ])
             })),
             OrderedJSONField("agents", .array(agents.map { agent in
                 .object([
+                    OrderedJSONField("type", "agent"),
                     OrderedJSONField("id", agent.id),
                     OrderedJSONField("name", agent.name),
+                    OrderedJSONField("displayName", optional: agent.displayName),
+                    OrderedJSONField("avatarUrl", optional: agent.avatarUrl),
+                    OrderedJSONField("status", agent.status),
+                    OrderedJSONField("runtime", agent.runtime),
                     OrderedJSONField("channelIds", strings(agent.channelIds)),
                 ])
             })),
@@ -649,6 +790,10 @@ public struct ServerMemberGraphResponse: Sendable, Equatable, JSONBodyConvertibl
                 .object([
                     OrderedJSONField("id", channel.id),
                     OrderedJSONField("name", channel.name),
+                    OrderedJSONField("type", channel.type),
+                    OrderedJSONField("archivedAt", optional: channel.archivedAt),
+                    OrderedJSONField("humanCount", channel.humanCount),
+                    OrderedJSONField("agentCount", channel.agentCount),
                     OrderedJSONField("memberCount", channel.memberCount),
                 ])
             })),

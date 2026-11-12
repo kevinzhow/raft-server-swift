@@ -95,16 +95,35 @@ private func body(_ error: any DomainError) -> String {
 
     let humans = [
         ChannelHumanRowDTO(
-            id: "h1", name: "Owner", serverRole: "owner", effectiveChannelRole: "admin",
-            channelAdminBasis: "server_role", canChangeChannelRole: false
+            id: "h1", serverId: "s1", serverName: "Server One", serverSlug: "server-one",
+            name: "owner-handle", displayName: "Owner", description: "Owner description",
+            avatarUrl: "/api/avatars/users/0123456789abcdef0123456789abcdef.webp",
+            role: "owner", serverRole: "owner", channelRole: "admin",
+            gravatarHash: String(repeating: "a", count: 64),
+            effectiveChannelRole: "admin", channelAdminBasis: "server_role", canChangeChannelRole: false
         ),
         ChannelHumanRowDTO(
-            id: "h2", name: "Member", serverRole: "member", effectiveChannelRole: "member",
-            channelAdminBasis: nil, canChangeChannelRole: true
+            id: "h2", serverId: "s1", serverName: "Server One", serverSlug: "server-one",
+            name: "member-handle", displayName: nil, description: nil, avatarUrl: nil,
+            role: "member", serverRole: "member", channelRole: "member",
+            gravatarHash: String(repeating: "b", count: 64),
+            effectiveChannelRole: "member", channelAdminBasis: nil, canChangeChannelRole: true
         ),
     ]
+    let avatarURL = "/api/avatars/users/0123456789abcdef0123456789abcdef.webp"
     #expect(ChannelMembersResponse(agents: [agent], humans: humans).jsonBody.render() == """
-    {"agents":[{"id":"a1","name":"Atlas \\"One\\"","activity":"online","activityDetail":""}],"humans":[{"id":"h1","name":"Owner","serverRole":"owner","effectiveChannelRole":"admin","channelAdminBasis":"server_role","canChangeChannelRole":false},{"id":"h2","name":"Member","serverRole":"member","effectiveChannelRole":"member","channelAdminBasis":null,"canChangeChannelRole":true}]}
+    {"agents":[{"id":"a1","name":"Atlas \\"One\\"","activity":"online","activityDetail":""}],"humans":[{"id":"h1","serverId":"s1","serverName":"Server One","serverSlug":"server-one","name":"owner-handle","displayName":"Owner","description":"Owner description","avatarUrl":"\(avatarURL)","role":"owner","serverRole":"owner","channelRole":"admin","gravatarHash":"\(String(repeating: "a", count: 64))","effectiveChannelRole":"admin","channelAdminBasis":"server_role","canChangeChannelRole":false},{"id":"h2","serverId":"s1","serverName":"Server One","serverSlug":"server-one","name":"member-handle","displayName":null,"description":null,"avatarUrl":null,"role":"member","serverRole":"member","channelRole":"member","gravatarHash":"\(String(repeating: "b", count: 64))","effectiveChannelRole":"member","channelAdminBasis":null,"canChangeChannelRole":true}],"externalMembers":[]}
+    """)
+
+    // A Guest viewer publishes the bounded roster: no description, server
+    // metadata or role facts, but the display/avatar identity the channel needs.
+    let guestHuman = ChannelHumanRowDTO(
+        id: "h3", name: "guest-handle", displayName: "Guest",
+        avatarUrl: avatarURL, gravatarHash: String(repeating: "c", count: 64),
+        effectiveChannelRole: "member", canChangeChannelRole: false
+    )
+    #expect(ChannelMembersResponse(agents: [], humans: [guestHuman]).jsonBody.render() == """
+    {"agents":[],"humans":[{"id":"h3","name":"guest-handle","displayName":"Guest","avatarUrl":"\(avatarURL)","gravatarHash":"\(String(repeating: "c", count: 64))","effectiveChannelRole":"member","canChangeChannelRole":false}],"externalMembers":[]}
     """)
 
     #expect(ChannelRoleUpdateResponse(authorityRevision: 3).jsonBody.render() == #"{"ok":true,"authorityRevision":3}"#)
@@ -450,8 +469,13 @@ private func body(_ error: any DomainError) -> String {
     let members = try service.channelMembers(authorization: f.ownerAuthorization, serverId: f.serverId, channelId: f.channelId)
     let rendered = members.jsonBody.render()
     #expect(rendered.hasPrefix(#"{"agents":[{"id":"\#(f.agentId)","name":"atlas-007","activity":"offline","activityDetail":""}],"humans":["#))
-    #expect(rendered.contains(#""serverRole":"owner","effectiveChannelRole":"admin","channelAdminBasis":"server_role","canChangeChannelRole":false"#))
-    #expect(rendered.contains(#""serverRole":"member","effectiveChannelRole":"member","channelAdminBasis":null,"canChangeChannelRole":true"#))
+    #expect(rendered.contains(#""serverId":"\#(f.serverId)","serverName":"Assign 007","serverSlug":"assign-007""#))
+    #expect(rendered.contains(#""name":"assign-owner-007","displayName":null,"description":null,"avatarUrl":null"#))
+    #expect(rendered.contains(#""role":"owner","serverRole":"owner","channelRole":"member","gravatarHash":"#))
+    #expect(rendered.contains(#""effectiveChannelRole":"admin","channelAdminBasis":"server_role","canChangeChannelRole":false"#))
+    #expect(rendered.contains(#""role":"member","serverRole":"member","channelRole":"member","gravatarHash":"#))
+    #expect(rendered.contains(#""effectiveChannelRole":"member","channelAdminBasis":null,"canChangeChannelRole":true"#))
+    #expect(rendered.range(of: #""gravatarHash":"[0-9a-f]{64}""#, options: .regularExpression) != nil)
 
     let agents = try service.channelAgents(authorization: f.ownerAuthorization, serverId: f.serverId, channelId: f.channelId)
     #expect(agents.jsonBody.render() == """

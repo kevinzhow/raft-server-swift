@@ -594,26 +594,61 @@ public struct ManagedMCPAssignmentsService: Sendable {
                 }
             }
         }
-        let accounts = profiles.accounts
+        let accounts = Dictionary(uniqueKeysWithValues: profiles.accounts.values.map { ($0.id, $0) })
+        let server = oauth.serverProfile(id: serverId)
+        let guestViewer = viewerServerRole == "guest"
         let humans = rosterHumanIds.map { humanId -> ChannelHumanRowDTO in
+            let account = accounts[humanId]
             let targetServerRole = oauth.memberRole(serverId: serverId, userId: humanId) ?? "member"
             let isLocalMember = oauth.memberRole(serverId: serverId, userId: humanId) != nil
             let targetLocalRole = snapshot.channelHumanRoles["\(channelId)\n\(humanId)"]
-            let displayName = accounts.values.first { $0.id == humanId }?.name ?? humanId
+            let name = account?.name ?? humanId
+            let gravatarHash = Self.gravatarHash(email: account?.email)
+            // Pinned `routes/channels.ts` guest branch: the bounded roster prints
+            // the account display/avatar pair but no description, server metadata
+            // or role facts. Omitting the optional members keeps that boundary.
+            if guestViewer {
+                return ChannelHumanRowDTO(
+                    id: humanId,
+                    name: name,
+                    displayName: account?.displayName,
+                    avatarUrl: account?.avatarUrl,
+                    gravatarHash: gravatarHash,
+                    effectiveChannelRole: targetServerRole == "guest" ? "guest" : "member",
+                    canChangeChannelRole: false
+                )
+            }
             let basis: String? = targetLocalRole == "admin" ? "channel_role"
                 : ((targetServerRole == "owner" || targetServerRole == "admin") ? "server_role" : nil)
             let canChange = viewerIsChannelAdmin && isLocalMember && targetServerRole != "owner"
                 && targetServerRole != "admin" && humanId != userId
             return ChannelHumanRowDTO(
                 id: humanId,
-                name: displayName,
+                serverId: serverId,
+                serverName: server?.name ?? "",
+                serverSlug: server?.slug ?? "",
+                name: name,
+                displayName: account?.displayName,
+                description: account?.description,
+                avatarUrl: account?.avatarUrl,
+                role: targetServerRole,
                 serverRole: targetServerRole,
+                channelRole: targetLocalRole ?? "member",
+                gravatarHash: gravatarHash,
                 effectiveChannelRole: basis == nil ? "member" : "admin",
                 channelAdminBasis: basis,
                 canChangeChannelRole: canChange
             )
         }
         return ChannelMembersResponse(agents: agentRows, humans: humans)
+    }
+
+    /// Pinned `getChannelHumansRawForChannels` / `getServerMembers`: the
+    /// gravatar hash is SHA-256 of the stored email trimmed and lowercased.
+    private static func gravatarHash(email: String?) -> String {
+        AuthTokenCodec.sha256Hex(
+            (email ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
     }
 
     // MARK: - Human task routes

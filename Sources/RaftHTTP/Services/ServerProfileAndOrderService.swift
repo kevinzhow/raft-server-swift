@@ -375,6 +375,9 @@ public struct ServerProfileAndOrderService: Sendable {
         let userId = try requireUserWithCode(authorization)
         let role = try requireRole(serverId: serverId, userId: userId)
         let oauth = dependencies.oauth
+        let server = oauth.serverProfile(id: serverId)
+        let serverName = server?.name ?? ""
+        let serverSlug = server?.slug ?? ""
         let targetRole = oauth.memberRole(serverId: serverId, userId: memberId)
         if targetRole == nil {
             let removed = dependencies.channels.isMemberRemoved(serverId: serverId, userId: memberId)
@@ -383,12 +386,18 @@ public struct ServerProfileAndOrderService: Sendable {
             guard removed, canSee, let account else {
                 throw ServerProfileAndOrderError.userNotFound
             }
-            return .removed(
+            return .removed(ServerMemberProfileResponse.MemberFacts(
                 userId: memberId,
+                serverId: serverId,
+                serverName: serverName,
+                serverSlug: serverSlug,
                 name: account.name,
+                displayName: account.displayName,
+                description: account.description,
+                avatarUrl: account.avatarUrl,
                 email: account.email,
-                avatarUrl: account.avatarUrl
-            )
+                gravatarHash: Self.gravatarHash(email: account.email)
+            ))
         }
         let hiddenDirectory = dependencies.channels.hideHumans(serverId: serverId)
         let targetAccount = dependencies.profiles.account(userId: memberId)
@@ -409,13 +418,25 @@ public struct ServerProfileAndOrderService: Sendable {
         let createdAgents = oauth.serverAgents(serverId: serverId)
             .filter { !$0.deleted && $0.creatorUserId == memberId }
             .map {
-                ServerMemberProfileResponse.CreatedAgent(id: $0.id, name: $0.name, displayName: $0.displayName)
+                ServerMemberProfileResponse.CreatedAgent(
+                    id: $0.id, name: $0.name, displayName: $0.displayName,
+                    avatarUrl: $0.avatarUrl, runtime: $0.runtime, status: $0.status
+                )
             }
         return .current(
-            userId: memberId,
-            name: targetAccount?.name ?? "",
-            email: email,
-            avatarUrl: targetAccount?.avatarUrl,
+            ServerMemberProfileResponse.MemberFacts(
+                userId: memberId,
+                serverId: serverId,
+                serverName: serverName,
+                serverSlug: serverSlug,
+                name: targetAccount?.name ?? "",
+                displayName: targetAccount?.displayName,
+                description: targetAccount?.description,
+                avatarUrl: targetAccount?.avatarUrl,
+                email: email,
+                gravatarHash: Self.gravatarHash(email: targetAccount?.email)
+            ),
+            role: targetRole ?? "member",
             createdAgents: createdAgents
         )
     }
@@ -438,10 +459,13 @@ public struct ServerProfileAndOrderService: Sendable {
             let email: String? = (canSeeAllEmails || member.id == userId) ? account?.email : nil
             return ServerMemberListEntry(
                 userId: member.id,
-                role: member.role,
                 name: account?.name ?? "",
+                displayName: account?.displayName,
+                description: account?.description,
+                avatarUrl: account?.avatarUrl,
+                role: member.role,
                 email: email,
-                avatarUrl: account?.avatarUrl
+                gravatarHash: Self.gravatarHash(email: account?.email)
             )
         }
         return ServerMembersListResponse(members: rows)
@@ -458,11 +482,12 @@ public struct ServerProfileAndOrderService: Sendable {
         if dependencies.channels.hideHumans(serverId: serverId), role != "owner", role != "admin" {
             throw ServerProfileAndOrderError.memberGraphUnavailable
         }
-        let memberIds = oauth.memberIds(serverId: serverId)
+        let memberRoles = oauth.memberIdsWithRoles(serverId: serverId)
+        let memberIds = memberRoles.map(\.id)
         let agentIds = oauth.activeAgentIds(serverId: serverId)
-        var channels: [(id: String, name: String, humans: [String], agents: [String])] = []
+        var channels: [(id: String, name: String, type: String, humans: [String], agents: [String])] = []
         if let allChannelId = oauth.allChannelId(serverId: serverId) {
-            channels.append((allChannelId, "all", memberIds, agentIds))
+            channels.append((allChannelId, "all", "channel", memberIds, agentIds))
         }
         for channel in oauth.channelsForServer(serverId: serverId, userId: userId) {
             guard channel.type == "channel", channel.name != "all",
@@ -470,7 +495,7 @@ public struct ServerProfileAndOrderService: Sendable {
             else { continue }
             let humans = oauth.channelHumanIds(channelId: channel.id).filter { memberIds.contains($0) }
             let agents = oauth.channelAgentIds(channelId: channel.id).filter { agentIds.contains($0) }
-            channels.append((channel.id, channel.name, humans, agents))
+            channels.append((channel.id, channel.name, "channel", humans, agents))
         }
         var edges: [ServerMemberGraphResponse.Edge] = []
         var humanChannelIds: [String: [String]] = [:]
@@ -488,19 +513,46 @@ public struct ServerProfileAndOrderService: Sendable {
             channelRows.append(.init(
                 id: channel.id,
                 name: channel.name,
+                type: channel.type,
+                archivedAt: oauth.channelArchivedAt(id: channel.id).map(DateText.iso8601),
+                humanCount: channel.humans.count,
+                agentCount: channel.agents.count,
                 memberCount: channel.humans.count + channel.agents.count
             ))
         }
-        let humans = memberIds.map {
-            ServerMemberGraphResponse.Human(id: $0, channelIds: humanChannelIds[$0] ?? [])
+        let roles = Dictionary(uniqueKeysWithValues: memberRoles.map { ($0.id, $0.role) })
+        let humans = memberIds.map { memberId -> ServerMemberGraphResponse.Human in
+            let account = dependencies.profiles.account(userId: memberId)
+            return ServerMemberGraphResponse.Human(
+                id: memberId,
+                name: account?.name ?? memberId,
+                displayName: account?.displayName,
+                avatarUrl: account?.avatarUrl,
+                gravatarHash: Self.gravatarHash(email: account?.email),
+                role: roles[memberId] ?? "member",
+                channelIds: humanChannelIds[memberId] ?? []
+            )
         }
-        let agents = agentIds.map { agentId in
-            ServerMemberGraphResponse.Agent(
+        let agents = agentIds.map { agentId -> ServerMemberGraphResponse.Agent in
+            let agent = oauth.agentRuntimeInfo(id: agentId)
+            return ServerMemberGraphResponse.Agent(
                 id: agentId,
-                name: oauth.agentRuntimeInfo(id: agentId)?.name ?? "",
+                name: agent?.name ?? "",
+                displayName: agent.flatMap { $0.displayName.isEmpty ? nil : $0.displayName },
+                avatarUrl: agent?.avatarUrl,
+                status: agent?.status ?? "",
+                runtime: agent?.runtime ?? "",
                 channelIds: agentChannelIds[agentId] ?? []
             )
         }
         return ServerMemberGraphResponse(humans: humans, agents: agents, channels: channelRows, edges: edges)
+    }
+
+    /// Pinned `serverService.getServerMembers` / `getServerMemberProfile`: the
+    /// gravatar hash is SHA-256 of the stored email trimmed and lowercased.
+    private static func gravatarHash(email: String?) -> String {
+        AuthTokenCodec.sha256Hex(
+            (email ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
     }
 }
