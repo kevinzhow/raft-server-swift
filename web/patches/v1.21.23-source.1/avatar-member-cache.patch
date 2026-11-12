@@ -1,0 +1,456 @@
+diff --git a/packages/web/src/hooks/useChannelMembers.ts b/packages/web/src/hooks/useChannelMembers.ts
+index 269cae1..732eb8a 100644
+--- a/packages/web/src/hooks/useChannelMembers.ts
++++ b/packages/web/src/hooks/useChannelMembers.ts
+@@ -75,6 +75,18 @@ export type AddChannelMembersBatchResult = {
+ // removed as soon as the request settles so a socket/local invalidation still
+ // performs a fresh fetch.
+ const inFlightMemberRequests = new Map<string, Promise<ChannelMembersPayload>>();
++
++/**
++ * Drop the coalesced roster read for a channel so the next load issues a fresh
++ * GET. Invalidation must not be absorbed by a request that started before the
++ * change it is reacting to: the old response can land after the change (separate
++ * HTTP connections) and would otherwise become the final roster state with no
++ * further refetch. The per-hook request version already discards the old
++ * response when it arrives late.
++ */
++function invalidateChannelMemberRequest(channelId: string): void {
++  inFlightMemberRequests.delete(channelId);
++}
+ const EMPTY_CHANNEL_AGENTS: ChannelAgent[] = [];
+ const EMPTY_CHANNEL_HUMANS: ChannelHuman[] = [];
+ const EMPTY_CHANNEL_EXTERNAL_MEMBERS: ChannelExternalMember[] = [];
+@@ -179,6 +191,7 @@ export function useChannelMembers(channelId: string, { enabled = true }: { enabl
+     const socket = getSocket();
+     const handler = (data: { channelId: string }) => {
+       if (data.channelId === channelId) {
++        invalidateChannelMemberRequest(channelId);
+         loadMembers();
+       }
+     };
+@@ -192,6 +205,7 @@ export function useChannelMembers(channelId: string, { enabled = true }: { enabl
+     if (!enabled) return;
+     return subscribeChannelMembersChanged((changedChannelId) => {
+       if (changedChannelId === null || changedChannelId === channelId) {
++        invalidateChannelMemberRequest(channelId);
+         loadMembers();
+       }
+     });
+diff --git a/packages/web/src/store/authStore.ts b/packages/web/src/store/authStore.ts
+index cf9f660..cc229e5 100644
+--- a/packages/web/src/store/authStore.ts
++++ b/packages/web/src/store/authStore.ts
+@@ -20,6 +20,7 @@ import {
+   parseHostAccessTokenBindingStorage,
+ } from "../utils/hostAccessTokenSync";
+ import { clearSlockdevManualLogout, markSlockdevManualLogout } from "../utils/devMode";
++import { notifyAllChannelMembersChanged } from "./channelMemberEvents";
+ import { useServerStore } from "./serverStore";
+ import {
+   deriveInitialAuthRestoreState,
+@@ -339,6 +340,27 @@ async function restoreUserWithinLoadUserSpan(set: AuthStoreSet, get: AuthStoreGe
+   }
+ }
+ 
++/**
++ * A successful profile write (avatar included) is the authoritative identity for
++ * this user, but the mounted rosters are membership snapshots: the server roster
++ * still holds the pre-write row, and channel message rows resolve their sender
++ * avatar from the channel roster, which is only re-read on membership events. A
++ * profile edit from Settings or the member panel would therefore leave the old
++ * avatar in an already-open channel until a reload. Re-read the server roster and
++ * invalidate every channel roster so both stores converge on the written identity.
++ *
++ * Best-effort by design: the write already succeeded, so a roster refresh must
++ * never turn a successful avatar/profile update into a rejected action.
++ * `loadMembers` already records its own failure in `membersLoadError`, and
++ * channel listeners re-read independently.
++ */
++function refreshMemberRostersAfterProfileWrite(): void {
++  void useServerStore.getState().loadMembers().catch(() => {
++    // The write is authoritative; the roster will be re-read by the next event.
++  });
++  notifyAllChannelMembersChanged();
++}
++
+ export const useAuthStore = create<AuthState>((set, get) => ({
+   user: null,
+   accessToken: localStorage.getItem("slock_access_token"),
+@@ -560,6 +582,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
+     const { data } = await api.patch("/auth/me", fields);
+     seedMessageBodyFontSizeFromProfile(data.preferredMessageBodyFontSize);
+     set({ user: data });
++    refreshMemberRostersAfterProfileWrite();
+   },
+ 
+   uploadAvatar: async (file) => {
+@@ -571,6 +594,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
+     });
+     seedMessageBodyFontSizeFromProfile(data.preferredMessageBodyFontSize);
+     set({ user: data });
++    refreshMemberRostersAfterProfileWrite();
+   },
+ 
+   // ── Invite ──
+diff --git a/packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts b/packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts
+new file mode 100644
+index 0000000..420e6d7
+--- /dev/null
++++ b/packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts
+@@ -0,0 +1,191 @@
++import assert from "node:assert/strict";
++import "./helpers/domSetup";
++import api from "../src/api/client";
++import { useAuthStore } from "../src/store/authStore";
++import type { User } from "../src/store/authStore";
++import { subscribeChannelMembersChanged } from "../src/store/channelMemberEvents";
++import { useServerStore } from "../src/store/serverStore";
++
++const initialAuthState = useAuthStore.getInitialState();
++const realLoadMembers = useServerStore.getInitialState().loadMembers;
++
++const OLD_AVATAR_URL = `/api/avatars/users/${"a".repeat(32)}.webp`;
++const NEW_AVATAR_URL = `/api/avatars/users/${"b".repeat(32)}.webp`;
++const REPLACED_AVATAR_URL = `/api/avatars/users/${"c".repeat(32)}.webp`;
++
++function user(overrides: Partial<User> = {}): User {
++  return {
++    id: "avatar-user",
++    email: "avatar@example.com",
++    gravatarHash: "hash",
++    name: "avatar-user",
++    displayName: "Avatar User",
++    description: null,
++    avatarUrl: null,
++    emailVerified: true,
++    preferredLanguage: null,
++    preferredTimezone: null,
++    firstObservedTimezone: null,
++    firstObservedTimezoneAt: null,
++    lastObservedTimezone: null,
++    lastObservedTimezoneAt: null,
++    autoTranslationEnabled: false,
++    preferredTranslationMode: "off",
++    preferredTranslationDisplay: "translated",
++    preferredTimeFormat: null,
++    preferredMessageBodyFontSize: null,
++    referralSource: null,
++    referralSourceOther: null,
++    referralSourceSkippedAt: null,
++    ...overrides,
++  };
++}
++
++function avatarFile(): File {
++  return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "avatar.png", { type: "image/png" });
++}
++
++interface RosterInvalidationLog {
++  readonly serverReloads: () => number;
++  readonly channelReloads: () => number;
++  readonly channelIds: () => Array<string | null>;
++  unsubscribe(): void;
++}
++
++/**
++ * Installs the two effects the fix must have: a server roster re-read through the
++ * store action, and a broadcast on the channel-member invalidation channel that
++ * `useChannelMembers` subscribes to. The channel log uses the real subscription
++ * helper, so it also proves an already-open channel listener would re-read.
++ */
++function installRosterSpies(): RosterInvalidationLog {
++  let serverReloads = 0;
++  let channelReloads = 0;
++  const channelIds: Array<string | null> = [];
++  useServerStore.setState({
++    loadMembers: async () => {
++      serverReloads += 1;
++    },
++  } as never);
++  const unsubscribe = subscribeChannelMembersChanged((channelId) => {
++    channelReloads += 1;
++    channelIds.push(channelId);
++  });
++  return {
++    serverReloads: () => serverReloads,
++    channelReloads: () => channelReloads,
++    channelIds: () => channelIds,
++    unsubscribe,
++  };
++}
++
++test.afterEach(() => {
++  localStorage.clear();
++  useAuthStore.setState(initialAuthState, true);
++  useServerStore.setState({ loadMembers: realLoadMembers } as never);
++});
++
++test("a first avatar upload refreshes the server roster and every open channel roster", async () => {
++  useAuthStore.setState({ user: user({ avatarUrl: null }) });
++  const calls: Array<{ url: string; data: unknown }> = [];
++  vi.spyOn(api, "post").mockImplementation(async (url: string, data?: unknown) => {
++    calls.push({ url, data });
++    return { data: user({ avatarUrl: NEW_AVATAR_URL }) };
++  });
++  const spies = installRosterSpies();
++  try {
++    await useAuthStore.getState().uploadAvatar(avatarFile());
++
++    assert.equal(calls.length, 1);
++    assert.equal(calls[0].url, "/auth/me/avatar");
++    assert.equal(useAuthStore.getState().user?.avatarUrl, NEW_AVATAR_URL);
++    assert.equal(spies.serverReloads(), 1, "the server roster must be re-read after the write");
++    assert.deepEqual(spies.channelIds(), [null], "every channel roster must be invalidated");
++  } finally {
++    spies.unsubscribe();
++  }
++});
++
++test("replacing an existing avatar refreshes the rosters instead of leaving the old URL cached", async () => {
++  useAuthStore.setState({ user: user({ avatarUrl: OLD_AVATAR_URL }) });
++  vi.spyOn(api, "post").mockResolvedValue({ data: user({ avatarUrl: REPLACED_AVATAR_URL }) });
++  const spies = installRosterSpies();
++  try {
++    await useAuthStore.getState().uploadAvatar(avatarFile());
++
++    assert.equal(useAuthStore.getState().user?.avatarUrl, REPLACED_AVATAR_URL);
++    assert.notEqual(useAuthStore.getState().user?.avatarUrl, OLD_AVATAR_URL);
++    assert.equal(spies.serverReloads(), 1);
++    assert.equal(spies.channelReloads(), 1);
++  } finally {
++    spies.unsubscribe();
++  }
++});
++
++test("a successful profile update also refreshes the rosters", async () => {
++  useAuthStore.setState({ user: user({ displayName: "Before" }) });
++  vi.spyOn(api, "patch").mockResolvedValue({ data: user({ displayName: "After" }) });
++  const spies = installRosterSpies();
++  try {
++    await useAuthStore.getState().updateProfile({ displayName: "After" });
++
++    assert.equal(useAuthStore.getState().user?.displayName, "After");
++    assert.equal(spies.serverReloads(), 1);
++    assert.deepEqual(spies.channelIds(), [null]);
++  } finally {
++    spies.unsubscribe();
++  }
++});
++
++test("a failed avatar upload leaves both rosters untouched and still rejects", async () => {
++  const before = user({ avatarUrl: OLD_AVATAR_URL });
++  useAuthStore.setState({ user: before });
++  vi.spyOn(api, "post").mockRejectedValue(
++    Object.assign(new Error("Request failed"), { response: { status: 400, data: { error: "Only image files are allowed" } } }),
++  );
++  const spies = installRosterSpies();
++  try {
++    await assert.rejects(useAuthStore.getState().uploadAvatar(avatarFile()));
++    assert.equal(spies.serverReloads(), 0, "a rejected write must not invalidate caches");
++    assert.equal(spies.channelReloads(), 0);
++    assert.equal(useAuthStore.getState().user?.avatarUrl, OLD_AVATAR_URL);
++  } finally {
++    spies.unsubscribe();
++  }
++});
++
++test("a failed profile update leaves both rosters untouched and still rejects", async () => {
++  const before = user({ displayName: "Before" });
++  useAuthStore.setState({ user: before });
++  vi.spyOn(api, "patch").mockRejectedValue(new Error("Failed to update profile"));
++  const spies = installRosterSpies();
++  try {
++    await assert.rejects(useAuthStore.getState().updateProfile({ displayName: "Nope" }));
++    assert.equal(spies.serverReloads(), 0);
++    assert.equal(spies.channelReloads(), 0);
++    assert.equal(useAuthStore.getState().user?.displayName, "Before");
++  } finally {
++    spies.unsubscribe();
++  }
++});
++
++test("a roster refresh failure never turns a successful avatar upload into a rejection", async () => {
++  useAuthStore.setState({ user: user({ avatarUrl: null }) });
++  let serverReloads = 0;
++  useServerStore.setState({
++    loadMembers: async () => {
++      serverReloads += 1;
++      throw new Error("members failed to load");
++    },
++  } as never);
++  vi.spyOn(api, "post").mockResolvedValue({ data: user({ avatarUrl: NEW_AVATAR_URL }) });
++  const unsubscribe = subscribeChannelMembersChanged(() => {});
++  try {
++    await assert.doesNotReject(useAuthStore.getState().uploadAvatar(avatarFile()));
++
++    assert.equal(serverReloads, 1);
++    assert.equal(useAuthStore.getState().user?.avatarUrl, NEW_AVATAR_URL);
++  } finally {
++    unsubscribe();
++  }
++});
+diff --git a/packages/web/tests/useChannelMembersAvatarRace.behavior.test.tsx b/packages/web/tests/useChannelMembersAvatarRace.behavior.test.tsx
+new file mode 100644
+index 0000000..0fff6b0
+--- /dev/null
++++ b/packages/web/tests/useChannelMembersAvatarRace.behavior.test.tsx
+@@ -0,0 +1,158 @@
++import assert from "node:assert/strict";
++import "./helpers/domSetup";
++import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
++import api from "../src/api/client";
++import { useAuthStore } from "../src/store/authStore";
++import type { User } from "../src/store/authStore";
++import { useChannelMembers } from "../src/hooks/useChannelMembers";
++import { useServerStore } from "../src/store/serverStore";
++import { notifyAllChannelMembersChanged } from "../src/store/channelMemberEvents";
++
++const initialAuthState = useAuthStore.getInitialState();
++const realLoadMembers = useServerStore.getInitialState().loadMembers;
++
++const OLD_AVATAR_URL = `/api/avatars/users/${"a".repeat(32)}.webp`;
++const NEW_AVATAR_URL = `/api/avatars/users/${"b".repeat(32)}.webp`;
++
++function user(overrides: Partial<User> = {}): User {
++  return {
++    id: "self-user",
++    email: "self@example.com",
++    gravatarHash: "hash",
++    name: "self-user",
++    displayName: "Self User",
++    description: null,
++    avatarUrl: null,
++    emailVerified: true,
++    preferredLanguage: null,
++    preferredTimezone: null,
++    firstObservedTimezone: null,
++    firstObservedTimezoneAt: null,
++    lastObservedTimezone: null,
++    lastObservedTimezoneAt: null,
++    autoTranslationEnabled: false,
++    preferredTranslationMode: "off",
++    preferredTranslationDisplay: "translated",
++    preferredTimeFormat: null,
++    preferredMessageBodyFontSize: null,
++    referralSource: null,
++    referralSourceOther: null,
++    referralSourceSkippedAt: null,
++    ...overrides,
++  };
++}
++
++function membersPayload(avatarUrl: string) {
++  return {
++    data: {
++      agents: [],
++      humans: [{ id: "self-user", name: "Self User", avatarUrl }],
++      externalMembers: [],
++    },
++  };
++}
++
++function deferred<T>() {
++  let resolve!: (value: T) => void;
++  const promise = new Promise<T>((settle) => {
++    resolve = settle;
++  });
++  return { promise, resolve };
++}
++
++function avatarFile(): File {
++  return new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "avatar.png", { type: "image/png" });
++}
++
++test.afterEach(() => {
++  cleanup();
++  localStorage.clear();
++  useAuthStore.setState(initialAuthState, true);
++  useServerStore.setState({ loadMembers: realLoadMembers } as never);
++});
++
++/**
++ * A profile write must not be absorbed by a roster GET that started before it.
++ *
++ * `requestChannelMembers` coalesces concurrent reads per channel, so a roster
++ * request already on the wire when the avatar upload succeeds would otherwise
++ * be reused by the invalidation and its pre-upload avatar would become the
++ * final state, with no further refetch. The server's response for that old GET
++ * can arrive after the upload response (separate HTTP connections), so this is
++ * a real ordering, not a synthetic one: hold the old GET pending, let the upload
++ * succeed, then deliver the old response.
++ */
++test("an avatar write during an in-flight channel roster read still ends on the new avatar", async () => {
++  useAuthStore.setState({ user: user({ avatarUrl: OLD_AVATAR_URL }) });
++
++  const oldRoster = deferred<ReturnType<typeof membersPayload>>();
++  const freshRoster = deferred<ReturnType<typeof membersPayload>>();
++  const rosterCalls: string[] = [];
++  vi.spyOn(api, "get").mockImplementation((url: string) => {
++    if (url === "/channels/channel-1/members") {
++      rosterCalls.push(url);
++      return (rosterCalls.length === 1 ? oldRoster.promise : freshRoster.promise) as never;
++    }
++    throw new Error(`unexpected GET ${url}`);
++  });
++  vi.spyOn(api, "post").mockResolvedValue({ data: user({ avatarUrl: NEW_AVATAR_URL }) });
++  // Server roster refresh is not the subject here; keep it off the network.
++  let serverRosterReloads = 0;
++  useServerStore.setState({
++    loadMembers: async () => {
++      serverRosterReloads += 1;
++    },
++  } as never);
++
++  const { result } = renderHook(() => useChannelMembers("channel-1"));
++  await waitFor(() => assert.equal(rosterCalls.length, 1, "the initial roster read must be in flight"));
++
++  // The upload succeeds while the old roster GET is still pending.
++  await act(async () => {
++    await useAuthStore.getState().uploadAvatar(avatarFile());
++  });
++  assert.equal(serverRosterReloads, 1, "the successful write must invalidate the server roster");
++
++  // The old response lands after the upload (independent HTTP connection).
++  await act(async () => {
++    oldRoster.resolve(membersPayload(OLD_AVATAR_URL));
++  });
++  // A correct invalidation starts a fresh read; release its response too.
++  await act(async () => {
++    if (rosterCalls.length > 1) {
++      freshRoster.resolve(membersPayload(NEW_AVATAR_URL));
++    }
++  });
++
++  assert.equal(rosterCalls.length, 2, "the write must trigger a fresh roster GET, not reuse the in-flight one");
++  await waitFor(() => {
++    assert.equal(result.current.channelHumans[0]?.avatarUrl, NEW_AVATAR_URL);
++  });
++});
++
++test("a channel-members invalidation during an in-flight read also refetches fresh", async () => {
++  const oldRoster = deferred<ReturnType<typeof membersPayload>>();
++  const freshRoster = deferred<ReturnType<typeof membersPayload>>();
++  let rosterCalls = 0;
++  vi.spyOn(api, "get").mockImplementation((url: string) => {
++    if (url === "/channels/channel-2/members") {
++      rosterCalls += 1;
++      return (rosterCalls === 1 ? oldRoster.promise : freshRoster.promise) as never;
++    }
++    throw new Error(`unexpected GET ${url}`);
++  });
++
++  const { result } = renderHook(() => useChannelMembers("channel-2"));
++  await waitFor(() => assert.equal(rosterCalls, 1));
++
++  act(() => notifyAllChannelMembersChanged());
++  await act(async () => {
++    oldRoster.resolve(membersPayload(OLD_AVATAR_URL));
++  });
++  await act(async () => {
++    if (rosterCalls > 1) freshRoster.resolve(membersPayload(NEW_AVATAR_URL));
++  });
++
++  assert.equal(rosterCalls, 2);
++  await waitFor(() => assert.equal(result.current.channelHumans[0]?.avatarUrl, NEW_AVATAR_URL));
++});
