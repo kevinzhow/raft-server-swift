@@ -585,62 +585,158 @@ public struct ManagedMCPAssignmentsService: Sendable {
         let viewerServerRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
         let viewerLocalRole = snapshot.channelHumanRoles["\(channelId)\n\(userId)"]
         let viewerIsChannelAdmin = viewerLocalRole == "admin" || viewerServerRole == "owner" || viewerServerRole == "admin"
-        var rosterHumanIds = oauth.channelHumanIds(channelId: scopeChannelId)
-        if let canonical = snapshot.jointProjections.first(where: { $0.localChannelId == scopeChannelId })?.canonicalChannelId {
-            var seen = Set(rosterHumanIds)
-            for link in snapshot.jointProjections where link.canonicalChannelId == canonical {
-                for humanId in oauth.channelHumanIds(channelId: link.localChannelId) where seen.insert(humanId).inserted {
-                    rosterHumanIds.append(humanId)
+        // Pinned `isEnabledAllChannel`: only an enabled `channel`-type #all has
+        // the virtual audience; a hidden #all (type private) falls back to its
+        // explicit membership rows.
+        // Threads resolve their roster through the parent channel, including
+        // the virtual #all audience (`channelService.ts:5897-5921`).
+        let audienceChannelId = scopeChannelId
+        let allChannel = oauth.allChannelId(serverId: serverId) == audienceChannelId
+            && oauth.channelType(id: audienceChannelId) == "channel"
+        let jointCanonical = snapshot.jointProjections
+            .first(where: { $0.localChannelId == scopeChannelId })?.canonicalChannelId
+        /// One roster membership row and the server/channel projection that owns
+        /// it. A joint roster merges peer projections, so every row's server
+        /// metadata and stored channel role come from its own projection rather
+        /// than from the server in the request header.
+        struct RosterEntry {
+            let humanId: String
+            let ownerServerId: String
+            let ownerChannelId: String
+        }
+        var roster: [RosterEntry] = []
+        var rosterIndexByHuman: [String: Int] = [:]
+        /// Every server a joint-channel human participates through, in first-seen
+        /// order; the pinned order (viewed first, then name/id) applies later.
+        var serversByHuman: [String: [ChannelMemberServerDTO]] = [:]
+        func recordServer(_ humanId: String, ownerServerId: String) {
+            guard let server = oauth.serverProfile(id: ownerServerId) else { return }
+            var servers = serversByHuman[humanId] ?? []
+            if !servers.contains(where: { $0.id == server.id }) {
+                servers.append(ChannelMemberServerDTO(id: server.id, name: server.name, slug: server.slug))
+                serversByHuman[humanId] = servers
+            }
+        }
+        /// Merge one projection's humans. A duplicate identity keeps the first
+        /// published position and the last projection's ownership, which is the
+        /// pinned joint merge: peer projections first, the viewed projection
+        /// last, so the viewed projection owns a shared identity's final facts.
+        func mergeProjection(_ projectionChannelId: String, ownerServerId: String) {
+            for humanId in oauth.channelHumanIds(channelId: projectionChannelId) {
+                let entry = RosterEntry(
+                    humanId: humanId, ownerServerId: ownerServerId, ownerChannelId: projectionChannelId
+                )
+                // Pinned `getChannelHumansRawForChannels` inner-joins the owning
+                // projection's server_members before `humanServersById` merges
+                // rows, so a stale channel-membership row contributes neither a
+                // roster row nor a `servers` entry for that server.
+                let ownerMembership = oauth.memberRole(
+                    serverId: ownerServerId, userId: humanId
+                )
+                if jointCanonical != nil, ownerMembership != nil {
+                    recordServer(humanId, ownerServerId: ownerServerId)
+                }
+                if let index = rosterIndexByHuman[humanId] {
+                    roster[index] = entry
+                } else {
+                    rosterIndexByHuman[humanId] = roster.count
+                    roster.append(entry)
                 }
             }
         }
+        if allChannel {
+            // Pinned `getVirtualAllChannelMembers` -> `getServerAudienceHumans`
+            // (`channelService.ts:5757-5802,5919-5921`): the non-Guest server
+            // audience. Its select has no `channelRole`, and
+            // `routes/channels.ts:3606-3621` only spreads that row before adding
+            // the role triple, so an #all human row publishes no `channelRole`
+            // member at all (absent, not null).
+            for member in oauth.memberIdsWithRoles(serverId: serverId) where member.role != "guest" {
+                rosterIndexByHuman[member.id] = roster.count
+                roster.append(RosterEntry(
+                    humanId: member.id, ownerServerId: serverId, ownerChannelId: audienceChannelId
+                ))
+            }
+        } else if let jointCanonical {
+            // Pinned `getChannelMembers` joint order: every peer projection,
+            // then the viewed projection. The viewed projection wins a duplicate
+            // identity's final server/channel facts.
+            for link in snapshot.jointProjections
+            where link.canonicalChannelId == jointCanonical && link.localChannelId != scopeChannelId {
+                mergeProjection(link.localChannelId, ownerServerId: link.serverId)
+            }
+            mergeProjection(scopeChannelId, ownerServerId: serverId)
+        } else {
+            mergeProjection(scopeChannelId, ownerServerId: serverId)
+        }
         let accounts = Dictionary(uniqueKeysWithValues: profiles.accounts.values.map { ($0.id, $0) })
-        let server = oauth.serverProfile(id: serverId)
         let guestViewer = viewerServerRole == "guest"
-        let humans = rosterHumanIds.map { humanId -> ChannelHumanRowDTO in
-            let account = accounts[humanId]
-            let targetServerRole = oauth.memberRole(serverId: serverId, userId: humanId) ?? "member"
-            let isLocalMember = oauth.memberRole(serverId: serverId, userId: humanId) != nil
-            let targetLocalRole = snapshot.channelHumanRoles["\(channelId)\n\(humanId)"]
-            let name = account?.name ?? humanId
-            let gravatarHash = Self.gravatarHash(email: account?.email)
+        let humans = roster.compactMap { entry -> ChannelHumanRowDTO? in
+            // Pinned `getChannelHumansRawForChannels` inner-joins `users` and the
+            // owning projection's `server_members`: a channel membership row
+            // without an account row or without a current server membership
+            // publishes no roster row (never an invented profile/role).
+            guard let account = accounts[entry.humanId],
+                  let targetServerRole = oauth.memberRole(serverId: entry.ownerServerId, userId: entry.humanId)
+            else { return nil }
             // Pinned `routes/channels.ts` guest branch: the bounded roster prints
             // the account display/avatar pair but no description, server metadata
             // or role facts. Omitting the optional members keeps that boundary.
             if guestViewer {
                 return ChannelHumanRowDTO(
-                    id: humanId,
-                    name: name,
-                    displayName: account?.displayName,
-                    avatarUrl: account?.avatarUrl,
-                    gravatarHash: gravatarHash,
+                    id: entry.humanId,
+                    name: account.name,
+                    displayName: account.displayName,
+                    avatarUrl: account.avatarUrl,
+                    gravatarHash: Self.gravatarHash(email: account.email),
                     effectiveChannelRole: targetServerRole == "guest" ? "guest" : "member",
                     canChangeChannelRole: false
                 )
             }
-            let basis: String? = targetLocalRole == "admin" ? "channel_role"
+            let ownerServer = oauth.serverProfile(id: entry.ownerServerId)
+            let targetChannelRole: String? = allChannel
+                ? nil
+                : (snapshot.channelHumanRoles["\(entry.ownerChannelId)\n\(entry.humanId)"] ?? "member")
+            // Pinned `routes/channels.ts:3600-3604,3622-3628`: a joint viewer may
+            // only target humans whose membership row is on the viewed channel;
+            // a peer projection's member keeps `canChangeChannelRole: false`.
+            // Non-joint channels have no per-channel restriction.
+            let isRoleTarget = entry.ownerChannelId == scopeChannelId
+            let basis: String? = targetChannelRole == "admin" ? "channel_role"
                 : ((targetServerRole == "owner" || targetServerRole == "admin") ? "server_role" : nil)
-            let canChange = viewerIsChannelAdmin && isLocalMember && targetServerRole != "owner"
-                && targetServerRole != "admin" && humanId != userId
+            let canChange = viewerIsChannelAdmin && isRoleTarget && targetServerRole != "owner"
+                && targetServerRole != "admin" && entry.humanId != userId
+            let servers: [ChannelMemberServerDTO]? = jointCanonical == nil
+                ? nil
+                : (serversByHuman[entry.humanId] ?? []).sorted { lhs, rhs in
+                    if lhs.id == serverId { return rhs.id != serverId }
+                    if rhs.id == serverId { return false }
+                    if lhs.name != rhs.name { return lhs.name < rhs.name }
+                    return lhs.id < rhs.id
+                }
             return ChannelHumanRowDTO(
-                id: humanId,
-                serverId: serverId,
-                serverName: server?.name ?? "",
-                serverSlug: server?.slug ?? "",
-                name: name,
-                displayName: account?.displayName,
-                description: account?.description,
-                avatarUrl: account?.avatarUrl,
+                id: entry.humanId,
+                serverId: entry.ownerServerId,
+                serverName: ownerServer?.name ?? "",
+                serverSlug: ownerServer?.slug ?? "",
+                name: account.name,
+                displayName: account.displayName,
+                description: account.description,
+                avatarUrl: account.avatarUrl,
                 role: targetServerRole,
                 serverRole: targetServerRole,
-                channelRole: targetLocalRole ?? "member",
-                gravatarHash: gravatarHash,
+                channelRole: targetChannelRole,
+                gravatarHash: Self.gravatarHash(email: account.email),
+                servers: servers,
+                virtualAllAudience: allChannel,
                 effectiveChannelRole: basis == nil ? "member" : "admin",
                 channelAdminBasis: basis,
                 canChangeChannelRole: canChange
             )
         }
-        return ChannelMembersResponse(agents: agentRows, humans: humans)
+        return ChannelMembersResponse(
+            agents: agentRows, humans: humans, externalMembers: guestViewer ? nil : []
+        )
     }
 
     /// Pinned `getChannelHumansRawForChannels` / `getServerMembers`: the

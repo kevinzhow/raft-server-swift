@@ -379,6 +379,14 @@ public struct ServerProfileAndOrderService: Sendable {
         let serverName = server?.name ?? ""
         let serverSlug = server?.slug ?? ""
         let targetRole = oauth.memberRole(serverId: serverId, userId: memberId)
+        let createdAgents = oauth.serverAgents(serverId: serverId)
+            .filter { !$0.deleted && $0.creatorUserId == memberId }
+            .map {
+                ServerMemberProfileResponse.CreatedAgent(
+                    id: $0.id, name: $0.name, displayName: $0.displayName,
+                    avatarUrl: $0.avatarUrl, runtime: $0.runtime, status: $0.status
+                )
+            }
         if targetRole == nil {
             let removed = dependencies.channels.isMemberRemoved(serverId: serverId, userId: memberId)
             let account = dependencies.profiles.account(userId: memberId)
@@ -386,6 +394,8 @@ public struct ServerProfileAndOrderService: Sendable {
             guard removed, canSee, let account else {
                 throw ServerProfileAndOrderError.userNotFound
             }
+            let membershipStatus = dependencies.channels
+                .serverMemberStatuses["\(serverId)\n\(memberId)"] ?? "removed"
             return .removed(ServerMemberProfileResponse.MemberFacts(
                 userId: memberId,
                 serverId: serverId,
@@ -397,7 +407,7 @@ public struct ServerProfileAndOrderService: Sendable {
                 avatarUrl: account.avatarUrl,
                 email: account.email,
                 gravatarHash: Self.gravatarHash(email: account.email)
-            ))
+            ), membershipStatus: membershipStatus, createdAgents: createdAgents)
         }
         let hiddenDirectory = dependencies.channels.hideHumans(serverId: serverId)
         let targetAccount = dependencies.profiles.account(userId: memberId)
@@ -415,14 +425,6 @@ public struct ServerProfileAndOrderService: Sendable {
             }
         }
         let email: String? = (isAdmin || memberId == userId) ? targetAccount?.email : nil
-        let createdAgents = oauth.serverAgents(serverId: serverId)
-            .filter { !$0.deleted && $0.creatorUserId == memberId }
-            .map {
-                ServerMemberProfileResponse.CreatedAgent(
-                    id: $0.id, name: $0.name, displayName: $0.displayName,
-                    avatarUrl: $0.avatarUrl, runtime: $0.runtime, status: $0.status
-                )
-            }
         return .current(
             ServerMemberProfileResponse.MemberFacts(
                 userId: memberId,

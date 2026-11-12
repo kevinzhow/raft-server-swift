@@ -111,7 +111,7 @@ private func body(_ error: any DomainError) -> String {
         ),
     ]
     let avatarURL = "/api/avatars/users/0123456789abcdef0123456789abcdef.webp"
-    #expect(ChannelMembersResponse(agents: [agent], humans: humans).jsonBody.render() == """
+    #expect(ChannelMembersResponse(agents: [agent], humans: humans, externalMembers: []).jsonBody.render() == """
     {"agents":[{"id":"a1","name":"Atlas \\"One\\"","activity":"online","activityDetail":""}],"humans":[{"id":"h1","serverId":"s1","serverName":"Server One","serverSlug":"server-one","name":"owner-handle","displayName":"Owner","description":"Owner description","avatarUrl":"\(avatarURL)","role":"owner","serverRole":"owner","channelRole":"admin","gravatarHash":"\(String(repeating: "a", count: 64))","effectiveChannelRole":"admin","channelAdminBasis":"server_role","canChangeChannelRole":false},{"id":"h2","serverId":"s1","serverName":"Server One","serverSlug":"server-one","name":"member-handle","displayName":null,"description":null,"avatarUrl":null,"role":"member","serverRole":"member","channelRole":"member","gravatarHash":"\(String(repeating: "b", count: 64))","effectiveChannelRole":"member","channelAdminBasis":null,"canChangeChannelRole":true}],"externalMembers":[]}
     """)
 
@@ -123,7 +123,7 @@ private func body(_ error: any DomainError) -> String {
         effectiveChannelRole: "member", canChangeChannelRole: false
     )
     #expect(ChannelMembersResponse(agents: [], humans: [guestHuman]).jsonBody.render() == """
-    {"agents":[],"humans":[{"id":"h3","name":"guest-handle","displayName":"Guest","avatarUrl":"\(avatarURL)","gravatarHash":"\(String(repeating: "c", count: 64))","effectiveChannelRole":"member","canChangeChannelRole":false}],"externalMembers":[]}
+    {"agents":[],"humans":[{"id":"h3","name":"guest-handle","displayName":"Guest","avatarUrl":"\(avatarURL)","gravatarHash":"\(String(repeating: "c", count: 64))","effectiveChannelRole":"member","canChangeChannelRole":false}]}
     """)
 
     #expect(ChannelRoleUpdateResponse(authorityRevision: 3).jsonBody.render() == #"{"ok":true,"authorityRevision":3}"#)

@@ -575,35 +575,38 @@ public enum ServerMemberProfileResponse: Sendable, Equatable, JSONBodyConvertibl
         }
     }
 
-    case removed(MemberFacts)
+    case removed(MemberFacts, membershipStatus: String, createdAgents: [CreatedAgent])
     case current(MemberFacts, role: String, createdAgents: [CreatedAgent])
 
     public var jsonBody: OrderedJSON {
         switch self {
-        case .removed(let facts):
-            // The ledger records only that the membership was removed; it does
-            // not retain the departure reason, so the published status stays
-            // the pinned fallback rather than an invented value.
+        case .removed(let facts, let membershipStatus, let createdAgents):
+            // The ledger retains the departure status("left" or "removed"); the
+            // caller passes it, defaulting to the pinned "removed" only when the
+            // status row is absent.
             var fields = facts.jsonFields
             fields.append(OrderedJSONField("role", .null))
-            fields.append(OrderedJSONField("membershipStatus", "removed"))
+            fields.append(OrderedJSONField("membershipStatus", membershipStatus))
+            fields.append(OrderedJSONField("createdAgents", .array(createdAgents.map(Self.createdAgent))))
             return .object(fields)
         case .current(let facts, let role, let createdAgents):
             var fields = facts.jsonFields
             fields.append(OrderedJSONField("role", role))
             fields.append(OrderedJSONField("membershipStatus", "active"))
-            fields.append(OrderedJSONField("createdAgents", .array(createdAgents.map { agent in
-                .object([
-                    OrderedJSONField("id", agent.id),
-                    OrderedJSONField("name", agent.name),
-                    OrderedJSONField("displayName", agent.displayName),
-                    OrderedJSONField("avatarUrl", optional: agent.avatarUrl),
-                    OrderedJSONField("runtime", agent.runtime),
-                    OrderedJSONField("status", agent.status),
-                ])
-            })))
+            fields.append(OrderedJSONField("createdAgents", .array(createdAgents.map(Self.createdAgent))))
             return .object(fields)
         }
+    }
+
+    private static func createdAgent(_ agent: CreatedAgent) -> OrderedJSON {
+        .object([
+            OrderedJSONField("id", agent.id),
+            OrderedJSONField("name", agent.name),
+            OrderedJSONField("displayName", agent.displayName),
+            OrderedJSONField("avatarUrl", optional: agent.avatarUrl),
+            OrderedJSONField("runtime", agent.runtime),
+            OrderedJSONField("status", agent.status),
+        ])
     }
 }
 

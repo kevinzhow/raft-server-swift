@@ -260,9 +260,37 @@ public struct ChannelAgentsResponse: JSONBodyConvertible, Sendable, Equatable {
 ///
 /// A Guest viewer receives the bounded roster (`id`, `name`, `displayName`,
 /// `avatarUrl`, `gravatarHash`, `effectiveChannelRole`, `canChangeChannelRole`);
-/// the absent optional members are omitted rather than published as null. The
-/// profile fields the account row carries are the Web's message-author identity
-/// authority (`ChatPanel.memberById` overlays the server roster with this row).
+/// the absent description/server/role members are omitted. `displayName` and
+/// `avatarUrl` always publish (JSON null when absent), as the pinned guest
+/// branch does. A joint row additionally publishes `servers` between
+/// `gravatarHash` and the role triple (`channelService.ts:5955-6034`,
+/// `routes/channels.ts:3606-3621`). An enabled virtual `#all` audience row has no
+/// stored `channelRole`: its `gravatarHash` precedes `serverRole`, matching
+/// `getServerAudienceHumans` + the role projection. The profile fields the
+/// account row carries are the Web's message-author identity authority
+/// (`ChatPanel.memberById` overlays the server roster with this row).
+/// One server a joint-channel human participates through, viewed server first
+/// then by name/id (pinned `orderChannelMemberServers`).
+public struct ChannelMemberServerDTO: Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var slug: String
+
+    public init(id: String, name: String, slug: String) {
+        self.id = id
+        self.name = name
+        self.slug = slug
+    }
+
+    var json: OrderedJSON {
+        .object([
+            OrderedJSONField("id", id),
+            OrderedJSONField("name", name),
+            OrderedJSONField("slug", slug),
+        ])
+    }
+}
+
 public struct ChannelHumanRowDTO: Sendable, Equatable {
     public var id: String
     public var serverId: String?
@@ -276,6 +304,11 @@ public struct ChannelHumanRowDTO: Sendable, Equatable {
     public var serverRole: String?
     public var channelRole: String?
     public var gravatarHash: String
+    /// Joint-channel projections only; nil for ordinary channels and `#all`.
+    public var servers: [ChannelMemberServerDTO]?
+    /// The enabled virtual `#all` audience row order has no `channelRole` and
+    /// places `gravatarHash` before `serverRole`.
+    public var virtualAllAudience: Bool
     public var effectiveChannelRole: String
     public var channelAdminBasis: String?
     public var canChangeChannelRole: Bool
@@ -293,6 +326,8 @@ public struct ChannelHumanRowDTO: Sendable, Equatable {
         serverRole: String? = nil,
         channelRole: String? = nil,
         gravatarHash: String,
+        servers: [ChannelMemberServerDTO]? = nil,
+        virtualAllAudience: Bool = false,
         effectiveChannelRole: String,
         channelAdminBasis: String? = nil,
         canChangeChannelRole: Bool
@@ -309,6 +344,8 @@ public struct ChannelHumanRowDTO: Sendable, Equatable {
         self.serverRole = serverRole
         self.channelRole = channelRole
         self.gravatarHash = gravatarHash
+        self.servers = servers
+        self.virtualAllAudience = virtualAllAudience
         self.effectiveChannelRole = effectiveChannelRole
         self.channelAdminBasis = channelAdminBasis
         self.canChangeChannelRole = canChangeChannelRole
@@ -331,9 +368,19 @@ public struct ChannelHumanRowDTO: Sendable, Equatable {
         }
         body.append("avatarUrl", optional: avatarUrl)
         if let role { body.append("role", role) }
-        if let serverRole { body.append("serverRole", serverRole) }
-        if let channelRole { body.append("channelRole", channelRole) }
-        body.append("gravatarHash", gravatarHash)
+        if virtualAllAudience {
+            // Pinned `getServerAudienceHumans` row: role, gravatarHash, then the
+            // projectMemberRole additions; no channelRole member exists.
+            body.append("gravatarHash", gravatarHash)
+            if let serverRole { body.append("serverRole", serverRole) }
+        } else {
+            if let serverRole { body.append("serverRole", serverRole) }
+            if let channelRole { body.append("channelRole", channelRole) }
+            body.append("gravatarHash", gravatarHash)
+            if let servers {
+                body.append("servers", .array(servers.map(\.json)))
+            }
+        }
         body.append("effectiveChannelRole", effectiveChannelRole)
         if serverId != nil {
             body.append("channelAdminBasis", optional: channelAdminBasis)
@@ -343,21 +390,23 @@ public struct ChannelHumanRowDTO: Sendable, Equatable {
     }
 }
 
-/// `200` body of `GET /api/channels/:channelId/members`: `agents`, `humans`,
-/// `externalMembers`.
+/// `200` body of `GET /api/channels/:channelId/members`: `agents`, `humans`
+/// and, for a non-Guest viewer, `externalMembers`.
 ///
-/// The pinned response always carries `externalMembers`; the Slack external
+/// The pinned non-Guest response carries `externalMembers`; the Slack external
 /// member projection is not ported (see `docs/DEVIATIONS.md`), so this
-/// deployment publishes the empty array.
+/// deployment publishes the empty array. The pinned Guest branch answers only
+/// `{agents, humans}` (`routes/channels.ts:3631-3655`), so a Guest response
+/// omits the key entirely.
 public struct ChannelMembersResponse: JSONBodyConvertible, Sendable, Equatable {
     public var agents: [ChannelAgentRowDTO]
     public var humans: [ChannelHumanRowDTO]
-    public var externalMembers: [OrderedJSON]
+    public var externalMembers: [OrderedJSON]?
 
     public init(
         agents: [ChannelAgentRowDTO],
         humans: [ChannelHumanRowDTO],
-        externalMembers: [OrderedJSON] = []
+        externalMembers: [OrderedJSON]? = nil
     ) {
         self.agents = agents
         self.humans = humans
@@ -365,11 +414,11 @@ public struct ChannelMembersResponse: JSONBodyConvertible, Sendable, Equatable {
     }
 
     public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("agents", .array(agents.map(\.json))),
-            OrderedJSONField("humans", .array(humans.map(\.json))),
-            OrderedJSONField("externalMembers", .array(externalMembers)),
-        ])
+        var body = OrderedJSONObject()
+        body.append("agents", .array(agents.map(\.json)))
+        body.append("humans", .array(humans.map(\.json)))
+        if let externalMembers { body.append("externalMembers", .array(externalMembers)) }
+        return body.json
     }
 }
 
