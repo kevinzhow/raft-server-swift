@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Complete route inventory diff: upstream Express server -> Swift Vapor port.
+"""Static route inventory candidates: upstream Express server -> Swift Vapor port.
 
 The upstream half parses `packages/server/src/app.ts` mounts plus every
 `routes/*.ts` router registration (including nested mounts, factory routers and
@@ -16,6 +16,12 @@ Usage:
   python3 scripts/route_inventory.py --write docs/route-inventory.md
   python3 scripts/route_inventory.py --check
   python3 scripts/route_inventory.py --swift-dump /tmp/swift-routes.tsv
+  python3 scripts/route_inventory.py --upstream-only --json-out /data/entries.json
+
+JSON preserves raw registrations and source locations, including unresolved
+candidates. It explicitly excludes any completeness or behavioral parity claim.
+`--upstream-only` never invokes Swift. The normal Markdown comparison remains a
+normalized shape comparison; it is not a parameter-domain or behavior check.
 
 Exit status: 0 = report generated (or `--check` matched), 1 = `--check` drift or
 unparsable input, 2 = usage/IO error.
@@ -24,18 +30,20 @@ unparsable input, 2 = usage/IO error.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 DEFAULT_UPSTREAM = "/mnt/data/tmp/grok/raft-source-v1.21.23"
 DEFAULT_SWIFT = "/mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift"
-METHODS = ("get", "post", "put", "patch", "delete", "all")
-HTTP_METHODS = {"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH", "delete": "DELETE", "all": "ALL"}
+METHODS = ("get", "post", "put", "patch", "delete", "head", "options", "all")
+HTTP_METHODS = {method: method.upper() for method in METHODS}
 ROUTE_IMPORT_RE = re.compile(r'import\s*\{([^}]*)\}\s*from\s*["\'](\./routes/[^"\']+)["\']')
 DEFAULT_IMPORT_RE = re.compile(r'import\s+(\w+)\s+from\s*["\'](\./routes/[^"\']+)["\']')
 ROUTER_VAR_RE = re.compile(r'(?:export\s+)?const\s+(\w+)\s*(?::\s*[\w$.]+\s*)?=\s*Router\s*\([^)]*\)')
@@ -75,15 +83,32 @@ def strip_comments(text: str) -> str:
             out.append(ch)
             i += 1
             continue
+        if ch == "/" and i + 1 < n and text[i + 1] not in "/*":
+            previous = i - 1
+            while previous >= 0 and text[previous].isspace():
+                previous -= 1
+            if previous < 0 or text[previous] in "(,=:[!&|?{};":
+                try:
+                    end = skip_regex(text, i)
+                except ParseError:
+                    pass
+                else:
+                    out.append(text[i:end])
+                    i = end
+                    continue
         if ch == "/" and i + 1 < n:
             if text[i + 1] == "/":
                 while i < n and text[i] != "\n":
+                    out.append(" ")
                     i += 1
                 continue
             if text[i + 1] == "*":
+                out.extend("  ")
                 i += 2
                 while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    out.append("\n" if text[i] == "\n" else " ")
                     i += 1
+                out.extend("  ")
                 i += 2
                 continue
         out.append(ch)
@@ -211,6 +236,26 @@ class UpstreamRoute:
     path: str
     file: str
     regex: bool = False
+    source_line: int | None = None
+    raw_method: str | None = None
+    raw_path_expression: str | None = None
+    registration_path: str | None = None
+    mount_sources: list[dict] = field(default_factory=list)
+
+
+def upstream_route(method: str, path: str, file: Path, text: str, offset: int,
+                   expression: str, regex: bool = False) -> UpstreamRoute:
+    return UpstreamRoute(method.upper(), path, str(file), regex,
+                         text.count("\n", 0, offset) + 1, method, expression, path)
+
+
+def mounted_route(route: UpstreamRoute, prefix: str, file: Path, text: str,
+                  offset: int, expression: str) -> UpstreamRoute:
+    return replace(route, path=join_paths(prefix, route.path), mount_sources=[{
+        "file": str(file), "line": text.count("\n", 0, offset) + 1,
+        "raw_path_expression": expression, "resolved_prefix": prefix,
+        "conditions": "unknown: control flow and feature gates are not evaluated",
+    }, *route.mount_sources])
 
 
 @dataclass
@@ -237,6 +282,7 @@ class UpstreamParser:
         self.const_cache: dict[Path, dict[str, str]] = {}
         self.contract_paths: dict[str, str] = {}
         self.agent_api_contract: dict[str, tuple[str, str]] = {}
+        self.extraction_errors: list[str] = []
         self._load_contract_paths()
         self._load_agent_api_contract()
 
@@ -267,7 +313,7 @@ class UpstreamParser:
         for match in re.finditer(r"\b(\w+)\s*:\s*route\s*\(\s*\{", text):
             key = match.group(1)
             body, _ = extract_call(text, text.index("(", match.start()))
-            method = re.search(r'\bmethod\s*:\s*"(GET|POST|PUT|PATCH|DELETE)"', body)
+            method = re.search(r'\bmethod\s*:\s*"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)"', body)
             path = re.search(r'\bpath\s*:\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')', body)
             if method and path:
                 value = unquote(path.group(1))
@@ -299,11 +345,11 @@ class UpstreamParser:
                 depth -= 1
             i += 1
         body = text[brace:i]
-        target = re.search(r"(?<![\w$.])(\w+)\.(get|post|put|patch|delete)\(route\.path", body)
+        target = re.search(r"(?<![\w$.])(\w+)\.(get|post|put|patch|delete|head|options)\(route\.path", body)
         if not target or target.group(1) != var:
             return []
         routes: list[UpstreamRoute] = []
-        for match in re.finditer(r"(?<![\w$.])registerAgentApiRoute\s*\(", text):
+        for match in re.finditer(r"(?<![\w$.])registerAgentApiRoute\s*\(", mask_ts_literals(text)):
             args_text, _ = extract_call(text, match.end() - 1)
             args = split_args(args_text)
             if not args:
@@ -311,7 +357,8 @@ class UpstreamParser:
             key = unquote(args[0])
             contract = self.agent_api_contract.get(key or "")
             if contract:
-                routes.append(UpstreamRoute(contract[0], contract[1], str(file)))
+                routes.append(upstream_route(contract[0], contract[1], file, text,
+                                             match.start(), args[0]))
         return routes
 
     # -- file helpers -------------------------------------------------------
@@ -384,7 +431,8 @@ class UpstreamParser:
             return value, False
         arg = arg.strip()
         if arg.startswith("`"):
-            return arg[1:-1], False
+            # Interpolation is executable code, not a resolved literal path.
+            return (None, False) if "${" in arg else (arg[1:-1], False)
         if arg.startswith("/"):
             try:
                 end = skip_regex(arg, 0)
@@ -411,7 +459,7 @@ class UpstreamParser:
         text = strip_comments(read(file))
         routes: list[UpstreamRoute] = []
         pattern = re.compile(rf"(?<![\w$.]){re.escape(var)}\.(" + "|".join(METHODS) + r")\s*\(")
-        for match in pattern.finditer(text):
+        for match in pattern.finditer(mask_ts_literals(text)):
             method = match.group(1)
             try:
                 args_text, _ = extract_call(text, match.end() - 1)
@@ -422,9 +470,9 @@ class UpstreamParser:
                 continue
             path, is_regex = self.path_from_arg(args[0], file)
             if path is not None:
-                routes.append(UpstreamRoute(HTTP_METHODS[method], path, str(file), is_regex))
+                routes.append(upstream_route(method, path, file, text, match.start(), args[0], is_regex))
         # Nested mounts: this router.use("prefix", childRouter)
-        for match in re.finditer(rf"(?<![\w$.]){re.escape(var)}\.use\s*\(", text):
+        for match in re.finditer(rf"(?<![\w$.]){re.escape(var)}\.use\s*\(", mask_ts_literals(text)):
             try:
                 args_text, _ = extract_call(text, match.end() - 1)
             except ParseError:
@@ -439,9 +487,7 @@ class UpstreamParser:
                 if not re.search(rf"(?<![\w$.]){re.escape(child_name)}(?![\w$])", args_text):
                     continue
                 for child in self.router_routes(child_file, export_name, set()):
-                    routes.append(UpstreamRoute(
-                        child.method, join_paths(prefix, child.path), str(file), child.regex
-                    ))
+                    routes.append(mounted_route(child, prefix, file, text, match.start(), args[0]))
         routes.extend(self.dynamic_agent_api_routes(file, var))
         self.route_cache[key] = routes
         return routes
@@ -478,14 +524,15 @@ class UpstreamParser:
         var = router_match.group(1)
         routes: list[UpstreamRoute] = []
         pattern = re.compile(rf"(?<![\w$.]){re.escape(var)}\.(" + "|".join(METHODS) + r")\s*\(")
-        for reg in pattern.finditer(body):
+        for reg in pattern.finditer(mask_ts_literals(body)):
             args_text, _ = extract_call(body, reg.end() - 1)
             args = split_args(args_text)
             if not args:
                 continue
             path, is_regex = self.path_from_arg(args[0], file)
             if path is not None:
-                routes.append(UpstreamRoute(HTTP_METHODS[reg.group(1)], path, str(file), is_regex))
+                routes.append(upstream_route(
+                    reg.group(1), path, file, text, brace + reg.start(), args[0], is_regex))
         return routes
 
     def router_routes(self, file: Path, export_name: str, seen: set[tuple[Path, str]]) -> list[UpstreamRoute]:
@@ -510,7 +557,7 @@ class UpstreamParser:
         imports = self.imported_router_names(app_file)
         app_consts = self.consts(app_file)
         # Direct app routes.
-        for match in re.finditer(r"(?<![\w$.])app\.(" + "|".join(METHODS) + r")\s*\(", text):
+        for match in re.finditer(r"(?<![\w$.])app\.(" + "|".join(METHODS) + r")\s*\(", mask_ts_literals(text)):
             method = match.group(1)
             args_text, _ = extract_call(text, match.end() - 1)
             args = split_args(args_text)
@@ -525,9 +572,9 @@ class UpstreamParser:
                 last = args[-1].strip()
                 if len(args) == 2 and re.fullmatch(r"[A-Za-z_$][\w$]*(?:Limiter|Middleware)", last):
                     continue
-            routes.append(UpstreamRoute(HTTP_METHODS[method], path, str(app_file), is_regex))
+            routes.append(upstream_route(method, path, app_file, text, match.start(), args[0], is_regex))
         # Mounts.
-        for match in re.finditer(r"(?<![\w$.])app\.use\s*\(", text):
+        for match in re.finditer(r"(?<![\w$.])app\.use\s*\(", mask_ts_literals(text)):
             args_text, _ = extract_call(text, match.end() - 1)
             args = split_args(args_text)
             if len(args) < 2:
@@ -557,9 +604,7 @@ class UpstreamParser:
             for module, export_name in mounted:
                 for route in self.router_routes(module, export_name, set()):
                     for prefix in prefixes:
-                        routes.append(UpstreamRoute(
-                            route.method, join_paths(prefix, route.path), route.file, route.regex
-                        ))
+                        routes.append(mounted_route(route, prefix, app_file, text, match.start(), args[0]))
         return routes
 
 
@@ -943,6 +988,225 @@ def read_swift_dump(path: Path) -> list[SwiftRoute]:
     return routes
 
 
+# -- Machine-readable evidence (separate from normalized route matching) -----
+
+
+def mask_ts_literals(text: str) -> str:
+    """Mask comments/literals without moving source offsets; not a TS parser."""
+    text = strip_comments(text)
+    out = list(text)
+    i = 0
+    while i < len(text):
+        end = i + 1
+        if text[i] in "\"'`":
+            try:
+                end = skip_string(text, i)
+            except ParseError:
+                end = len(text)
+        elif text[i] == "/":
+            previous = i - 1
+            while previous >= 0 and text[previous].isspace():
+                previous -= 1
+            if previous < 0 or text[previous] in "(,=:[!&|?{};":
+                try:
+                    end = skip_regex(text, i)
+                except ParseError:
+                    pass
+        if end > i + 1:
+            out[i:end] = ["\n" if ch == "\n" else " " for ch in text[i:end]]
+        i = end
+    return "".join(out)
+
+
+def source_ref(file: Path, root: Path, line: int | None) -> dict:
+    try:
+        name = str(file.relative_to(root))
+    except ValueError:
+        name = str(file)
+    return {"file": name, "line": line}
+
+
+def raw_constraints(path: str | None, regex: bool = False) -> dict:
+    # The complete expression/path remains authoritative. These parameter hints
+    # are lexical only; regex groups and escaped slashes need manual review.
+    return {
+        "raw_path": path,
+        "path_kind": "regex" if regex else ("unknown" if path is None else "string"),
+        "parameters": [
+            {"name": match.group(1), "raw_tail": match.group(2)}
+            for match in re.finditer(r":([A-Za-z_][\w]*)([^/]*)", path or "")
+        ] if not regex else [],
+        "analysis": "verbatim preserved; lexical hints are not validated parameter domains",
+    }
+
+
+def scan_registrations(parser: UpstreamParser, routes: list[UpstreamRoute]) -> tuple[list[dict], list[dict]]:
+    """Account for candidate registrations independently of successful extraction.
+
+    The deliberately bounded scanner covers app.ts and non-test routes/**/*.ts,
+    known Router variables, the conventional app/router names, computed calls,
+    .route chains and the existing Agent helper. Unknown receivers/helpers and
+    other files remain explicit coverage limitations, never a completeness claim.
+    """
+    files = sorted({parser.src / "app.ts", *(
+        file for file in parser.routes_dir.rglob("*.ts")
+        if not file.name.endswith((".test.ts", ".spec.ts"))
+    )})
+    effective: dict[tuple[str, int | None], list[UpstreamRoute]] = {}
+    for route in routes:
+        effective.setdefault((route.file, route.source_line), []).append(route)
+    records, sources = [], []
+    for file in files:
+        raw = read(file)
+        text = strip_comments(raw)
+        mask = mask_ts_literals(raw)
+        sources.append({**source_ref(file, parser.root, None),
+                        "sha256": hashlib.sha256(raw.encode()).hexdigest()})
+        receivers = {"app", "router", *parser.router_vars(file)}
+        receivers.update(re.findall(
+            r"\b(?:const|let|var)\s+(\w+)\s*=\s*(?:express\s*\.\s*)?Router\s*\(", mask))
+        names = "|".join(re.escape(name) for name in sorted(receivers))
+        # Include unsupported member/computed forms rather than allowing a new
+        # method or .route(...).get(...) chain to disappear from the report.
+        pattern = re.compile(
+            rf"(?<![\w$.])(?:{names})\s*(?:\.\s*(\w+)\s*|\[[^\]\n]*\]\s*)\("
+            r"|(?<![\w$.])registerAgentApiRoute\s*\(")
+        for match in pattern.finditer(mask):
+            member = match.group(1)
+            helper = mask[match.start():match.end()].lstrip().startswith("registerAgentApiRoute")
+            if member in {"set", "disable", "enable", "enabled", "disabled", "listen"}:
+                continue  # Configuration is outside the registration scanner.
+            line = text.count("\n", 0, match.start()) + 1
+            reason = None
+            call_complete = True
+            try:
+                arguments, end = extract_call(text, match.end() - 1)
+                args = split_args(arguments)
+            except ParseError as error:
+                # Preserve a literal first argument even if an unsupported regex
+                # later in the handler prevents parsing the complete call.
+                literal = re.match(r'''\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')''',
+                                   text[match.end():])
+                args = [literal.group(1)] if literal else []
+                end = text.find("\n", match.end())
+                if end < 0:
+                    end = len(text)
+                reason = str(error)
+                call_complete = False
+            expression = args[0] if args else None
+            path, regex = (None, False)
+            if expression and not helper:
+                path, regex = parser.path_from_arg(expression, file)
+            matches = effective.get((str(file), line), [])
+            # Same-line calls must not accidentally consume each other's evidence.
+            matches = [route for route in matches if route.raw_path_expression == expression
+                       and (helper or route.raw_method == member)]
+            kind = "contract_helper" if helper else (
+                "mount_or_middleware" if member == "use" else "route")
+            if member not in {*METHODS, "use"} and not helper:
+                reason = reason or "unsupported registration member, computed method or route chain"
+            elif member == "use":
+                reason = reason or "mount/middleware candidate: handler role and control flow require review"
+            elif not matches:
+                reason = reason or "no effective path extracted: dynamic path, unmounted router, middleware or unsupported syntax"
+            if path is None and not helper:
+                reason = reason or "path expression unresolved"
+            record_id = f"{file.relative_to(parser.root)}:{line}:{match.start()}"
+            records.append({
+                "registration_id": record_id,
+                "source": source_ref(file, parser.root, line),
+                "raw_call": raw[match.start():end],
+                "raw_call_complete": call_complete,
+                "raw_method": member,
+                "raw_path_expression": expression,
+                "registration_path": path,
+                "constraints": raw_constraints(path, regex),
+                "transport": "HTTP", "listener": "upstream_express_app_candidate",
+                "entry_kind": kind,
+                "conditions": {"status": "unknown", "reason": "control flow, mount gates and runtime configuration not evaluated"},
+                "resolution": "effective_paths_extracted" if matches and reason is None else "needs_review",
+                "reason": reason,
+                "effective_paths": [{"method": route.method, "path": route.path} for route in matches],
+            })
+    return records, sources
+
+
+def machine_inventory(parser: UpstreamParser, routes: list[UpstreamRoute],
+                      swift: list[SwiftRoute] | None = None,
+                      swift_dump: Path | None = None) -> dict:
+    registrations, sources = scan_registrations(parser, routes)
+    diff = diff_routes(Inventory(routes, swift or [])) if swift is not None else None
+    matched = {id(route): "normalized_shape_match" for route, _ in diff.matched} if diff else {}
+    if diff:
+        matched.update({id(route): "literal_subset_variant" for route, _ in diff.param_variants})
+    operations = []
+    for route in routes:
+        mounts = [{**item, "file": source_ref(Path(item["file"]), parser.root, item["line"])["file"]}
+                  for item in route.mount_sources]
+        operations.append({
+            "operation_id": f"HTTP {route.method} {route.path}",
+            "method": route.method, "path": route.path,
+            "raw_method": route.raw_method, "raw_path_expression": route.raw_path_expression,
+            "registration_path": route.registration_path,
+            "constraints": raw_constraints(route.registration_path, route.regex),
+            "source": source_ref(Path(route.file), parser.root, route.source_line),
+            "mounts": mounts,
+            "transport": "HTTP", "listener": "upstream_express_app_candidate", "entry_kind": "route",
+            "conditions": {"status": "unknown", "reason": "static candidate; runtime activation and middleware semantics not verified"},
+            "normalized_match": {"method": route.method, "path": normalize_path(route.path),
+                                 "status": matched.get(id(route), "unmatched" if diff else "NOT_RUN"),
+                                 "behavior_verified": False},
+        })
+    return {
+        "schema_version": 1,
+        "extraction_errors": parser.extraction_errors,
+        "scope": {
+            "complete": False, "behavior_verified": False, "runtime_verified": False,
+            "description": "Static entry candidates and unresolved registrations; normalized matches are not behavior verification.",
+            "scanned": "packages/server/src/app.ts and non-test packages/server/src/routes/**/*.ts",
+            "limitations": [
+                "Bounded lexical scanner, not a TypeScript AST/control-flow analysis; unknown receiver aliases and helper APIs may be missed.",
+                "No runtime registry/feature matrix; conditions are unknown and implicit HEAD/OPTIONS are not inferred.",
+                "Parameter constraints remain verbatim; normalized matching intentionally discards names/constraints/suffixes.",
+                "Swift TSV is a Vapor router dump only; listener/middleware coverage and source registration locations are unknown.",
+            ],
+        },
+        "baseline": {"upstream_root": str(parser.root), "source_files": sources,
+                     "swift_dump": {"path": str(swift_dump), "sha256": hashlib.sha256(swift_dump.read_bytes()).hexdigest()}
+                     if swift_dump else None},
+        "operations": operations,
+        "registrations": registrations,
+        "unresolved_registrations": [item for item in registrations if item["resolution"] == "needs_review"],
+        "swift_routes": [{"method": route.method, "path": route.path,
+                          "transport": "HTTP", "listener": "swift_vapor_router_table",
+                          "entry_kind": "router_table_entry", "source": None,
+                          "conditions": {"status": "unknown"}, "behavior_verified": False}
+                         for route in swift] if swift is not None else None,
+        "review_items": [
+            {"transport": "HTTP", "listener": "upstream_express_app", "entry_kind": "middleware",
+             "status": "NOT_RUN", "reason": "app.use/router.use candidates need effective-path and handler adjudication"},
+            {"transport": "HTTP", "listener": "swift_vapor_middleware", "entry_kind": "middleware",
+             "status": "NOT_RUN", "reason": "FallbackMiddleware/PublicSearchMiddleware paths are outside the Vapor dump"},
+            {"transport": "WebSocket", "listener": "daemon_connect", "entry_kind": "independent_listener",
+             "status": "NOT_RUN", "reason": "/daemon/connect uses SwiftNIO; enumerate upstream and Swift handshake/frame contracts"},
+            {"transport": "Engine.IO/Socket.IO", "listener": "socket_io", "entry_kind": "independent_listener",
+             "status": "NOT_RUN", "reason": "SwiftNIO listener and upstream socket registry require a separate inventory"},
+            {"transport": "HTTP", "listener": "all_http_listeners", "entry_kind": "implicit_method",
+             "status": "NOT_RUN", "reason": "Explicit HEAD/OPTIONS are scanned; framework-generated methods and CORS remain unverified"},
+        ],
+        "counts": {"static_operation_candidates": len(operations), "registration_candidates": len(registrations),
+                   "unresolved_registrations": sum(item["resolution"] == "needs_review" for item in registrations)},
+    }
+
+
+def write_machine_inventory(path: Path, parser: UpstreamParser, routes: list[UpstreamRoute],
+                            swift: list[SwiftRoute] | None = None, swift_dump: Path | None = None) -> None:
+    result = machine_inventory(parser, routes, swift, swift_dump)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    sys.stderr.write(f"wrote {path}: {result['counts']} (static, incomplete, behavior not verified)\n")
+
+
 # -- main ------------------------------------------------------------------
 
 def main(argv: list[str]) -> int:
@@ -951,10 +1215,14 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--swift-root", default=str(Path(__file__).resolve().parent.parent))
     parser.add_argument("--swift", default=os.environ.get("SWIFT", DEFAULT_SWIFT))
     parser.add_argument("--swift-dump", default=None, help="read a pre-generated METHOD<TAB>path TSV")
+    parser.add_argument("--json-out", help="write raw candidates, constraints, source references and unknowns as JSON")
+    parser.add_argument("--upstream-only", action="store_true", help="with --json-out, scan upstream without building or reading Swift routes")
     parser.add_argument("--write", default=None, help="write the Markdown report to this path")
     parser.add_argument("--check", action="store_true", help="fail when --write output differs from the file")
     parser.add_argument("--no-usage", action="store_true", help="skip the Web/CLI reference scan")
     args = parser.parse_args(argv)
+    if args.upstream_only and (not args.json_out or args.swift_dump or args.write or args.check):
+        parser.error("--upstream-only requires --json-out and cannot use --swift-dump, --write or --check")
 
     upstream_root = Path(args.upstream_root).resolve()
     swift_root = Path(args.swift_root).resolve()
@@ -967,10 +1235,21 @@ def main(argv: list[str]) -> int:
         upstream_routes = upstream_parser.parse_app()
     except (ParseError, OSError) as error:
         sys.stderr.write(f"upstream parse failed: {error}\n")
-        return 1
-    if not upstream_routes:
+        if not args.upstream_only:
+            return 1
+        upstream_parser.extraction_errors.append(str(error))
+        upstream_routes = []
+    if not upstream_routes and not args.upstream_only:
         sys.stderr.write("upstream parse produced no routes\n")
         return 1
+
+    if args.upstream_only:
+        try:
+            write_machine_inventory(Path(args.json_out), upstream_parser, upstream_routes)
+        except (ParseError, OSError) as error:
+            sys.stderr.write(f"machine inventory failed: {error}\n")
+            return 1
+        return 0
 
     try:
         if args.swift_dump:
@@ -980,6 +1259,14 @@ def main(argv: list[str]) -> int:
     except (ParseError, OSError) as error:
         sys.stderr.write(f"Swift route dump failed: {error}\n")
         return 1
+
+    if args.json_out:
+        try:
+            write_machine_inventory(Path(args.json_out), upstream_parser, upstream_routes,
+                                    swift_routes, Path(args.swift_dump) if args.swift_dump else None)
+        except (ParseError, OSError) as error:
+            sys.stderr.write(f"machine inventory failed: {error}\n")
+            return 1
 
     inventory = Inventory(upstream_routes, swift_routes)
     diff = diff_routes(inventory)
