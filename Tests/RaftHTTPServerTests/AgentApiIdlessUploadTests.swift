@@ -69,8 +69,8 @@ private func agentIdlessMultipart(channelId: String, filename: String, content: 
             let download = try await client.get(URI(string: "/internal/agent-api/attachments/\(id)"), headers: downloadHeaders)
             #expect(download.status == .ok)
             #expect(download.body.string == "native agent upload")
-            #expect(download.headers[HTTPField.Name("Content-Type")!] == "text/plain")
-            #expect(download.headers[HTTPField.Name("Cache-Control")!] == "private, no-store")
+            #expect(download.headers[HTTPField.Name("Content-Type")!] == "text/plain; charset=utf-8")
+            #expect(download.headers[HTTPField.Name("Cache-Control")!] == "private, immutable, max-age=31536000")
         }
     }
 }
