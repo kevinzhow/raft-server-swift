@@ -66,9 +66,9 @@ Active slices, all unshipped:
   commit; effects-only commits reuse pending snapshots.
 - **Task 14, production Auth/OAuth/Integrations composition.** In
   implementation on `arch-production-composition` in the auth-identities
-  worktree, not committed or integrated. One same-owner
-  `ProductionFeatureGraph` supplies the Auth, OAuth and Integrations mounts; its
-  focused test covers `/api/auth/me`, `/api/auth/providers` and
+  worktree, not committed or integrated. The proposed same-owner
+  `ProductionFeatureGraph` supplies the Auth, OAuth and Integrations mounts;
+  planned focused coverage includes `/api/auth/me`, `/api/auth/providers` and
   `/api/integrations/clients` from the explicit graph.
 - **Task 15, attachment slow-I/O short-transaction design.** Read-only design
   still; no attachment source, test or deployment change.
