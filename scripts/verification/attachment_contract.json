@@ -11,7 +11,7 @@
       "database": "Persistent database, correct fixed-version migrations, actual required attachment authority read/write runtime installed; a stub or read-only authority installation is not proof of production write behavior.",
       "identity": "Verified human owner is server member and private-channel member; external Agent has active bound credential with read capability and relevant grants and is initially a member of both new private channels.",
       "private_channel_prerequisite": "Require attachment.channel.private_established: for both files and revocation channels, POST create and GET readback at the returned ID must both report type=private. An id/name-only response or requested visibility alone does not establish the profile. On failure stop dependent target writes, preserve observations, and do not PATCH to repair the fixture.",
-      "features": "Direct-upload session service disabled. Original-storage-v2, public-derived-v2, CDN availability, quota plan and other flags must be recorded independently for both targets; do not infer equality from route names.",
+      "features": "Record session service presence, global admission and per-server gate independently; a false direct-upload capability does not mean service=null. Also record original-storage-v2, derived/CDN availability and quota plan. The 35-rule streaming sample does not execute session operations.",
       "isolation": "Distinct equivalent databases, objects and queues; no other message-sending campaign shares these environments; no owner account mutation beyond the expressly configured isolated seed.",
       "metadata_comparison": "Pin equivalent preview generation/CDN settings, or report resulting thumbnail/width/height differences explicitly. Do not delete these fields to force equality. IDs use one-to-one aliases."
     },
@@ -31,6 +31,14 @@
     "any_recorded_profile": {
       "execution_status": "NOT_RUN",
       "condition": "Apply in each applicable explicitly recorded storage, identity and feature configuration; do not assume all branches are equivalent."
+    },
+    "upload_sessions_service_absent": {
+      "execution_status": "NOT_RUN",
+      "condition": "Formal global=true with incomplete dedicated direct-upload backend; factory returns null. Valid identities and UUID routes are still required."
+    },
+    "upload_sessions_global_off": {
+      "execution_status": "NOT_RUN",
+      "condition": "Formal global=false retains the Durable service for recovery. Record per-server attachment_direct_upload_v0 evaluation separately."
     }
   },
   "cases": {
@@ -1217,15 +1225,33 @@
       "source_refs": [
         "packages/server/src/app.ts:553-562",
         "packages/server/src/routes/attachmentUploadSessions.ts:176-295",
-        "packages/server/src/routes/internalAgentApi.ts:5663-5755"
+        "packages/server/src/routes/internalAgentApi.ts:5663-5755",
+        "packages/server/src/services/attachmentUploadSessionService.ts:826",
+        "packages/server/src/services/attachmentUploadSessionService.ts:273",
+        "packages/server/src/services/attachmentUploadSessionService.ts:542",
+        "packages/server/src/services/featureFlagService.ts:570"
       ],
-      "profile": "streaming_durable",
+      "profile": "any_recorded_profile",
       "preconditions": [
-        "Session service absent but valid auth/server/profile; use valid UUID regex paths"
+        "Record actual service presence, global admission and per-server flag independently; valid auth/server/channel and Agent send capability; valid UUID paths and schema"
       ],
-      "expected": "Capability routes remain registered; human active list returns uploads:[]; human disabled mutation/status paths return 403 UPLOAD_FORBIDDEN while Agent disabled session paths return 404 UPLOAD_SESSION_NOT_FOUND. Malformed IDs may fail route regex and fall through; do not flatten these distinct surfaces.",
+      "expected": "Capability=false does not determine rejection or recovery semantics. Test absent service separately from formal global-off Durable recovery and per-server admission. Source-defined limits, validators and exact refusal bodies remain observable.",
       "test_or_scenario_id": "missing disabled capability/session checks",
-      "status": "NOT_RUN"
+      "status": "NOT_RUN",
+      "subrules": [
+        {
+          "behavior_id": "attachment.upload_sessions.service_absent",
+          "profile": "upload_sessions_service_absent",
+          "expected": "Human four verbs: 403 UPLOAD_FORBIDDEN, message The member cannot upload to this channel. Agent four verbs: 404 UPLOAD_SESSION_NOT_FOUND, message Direct uploads are disabled. All refusals have retryable=false; human active list is uploads:[].",
+          "status": "NOT_RUN"
+        },
+        {
+          "behavior_id": "attachment.upload_sessions.global_off_recovery_present",
+          "profile": "upload_sessions_global_off",
+          "expected": "Create rejects new admission with 403 and the cancel-unfinished guidance. Complete/cancel/status evaluate the per-server flag; false flag yields its distinct 403. With a true flag preserve recovery/replay/cancel and source-specific missing-session distinctions. Do not require blanket 404.",
+          "status": "NOT_RUN"
+        }
+      ]
     },
     {
       "behavior_id": "attachment.upload_sessions.enabled_lifecycle",

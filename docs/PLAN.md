@@ -88,11 +88,17 @@ read-only/browser evidence does not qualify this attachment batch. Retain the
 - Agent principal/identity: missing Agent auth returns the human-session error;
   the real CLI rejects the successful credential's root identity payload.
 
-One area owner handles these source fixes in the attachment worktree. The old
-candidate is stopped and its unchanged binary snapshot and raw evidence are
-retained. Do not resume live writes or replace the candidate until focused and
-affected checks support a new explicit baseline. Membership/persistence changes
-also require real-PG qualification before landing.
+One area owner handles these source fixes in the attachment worktree. Its first
+candidate passed 305 affected tests and a further 25-test creation/projection
+increment. Independent review then found an Agent legacy-fallback permission leak,
+double filename repair, inconsistent creator guest-management permissions and
+same-UUID human/Agent removal interference. The legacy-fallback fix has a separate
+red-to-green HTTP witness; the other findings and final re-review remain pending.
+
+The old runtime stays stopped and its unchanged binary snapshot and raw evidence
+are retained. Do not resume live writes or replace the candidate until focused,
+affected and independent-review evidence supports a new explicit baseline.
+Membership/persistence changes also require real-PG qualification before landing.
 
 ## Inventory and remaining verification scope
 
@@ -108,8 +114,12 @@ The sample has source/behavior/scenario mappings. Seventeen additional rule grou
 remain explicit NOT_RUN, including identity/tenant matrices, linked/thread
 permissions, presign/expiry, upload boundaries and effects, read state/events,
 preview/Web behavior, enabled sessions, storage failures, cancellation/concurrency
-and managed Agent/Computer execution. Capability-off upload-session refusal also
-differs by principal upstream: human 403 and Agent 404; do not use a blanket 404.
+and managed Agent/Computer execution. Session-off expectations require the actual
+service branch: a null service gives human 403 / Agent 404, while formal global-off
+bootstrap retains a Durable recovery service with different gate/refusal behavior.
+Swift production has no installed presigner; changing S3 environment values cannot
+make encrypted originals into plaintext signed downloads. D5/D22 do not automatically
+exclude these real capability profiles, which remain open functional scope.
 
 A verified pre-repair `1b456511` release supplied the actual binary corruption
 counterexample. Its full closure and host dependencies were rechecked; a separate
