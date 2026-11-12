@@ -76,9 +76,10 @@ Active slices, all unshipped:
   get short committed phases around storage I/O; legacy paths stay unchanged.
   Required proof includes real-PG progress while storage blocks, revocation,
   original errors and retaining objects after unknown commits. Not yet accepted.
-- **Task 19, transfer preparation budget.** Standalone FIFO concurrency limiter
-  in implementation; cancellation must not leak permits. The classified-path
-  hook follows Task 17 and preserves independent business progress.
+- **Task 19, transfer preparation budget.** Reviewed `df5fd5cc` integrated at
+  `1b929920`; all 6 focused tests pass, including cancellation/grant stress.
+  Call sites are not migrated yet; Task 17 owns the classified-path hook and
+  real-PG proof that a full transfer budget leaves business writes independent.
 - **Web baseline.** Fresh ab04 capture: 5/5 authenticated pages at HTTP 200,
   zero runtime exceptions, only the accepted D5 feedback 404; screenshots reviewed.
 
