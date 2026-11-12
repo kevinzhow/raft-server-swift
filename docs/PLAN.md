@@ -53,9 +53,9 @@ parity, and this round does not widen them.
 
 The user cancelled the Computer setup and authorized a new architecture
 optimization round; the user's separate Computer home is not touched. The Lead
-created `integrate-architecture-1` from trunk `03132e6b`; Task 14 is integrated
-at `13960787`, Task 13 at `dcbb5a05`. Runtime is still `ab04`; no optimization
-candidate is deployed.
+created `integrate-architecture-1` from trunk `03132e6b`; all source slices are
+reviewed and integrated. Documentation sync precedes the frozen-candidate full
+gate and serial PG gate. Runtime is still `ab04`; no candidate is deployed.
 
 Active slices, all unshipped:
 
@@ -71,15 +71,17 @@ Active slices, all unshipped:
   regressions and the later 19-test OAuth run passed (overlapping runs, not a
   unique-test total). OAuth proof includes scoped discovery, tenant isolation,
   exact issuer/endpoint/cache fields and live deployment updates.
-- **Task 15/17, attachment I/O.** Design reviewed; implementation is active on
-  `arch-attachment-transactions`. Selected raw UUID body routes and human upload
-  get short committed phases around storage I/O; legacy paths stay unchanged.
-  Required proof includes real-PG progress while storage blocks, revocation,
-  original errors and retaining objects after unknown commits. Not yet accepted.
-- **Task 19, transfer preparation budget.** Reviewed `df5fd5cc` integrated at
-  `1b929920`; all 6 focused tests pass, including cancellation/grant stress.
-  Call sites are not migrated yet; Task 17 owns the classified-path hook and
-  real-PG proof that a full transfer budget leaves business writes independent.
+- **Task 15/17, attachment I/O.** Reviewed `44ff3bb0` and `da5993cf` integrated.
+  Selected raw UUID bodies/previews and human upload use short committed phases;
+  legacy paths stay unchanged. All 9 targeted real-PG cases pass: independent
+  writes while get/put blocks, post-I/O revocation/binding refusal, cleanup,
+  shielded cancellation, lost-writer retention, internal legacy upload, non-UUID
+  errors and a full transfer budget. Lost-writer evidence is a post-callback
+  connection failure, not a successful COMMIT with a lost acknowledgement.
+- **Task 19, transfer preparation budget.** Reviewed `df5fd5cc` integrated and
+  wired by Task 17; 6 focused tests pass, including cancellation/grant stress.
+  Four preparations may run while unrelated business writes remain independent.
+  The budget does not cap slow-client response buffers or the overall heap.
 - **Web baseline.** Fresh ab04 capture: 5/5 authenticated pages at HTTP 200,
   zero runtime exceptions, only the accepted D5 feedback 404; screenshots reviewed.
 
