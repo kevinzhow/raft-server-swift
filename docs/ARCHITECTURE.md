@@ -1,10 +1,9 @@
 # Architecture: modular single-process Main
 
-**Status (2026-11-12):** This describes the candidate source and integration
-architecture of the modular single-process Main, not a deployed release. Current
-release identity, gate acceptance, task state and acceptance evidence are tracked
-in [PLAN.md](PLAN.md). This file owns the target layering, persistence invariants
-and architecture guardrail numbers.
+**Status (2026-11-12):** This describes the Main source architecture. Current
+release identity, gate acceptance and rollout status are tracked in
+[PLAN.md](PLAN.md); this file owns the target layering, persistence invariants and
+architecture guardrail numbers.
 
 **Specification:** observable HTTP status codes, JSON bytes, response headers
 and socket frames from `raft-source` tag `v1.21.23-source.1`. Refactoring keeps
@@ -150,11 +149,10 @@ business commands, including `execute`-based pure reads. This is an intentional
 atomic-coarse-snapshot design, not per-entity persistence and not a horizontal
 scaling model.
 
-## 4. Attachment transfer plane (staged)
+## 4. Attachment transfer plane
 
-The attachment change moves selected slow object I/O and multipart collection
-out of the global writer FIFO without changing the contract family. It is staged
-and under review; it is not in the accepted source root.
+The attachment transfer plane moves selected slow object I/O and multipart
+collection out of the global writer FIFO without changing the contract family.
 
 `AttachmentBodyPlanePolicy` classifies the exact raw request target, without
 percent decoding or route reconstruction. Only these shapes use the bounded
@@ -192,10 +190,6 @@ and response preparation only. It does not bound buffers retained by slow
 clients while responses drain, connection memory or overall heap, and separate
 instances do not coordinate.
 
-Current stage: the transaction plane is staged and under review. It is not
-integrated into the accepted source root, and no deployment or full gate covers
-it.
-
 ## 5. Target layers
 
 | Layer | Owns | Boundary |
@@ -230,30 +224,27 @@ returns a machine-readable report; `--root PATH` checks another checkout. Python
 exits 0 for pass/warnings, 1 for a violation and 2 for invalid input or an
 operational error.
 
-| Check | Rule | Latest recorded 22-PASS state | Headroom |
+| Check | Rule | Current 22-PASS state | Headroom |
 | --- | --- | --- | --- |
 | Directory root | `EmailLogin.swift` at most 28 lines | 28 lines | 0 |
 | Feature size | Every Feature/helper file at most 1,200 lines | 29 files, largest 1,045 | 155 |
-| Service size | Every Service/accessor file at most 1,200 lines | 189 files, largest 1,174 | 26 |
+| Service size | Every Service/accessor file at most 1,200 lines | 191 files, largest 1,174 | 26 |
 | Store size | Every Store file, including nested extension files, at most 1,000 lines | 67 files, largest 945 | 55 |
 | Composition size | Each Composition file at most 1,000 lines | 7 files, largest 713 | 287 |
 | Container size | `ServiceContainer` at most 28 lines | 17 lines | 11 |
 | Retired directory | No Swift files under `Sources/RaftHTTP/EmailLogin/` | absent | n/a |
 | Production test markers | No `ForTesting` baseline across `Sources/` | 0 | 0 |
-| Service imports | `import Vapor` hard zero in `Services/` | 0 in 189 files | 0 |
+| Service imports | `import Vapor` hard zero in `Services/` | 0 in 191 files | 0 |
 | Composition values | Exactly nine public groups of approved concrete values | 9 groups, 64 values | n/a |
 | Composition boundaries | Hard zero Vapor, HTTPReply, JSONSerialization, Any and AnyObject; protected declarations stay in canonical files | 0 violations | 0 |
 
-The latest recorded 22-PASS static run is
-`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/integrated-snapshot-composition-static.log`.
-It predates the transfer-budget helper now present in the current integration
-tree, which has 190 Service files because `AttachmentTransferBudget.swift` is
-present. The largest Service file remains 1,174, so the 26-line headroom still
-applies. A not-yet-integrated `AttachmentTransactionPort.swift` is not counted,
-and this document does not claim a future total. A fresh 22-PASS record for the
-current tree is still pending.
+The fresh 22-PASS static run is
+`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/integrated-all-slices-static.log`.
+It reports 191 Service files with the largest still 1,174, 67 Stores with the
+largest 945, 29 Feature files with the largest 1,045, and seven Composition
+files. The 26-line Service headroom and all other bounds are unchanged.
 
-Ratchet state from the same recorded run: six directory extension occurrences
+The fresh run keeps the ratchets unchanged: six directory extension occurrences
 across six files, zero directory forwarders, zero Service reply tokens, one
 Service/DTO JSON-any occurrence (a comment), 60 server reply tokens across 21
 files, 81 server JSON-any occurrences across 20 files, 43 directory references
@@ -275,11 +266,11 @@ persistence or transaction changes, serial `make test-pg`. Smoke is supplemental
 real-process wiring evidence, not proof of every locked module. Integration uses
 real merge commits. Detailed gate results, acceptance evidence, the current
 release identity and rollout status live in [PLAN.md](PLAN.md); this document
-does not duplicate that record and makes no deployment or acceptance claim for
-the staged attachment plane.
+does not duplicate that record or make a deployment or acceptance claim.
 
 Remaining architecture debt is the unmigrated Feature factories and old root in
-section 2, raw Feature ledger operations, the daemon concurrency inventory, and
-the staged attachment transaction plane until the Lead qualifies and integrates
-it. The target layering, owner graph, persistence invariants and exclusions above
-are expected to stay stable through that qualification.
+section 2, raw Feature ledger operations, the single writer and fourteen
+whole-root encodes per command, unbounded process heap and slow-client response
+buffers, and the daemon concurrency inventory. The target layering, owner graph,
+persistence invariants and exclusions above are expected to stay stable through
+gate and rollout.
