@@ -34,7 +34,8 @@ extension AgentsLifecycleService {
     /// Direct scoped capability entry. The shared verifier completes before any
     /// attachment projection lookup; the HTTP Flex path supplies the same proof.
     public func attachmentHTMLPreview(
-        attachmentId: String, serverId: String, previewToken rawPreviewToken: String?, bearerQuery: String?
+        attachmentId: String, serverId: String, previewToken rawPreviewToken: String?, bearerQuery: String?,
+        transaction: AttachmentTransactionMode = .legacy
     ) async throws -> AttachmentBinaryContent {
         // Match Node's truthy preview-token check without trimming whitespace
         // or discarding the separate scalar bearer-query presence check.
@@ -47,13 +48,15 @@ extension AgentsLifecycleService {
         guard let proof = await attachmentPreviewTokens.verify(previewToken, attachmentId: attachmentId,
             serverId: serverId, now: dependencies.now()) else { throw AgentsLifecycleError.unauthorized }
         return try await attachmentHTMLPreview(attachmentId: attachmentId,
-            admission: previewAdmission(proof), previewToken: previewToken, bearerQuery: bearerQuery)
+            admission: previewAdmission(proof), previewToken: previewToken, bearerQuery: bearerQuery,
+            transaction: transaction)
     }
 
     /// Consumes the request-local admission and immutable proof from Flex. A
     /// proof already verified by middleware is not cryptographically reverified.
     public func attachmentHTMLPreview(
-        attachmentId: String, admission: AttachmentFlexAdmission, previewToken rawPreviewToken: String?, bearerQuery: String?
+        attachmentId: String, admission: AttachmentFlexAdmission, previewToken rawPreviewToken: String?,
+        bearerQuery: String?, transaction: AttachmentTransactionMode = .legacy
     ) async throws -> AttachmentBinaryContent {
         // Match Node's truthy preview-token check without trimming whitespace
         // or discarding the separate scalar bearer-query presence check.
@@ -76,7 +79,9 @@ extension AgentsLifecycleService {
             throw AgentsLifecycleError.unauthorized
         }
         let actorAdmission = proof.map(previewAdmission) ?? admission
-        return try await attachmentPreviewContent(attachmentId: attachmentId) { attachment in
+        return try await attachmentPreviewContent(
+            attachmentId: attachmentId, transaction: transaction
+        ) { attachment in
             if let proof, !proof.isValid(attachmentId: attachmentId, serverId: admission.serverId, now: dependencies.now()) {
                 throw AgentsLifecycleError.unauthorized
             }

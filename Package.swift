@@ -238,8 +238,9 @@ let package = Package(
             name: "RaftServerStartupTests",
             dependencies: [
                 "RaftServer", "RaftHTTP", "RaftMachineSocket", "RaftConnectAuth", "RaftPersistence",
-                "RaftRealtime", "RaftHTTPServer", "RaftShared", "TestSupport",
+                "RaftRealtime", "RaftHTTPServer", "RaftShared", "TestSupport", "RaftObjectStorage",
                 .product(name: "Vapor", package: "vapor"),
+                .product(name: "VaporTesting", package: "vapor"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "PostgresNIO", package: "postgres-nio"),
                 .product(name: "Logging", package: "swift-log"),

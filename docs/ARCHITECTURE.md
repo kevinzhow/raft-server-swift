@@ -1,41 +1,205 @@
-# Architecture: target Swift layering
+# Architecture: modular single-process Main
 
-**Status**: Phase 6 has removed directory state forwarding and the global transaction lock. A 17-line immutable `ServiceContainer` holds nine groups of 63 concrete Service/Support values, built by one explicit-owner composer. AuthScene, InstallationScene and the OAuthScene protocol batches share that graph with private domain fixtures and the actual production HTTP registrations. The legacy 28-line `EmailLoginDirectory` and six factory/helper extensions still serve the complete Fallback and unmigrated fixtures. Remaining Feature dependency and fixture cutovers, followed by deletion of the old root, are required for completion. The remaining milestones live in `docs/PLAN.md`.
+**Status (2026-11-12):** This describes the Main source architecture. Current
+release identity, gate acceptance and rollout status are tracked in
+[PLAN.md](PLAN.md); this file owns the target layering, persistence invariants and
+architecture guardrail numbers.
 
-**Specification**: observable HTTP status codes, JSON bytes, response headers, and socket frames asserted by the upstream suite at `v1.21.23-source.1`. Refactoring preserves those contracts, including validation order, omission versus null, input coercion, and stored JSON fingerprints.
+**Specification:** observable HTTP status codes, JSON bytes, response headers
+and socket frames from `raft-source` tag `v1.21.23-source.1`. Refactoring keeps
+validation order, omission versus null, input coercion and stored JSON
+fingerprints.
 
-**Scope**: the complete local dependency closure of `RaftServer`: `RaftHTTP`, `RaftHTTPServer`, `RaftRealtime`, `RaftServer`, `RaftMachineSocket`, `RaftConnectAuth`, and `RaftShared`. The daemon-only targets are `RaftDaemonClient` and `RaftDaemon`. Shared targets are counted once. Both unchecked-conformance ratchets and the production `ForTesting` scan include Generated. Other ratchets exclude `Sources/RaftHTTPServer/Generated/` because of the embedded corpus; this does not exempt generated executable code from the unchecked scan.
+**Scope:** `RaftHTTP`, `RaftHTTPServer`, `RaftRealtime`, `RaftServer`,
+`RaftMachineSocket`, `RaftConnectAuth`, `RaftShared`, `RaftPersistence`,
+`RaftRedis`, `RaftObjectStorage`, `RaftDaemonClient` and `RaftDaemon`. Shared
+targets are counted once. Generated sources are included in the unchecked
+conformance and `ForTesting` scans; the embedded-corpus file-size scans exclude
+`Sources/RaftHTTPServer/Generated/`, which does not exempt generated executable
+code from the unchecked scan.
 
-## 1. Current structure
+## 1. Runtime topology
 
-The upstream server separates route modules, services, database schema, middleware, and shared contracts. This port has extracted those boundaries progressively while retaining an in-memory backend.
+Main is one stateful process with three listeners on separate ports:
 
-| Path | Current role |
-| --- | --- |
-| `Sources/RaftHTTPServer/FallbackApplication.swift` | Composition, middleware order, lifecycle wiring, and policy catch-alls |
-| `Sources/RaftHTTPServer/Features/` | 16 `RouteCollection` modules plus request/response helpers; 20 Swift files |
-| `Sources/RaftHTTP/Composition/` | Four Swift files: 17-line ServiceContainer, nine immutable groups, shared 13-owner composer and explicit publisher variants; largest 554 lines |
-| `Sources/RaftHTTP/EmailLogin.swift` | Legacy 28-line directory root: 12 principal store instances and the OAuth ledger; no shared lock or field forwarders |
-| `Sources/RaftHTTP/Services/` | 121 Swift files of domain services and remaining directory accessors; no Vapor imports |
-| `Sources/RaftHTTP/Stores/` | 55 Swift files; implementations split by responsibility; every file at most 1,000 lines, currently largest 974 |
-| `Sources/RaftHTTP/DTO/` | Codable request shapes, ordered response payloads, and semantic outcomes |
-| `Sources/RaftHTTP/Support/` | Naming, token, cursor, projection, runtime-config, and policy helpers; no directory extensions or legacy reply factories |
-| `Sources/RaftHTTP/OAuthLedger.swift` and `OAuth/` | 97-line ledger root plus 19 domain files; the largest OAuth file is 466 lines |
-| `Sources/RaftShared/` | Shared value contracts, including `JSONValue` |
-| `Tests/TestSupport/` | Test-only seams, deterministic setup, and injected dependencies; never a production dependency |
+| Listener | Implementation | Role |
+| --- | --- | --- |
+| HTTP | Vapor at the pinned revision | API routes, middleware, JSON projection, lifecycle |
+| Socket.IO | SwiftNIO `RealtimeServer` | Engine.IO v4 polling, upgrade, socket frames |
+| `/daemon/connect` | SwiftNIO `MachineConnectServer` | Raw machine upgrade and `machine:context` |
 
-`Sources/RaftHTTP/EmailLogin/` has no Swift files. The six remaining directory extensions are under `Services/`; the Store forwarding file has been deleted. They contain service factories and transitional helper methods and still need migration to explicit composition. PushRegistration is an independent notification DTO; Stores and push registration no longer depend on a directory-nested record. Mutex state and typed owner transactions protect domain operations independently of the old directory lock.
+`SOCKET_PORT=0` disables the Socket.IO listener and `DAEMON_CONNECT_PORT=0`
+disables `/daemon/connect`. `PORT=0` does not disable HTTP: the entrypoint only
+applies the configured port when it is greater than zero, so zero retains
+Vapor's default HTTP port. Vapor does not host the Socket.IO
+upgrade; the pinned Vapor snapshot has no WebSocket upgrade, so both socket
+surfaces stay on SwiftNIO. HTTP remains a stateful service: one process owns the
+retained domain owners, the realtime hub and the single PostgreSQL writer. A
+second Main process cannot share that state or claim the writer lease; it fails
+closed instead of scaling horizontally. Realtime fan-out is process-local, not
+Redis pub/sub.
 
-## 2. Target layers
+Production external dependencies are deliberately narrow:
+
+- **PostgreSQL** is the durable authority. It stores thirteen domain roots plus
+  the separate native-notifications root, the writer fence and the durable
+  outbox. Without a configured database the process keeps `/health` at 503.
+- **Redis** backs only the shared public-search minute bucket and the explicit
+  readiness ping. It does not store sessions, domain records or socket state.
+- **Object storage** is S3-compatible, using Cloudflare R2 in production.
+  `S3AttachmentStorage` encrypts attachment and avatar bytes, writes them
+  outside PostgreSQL, and keeps only object references in the owned rows.
+
+The production Computer is the upstream Node `raft-computer` process, outside
+this repository. The Swift `RaftDaemon`/`RaftDaemonClient` is a minimal
+handshake and reconnect client used to prove the daemon wire; it is not the
+shipped provider runtime and does not replace the official Computer.
+
+## 2. Owner graph and production composition
+
+`EmailLoginDirectory` is a 28-line root that retains thirteen actual owners:
+twelve stores plus the OAuth ledger. It holds references and deployment
+configuration only; it has no global lock, field proxies or domain decisions.
+`makeDurableBindings()` binds fourteen codecs because the notifications store
+has an additional `native` root. Every codec reads and restores the same owner
+instance; no second graph is constructed for persistence.
+
+The explicit composer takes all thirteen owners and builds one
+`ServiceContainer`: nine immutable groups containing 64 concrete Service/Support
+values. `ProductionFeatureGraph` pairs that container with the owner-bound
+`OnboardingBriefingService`. `FallbackServices.featureGraph` defaults to
+`emailAccounts.productionFeatureGraph()`, so production constructs the graph
+over the same directory it restores and wires. `ServiceContainer()` still
+allocates a fresh graph for tests and standalone use; production does not call it
+after wiring.
+
+The accepted production cutover covers three Feature families:
+
+- `AuthFeature`, `OAuthFeature` and `IntegrationsFeature` consume
+  `ProductionFeatureGraph` service values for identity, OAuth, apps,
+  integrations, cards and the onboarding briefing.
+- Focused HTTP tests mount `configure` with an explicit graph over a separate
+  directory and prove `/api/auth/me`, `/api/auth/providers`,
+  `/api/integrations/clients`, global and scoped OIDC discovery, and live
+  deployment changes. A factory-backed mount would fail those cases.
+- The graph retains owners rather than construction snapshots: accounts,
+  servers and deployment configuration added after composition are visible.
+
+All other Feature mounts still obtain services through `FallbackServices` and
+`EmailLoginDirectory` factory/accessor methods: Agents, Computers, Reminders,
+Notifications, Servers, Channels, Messaging, Feedback, Translation, Public,
+Billing, RaftBench, Knowledge, avatar routes and the internal surfaces. Those
+methods read the same owners but remain transitional composition debt. The old
+root is not deleted, and this document does not claim a complete production
+cutover.
+
+## 3. Persistence and commit invariants
+
+Persistence is coarse-grained by design. Each of the fourteen bindings serializes
+a complete domain root, not individual rows. There is one fenced PostgreSQL
+writer:
+
+- A dedicated PostgreSQL session holds an advisory lock and a monotonically
+  increasing writer epoch. A competing process cannot claim the lease.
+- All business commands share one FIFO. The permit spans operation, SQL commit,
+  publication and deferred-effect flush; actor isolation alone would let another
+  command enter at an await.
+- `compareAndSwap` validates the writer epoch and every expected revision inside
+  one serializable transaction. Durable effects are inserted in that same
+  transaction before COMMIT.
+
+Startup and activation preserve the same ownership:
+
+1. `start` restores the owner rows but deliberately leaves admission closed.
+2. Application wiring installs live relay, provider and secret configuration on
+   those owners.
+3. `activate` encodes all fourteen bindings once from the committed read view and
+   seeds the canonical committed-byte cache. This post-restore, post-wiring seed
+   prevents pure wiring from looking like a durable change.
+4. Only then does admission open and the listeners begin serving.
+
+Every command encodes each pending snapshot once, then compares its bytes with
+the canonical cache. A pure read performs no write and consumes no revision. A
+changed command writes only the changed roots, but the transaction still
+validates all fourteen revisions. The cache advances only after PostgreSQL
+confirms COMMIT and the returned revisions cover every changed binding.
+Rollback, a failed commit or an unknown outcome never advances it; an unknown
+business commit fails admission closed, and production exits for a supervisor
+restart rather than continuing as a 503-only zombie.
+
+An effects-only command still writes every binding as the transaction payload,
+but reuses the pending snapshots already encoded for that transaction instead of
+encoding them again. The durable outbox is the deferred-effect carrier:
+producers insert immutable effect IDs, workers claim and acknowledge them with
+the same writer epoch, and receivers must deduplicate those IDs. Publication
+runs only after commit; an ambiguous delivery consumes an attempt rather than
+being blindly retried.
+
+The real PostgreSQL codec test wraps the production bindings and counts actual
+codec calls. It proves a pure read at 14 calls (was 28) and an effects-only
+commit at 14 (was 42). Those are call counts, not latency, throughput or a
+claim that persistence is twice or three times faster.
+
+The tradeoff is explicit. Every command still serializes all fourteen roots, and
+the cache retains one canonical `Data` per binding. A small edit rewrites a whole
+domain root and pays a full-domain encode/copy. The 16 MiB limit applies to a
+CAS/read payload, and each outbox payload is limited to 1 MiB; neither bounds the
+steady-state cache or overall process heap. A single writer still serializes all
+business commands, including `execute`-based pure reads. This is an intentional
+atomic-coarse-snapshot design, not per-entity persistence and not a horizontal
+scaling model.
+
+## 4. Attachment transfer plane
+
+The attachment transfer plane moves selected slow object I/O and multipart
+collection out of the global writer FIFO without changing the contract family.
+
+`AttachmentBodyPlanePolicy` classifies the exact raw request target, without
+percent decoding or route reconstruction. Only these shapes use the bounded
+transaction port:
+
+- `GET` and `HEAD /api/attachments/<uuid>` for the raw body.
+- `GET` and `HEAD /api/attachments/<uuid>/preview`.
+- `GET` and `HEAD /api/attachments/<uuid>/html-preview`.
+- `POST /api/attachments/upload` for a human multipart upload.
+
+Flex admission still distinguishes human, machine, computer and preview-token
+authority. The bounded path runs short committed phases around I/O:
+
+1. Commit admission, authorization and the pre-I/O projection.
+2. Perform object get/put or multipart body collection outside every writer
+   permit.
+3. Re-read the row and recheck this binding, the object reference, the message
+   channel and the authorization decision in another short committed phase.
+4. Commit row changes, or project the original refusal; a response is built only
+   after those facts are settled.
+
+A failed or definitely-uncommitted upload may delete the object it just wrote.
+An unknown SQL outcome retains the object because the row may have committed;
+automatic deletion would destroy a possibly referenced file.
+
+Every other attachment shape stays on the legacy serialized path with its
+existing errors: upload sessions, `url`, `urls`, `html-preview-url`, comments,
+malformed or non-UUID IDs, aliases, trailing or doubled slashes, internal
+agent/machine paths and public attachments. A false negative only keeps the old
+serialization; the exact segment count and UUID check prevent a false positive.
+
+`AttachmentTransferBudget.shared` runs at most four classified preparations at
+once, using a cancellation-safe FIFO. It bounds multipart collection, object I/O
+and response preparation only. It does not bound buffers retained by slow
+clients while responses drain, connection memory or overall heap, and separate
+instances do not coordinate.
+
+## 5. Target layers
 
 | Layer | Owns | Boundary |
 | --- | --- | --- |
 | Feature | Registration, request extraction, response status/headers/body projection | Calls services; does not implement domain state or hand-build JSON |
 | Service | Authorization and validation order, domain orchestration, typed results/errors | Vapor-free; state belongs in stores |
-| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; the named fixed nested-owner capabilities and remaining callback debt are documented below |
-| DTO | Codable request values, `JSONBodyConvertible` response payloads, explicit domain outcomes | No mutable shared state and no Vapor dependency |
-| Support | Small functions and policies with a named responsibility | Does not become another directory or a generic reply factory |
-| Shared | Contracts consumed by multiple targets | Does not depend on server, daemon, or Vapor targets |
+| Store | Domain records and atomic domain operations | No HTTP replies or arbitrary callbacks under a state borrow; named fixed nested-owner capabilities are documented |
+| DTO | Codable request values, `JSONBodyConvertible` response payloads, explicit outcomes | No mutable shared state and no Vapor dependency |
+| Support | Small functions and policies with a named responsibility | Not another directory or a generic reply factory |
+| Shared | Contracts consumed by multiple targets | Does not depend on server, daemon or Vapor targets |
 | TestSupport | Test setup and observation of real outputs | Not imported by production targets |
 
 Allowed dependency direction:
@@ -48,134 +212,65 @@ RaftRealtime -----------------> RaftShared
 Tests ------------------------> TestSupport
 ```
 
-This is the target boundary. Directory factory captures, broad Feature initialization dependencies and raw ledger calls remain migration debt. The global directory lock and field proxies are gone. The script enforces measurable rules, not every architectural property in this table.
+The script enforces measurable rules, not every property in this table. Swift
+compilation, owner binding review and published-path tests remain required.
+Directory factory captures, broad Feature initialization dependencies and raw
+ledger calls remain debt in the unmigrated Features listed in section 2.
 
-The new composition path allocates thirteen actual owners once or requires all thirteen as explicit parameters, with no partial defaults. It binds named domain capabilities and returns only the nine immutable groups; it has no legacy-root argument, Store bag, locator, flat compatibility alias, configuration snapshot or transport installation. Published Threads/Assignments values use the base general publisher; internal domain composers require an explicit publisher for silent/custom scenes. Existing consumers retain their old variants until individually migrated. Two production prerequisites are now explicit service methods: notifications.push resolves the original non-consuming user/family tuple, and integrations.tools evaluates Main's original strict startup read predicate. Main and Notifications use these methods over their existing owners. The later configure observer still replaces the same slot and uses its original less restrictive read rule. Real HTTP/TCP closure and received read-receipt frames cover these boundaries. Threads and Assignments can now return a service value that changes only its explicit publisher; the same private owners, capabilities, catalog and custom clock remain. Their published, silent and custom variants share live general delivery, while the parent-message-only follow guard stays silent. ChannelsFeature now stores fifteen private concrete services and one explicitly supplied optional Hub. Its caller selects custom Threads and silent Assignments; the Feature accepts no Fallback, Root, Container or dependency bag. ChannelsScene composes thirteen actual owners once, shares its profile owner with AuthFixture, and gives its bounded ChannelsFixture only private OAuth and Messages references for server, member-role and parent-message setup. Real channel/thread creation, later role and session changes, fixed-host room grants and live general delivery verify that entry. The central production mount still selects the existing Root's actual service values at this stage. The remaining eleven Root-bearing Feature files, Fallback and Main form the next synchronized production graph cutover; required seeded HTTP callers must pass their same-owner scene graph. The complete production graph constructor cutover remains pending.
+## 6. Architecture guardrails
 
-AuthScene supplies those same owner references to the shared composer and its private Auth/Invite fixtures. A focused app mounts the actual seven-service AuthFeature. HTTP seed/readback, login/me, profile completion, verification/provider updates after registration, and the three public-directory invite branches verify this scene's ownership. InstallationScene uses the same thirteen-owner composer with private Auth/Installation fixtures. Its focused app mounts AuthFeature and the three handlers from InstallationCredentialRoutes, which the complete production Features delegate to at their original registration positions. Installation HTTP results and primary token counts prove fixture/service ownership and cross-scene credential isolation; the byte/header and live-invalidation regressions remain intact. A separate legacy graph retains a complete-Fallback three-route wiring regression. A separate thirteen-local-owner composer case now consumes identity.issuerMetadata and sibling oauthFlows: post-construction URL/secret changes and actual OAuth row seed/delete demonstrate the new field's shared owners. The separate authorization case also supplies thirteen actual owners, consumes identity.authorization with sibling flows/metadata, and checks an early profile snapshot, captured/live URL contexts, later role/key changes, actual JWT verification and consumed-code replay. A third thirteen-local-owner case consumes identity.principal with same-graph G5 minting, live raw profile URL changes and actual OAuth role/server/list/client/request changes, checking all three new projections. OAuthScene likewise creates thirteen actual owners for the same composer and private Auth/OAuth fixtures. Its focused app mounts the actual five-service OAuthFeature followed by the seven-service AuthFeature and the production JSON boundary. Fifteen mounts in the first four existing HTTP files exercise this graph, with original assertions and profile/URL/request-deletion mutations retained. A second eight-file browser protocol batch adds twelve mounts on the same scene, preserving PKCE, nonce, actual P256 verification, optional claims, scoped refusals and return-URL guards. Its fixture keeps the legacy unvalidated return-URL seed distinct from the throwing update operation. A third eight-file metadata/identity batch adds eleven mounts with unchanged actual P256 verification, scoped refusal order and live secret replacements, including empty and single-space values; the default discovery mount creates a fresh scene at the original construction point. The fourth event/concurrency batch moves four more existing files: focused apps mount the actual seven-service IntegrationsFeature and extracted PixelAvatarRoutes before OAuth/Auth, while bare collection catalog tests retain their original subsets. Complete Fallback still supplies its original seven service values at the original Integrations registration point; Notifications delegates the byte-identical pixel handler at its former point. The fifth app batch migrates six more HTTP files through that unchanged scene/registrar, retaining live publish/review, revocation, installation status and explicit marketplace visibility. All twenty OAuth-prefixed HTTP test files now use scenes; with nine OIDC files and FeatureOAuthRoutes, the accepted inventory is thirty HTTP files. OAuthFlows service unit tests now use a local fixture with private profile/flags owners from the actual thirteen-owner composition and the internal Store subject over that same profile. It exposes no public TestSupport owner or new production visibility. Twelve original functions retain their bytes/claims/write facts; the exchange-count spy is replaced by twenty-four actual typed callback results with the original handoff/hash facts. The legacy Auth HTTP file additionally migrates thirty-nine non-Native functions through AuthScene's same private profile and concrete Auth/Mobile fixtures. Its three exchange-count checks become explicit public refusal observations and the unused shared getter is removed. The five Native functions now use that same private graph too; their three exchange recorders/barrier helpers are removed. Thirteen private observations become five public refusal checks plus eight deletions, retaining the original103 published HTTP/write assertions. Pure synchronous provider response inputs replace the recorders, and the concurrent test is explicitly limited to one handoff and one consumed reply rather than private exchange ordering. This closes Root use in that Auth HTTP file; Auth core, identity and profile unit files now share a local private-profile fixture over the actual thirteen-owner graph too, retaining custom service clocks and real transaction subjects. Two cumulative verification-counter observations become actual per-user token-record checks. The subsequent counter retirement removes the remaining private instrumentation field, two increments, compatibility accessor and both test getters after a whole-repository caller audit; four HTTP assertions and one direct Store assertion now check stored records or token-hash stability. Actual issuance, consumption and rate-limit ledgers retain their original bytes. Other domain fixtures and production composition remain. Seven direct Feature callers and complete Fallback supply the original graph's five concrete services at their former registration points; no Root-taking Feature constructor remains. These scenes and field checks are bounded runtime evidence, not proof of every method in all 63 fields or the complete new Fallback. Full Fallback/main and other old fixtures still use the legacy graph; their cutover must preserve one graph per scene and transport scope.
+Run `make architecture` or `python3 scripts/check_architecture.py`. `--json`
+returns a machine-readable report; `--root PATH` checks another checkout. Python
+exits 0 for pass/warnings, 1 for a violation and 2 for invalid input or an
+operational error.
 
-### 2.1 Features and request decoding
+| Check | Rule | Current 22-PASS state | Headroom |
+| --- | --- | --- | --- |
+| Directory root | `EmailLogin.swift` at most 28 lines | 28 lines | 0 |
+| Feature size | Every Feature/helper file at most 1,200 lines | 29 files, largest 1,045 | 155 |
+| Service size | Every Service/accessor file at most 1,200 lines | 191 files, largest 1,174 | 26 |
+| Store size | Every Store file, including nested extension files, at most 1,000 lines | 67 files, largest 945 | 55 |
+| Composition size | Each Composition file at most 1,000 lines | 7 files, largest 713 | 287 |
+| Container size | `ServiceContainer` at most 28 lines | 17 lines | 11 |
+| Retired directory | No Swift files under `Sources/RaftHTTP/EmailLogin/` | absent | n/a |
+| Production test markers | No `ForTesting` baseline across `Sources/` | 0 | 0 |
+| Service imports | `import Vapor` hard zero in `Services/` | 0 in 191 files | 0 |
+| Composition values | Exactly nine public groups of approved concrete values | 9 groups, 64 values | n/a |
+| Composition boundaries | Hard zero Vapor, HTTPReply, JSONSerialization, Any and AnyObject; protected declarations stay in canonical files | 0 violations | 0 |
 
-`configure(app:services:)` installs middleware and feature collections. Route handlers retain the published method/path pairs and authorization order. Migrated domains invoke typed services and use `Features/Respond.swift` for JSON projection. Other JSON paths, including knowledge replies and some channel/message handlers, still use the legacy reply adapter; the remaining reply tokens are not all transport-only infrastructure.
+The fresh 22-PASS static run is
+`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/integrated-all-slices-static.log`.
+It reports 191 Service files with the largest still 1,174, 67 Stores with the
+largest 945, 29 Feature files with the largest 1,045, and seven Composition
+files. The 26-line Service headroom and all other bounds are unchanged.
 
-`Features/RequestBody.swift` centralizes the existing typed request policies: registered content decoder with raw-JSON fallback, explicit JSON decoding, or content decoder only. Callers select their established empty/blank-body defaults and read-error behavior. Form bodies, file uploads, and existing raw-text compatibility paths remain explicit. There are no synchronous `request.body.string` reads and no global body-buffering middleware.
+The fresh run keeps the ratchets unchanged: six directory extension occurrences
+across six files, zero directory forwarders, zero Service reply tokens, one
+Service/DTO JSON-any occurrence (a comment), 60 server reply tokens across 21
+files, 81 server JSON-any occurrences across 20 files, 43 directory references
+across 24 files, 162 server string-literal candidates across 55 files, three
+unchecked Sendable declarations across two daemon-only files and zero in the
+server closure. This is textual ratchet state, not a runtime operation count and
+not proof that all handwritten response construction is gone.
 
-Moving a route to a helper must not silently change these policies. In particular, malformed JSON must not precede an authentication refusal, and adding a content-type requirement must not turn an accepted raw-JSON request into a 415.
+Composition declaration checks use a restricted lexical grammar, not a Swift AST
+or type resolver. They do not prove shared owner identity, free-function purity,
+all alias chains, macro expansion or construction DAGs; regex literals are
+outside the tokenizer's supported subset.
 
-### 2.2 Services, outcomes, and response projection
+## 7. Gates and open proof
 
-A domain returns a named payload or a semantic outcome and throws a `DomainError`. `Respond.swift` projects the error's published body and complete header policy. The success path uses `JSONBodyConvertible` when member order matters, or an Encodable payload when sorted encoding is the contract.
+Every accepted slice runs its focused tests and affected published-path
+regressions. The Lead then runs `make gate` on the integration commit and, for
+persistence or transaction changes, serial `make test-pg`. Smoke is supplemental
+real-process wiring evidence, not proof of every locked module. Integration uses
+real merge commits. Detailed gate results, acceptance evidence, the current
+release identity and rollout status live in [PLAN.md](PLAN.md); this document
+does not duplicate that record or make a deployment or acceptance claim.
 
-Installation credentials, app-initiated agent requests and resource-bound agent event ingress now follow this boundary through IntegrationsAndAppAccessService. The service owns compatible request parsing, delayed invalid-input markers and transport projection; the OAuth owner accepts typed attempts and returns value facts or semantic decisions. Agent request authorization/allocation and event principal-validation/claim/append each retain their original single owner transaction. Event payload text stays at the Foundation compatibility boundary, and dates/DTOs are projected after the owner lock. The old owner HTTP entry points are removed. Issuer metadata now uses OAuthIssuerMetadataService over the actual profiles/oauth owners. A fixed scope resolver keeps regex then live row lookup before configuration/auth/body, and independent key facts preserve the original key derivation outside the signing-secret lock. Discovery URL and key eligibility stay separate. OAuthAuthorizationService now owns browser protocol checks, specialized pre-body session snapshots, human/body parsing, consent projection and the two token grant paths. Four typed owner operations retain their original complete transactions and return flat facts; access append/consumption commits before openid-only independent key reading/signing. The three parser dialects, per-route body/config read points and grant-specific eligibility stay distinct. Old owner HTTP authorization/lookup/token/browser entry points and the old identity-service session entry are removed. OAuthPrincipalService now owns all six userinfo/serverinfo/agents handlers' projection over raw live profile URLs and three distinct complete OAuth fact queries. Agent role/same-server gates, human grant-request dependence, directory enabled/scope priority, name-only sorting and endpoint cache policies remain distinct. Picture helpers retain raw casing and one-slash behavior. The old three owner HTTP APIs are removed; the Feature G2–G7 raw-ledger cutovers are complete. Domain fixture and full production composition cutovers remain required.
-
-Examples of semantic outcomes are public attachment file/redirect results, release-note published/not-modified results, and mobile-email unsubscribe confirmation/invalid-link/unsubscribed/one-click results. These preserve non-JSON responses without replacing `HTTPReply` with another generic status/headers/body container.
-
-Conditional release-note responses retain their ETag and the original 304 header omissions. Public-search HEAD suppresses the body while retaining the corresponding GET representation length, including errors. No adapter may recompute that length from the suppressed body.
-
-Two leaf services now make the construction graph acyclic at the known policy loops. `AgentCredentialUseService` holds Agents, OAuth and the realtime relay, preserving the owner's use/throttle transaction and publishing external presence afterwards. Credential lookup no longer needs PrivateSurface. `MessageSuppressionService` holds Messages and OAuth and evaluates current prefs/mentions using the existing predicate; execute captures this leaf and no longer constructs tools to make that decision. Their long-lived values retain owners, not state or callback snapshots. AssistantOwnershipQuery likewise separates raw stored links from live membership/flag eligibility using only Agents and OAuth. Prepare/send and assignment owner lookup use that query directly; the three corresponding directory helpers are deleted. AgentSendFreshnessPolicy preserves the original pure system/causal-actor/subtype rule.
-
-Source Services receive actual owners or named capabilities; no directory-taking constructor or live dependency factory remains. Root factory captures and transitional helpers still require pure composition. The current boundaries are:
-
-- AuthFeature stores seven actual domain Services and its optional PublicServerDirectory, with no FallbackServices constructor. Its 38 registrations retain the original decode/auth/error/header order; public invite acceptance falls back only on 404, and profile completion retains its MCP lifecycle capability. Auth/session adapters retain each credential surface's accepted set and validation order. ExperimentalSurfaceGate holds only DirectoryRuntimePolicy; it reads the same owner's override/environment per request before body/auth handling. FeedbackLocator keeps broad capability refusal separate from strict optional-agent identity. OAuthFlows configuration delegates to the original OAuth setter.
-- Message/channel/MCP Services bind explicit auth, ownership, probe, catalog, projection, membership and credential capabilities. ChannelProbeAccessQuery owns the shared decision; read projections form temporary current-owner facts. System notices and raw appends enter the existing Messages allocator/mirror transaction. Threads binds its follower transport to the actual messaging Service.
-- Fleet, delivery and migration adapters own credential/integration result projection. Feature gates, providers, permissions and relay/cancel slots remain live per operation. Cancel dispatch copies its current owner slot and invokes it after release. Integration reference resolution precedes preparation in the register domain; production and fixtures share receipt rendering while retaining their distinct idempotency ports.
-- Feedback adapters own direct flags, attribution, configuration and warning projection. They retain the original env/conversation/store read order and copy the current callback before invoking it outside the slot lock.
-- ChannelMessaging uses typed auth/catalog capabilities and an immutable user-delivery binding. Each Fallback retains its own optional Hub for user join/emit, while general delivery reads the shared live relay. There is no global pair slot; observer installation and transport configuration remain separate from pure assembly.
-
-### 2.3 Stores and concurrency
-
-Each principal store owns one record family. All twelve principal stores and the OAuth ledger now declare checked Sendable conformance, with mutable records and configuration isolated by `Mutex`. State values and the 55 shared value records used by those transactions have checked conformances too. Locked helpers borrow the caller's state explicitly and do not acquire that Mutex again. OAuth flows intentionally share the AuthProfileStore state so account, identity, legal acceptance, and session writes remain one auth transaction.
-
-Field setters update only their own field in one transaction, fixing the old whole-State copy/writeback race. Separately locked getters/setters still do not form an atomic read-modify-write. Directory field proxies have now been deleted, and test setup borrows the actual owning State for complete single-owner operations. Multi-field OAuth/native deployment settings use typed owner cohorts; Services read them when handling an operation.
-
-The 28-line directory root has only immutable checked owner references and no transaction lock. Human, agent, comment, system, and app-reminder writers share one Messages allocator. Human replay/attachment validation/binding/append/mirror/done/cursor writes remain one transaction; a refusal returns before mutation. Mention uniqueness and insertion also share one Messages borrow. Relay slots are copied under their owner's Mutex and invoked outside it. These boundaries do not establish a cross-store authorization snapshot or make remaining factory extensions pure composition.
-
-OAuth's signing secret uses a separate Mutex so signing can run after a record transaction. The cards store's send-commit barrier remains separate from its State Mutex: the protected orchestration calls back into receipt/state operations, so merging the two would cause reentry.
-
-Six concrete callback-free capabilities permit nested owner transactions:
-
-| Held owner → leaf owner | Complete operation |
-| --- | --- |
-| Messages → OAuth | Append the already constructed mirror and advance the human sender cursor before releasing Messages |
-| Channels → OAuth | Reuse the existing DM identity operation, then prepare the local projection and agent/human membership before releasing Channels |
-| Channels → OAuth | ServerMembershipQuery reads current member server IDs at the original point inside switcher order read/update |
-| Channels → OAuth | ServerAdmissionQuery reads holder count only for a cap, then independently reads the active agreement before original audit/consume |
-| Channels → OAuth | ThreadChannelCommand mints/appends the original primary thread while Channels commits local rows/members and the applicable order/joint projections |
-| Tasks → Channels | Read the current channel deletedAt at the original point inside claim/status row lookup and write; release Channels before the remaining Tasks write |
-
-The two ledger ports, membership/admission queries and ThreadChannelCommand hold only a checked OAuthLedger reference and enter record-only leaf methods; OAuth has no reverse dependency on Messages or Channels. Neither query reads facts during construction. Membership preserves orderedServerList's separate nonempty check and locked second query; admission skips holder reads for no cap and keeps holder and agreement queries as two original OAuth locks. No cross-owner snapshot or global seat reservation is implied. TaskChannelDeletionQuery holds only the actual Channels owner and performs its fixed row read without an injected callback. The current production call graph has no Channels-held → Tasks edge; channel deletion releases Channels before orphan-task cleanup. Role notices release Channels before entering Messages; Messages never takes Channels or Auth. The thread command preserves normal server/deleted filtering and order append, action-card's different lookup/no-order/fallback, and joint snapshot iteration. All seven inventoried Channels callback signatures are now fixed capabilities. These facts approve the inspected paths, not arbitrary future Store callbacks. Rendering, publication and cancellation described above run outside their State borrows. Fixed-sequence test setup uses the same Messages → OAuth mirror boundary without a production sequence override.
-
-### 2.4 JSON and compatibility boundaries
-
-`Support/OrderedJSON.swift` preserves member order, omission versus null, string escaping, and scalar types. `JSONBodyConvertible` supplies the exact published body; `Respond.swift` maps it to Vapor. The contract and migration recipe are in `docs/PHASE6_JSON.md` and `docs/PHASE6_RECIPE.md`.
-
-Foundation remains at specific input or stored-text compatibility boundaries. Its JSON object parser takes the last duplicate key, while Swift's keyed JSONDecoder can take the first. Existing Foundation Bool casts accept numeric 0/1, and some inputs filter heterogeneous arrays or distinguish missing/null values. Public settings, translations, visits, release cursors, signed-token verification, and OAuth input parsing preserve those established rules.
-
-Stored runtime configuration and OAuth event fingerprints also retain Foundation's sorted serialization where client-supplied numbers must keep Foundation's established representation after parsing and serialization. Routing those values through an Int64/Double-only tree can overflow UInt64 values or alter decimal bytes. Differential tests cover large integers, decimals, booleans, slashes, duplicate keys, normalization, redaction, and provider-key merging. These compatibility writers are counted as remaining JSON-any text; they are not claimed to be typed response serialization.
-
-### 2.5 Test seams and real outputs
-
-Production `ForTesting` markers are a hard zero. Test setup lives in `Tests/TestSupport/`, with explicit injected dependencies where possible. The production behavior remains observable through HTTP or socket output.
-
-The channel-message recorded-event side channel has been removed. Idempotent replays re-emit `message:new` and `task:created` through the single persisted-frontend publisher; a replay must not duplicate the committed row or repeat commit-time follow/Done side effects. The attachment-order regression captures the actual `message:new` sink, checks its payload and the replay frame. Other retained audit/recorded collections require separate evaluation; extracting their files does not count as removing them.
-
-## 3. Architecture guardrails
-
-Run `make architecture` or `python3 scripts/check_architecture.py`. `--json` returns a machine-readable report; `--root PATH` checks another checkout. Python exit codes are 0 for pass/warnings, 1 for a guardrail violation, and 2 for invalid input or an operational error. The Makefile target is installed.
-
-| Check | Rule |
-| --- | --- |
-| Directory root size | `EmailLogin.swift` at most 28 lines; the ceiling only decreases |
-| Feature size | Every feature/helper Swift file at most 1,200 lines |
-| Service size | Every service/accessor Swift file at most 1,200 lines |
-| Store size | Every Store Swift file, including nested extension files, at most 1,000 lines |
-| Retired directory | No Swift files under `Sources/RaftHTTP/EmailLogin/`; legacy per-file limit 1,600 |
-| Production test markers | `ForTesting` per-file baseline is empty across all `Sources/`; root warning baseline is also zero |
-| Service imports | `import Vapor` is a hard zero in `Services/` |
-| Composition size | Each Composition Swift file at most 1,000 lines; ServiceContainer at most 28 |
-| Composition values | Canonical checked Container has exactly nine public let groups; Groups contain only approved concrete Service/Support values |
-| Composition boundaries | Code-token hard zero for Vapor, HTTPReply, JSONSerialization, Any and AnyObject; protected declarations/extensions/direct aliases cannot move outside the canonical files |
-
-Composition declaration checks use a restricted lexical grammar with comment/string handling, not a Swift AST or type resolver. They reject extra mutable/computed fields, initializers, owners, closures and direct compatibility aliases. External protected-name checks recognize bare, backticked and qualified ASCII identifiers, and reject a protected alias declaration name even when the canonical Composition files have been removed. They do not prove shared owner identity, free-function purity, all alias chains, macro expansion or construction DAGs; regex literals are outside the tokenizer's supported subset. Swift compilation, binding review and published-path scene tests remain required.
-
-### 3.1 Per-file ratchets
-
-Each metric has `scripts/ratchet_<metric>.tsv` with `path<TAB>count`. An unlisted file has a baseline of zero. Except for the string-literal scanner, these are textual occurrence counts and include comments; they are not counts of runtime operations.
-
-| Metric | Scope | Counted |
-| --- | --- | --- |
-| `extension_directory` | `Sources/RaftHTTP` | Literal directory extension declarations |
-| `service_httpreply` | Services | Legacy reply tokens |
-| `service_json_any` | Services and DTO | `JSONSerialization`, `[String: Any]`, `[String:Any]` |
-| `unchecked_sendable` | All Sources, including Generated | Explicit unchecked Sendable declarations |
-| `directory_forwarder` | Directory forwarding file | Physical lines; zero after deletion |
-| `service_directory_calls` | Services | Literal `directory.` text, including comments |
-| `httpreply_sources` | Seven server targets | Legacy reply tokens, including transport adapters and comments |
-| `json_any_sources` | Seven server targets | The same three JSON-any text patterns |
-| `directory_references` | Sources excluding Generated | Bare directory type identifiers, with word boundaries |
-| `unchecked_sendable_server` | Seven server targets, including Generated | Explicit unchecked Sendable declarations |
-| `json_string_payloads` | Seven server targets | Object/array-shaped Swift string literal candidates |
-
-The two JSON metrics measure different things. The string scanner handles ordinary, raw, and multiline strings, interpolation, nested strings inside interpolation, and concatenation prefixes. It skips line and nested block comments. Constants and DTO defaults are candidates too; a JSON-shaped label such as `[1]` can be a false positive. It does not validate complete JSON, follow variables/appends/arbitrary splits, decode Unicode escapes, or parse Swift regex literals. Neither metric proves that all handwritten response construction is gone.
-
-The updater validates every metric before writing any TSV. Ordinary `--update-baselines` refuses per-file growth and cannot partially lower earlier metrics after a later validation failure. Both growth and stale higher baselines fail the gate, so reductions are recorded in the same change.
-
-For a new metric, expanded scope, or a reviewed pure file move, `--print-ratchet-baseline METRIC` exports the current data without writing it. Review the scope and before/after totals, explicitly adopt the migration, then use the ordinary decreasing-only updater. Hand-editing a TSV is not evidence of a legitimate reduction. The updater never changes `for_testing_baseline.tsv`.
-
-`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py' -v` covers scan scope, duplicate roots, exclusions, scanner boundaries, decreasing-only updates, validation before writes, and file-size boundaries.
-
-### 3.2 Snapshot and exclusions
-
-The current handwritten-source snapshot has six directory extension occurrences, zero forwarding lines/properties, 60 server reply tokens, 94 server JSON-any text occurrences, 45 directory type references, and 169 string-literal candidates. Services have zero reply tokens; the combined Services/DTO JSON-any occurrence and the remaining Services `directory.` occurrence are comments. Source-level transport/string construction, factory captures, and transitional directory helpers remain outside those narrow zeros.
-
-The unchecked conformance ratchet now covers all Sources, including Generated: 3 declarations, all daemon-only; the complete server dependency closure is zero. Stores, public directories, caches, the immutable directory root, the realtime hub/session/attention state, connect state, and generated knowledge telemetry use checked storage. The realtime parser handler is deliberately non-Sendable and transferred only through SDK `NIOLoopBound` for synchronous installation on its channel loop; every entry checks that loop. Connect tasks capture immutable values and checked connection state, with channel writes/status callbacks on the owning loop. Session terminal writes and attention callbacks use a single ordered drainer outside their state locks. Session drains process at most 64 frames per batch; only backlog schedules a 1 ms continuation, so continuous HTTP broadcasts cannot keep one immediate task running indefinitely or prevent the selector from polling other connections. Idle admission still schedules its first drain immediately.
-
-The generated telemetry helper no longer has an unchecked exception. Its recovered generator and template are in `scripts/generate_knowledge.py` and `scripts/templates/knowledge.swift`; `python3 scripts/generate_knowledge.py --upstream-root /path/to/raft-source-v1.21.23 --check` verifies reproduction. Registry/table blocks remain byte-identical to the pinned corpus.
-
-The 4 retained daemon declarations are not certified safe merely because they are outside the server closure. The [daemon concurrency inventory](CONCURRENCY.md) records their fields, actual protections, callback/ownership assumptions, inspected tests, and concrete gaps. It distinguishes complete one-shot/storage gates from unprotected public mutable models, raw Any payloads, timer publication/cancellation windows, and cross-queue accesses. Six immutable daemon errors already use checked conformance. RuntimeChildGuard now has a checked lifecycle state machine and effect callbacks outside its Mutex; HTTP CompletionBox has checked one-shot state and its parser/deadlines stay on their owning NIO loop. ChatBridgeRequest and OarListModels private one-shot gates now likewise keep only a Bool in checked Mutex state; original effects remain outside at their caller positions, without changing the rest of those lifecycles. KimiRefreshLockHandle likewise keeps only its optional first-compromise reason in checked Mutex state, preserving independent getters and the complete unchanged filesystem/monitor protocol tail. WalkBudget now checks correlated value state and its complete internal consumption RMW, with foreign clock sampling outside borrowed state and original post-callback deadline reading/batch overdraw retained. Real shared-directory output exposed and closes lost consumption. DaemonFetchPool now checks its shared/isolated/direct cache state with the same five complete transactions, retaining transport outside the borrow and original key-only eviction policy. ModelLister likewise checks its running Task/generation with the original complete join/publication transaction and generation-matched cleanup after await. DispatchDeadlineScheduler retains real native WorkItems through private checked owners: the map/ID Mutex stays separate from per-item SDK enqueue/cancel borrowing, with queue/deadline sampling before the item borrow and native cancellation/retention policy preserved. DaemonUpgradeHandler is now non-Sendable, constructed and synchronously installed on each channel's loop with callback entry checks and unchanged shared Once/timeout flow. AgentStartCoordinator checks its correlated queue/index/starting/count values while retaining the original snapshot→outside callbacks→clear-current cancel policy and separate pump operations; this does not close its broader upstream semantic gaps. RuntimeModelSourceCache samples its foreign live clock before publishing into checked entry/refresh state, allowing public store reentry while retaining independent misses and old-completion overwrite policy. DaemonLog requires Sendable captures and retires unsubscribed handlers outside its checked state while preserving the actual SDK formatter and snapshot dispatch. DaemonReconnectLoop reserves failure state before its outside policy call and samples stop afterwards, preserving the original post-policy checked arithmetic with explicit ordering qualifications. These fixes have real-child/network acceptance, with the exact evidence and in-flight callback boundaries in the inventory. Four mutable daemon model classes now use checked snapshots while preserving public setters and identity; retired response Data is released outside its Mutex. Notification scheduling reserves a generation before registration, retires stale returned tokens, and admits each current callback once; clear publishes the complete reset before cancellation can reenter. Its checked default scheduler calls and releases callbacks outside the Mutex. Deterministic helper regressions cover those interleavings, without claiming that cancellation joins an admitted callback or that daemon wiring was exercised. JanitorSchedule likewise reserves a generation and serializes timer effects outside its Mutex, preserving admitted-pass ownership and weak pending callbacks. Its stop/rearm/nonoverlap regressions exercise the public Timers seam without changing disk policy or claiming production wiring. LegacyActivitySink's immutable Sendable collaborators now establish checked ownership. RuntimeProgressState uses checked four-value Mutex state, while ProbeGate retains Sendable results in actor-owned shared Tasks instead of a mutable Any box; its joined-result, FIFO and error behavior is unchanged. ManagedMcpTool's immutable fields and the correlated reminder item/order and recent-delivery order/timestamp states now have checked ownership; validation and transport stay outside their value transactions. StandingPromptLedger samples its foreign clock between two I/O lock sections, preserving per-call mkdir/clock/serialization/atomic-write order and permitting a nested writer to finish before the outer clock returns. Actual last commit wins; sampled timestamps are not a global commit order. TurnTokenAccumulator keeps all three token cohorts under one Mutex, with complete note/count operations and independent public setters; real lost-update/mixed-snapshot regressions now pass. DaemonTurnSummaryTracker now holds private value accumulators in one checked Mutex map, with complete begin/batch/send/finish transactions and unchanged bounded summary rules. Independent property setters and separate cause snapshots do not provide a multi-object transaction. Remaining fixes require domain transactions and lifecycle evidence, not annotation deletion.
-
-## 4. Behavioral gates and remaining work
-
-Every accepted slice runs relevant published-path regressions and, on the integration commit, `make gate` (`make test-sharded`, `make test-e2e`, `scripts/smoke-server.sh`, `make architecture`, `make parity-check`). Persistence and agent-execution changes also run `make test-pg`. Smoke is supplemental evidence for real-process wiring, not proof of every locked module. Coverage progress comes from `make parity` and the qualifications in `docs/PARITY.tsv`.
-
-Reminder creation now returns a typed completion after the existing Store commit; recipient selection and the ordered scheduled payload belong to the catalog Service. The two Feature handlers only emit through their fixed optional Fallback Hub and return the unchanged HTTP response; their raw-ledger helpers are deleted. Installation credential issue/server/channel routes now invoke IntegrationsAndAppAccessService. Compatibility parsing, credential admission, group authority and DTO/error projection belong to that Service; the OAuth owner returns typed mint outcomes and verified/server facts. Mint keeps live eligibility, groups/revision and token append in one transaction. Reads retain credential verification, release, group check and the separate server read; channel projection adds no server-live check. Other raw Feature ledger operations remain. The remaining work is pure composition of explicitly constructed Services, removal of factory policy/captures and transitional directory helpers, migration of those Feature operations and dedicated fixtures, and replacement of the old type with a pure `ServiceContainer`. The current owner root has no global lock or field proxies; that does not complete those composition boundaries. Unresolved daemon boundaries remain documented separately. The detailed phase order belongs in `docs/PLAN.md`. None of these steps changes the pinned Vapor revision, replaces the SwiftNIO listeners, or changes the no-database `/health` 503 contract.
+Remaining architecture debt is the unmigrated Feature factories and old root in
+section 2, raw Feature ledger operations, the single writer and fourteen
+whole-root encodes per command, unbounded process heap and slow-client response
+buffers, and the daemon concurrency inventory. The target layering, owner graph,
+persistence invariants and exclusions above are expected to stay stable through
+gate and rollout.

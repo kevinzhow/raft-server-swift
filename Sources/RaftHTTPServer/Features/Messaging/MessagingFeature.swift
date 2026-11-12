@@ -368,15 +368,23 @@ public struct MessagingFeature: RouteCollection, Sendable {
         attachments.post("upload") { request async throws -> Response in
             try await respond {
                 let lifecycle = services.emailAccounts.agentsLifecycle
-                let serverId = try lifecycle.authorizeHumanAttachmentUpload(
-                    authorization: request.headers[.authorization],
-                    headerServerId: request.headers[HTTPField.Name("X-Server-Id")!],
-                    flexAdmission: try requireAttachmentFlexContext(request)
-                )
+                let authorization = request.headers[.authorization]
+                let headerServerId = request.headers[HTTPField.Name("X-Server-Id")!]
+                let flexAdmission = try requireAttachmentFlexContext(request)
+                let transaction = try AttachmentTransactionScope.mode()
+                // The write gate is a committed phase; multipart collection and
+                // object writes stay outside every writer permit.
+                let serverId = try await transaction.committedValue {
+                    try lifecycle.authorizeHumanAttachmentUpload(
+                        authorization: authorization,
+                        headerServerId: headerServerId,
+                        flexAdmission: flexAdmission
+                    )
+                }
                 let parsed = try await AttachmentMultipartDecoder.decode(request)
                 return try await lifecycle.uploadAttachmentContents(
-                    authorization: request.headers[.authorization], serverId: serverId,
-                    channelId: parsed.channelId, files: parsed.files
+                    authorization: authorization, serverId: serverId,
+                    channelId: parsed.channelId, files: parsed.files, transaction: transaction
                 )
             }
         }
@@ -434,10 +442,12 @@ public struct MessagingFeature: RouteCollection, Sendable {
             let authorization = request.headers[.authorization] ?? queryToken.map { "Bearer \($0)" }
             let serverId = request.headers[HTTPField.Name("X-Server-Id")!] ?? desktopQuery(request.url.query, "serverId")
             do {
+                let transaction = try AttachmentTransactionScope.mode()
                 let content = try await services.emailAccounts.agentsLifecycle.attachmentContent(
                     authorization: authorization, serverId: serverId,
                     attachmentId: request.parameters.get("id") ?? "",
-                    admission: try requireAttachmentFlexContext(request)
+                    admission: try requireAttachmentFlexContext(request),
+                    transaction: transaction
                 )
                 return AttachmentContentResponse.make(
                     content, request: request,
@@ -452,11 +462,13 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
                     throw AttachmentFlexAdmissionError.authenticationRequired
                 }
+                let transaction = try AttachmentTransactionScope.mode()
                 let content = try await services.emailAccounts.agentsLifecycle.attachmentHTMLPreview(
                     attachmentId: request.parameters.get("id") ?? "",
                     admission: admission,
                     previewToken: AttachmentQueryScalars.value(request.url.query, named: "previewToken"),
-                    bearerQuery: AttachmentQueryScalars.value(request.url.query, named: "token")
+                    bearerQuery: AttachmentQueryScalars.value(request.url.query, named: "token"),
+                    transaction: transaction
                 )
                 return try AttachmentHTMLPreviewResponse.make(content,
                     frameAncestors: services.corsOrigins + [services.releaseEnvironment["APP_URL"]].compactMap { $0 })
@@ -478,8 +490,11 @@ public struct MessagingFeature: RouteCollection, Sendable {
                 guard let admission = request.auth.get(AttachmentFlexContext.self)?.admission else {
                     throw AttachmentFlexAdmissionError.authenticationRequired
                 }
+                let transaction = try AttachmentTransactionScope.mode()
                 return try await services.emailAccounts.agentsLifecycle.attachmentPreview(
-                    attachmentId: request.parameters.get("id") ?? "", admission: admission)
+                    attachmentId: request.parameters.get("id") ?? "", admission: admission,
+                    transaction: transaction
+                )
             }
         }
         tasks.get("server", "snapshot-metrics") { request async throws -> Response in

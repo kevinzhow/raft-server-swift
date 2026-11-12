@@ -58,8 +58,7 @@ private func uploadContractAttachment(
     return try #require(rows.first?["id"] as? String)
 }
 
-@Test func attachmentResponseIgnoresMalformedAndMultipleRangesAndResolvesSingleRanges() async throws {
-    try await withAttachmentContract { client, headers, channel in
+@Test func attachmentResponseIgnoresMalformedAndMultipleRangesAndResolvesSingleRanges() async throws {    try await withAttachmentContract { client, headers, channel in
         let id = try await uploadContractAttachment(client, headers: headers, channel: channel, filename: "range.bin", mime: "application/octet-stream")
         let path = URI(string: "/api/attachments/\(id)")
         for raw in ["bytes=0-1,3-4", "bytes=abc-5", "bytes=1-abc", "items=0-1", "Bytes=0-1", "bytes =0-1", "bytes= 0-1", "bytes=0 -1", "bytes=0-1;extra", "bytes=-", "bytes=+1-2"] {
@@ -164,5 +163,47 @@ private func uploadContractAttachment(
         let response = try await client.send(.get, headers: headers, to: URI(string: "/api/attachments/\(id)"))
         #expect(response.headers[.contentType] == "text/plain; charset=utf-8")
         #expect(response.headers[.contentDisposition] == "attachment; filename=\"caf_.txt\"; filename*=UTF-8''caf%C3%A9.txt")
+    }
+}
+
+@Test func attachmentHeadMatchesGetForBodyRangeAndTypedRefusals() async throws {
+    try await withAttachmentContract { client, headers, channel in
+        let id = try await uploadContractAttachment(
+            client, headers: headers, channel: channel, filename: "head.bin", mime: "application/octet-stream"
+        )
+        let path = try #require(URI(string: "/api/attachments/\(id)"))
+
+        let body = try await client.send(.get, headers: headers, to: path)
+        let head = try await client.send(.head, headers: headers, to: path)
+        #expect(head.status == body.status)
+        #expect(head.headers[.contentLength] == body.headers[.contentLength])
+        #expect(head.headers[.contentType] == body.headers[.contentType])
+        #expect(head.headers[.contentDisposition] == body.headers[.contentDisposition])
+        #expect(head.headers[.acceptRanges] == "bytes")
+
+        var rangeHeaders = headers
+        rangeHeaders[.range] = "bytes=1-3"
+        let rangedBody = try await client.send(.get, headers: rangeHeaders, to: path)
+        let rangedHead = try await client.send(.head, headers: rangeHeaders, to: path)
+        #expect(rangedHead.status == .partialContent)
+        #expect(rangedHead.headers[.contentRange] == rangedBody.headers[.contentRange])
+        #expect(rangedHead.headers[.contentLength] == "3")
+
+        var unsatisfiableHeaders = headers
+        unsatisfiableHeaders[.range] = "bytes=99-"
+        let unsatisfiable = try await client.send(.head, headers: unsatisfiableHeaders, to: path)
+        #expect(unsatisfiable.status == .rangeNotSatisfiable)
+        #expect(unsatisfiable.headers[.contentRange] == "bytes */8")
+        #expect(unsatisfiable.headers[.contentLength] == "0")
+
+        // A non-UUID UUID-gated path keeps its legacy typed refusal; it must not
+        // suddenly become the bounded persistence 503.
+        let nonUUID = try #require(URI(string: "/api/attachments/not-a-uuid"))
+        let typed = try await client.send(.get, headers: headers, to: nonUUID)
+        #expect(typed.status == .badRequest)
+        #expect(typed.body.string == #"{"code":"invalid_attachment_id","error":"Invalid attachment id"}"#)
+        let typedHead = try await client.send(.head, headers: headers, to: nonUUID)
+        #expect(typedHead.status == .badRequest)
+        #expect(typedHead.headers[.contentLength] == typed.headers[.contentLength])
     }
 }

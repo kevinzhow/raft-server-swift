@@ -1,5 +1,6 @@
 import Foundation
 import RaftObjectStorage
+import Synchronization
 
 private enum AttachmentUploadActor: Sendable {
     case human(authorization: String?, serverId: String)
@@ -45,6 +46,13 @@ private struct AttachmentReadSnapshot: Sendable {
     }
 }
 
+/// The bounded upload's pre-I/O admission and storage capture. It contains no
+/// bytes and no request body; the caller writes objects between phases.
+private struct AttachmentUploadPlan: Sendable {
+    let admission: AttachmentUploadAdmission
+    let storage: (any AttachmentObjectStoring)?
+}
+
 extension AgentsLifecycleService {
     /// Prefix flex and its first server scope already ran. Recheck the
     /// later full-profile/header-only server gate before multipart decoding.
@@ -56,26 +64,32 @@ extension AgentsLifecycleService {
     }
 
     public func uploadAttachmentContents(
-        authorization: String?, serverId: String, channelId: String, files: [AttachmentUploadContent]
+        authorization: String?, serverId: String, channelId: String, files: [AttachmentUploadContent],
+        transaction: AttachmentTransactionMode = .legacy
     ) async throws -> AttachmentUploadListResponse {
         try await storeAttachmentContents(
-            actor: .human(authorization: authorization, serverId: serverId), channelId: channelId, files: files
+            actor: .human(authorization: authorization, serverId: serverId), channelId: channelId,
+            files: files, transaction: transaction
         )
     }
 
     public func uploadMachineAttachmentContent(
-        authorization: String?, agentId: String, channelId: String, file: AttachmentUploadContent
+        authorization: String?, agentId: String, channelId: String, file: AttachmentUploadContent,
+        transaction: AttachmentTransactionMode = .legacy
     ) async throws -> AttachmentUploadListResponse {
         try await storeAttachmentContents(
-            actor: .machine(authorization: authorization, agentId: agentId), channelId: channelId, files: [file]
+            actor: .machine(authorization: authorization, agentId: agentId), channelId: channelId,
+            files: [file], transaction: transaction
         )
     }
 
     public func uploadAgentAttachmentContent(
-        authorization: String?, channelId: String, file: AttachmentUploadContent
+        authorization: String?, channelId: String, file: AttachmentUploadContent,
+        transaction: AttachmentTransactionMode = .legacy
     ) async throws -> AgentAttachmentUploadResponse {
         let result = try await storeAttachmentContents(
-            actor: .agent(authorization: authorization), channelId: channelId, files: [file]
+            actor: .agent(authorization: authorization), channelId: channelId,
+            files: [file], transaction: transaction
         )
         guard let row = result.attachments.first else { throw AttachmentContentError.uploadFailed }
         return AgentAttachmentUploadResponse(
@@ -85,37 +99,54 @@ extension AgentsLifecycleService {
 
     /// Authorize before object I/O and again before returning plaintext. The
     /// projection and object reference must still describe the same attachment.
+    /// Each authorization/capture pair is one short committed phase; the object
+    /// read happens between them outside every writer permit.
     public func attachmentContent(
         authorization: String?, serverId: String?, attachmentId: String,
-        admission: AttachmentFlexAdmission? = nil
+        admission: AttachmentFlexAdmission? = nil,
+        transaction: AttachmentTransactionMode = .legacy
     ) async throws -> AttachmentBinaryContent {
-        if let admission {
-            _ = try attachmentReadRecord(admission: admission, attachmentId: attachmentId)
-        } else {
-            _ = try readAttachment(authorization: authorization, serverId: serverId, attachmentId: attachmentId)
+        let captured = try await transaction.committedValue {
+            if let admission {
+                _ = try attachmentReadRecord(admission: admission, attachmentId: attachmentId)
+            } else {
+                _ = try readAttachment(authorization: authorization, serverId: serverId, attachmentId: attachmentId)
+            }
+            return try attachmentReadSnapshot(attachmentId)
         }
-        let captured = try attachmentReadSnapshot(attachmentId)
         let bytes = try await loadAttachmentBytes(captured, failure: .downloadFailed)
-        if let reference = captured.reference,
-           messages.withState({ $0.attachmentObjectReferences[attachmentId] }) != reference {
-            throw AgentsLifecycleError.attachmentNotFound
-        }
-        if let admission {
-            _ = try attachmentReadRecord(admission: admission, attachmentId: attachmentId)
-        } else {
-            _ = try readAttachment(authorization: authorization, serverId: serverId, attachmentId: attachmentId)
+        let current = try await transaction.committedValue {
+            if let admission {
+                _ = try attachmentReadRecord(admission: admission, attachmentId: attachmentId)
+            } else {
+                _ = try readAttachment(authorization: authorization, serverId: serverId, attachmentId: attachmentId)
+            }
+            let current = try attachmentReadSnapshot(attachmentId)
+            guard current.hasSameBinding(as: captured) else {
+                throw AgentsLifecycleError.attachmentNotFound
+            }
+            return current
         }
         guard bytes.count == captured.row.sizeBytes else { throw AttachmentContentError.downloadFailed }
-        return AttachmentBinaryContent(bytes: bytes, filename: captured.row.filename, mimeType: captured.row.mimeType)
+        return AttachmentBinaryContent(
+            bytes: bytes, filename: current.row.filename, mimeType: current.row.mimeType
+        )
     }
 
     /// Preview admission runs on both sides of object I/O. All captured byte and
     /// authorization bindings must still refer to the same projection afterwards.
     func attachmentPreviewContent(
-        attachmentId: String, authorize: @Sendable (ChannelAttachment) throws -> AttachmentPreviewAdmission
+        attachmentId: String,
+        transaction: AttachmentTransactionMode = .legacy,
+        authorize: @escaping @Sendable (ChannelAttachment) throws -> AttachmentPreviewAdmission
     ) async throws -> AttachmentBinaryContent {
-        let captured = try attachmentReadSnapshot(attachmentId)
-        let admission = try authorize(captured.row)
+        let pre = try await transaction.committedValue {
+            let snapshot = try attachmentReadSnapshot(attachmentId)
+            let admission = try authorize(snapshot.row)
+            return (snapshot, admission)
+        }
+        let captured = pre.0
+        let admission = pre.1
         let maximum = 200 * 1024 * 1024
         guard let count = captured.row.sizeBytes, count >= 0, count <= maximum else {
             throw AttachmentContentError.previewFailed
@@ -126,12 +157,17 @@ extension AgentsLifecycleService {
             }
         }
         let bytes = try await loadAttachmentBytes(captured, failure: .previewFailed)
-        let current = try attachmentReadSnapshot(attachmentId)
-        guard current.hasSameBinding(as: captured) else { throw AgentsLifecycleError.attachmentNotFound }
-        let currentAdmission = try authorize(current.row)
-        guard currentAdmission == admission else { throw AgentsLifecycleError.attachmentNotFound }
+        let current = try await transaction.committedValue {
+            let current = try attachmentReadSnapshot(attachmentId)
+            guard current.hasSameBinding(as: captured) else { throw AgentsLifecycleError.attachmentNotFound }
+            let currentAdmission = try authorize(current.row)
+            guard currentAdmission == admission else { throw AgentsLifecycleError.attachmentNotFound }
+            return current
+        }
         guard bytes.count == count else { throw AttachmentContentError.previewFailed }
-        return AttachmentBinaryContent(bytes: bytes, filename: current.row.filename, mimeType: currentAdmission.mimeType)
+        return AttachmentBinaryContent(
+            bytes: bytes, filename: current.row.filename, mimeType: admission.mimeType
+        )
     }
 
     private func attachmentReadSnapshot(_ id: String) throws -> AttachmentReadSnapshot {
@@ -161,6 +197,24 @@ extension AgentsLifecycleService {
     }
 
     private func storeAttachmentContents(
+        actor: AttachmentUploadActor, channelId: String, files: [AttachmentUploadContent],
+        transaction: AttachmentTransactionMode
+    ) async throws -> AttachmentUploadListResponse {
+        switch transaction {
+        case .legacy:
+            return try await storeAttachmentContentsLegacy(
+                actor: actor, channelId: channelId, files: files
+            )
+        case .bounded(let port):
+            return try await storeAttachmentContentsBounded(
+                actor: actor, channelId: channelId, files: files, port: port
+            )
+        }
+    }
+
+    /// Every excluded caller (internal agent/machine uploads and direct
+    /// fixtures) keeps the original outer-transaction behavior.
+    private func storeAttachmentContentsLegacy(
         actor: AttachmentUploadActor, channelId: String, files: [AttachmentUploadContent]
     ) async throws -> AttachmentUploadListResponse {
         let admission = try admitAttachmentUpload(actor: actor, channelId: channelId, files: files)
@@ -205,6 +259,113 @@ extension AgentsLifecycleService {
             }
         }
         return AttachmentUploadListResponse(attachments: zip(ids, files).map { .init(id: $0.0, filename: $0.1.filename) })
+    }
+
+    /// Bounded upload: admit/capture, object writes, re-admit/compare, rows.
+    /// Cleanup happens only when metadata is definitely not committed. An
+    /// unknown commit never deletes the just-written object.
+    private func storeAttachmentContentsBounded(
+        actor: AttachmentUploadActor, channelId: String, files: [AttachmentUploadContent],
+        port: any AttachmentTransactionPort
+    ) async throws -> AttachmentUploadListResponse {
+        let planOutcome = await port.commit {
+            do {
+                let admission = try admitAttachmentUpload(actor: actor, channelId: channelId, files: files)
+                let requiresDurable = messages.withState { $0.requiresDurableAttachmentStorage }
+                let storage = messages.withState { $0.attachmentObjectStorage }
+                guard storage != nil || !requiresDurable else {
+                    throw AttachmentContentError.uploadsNotConfigured
+                }
+                return .ready(AttachmentUploadPlan(admission: admission, storage: storage))
+            } catch let error as any DomainError {
+                return .refused(error)
+            } catch {
+                return .failed(error)
+            }
+        }
+        let plan = try planOutcome.value()
+
+        let ids = files.map { _ in UUID().uuidString.lowercased() }
+        var references: [String: AttachmentObjectReference] = [:]
+        do {
+            if let storage = plan.storage {
+                for (id, file) in zip(ids, files) {
+                    references[id] = try await storage.put(attachmentID: id, bytes: file.bytes)
+                }
+            }
+        } catch {
+            // The puts failed before any metadata write was attempted.
+            await deleteReferences(references, storage: plan.storage)
+            if let refusal = error as? any DomainError { throw refusal }
+            throw AttachmentContentError.uploadFailed
+        }
+
+        // Set immediately before the row publication. Nothing can throw after
+        // this point, so a false value proves no attachment metadata was written.
+        let writtenReferences = references
+        let metadataWriteStarted = Mutex(false)
+        let outcome = await port.commit {
+            do {
+                guard try admitAttachmentUpload(actor: actor, channelId: channelId, files: files)
+                    == plan.admission else {
+                    throw AttachmentContentError.cannotWriteChannel
+                }
+                let now = dependencies.now()
+                metadataWriteStarted.withLock { $0 = true }
+                messages.withState { state in
+                    for (id, file) in zip(ids, files) {
+                        state.channelAttachments[id] = ChannelAttachment(
+                            id: id, channelId: channelId, uploaderId: plan.admission.uploaderId,
+                            filename: file.filename, messageId: nil, messagePosition: nil,
+                            mimeType: file.mimeType, sizeBytes: file.bytes.count,
+                            uploaderType: plan.admission.uploaderType,
+                            createdAt: now, storageKey: writtenReferences[id]?.objectKey
+                        )
+                        if let reference = writtenReferences[id] {
+                            state.attachmentObjectReferences[id] = reference
+                        } else {
+                            state.developmentAttachmentBytes[id] = file.bytes
+                        }
+                    }
+                }
+                return .ready(AttachmentUploadListResponse(
+                    attachments: zip(ids, files).map { .init(id: $0.0, filename: $0.1.filename) }
+                ))
+            } catch let error as any DomainError {
+                return .refused(error)
+            } catch {
+                return .failed(error)
+            }
+        }
+
+        switch outcome {
+        case .committed(let response):
+            return response
+        case .notCommitted(.refused(let error)):
+            // The closure guarantees no attachment row was written before a
+            // refusal, and the runtime has committed any admission side effects.
+            await deleteReferences(references, storage: plan.storage)
+            throw error
+        case .notCommitted(.failed(let error)):
+            if !metadataWriteStarted.withLock({ $0 }) {
+                await deleteReferences(references, storage: plan.storage)
+            }
+            throw error
+        case .notCommitted(.unavailable), .notCommitted(.cancelledBeforeStart):
+            // The callback never started, so no attachment row can exist.
+            await deleteReferences(references, storage: plan.storage)
+            throw AttachmentPersistenceUnavailable()
+        case .outcomeUnknown:
+            // SQL may have committed. Never delete the object.
+            throw AttachmentPersistenceUnavailable()
+        }
+    }
+
+    private func deleteReferences(
+        _ references: [String: AttachmentObjectReference], storage: (any AttachmentObjectStoring)?
+    ) async {
+        guard let storage else { return }
+        for reference in references.values { try? await storage.delete(reference) }
     }
 
     private func admitAttachmentUpload(

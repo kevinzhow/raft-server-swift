@@ -709,6 +709,28 @@ extension EmailLoginDirectory {
         )
     }
 
+    /// The production Feature services and briefing hook over this directory's
+    /// retained owners. A host that keeps the directory for durable bindings and
+    /// lifecycle wiring passes this one graph to the Feature mounts instead of
+    /// asking each factory for a separate value.
+    public func productionFeatureGraph() -> ProductionFeatureGraph {
+        composeProductionFeatureGraph(
+            profiles: authProfileStore,
+            notifications: notificationsStore,
+            productEvents: productEventStore,
+            inboxFacts: inboxFactStore,
+            threadFollows: threadFollowStore,
+            messages: messagesAndThreadsStore,
+            agents: agentsRuntimeStore,
+            tasks: tasksAndRemindersStore,
+            machines: machinesAndComputersStore,
+            channels: serversAndChannelsStore,
+            cards: managedMCPAndCardsStore,
+            feedback: feedbackStore,
+            oauth: oauth
+        )
+    }
+
     /// The owner onboarding briefing over this directory's actual owners. The
     /// delivery admission is producer-bound: it needs the caller's durable
     /// transaction, and a notice admitted here is sent by the production worker.
