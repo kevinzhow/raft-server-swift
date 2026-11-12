@@ -24,6 +24,29 @@ The qualified source was landed by the no-ff merge
 `d244fe30d8840f56fe679c37e229538069179964`; later documentation commits leave
 `Sources/` and `Tests/` unchanged.
 
+## Native Markdown candidate
+
+`replace-javascriptcore-markdown` replaces the message parser's JavaScriptCore
+context with pinned MD4C and source-range/GFM adaptations. The JS parser remains
+an offline oracle under `Tools/MarkdownParser/reference`; production resources
+contain the combined native dependency notices instead of executable JS.
+Parser scratch is owned by each invocation, with no global parsing lock.
+
+Qualification so far: 9,189 differential inputs have identical raw ranges and
+mention surfaces; the final 17,492-input ASan/UBSan/leak campaign passes; targeted
+human/agent, raw/typed HTTP mention cases and the streamed process-map startup
+check pass. The startup check rejects the historical JSC executable. The full
+five-step gate passes (sharded regression, process E2E, smoke, architecture,
+parity-check); the existing Kimi race test passes its isolated retry and the
+failure list is empty. Evidence: `.build/gate-logs/20261112T040123Z/summary.txt`.
+Production remains `ab04cacf`; this branch is not deployed.
+
+Three matching debug startup checkpoints have median RSS 95.4 MiB (JSC) versus
+64.0 MiB (native), before database state or user traffic. An isolated parser
+driver after 16,623 parses reports 108.8 versus 20.0 MiB. Neither measurement is
+production steady-state memory. Comparison and regression commands live in
+`Tools/MarkdownParser/README.md`.
+
 ## Durable-state clearance
 
 The original comparison kept `post-deploy-verification.json` `passed: false`;

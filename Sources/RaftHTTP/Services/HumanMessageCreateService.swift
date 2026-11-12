@@ -34,8 +34,8 @@ public enum HumanMessageContract: Sendable, Equatable {
 /// it invokes no Service callback while State is borrowed. Routes decode the
 /// body and project the returned DTO or thrown DomainError.
 public struct HumanMessageCreateService: Sendable {
-    /// Required startup closure: load the packaged mature parser and execute it
-    /// before the server accepts message writes. This creates no business state.
+    /// Execute the compiled native parser before accepting message writes.
+    /// The self-check releases its scratch and creates no business state.
     public static func validateMessageParserRuntime() throws {
         _ = try MessageMentionMarkdown.parse("")
     }
