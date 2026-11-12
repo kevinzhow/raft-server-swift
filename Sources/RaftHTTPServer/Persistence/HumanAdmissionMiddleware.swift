@@ -147,7 +147,15 @@ struct HumanAdmissionMiddleware: Middleware {
         case .legacyAttachment: return try await next.respond(to: request)
         }
         do {
-            _ = try auth.admitHuman(authorization: request.headers[.authorization], requirement: humanRequirement)
+            // Defensive: a classified request carries the bounded port. A future
+            // policy that gates a body-plane path here still commits the
+            // admission instead of discarding an unscoped auth write. The
+            // current attachment serving/upload shapes return before this.
+            let transaction = try AttachmentTransactionScope.mode()
+            let authorization = request.headers[.authorization]
+            _ = try await transaction.committedValue {
+                try auth.admitHuman(authorization: authorization, requirement: humanRequirement)
+            }
         } catch let error as HumanAdmissionError {
             var refusal = RaftHTTPServer.respond(
                 status: error.status, headers: error.errorHeaders,
@@ -159,6 +167,9 @@ struct HumanAdmissionMiddleware: Middleware {
                 refusal.headers[.contentLength] = length
             }
             return refusal
+        } catch let error as AttachmentPersistenceUnavailable {
+            _ = error
+            return try await BusinessPersistenceUnavailableResponse.make(request: request)
         }
         return try await next.respond(to: request)
     }

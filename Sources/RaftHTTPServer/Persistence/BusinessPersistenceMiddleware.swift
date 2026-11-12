@@ -2,6 +2,29 @@ import Foundation
 import RaftHTTP
 import Vapor
 
+/// The exact business-persistence 503 shared by the legacy writer boundary and
+/// the bounded admission middlewares. HEAD keeps the GET body length.
+enum BusinessPersistenceUnavailableResponse {
+    static func make(request: Request) async throws -> Response {
+        var response = try await RaftHTTPServer.respond(
+            status: 503,
+            headers: .exact(["Content-Type": "application/json", "Cache-Control": "no-store"])
+        ) {
+            BusinessPersistenceUnavailableBody()
+        }
+        if request.method == .head {
+            let length = response.headers[.contentLength]
+            response.body = .init(string: "")
+            response.headers[.contentLength] = length
+        }
+        return response
+    }
+}
+
+private struct BusinessPersistenceUnavailableBody: Encodable, Sendable {
+    let error = "Business persistence unavailable"
+}
+
 /// The outermost business boundary returns a response only after PG commit and
 /// publication. HTTP refusals can consume durable nonces, so response status does
 /// not determine rollback. Intent failures must mark the transaction rollback-only.
@@ -29,14 +52,26 @@ struct BusinessPersistenceMiddleware: Middleware {
         if request.method == .get && ["/api/version", "/health", "/livez"].contains(request.url.path) {
             return try await next.respond(to: request)
         }
-        // Only these read-only machine RPC routes own explicit short
-        // committed boundaries in their typed services. Awaiting a daemon under
-        // the outer FIFO writer would prevent earlier ready/catalog commits.
         do {
+            // Only these read-only machine RPC routes own explicit short
+            // committed boundaries in their typed services. Awaiting a daemon under
+            // the outer FIFO writer would prevent earlier ready/catalog commits.
             // Vapor forwards HEAD to these GET handlers without changing the
             // request method. Both methods need the same short UoW boundaries.
             if (request.method == .get || request.method == .head) && Self.isMachineQuery(request.url.path) {
                 return try await next.respond(to: request)
+            }
+            // The selected attachment body plane keeps storage/multipart I/O out of
+            // the global writer. It gets a request-scoped port and no outer
+            // `runtime.execute`; admission and row writes use short phases.
+            if AttachmentBodyPlanePolicy.matches(method: request.method, path: request.url.path) {
+                return try await AttachmentTransactionScope.$bounded.withValue(true) {
+                    try await AttachmentTransactionScope.$port.withValue(
+                        RuntimeAttachmentTransactionPort(runtime: runtime)
+                    ) {
+                        try await next.respond(to: request)
+                    }
+                }
             }
             return try await runtime.execute {
                 try await next.respond(to: request)
@@ -44,14 +79,7 @@ struct BusinessPersistenceMiddleware: Middleware {
         } catch {
             // Never leak a driver error, URL or token, and never return the
             // handler's successful body after a failed/unknown SQL commit.
-            return try await RaftHTTPServer.respond(
-                status: 503,
-                headers: .exact(["Content-Type": "application/json", "Cache-Control": "no-store"])
-            ) { BusinessPersistenceUnavailableBody() }
+            return try await BusinessPersistenceUnavailableResponse.make(request: request)
         }
     }
-}
-
-private struct BusinessPersistenceUnavailableBody: Encodable, Sendable {
-    let error = "Business persistence unavailable"
 }
