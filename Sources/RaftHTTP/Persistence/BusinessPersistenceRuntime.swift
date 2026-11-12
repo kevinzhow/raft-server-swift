@@ -41,6 +41,11 @@ public actor BusinessPersistenceRuntime {
     let fatalFailureHandler: BusinessPersistenceFatalFailureHandler
     let logger: Logger
     var revisions: [DurableKey: Int64] = [:]
+    /// Canonical bytes of the last confirmed commit for every binding. This is
+    /// the comparison base for "did this transaction change a durable fact?".
+    /// It is seeded from the wired live owners at activation and advanced only
+    /// after a confirmed SQL COMMIT; it is never read back from PostgreSQL.
+    var committedSnapshots: [DurableKey: Data] = [:]
     var activated = false
     var stopping = false
     var resourcesClosed = false
@@ -135,6 +140,17 @@ public actor BusinessPersistenceRuntime {
         // policy requires no active context and no concurrent unscoped writer.
         context.discard()
         domain.enableReadOnlyUnscoped()
+        // Production wiring runs after start restored the owners and before
+        // admission opens, so this committed view is the state the runtime is
+        // about to serve, not the raw rows read at bootstrap. Encode it once;
+        // without this seed every pure read would look like a durable change.
+        try RaftShared.withCommittedReadView(in: domain) {
+            var seeded: [DurableKey: Data] = [:]
+            for binding in bindings {
+                seeded[binding.key] = try binding.encode()
+            }
+            committedSnapshots = seeded
+        }
         activated = true
         readyState.observedHealthy(epoch: health.epoch)
         readyState.activate()
@@ -154,6 +170,10 @@ public actor BusinessPersistenceRuntime {
     private struct PreparedWrites {
         let writes: [DurableWrite]
         let changed: Set<DurableKey>
+        /// Every pending snapshot encoded for this transaction. An effects-only
+        /// commit needs all fourteen as its SQL payload and reuses these bytes
+        /// instead of encoding the same frozen state a second time.
+        let pending: [DurableKey: Data]
     }
 
     private func executeAdmitted<Output: Sendable>(
@@ -183,10 +203,11 @@ public actor BusinessPersistenceRuntime {
                 context.flushDeferredEffects()
             } else {
                 // A durable effect needs a real SQL transaction. Store writes are
-                // then the transaction payload even when no snapshot byte moved.
-                let writes = prepared.writes.isEmpty
-                    ? try preparedWrites(context: context, creating: false, forceAll: true).writes
-                    : prepared.writes
+                // then the transaction payload even when no snapshot byte moved;
+                // reuse the pending snapshots this transaction already encoded.
+                let payload = prepared.writes.isEmpty
+                    ? try forcedWrites(from: prepared)
+                    : prepared
                 let conditions = try bindings.map { binding in
                     guard let revision = revisions[binding.key] else {
                         throw BusinessPersistenceError.invalidRevisionSet
@@ -199,15 +220,14 @@ public actor BusinessPersistenceRuntime {
                 // connection with an open transaction or failing admission closed.
                 let committed = try await Self.runCommitShielded { [persistence, lease] in
                     try await persistence.compareAndSwap(
-                        writes, checking: conditions,
+                        payload.writes, checking: conditions,
                         expectedWriterEpoch: lease.epoch, effects: effects
                     )
                 }
                 // A confirmed COMMIT must publish even if close starts concurrently.
                 // Never substitute a blind in-memory rollback for an unknown COMMIT.
-                let written = prepared.writes.isEmpty
-                    ? Set(bindings.map(\.key)) : prepared.changed
-                try applyCommittedRevisions(committed, written: written)
+                try applyCommittedRevisions(committed, written: payload.changed)
+                recordCommittedSnapshots(payload, written: payload.changed)
                 context.publishCommitted()
                 context.flushDeferredEffects()
             }
@@ -255,6 +275,7 @@ public actor BusinessPersistenceRuntime {
                 prepared.writes, checking: conditions, expectedWriterEpoch: lease.epoch
             )
             try applyCommittedRevisions(created, written: prepared.changed)
+            recordCommittedSnapshots(prepared, written: prepared.changed)
         } else {
             let byKey = Dictionary(uniqueKeysWithValues: documents.map { ($0.key, $0) })
             for binding in bindings {
@@ -272,36 +293,37 @@ public actor BusinessPersistenceRuntime {
         context.flushDeferredEffects()
     }
 
-    /// Encode the pending and the committed snapshots in the same task. A
-    /// binding whose bytes are identical did not change any durable fact and
-    /// must not consume a revision or a row rewrite. PG still checks every
-    /// binding's revision and the total snapshot/effect budget against 16 MiB.
+    /// Encode every pending snapshot exactly once in the same task, then compare
+    /// it with the canonical bytes of the last confirmed commit. A binding whose
+    /// bytes are identical did not change any durable fact and must not consume a
+    /// revision or a row rewrite. The committed base is not re-encoded: activation
+    /// seeded it from the wired live owners and only a confirmed commit advances
+    /// it, so rollback and failed commits cannot move the comparison base.
+    /// PG still checks every binding's revision and the total snapshot/effect
+    /// budget against 16 MiB.
     private func preparedWrites(
-        context: TransactionContext, creating: Bool, forceAll: Bool = false
+        context: TransactionContext, creating: Bool
     ) throws -> PreparedWrites {
         if !creating {
-            for binding in bindings where revisions[binding.key] == nil {
+            for binding in bindings
+            where revisions[binding.key] == nil || committedSnapshots[binding.key] == nil {
                 throw BusinessPersistenceError.invalidRevisionSet
             }
-        }
-        if creating || forceAll {
-            let writes = try context.withPendingReadView {
-                try bindings.map { binding in
-                    try DurableWrite.put(
-                        binding.encode(), key: binding.key, codecVersion: 1,
-                        expectedRevision: creating ? nil : revisions[binding.key]
-                    )
-                }
-            }
-            return PreparedWrites(writes: writes, changed: Set(bindings.map(\.key)))
         }
         var pending: [DurableKey: Data] = [:]
         try context.withPendingReadView {
             for binding in bindings { pending[binding.key] = try binding.encode() }
         }
-        var base: [DurableKey: Data] = [:]
-        try context.withBaseReadView {
-            for binding in bindings { base[binding.key] = try binding.encode() }
+        if creating {
+            let writes = try bindings.map { binding -> DurableWrite in
+                guard let snapshot = pending[binding.key] else {
+                    throw BusinessPersistenceError.invalidRevisionSet
+                }
+                return try DurableWrite.put(
+                    snapshot, key: binding.key, codecVersion: 1, expectedRevision: nil
+                )
+            }
+            return PreparedWrites(writes: writes, changed: Set(bindings.map(\.key)), pending: pending)
         }
         var writes: [DurableWrite] = []
         var changed: Set<DurableKey> = []
@@ -310,13 +332,38 @@ public actor BusinessPersistenceRuntime {
                   let revision = revisions[binding.key] else {
                 throw BusinessPersistenceError.invalidRevisionSet
             }
-            guard base[binding.key] != snapshot else { continue }
+            guard committedSnapshots[binding.key] != snapshot else { continue }
             writes.append(try DurableWrite.put(
                 snapshot, key: binding.key, codecVersion: 1, expectedRevision: revision
             ))
             changed.insert(binding.key)
         }
-        return PreparedWrites(writes: writes, changed: changed)
+        return PreparedWrites(writes: writes, changed: changed, pending: pending)
+    }
+
+    /// An effects-only commit needs a real SQL transaction, so every binding is
+    /// the payload even though no snapshot byte moved. Reuse the snapshots the
+    /// same frozen transaction already encoded; do not encode the owners again.
+    private func forcedWrites(from prepared: PreparedWrites) throws -> PreparedWrites {
+        let writes = try bindings.map { binding -> DurableWrite in
+            guard let snapshot = prepared.pending[binding.key],
+                  let revision = revisions[binding.key] else {
+                throw BusinessPersistenceError.invalidRevisionSet
+            }
+            return try DurableWrite.put(
+                snapshot, key: binding.key, codecVersion: 1, expectedRevision: revision
+            )
+        }
+        return PreparedWrites(
+            writes: writes, changed: Set(bindings.map(\.key)), pending: prepared.pending
+        )
+    }
+
+    /// Advance the comparison base only after PostgreSQL confirmed the commit.
+    /// A missing snapshot deliberately removes the key so the next command fails
+    /// closed instead of treating an unknown base as unchanged.
+    private func recordCommittedSnapshots(_ prepared: PreparedWrites, written: Set<DurableKey>) {
+        for key in written { committedSnapshots[key] = prepared.pending[key] }
     }
 
     private func applyCommittedRevisions(_ committed: [DurableRevision], written: Set<DurableKey>) throws {
@@ -455,6 +502,8 @@ public actor BusinessPersistenceRuntime {
         resourcesClosed = true
         await lease.close()
         await persistence.close()
+        // Opaque snapshots can contain credentials; release them with the owners.
+        committedSnapshots = [:]
         healthMonitor = nil
     }
 }
