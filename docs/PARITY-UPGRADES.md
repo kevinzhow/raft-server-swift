@@ -57,6 +57,16 @@ alongside these files. An API version string alone is insufficient build proof.
 If a parser change caused the inventory difference, regenerate both old and new
 inventories with the corrected parser before investigating upstream.
 
+For each real CLI, enumerate the code that its entry actually loads. A launcher
+hash does not cover an implementation bundle. Freeze the entry, complete dist
+files/module metadata and actual Node/runtime dependency closure. Verify those
+hashes and symlink targets before every client exec; reject unbound preload and
+cache inputs. Preserve a successful real-version invocation and a negative
+control that corrupts a copied implementation and is refused before execution.
+Declare all closure hashes in the new baseline. If a prior run omitted them,
+retain that run's limitation and execute fresh initial/restart scenarios under
+the repaired baseline. Do not copy its results into the successor.
+
 ## 3. Extract raw entry inventories
 
 ```sh
