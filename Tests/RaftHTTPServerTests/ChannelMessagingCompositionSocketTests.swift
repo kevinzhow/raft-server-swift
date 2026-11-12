@@ -188,7 +188,7 @@ struct ChannelMessagingCompositionSocketTests {
                 }
                 #expect(created.status == .ok)
                 let channelId = try #require(channelCompositionObject(created.body.string ?? "")["id"] as? String)
-                let updated = "42[\"channel:updated\",{\"channel\":{\"description\":null,\"id\":\"\(channelId)\",\"joined\":true,\"name\":\"composed-room\"}}]"
+                let updated = "42[\"channel:updated\",{\"channel\":{\"description\":\"stored description\",\"id\":\"\(channelId)\",\"joined\":true,\"name\":\"composed-room\"}}]"
                 // Probe the actual new channel room before fencing. Existing
                 // sessions must already have been joined by the fixed Hub.
                 fixed.hub.emit(room: "channel:\(channelId)", event: "test:room-probe", payloadJSON: "{}")

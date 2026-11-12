@@ -11,6 +11,10 @@ struct ManagedMCPChannelVisibility: Sendable {
     /// participants. A channel without a posting row falls back to the ledger.
     func actorCanSee(channelId: String, userId: String) -> Bool {
         if let postable = channels.postableChannel(id: channelId) {
+            if oauth.channelInfo(id: channelId) != nil {
+                return oauth.channelType(id: channelId) == "channel"
+                    || oauth.isChannelParticipant(channelId: channelId, userId: userId)
+            }
             return postable.kind == "channel" || postable.memberIds.contains(userId)
         }
         return oauth.channelType(id: channelId) == "channel"

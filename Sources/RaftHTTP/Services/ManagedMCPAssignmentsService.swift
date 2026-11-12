@@ -144,7 +144,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
         guard channels.postableChannel(id: channelId) == nil else { return false }
         return LedgerChannelReadFallback.canReadHuman(
-            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: channels)
     }
 
     /// A thread's members are managed with follow/unfollow, never directly.
@@ -206,8 +206,9 @@ public struct ManagedMCPAssignmentsService: Sendable {
         try requireChannel(serverId: serverId, channelId: channelId)
         try requireNotArchived(channelId)
         try requireNotThread(channelId)
-        channels.removePostableMember(channelId: channelId, memberId: userId)
         oauth.removeChannelHuman(channelId: channelId, userId: userId)
+        _ = channels.projectTypedMembership(channelId: channelId, memberId: userId,
+            humanMember: false, agentMember: oauth.channelAgentIds(channelId: channelId).contains(userId))
         return OkResponse()
     }
 
@@ -449,8 +450,9 @@ public struct ManagedMCPAssignmentsService: Sendable {
         guard role == "owner" || role == "admin" || actorChannelAdmin || userId == memberId else {
             throw ChannelMembershipError.forbidden
         }
-        channels.removePostableMember(channelId: channelId, memberId: memberId)
         oauth.removeChannelHuman(channelId: channelId, userId: memberId)
+        _ = channels.projectTypedMembership(channelId: channelId, memberId: memberId,
+            humanMember: false, agentMember: oauth.channelAgentIds(channelId: channelId).contains(memberId))
         return OkResponse()
     }
 
@@ -476,6 +478,8 @@ public struct ManagedMCPAssignmentsService: Sendable {
             throw ChannelMembershipError.forbidden
         }
         oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
+        _ = channels.projectTypedMembership(channelId: channelId, memberId: agentId,
+            humanMember: oauth.isChannelParticipant(channelId: channelId, userId: agentId), agentMember: false)
         return OkResponse()
     }
 

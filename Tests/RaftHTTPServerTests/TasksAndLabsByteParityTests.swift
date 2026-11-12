@@ -231,11 +231,14 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             ]
             let infoAgents = accounts.oauth.activeAgentIds(serverId: serverId)
                 .compactMap { agentRows[$0] }.joined(separator: ",")
+            // Pinned serverPermissions.ts:13-119: admin grants every action
+            // except manageBilling, rather than a fabricated two-key projection.
+            let adminCapabilities = #"{"viewChannel":true,"createChannels":true,"editChannelMetadata":true,"archiveChannels":true,"deleteChannels":true,"changeChannelVisibility":true,"manageGuestAccess":true,"federateChannels":true,"viewChannelMembers":true,"joinPublicChannels":true,"addChannelMembers":true,"removeChannelMembers":true,"changeChannelMemberRoles":true,"viewMembers":true,"inviteMembers":true,"removeMembers":true,"changeMemberRoles":true,"viewServerProfile":true,"viewServerSettings":true,"editServerSettings":true,"manageIntegrations":true,"manageExternalAuth":true,"rotateServerSecrets":true,"viewAgents":true,"createAgents":true,"editAgents":true,"controlAgentRuntime":true,"resetAgentWorkspace":true,"deleteAgents":true,"migrateAgents":true,"issueAgentCredentials":true,"viewMachines":true,"registerMachines":true,"editMachines":true,"controlComputers":true,"removeMachines":true,"rotateMachineKeys":true,"assignTasks":true,"deleteAnyTask":true,"viewBilling":true,"manageBilling":false}"#
             let info = try await client.send(.get, headers: admin, to: "/internal/agent-api/server")
             #expect(info.status == .ok)
             assertJSONHeaders(
                 info,
-                body: "{\"id\":\"\(serverId)\",\"name\":\"TL Agent\",\"slug\":\"tl-agent\",\"runtimeContext\":{\"agentId\":\"\(agentId)\",\"runtime\":\"claude\",\"model\":\"external\",\"reasoningEffort\":null,\"serverId\":\"\(serverId)\",\"machineId\":null,\"machineName\":null,\"machineDescription\":null,\"machineHostname\":null,\"machineOs\":null,\"daemonVersion\":null,\"workspacePath\":null},\"serverRole\":\"admin\",\"serverCapabilities\":{\"addChannelMembers\":true,\"createChannels\":true},\"channels\":[{\"id\":\"\(alpha)\",\"name\":\"alpha\",\"type\":\"channel\",\"joined\":true,\"activityMuted\":false,\"muteFromSeq\":null}],\"agents\":[\(infoAgents)]}"
+                body: "{\"id\":\"\(serverId)\",\"name\":\"TL Agent\",\"slug\":\"tl-agent\",\"runtimeContext\":{\"agentId\":\"\(agentId)\",\"runtime\":\"claude\",\"model\":\"external\",\"reasoningEffort\":null,\"serverId\":\"\(serverId)\",\"machineId\":null,\"machineName\":null,\"machineDescription\":null,\"machineHostname\":null,\"machineOs\":null,\"daemonVersion\":null,\"workspacePath\":null},\"serverRole\":\"admin\",\"serverCapabilities\":\(adminCapabilities),\"channels\":[{\"id\":\"\(alpha)\",\"name\":\"alpha\",\"type\":\"channel\",\"joined\":true,\"activityMuted\":false,\"muteFromSeq\":null}],\"agents\":[\(infoAgents)]}"
             )
 
             let badToken = try await client.send(.get, headers: headers("sk_agent_nope"), to: "/internal/agent-api/server")
@@ -382,7 +385,7 @@ private func jsonField(_ response: ClientResponse, _ path: [String]) -> String {
             assertJSONHeaders(joined, body: "{\"ok\":true}")
             let noAuth = try await client.send(.post, headers: HTTPFields(), to: "/internal/agent-api/channels/\(joinTarget)/join")
             #expect(noAuth.status == .unauthorized)
-            assertJSONHeaders(noAuth, body: "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            assertJSONHeaders(noAuth, body: "{\"error\":\"Missing agent credential\"}")
         }
     }
 }

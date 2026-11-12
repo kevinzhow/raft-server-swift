@@ -57,7 +57,7 @@ struct CanonicalMessagePayload: JSONBodyConvertible {
 
         init(_ row: ChannelAttachment) {
             id = row.id
-            filename = row.filename
+            filename = AttachmentPresentationRules.normalizedFilename(row.filename)
             mimeType = ChannelFileRules.resolveAttachmentMimeType(filename: row.filename, stored: row.mimeType)
             sizeBytes = row.sizeBytes
             width = row.width

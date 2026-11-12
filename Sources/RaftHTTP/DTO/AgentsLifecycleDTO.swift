@@ -14,14 +14,21 @@ import RaftShared
 /// `GET /internal/agent-api`: the validated credential projection.
 public struct AgentApiCredentialResponse: JSONBodyConvertible, Sendable, Equatable {
     public let agentId: String
+    public let agentName: String
+    public let agentDisplayName: String?
     public let credentialId: String
     public let serverId: String
+    public let serverRole: String?
     public let scopes: [String]
 
-    public init(agentId: String, credentialId: String, serverId: String, scopes: [String]) {
+    public init(agentId: String, credentialId: String, serverId: String, scopes: [String],
+                agentName: String, agentDisplayName: String?, serverRole: String?) {
         self.agentId = agentId
+        self.agentName = agentName
+        self.agentDisplayName = agentDisplayName
         self.credentialId = credentialId
         self.serverId = serverId
+        self.serverRole = serverRole
         self.scopes = scopes
     }
 
@@ -33,8 +40,12 @@ public struct AgentApiCredentialResponse: JSONBodyConvertible, Sendable, Equatab
     public var jsonBody: OrderedJSON {
         .object([
             OrderedJSONField("agentId", agentId),
-            OrderedJSONField("credentialId", credentialId),
+            OrderedJSONField("agentName", agentName),
+            OrderedJSONField("agentDisplayName", optional: agentDisplayName),
             OrderedJSONField("serverId", serverId),
+            OrderedJSONField("serverRole", optional: serverRole),
+            OrderedJSONField("serverCapabilities", ServerRoleCapabilities.json(role: serverRole)),
+            OrderedJSONField("credentialId", credentialId),
             OrderedJSONField("scopes", .array(scopes.map(OrderedJSON.string))),
         ])
     }
@@ -73,25 +84,45 @@ public struct AgentAttachmentUploadResponse: JSONBodyConvertible, Sendable, Equa
     }
 }
 
-/// `POST /api/attachments/upload` and `POST /internal/agent/:agentId/upload`:
-/// the ids of the stored rows, in upload order.
+/// `POST /api/attachments/upload`: complete stored attachment metadata in upload order.
 public struct AttachmentUploadListResponse: JSONBodyConvertible, Sendable, Equatable {
     public struct Row: Sendable, Equatable {
         public let id: String
         public let filename: String
+        public let mimeType: String
+        public let sizeBytes: Int?
+        public let width: Int?
+        public let height: Int?
+        public let thumbnailUrl: String?
+        public let rasterPreviewUrl: String?
+
+        public init(id: String, filename: String, mimeType: String? = nil, sizeBytes: Int? = nil,
+                    width: Int? = nil, height: Int? = nil, thumbnailUrl: String? = nil, rasterPreviewUrl: String? = nil) {
+            self.id = id
+            self.filename = AttachmentPresentationRules.normalizedFilename(filename)
+            self.mimeType = ChannelFileRules.resolveAttachmentMimeType(filename: filename, stored: mimeType)
+            self.sizeBytes = sizeBytes
+            self.width = width
+            self.height = height
+            self.thumbnailUrl = thumbnailUrl
+            self.rasterPreviewUrl = rasterPreviewUrl
+        }
+
+        var json: OrderedJSON {
+            .object([
+                OrderedJSONField("id", id), OrderedJSONField("filename", filename),
+                OrderedJSONField("mimeType", mimeType), OrderedJSONField("sizeBytes", optional: sizeBytes),
+                OrderedJSONField("width", optional: width), OrderedJSONField("height", optional: height),
+                OrderedJSONField("thumbnailUrl", optional: thumbnailUrl),
+                OrderedJSONField("rasterPreviewUrl", optional: rasterPreviewUrl),
+            ])
+        }
     }
 
     public let attachments: [Row]
 
     public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("attachments", .array(attachments.map { row in
-                .object([
-                    OrderedJSONField("id", row.id),
-                    OrderedJSONField("filename", row.filename),
-                ])
-            })),
-        ])
+        .object([OrderedJSONField("attachments", .array(attachments.map(\.json)))])
     }
 }
 

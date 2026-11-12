@@ -534,10 +534,7 @@ public struct AgentServerInfoResponse: JSONBodyConvertible, Sendable, Equatable 
             OrderedJSONField("slug", slug),
             OrderedJSONField("runtimeContext", context),
             OrderedJSONField("serverRole", optional: serverRole),
-            OrderedJSONField("serverCapabilities", .object([
-                OrderedJSONField("addChannelMembers", true),
-                OrderedJSONField("createChannels", true),
-            ])),
+            OrderedJSONField("serverCapabilities", ServerRoleCapabilities.json(role: serverRole)),
             OrderedJSONField("channels", .array(channelRows)),
             OrderedJSONField("agents", .array(agentRows)),
         ])

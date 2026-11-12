@@ -1,4 +1,5 @@
 import Foundation
+import RaftShared
 
 // Response shapes for announcements, avatars, channel unread and notification
 // settings, the channel create/patch routes, the agent user lookups and the
@@ -163,7 +164,7 @@ public enum ManagedMCPChannelRouteResponse: JSONBodyConvertible, Equatable {
     case guestFlags(id: String, guestVisible: Bool, guestJoinable: Bool)
     case visibility(id: String, visibility: String)
     case updated(id: String, name: String, description: String?, systemMessageSeq: Int?)
-    case created(id: String, name: String)
+    case created(RegularChannelCreatedResponse)
     case jointCreated(id: String, name: String, targetServerSlug: String, inviteId: String)
 
     public var jsonBody: OrderedJSON {
@@ -189,18 +190,8 @@ public enum ManagedMCPChannelRouteResponse: JSONBodyConvertible, Equatable {
                 OrderedJSONField("description", optional: description),
                 OrderedJSONField("systemMessageSeq", optional: seq),
             ])
-        case .created(let id, let name):
-            return .object([
-                OrderedJSONField("id", id),
-                OrderedJSONField("name", name),
-                OrderedJSONField("joined", true),
-                OrderedJSONField("activityMuteSupported", true),
-                OrderedJSONField("activityMuted", false),
-                OrderedJSONField("muteFromSeq", .null),
-                OrderedJSONField("prefsVersion", 0),
-                OrderedJSONField("maxReadSeq", 0),
-                OrderedJSONField("readStateVersion", 0),
-            ])
+        case .created(let channel):
+            return channel.jsonBody
         case .jointCreated(let id, let name, let slug, let inviteId):
             return .object([
                 OrderedJSONField("id", id),
@@ -227,32 +218,46 @@ public struct ManagedMCPChannelCreateRequest: Decodable, Sendable, Equatable {
     public var targetServerSlug: String?
     public var invitedPeople: [String]?
     public var description: String?
+    public var agentIds: [String]
+    public var userIds: [String]
 
     public init(
         name: String? = nil,
         visibility: String? = nil,
         targetServerSlug: String? = nil,
         invitedPeople: [String]? = nil,
-        description: String? = nil
+        description: String? = nil,
+        agentIds: [String] = [],
+        userIds: [String] = []
     ) {
         self.name = name
         self.visibility = visibility
         self.targetServerSlug = targetServerSlug
         self.invitedPeople = invitedPeople
         self.description = description
+        self.agentIds = agentIds
+        self.userIds = userIds
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, visibility, targetServerSlug, invitedPeople, description
+        case name, visibility, targetServerSlug, invitedPeople, description, agentIds, userIds
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try? container.decode(String.self, forKey: .name)
-        visibility = try? container.decode(String.self, forKey: .visibility)
+        // Missing visibility defaults to public. Null/non-string remains an
+        // invalid request instead of silently dropping a private intent.
+        visibility = container.contains(.visibility) ? ((try? container.decode(String.self, forKey: .visibility)) ?? "") : nil
         targetServerSlug = try? container.decode(String.self, forKey: .targetServerSlug)
         invitedPeople = try? container.decode([String].self, forKey: .invitedPeople)
         description = try? container.decode(String.self, forKey: .description)
+        agentIds = ((try? container.decode([JSONValue].self, forKey: .agentIds)) ?? []).compactMap {
+            if case .string(let value) = $0 { return value }; return nil
+        }
+        userIds = ((try? container.decode([JSONValue].self, forKey: .userIds)) ?? []).compactMap {
+            if case .string(let value) = $0 { return value }; return nil
+        }
     }
 }
 

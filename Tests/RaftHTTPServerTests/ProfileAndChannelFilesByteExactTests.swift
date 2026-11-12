@@ -266,7 +266,7 @@ private func exactLogin(_ client: any Client, email: String) async throws -> Str
             #expect(unauthenticated.status == .unauthorized)
             expectExactJSONHeaderPolicy(unauthenticated)
             #expect(exactBodyText(unauthenticated) == """
-            {"error":"Missing or invalid Authorization header","code":"auth_required"}
+            {"error":"Missing agent credential"}
             """)
         }
     }

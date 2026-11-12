@@ -230,10 +230,14 @@ private func headerPairs(_ response: ClientResponse) -> [String: String] {
         )
         #expect(created.status == .ok)
         let body = created.body.string ?? ""
-        let prefix = "{\"id\":\""
-        let suffix = "\",\"name\":\"exact-room\",\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}"
-        #expect(body.hasPrefix(prefix) && body.hasSuffix(suffix))
-        let channelId = String(body.dropFirst(prefix.count).dropLast(suffix.count))
+        let object = try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any]
+        let channelId = try #require(object?["id"] as? String)
+        let createdAt = try #require(object?["createdAt"] as? String)
+        // channels.ts:1033-1067, complete regular-channel creation envelope.
+        let expected = """
+        {"id":"\(channelId)","serverId":"\(fixture.serverId)","name":"exact-room","description":null,"type":"channel","guestVisible":false,"guestJoinable":false,"parentMessageId":null,"parentChannelId":null,"createdAt":"\(createdAt)","archivedAt":null,"archivedByUserId":null,"archivedByAgentId":null,"deletedAt":null,"joined":true,"jointChannelId":null,"jointRole":null,"jointPeerServerId":null,"jointPeerServerName":null,"jointPeerServerSlug":null,"jointPeerStatus":null,"jointServers":[],"jointPendingInvites":[],"jointBillingLocked":null,"channelRole":"admin","channelAdminBasis":"both","channelCapabilities":{"editChannelMetadata":true,"archiveChannels":true,"deleteChannels":true,"changeChannelVisibility":true,"manageGuestAccess":true,"federateChannels":true,"addChannelMembers":true,"removeChannelMembers":true,"changeChannelMemberRoles":true},"channelAuthorityRevision":1,"activityMuted":false,"muteFromSeq":null,"prefsVersion":0,"maxReadSeq":0,"readStateVersion":0,"readState":{"kind":"absent"},"activityMuteSupported":true,"jointInvites":[],"jointInvite":null}
+        """
+        #expect(body == expected)
 
         let collision = try await client.send(
             .post, headers: headers, to: "/api/channels", body: "{\"name\":\"exact-room\"}"

@@ -270,7 +270,7 @@ private func jsonField(_ body: String, _ key: String) -> String {
             #expect(text(agentEmptyUpdate) == "{\"error\":\"no update fields\"}")
             let noToken = try await client.get("/internal/agent-api/reminders")
             #expect(noToken.status == .unauthorized)
-            #expect(text(noToken) == "{\"error\":\"Invalid or expired token\",\"code\":\"auth_required\"}")
+            #expect(text(noToken) == "{\"error\":\"Missing agent credential\"}")
 
             let owner = bearer(fixture.ownerToken, serverId: fixture.serverId)
             let ownerList = try await client.get(URI(string: "/api/reminders?ownerAgentId=\(fixture.agentId)"), headers: owner)
@@ -334,7 +334,7 @@ private func jsonField(_ body: String, _ key: String) -> String {
             #expect(text(hidden) == "{\"error\":\"Channel not found or not visible\"}")
             let noAuth = try await client.get("/internal/agent-api/history?channel=%23\(channelName)")
             #expect(noAuth.status == .unauthorized)
-            #expect(text(noAuth) == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(text(noAuth) == "{\"error\":\"Missing agent credential\"}")
             let badAnchor = try await client.get(URI(string: "/internal/agent-api/history?channel=%23\(channelName)&around=zzzz"), headers: bearer(readKey))
             #expect(text(badAnchor) == "{\"error\":\"Message anchor must be a seq, full UUID, or 8-character short id in #\(channelName): zzzz\",\"errorCode\":\"INVALID_ARG\"}")
             let missingAnchor = try await client.get(URI(string: "/internal/agent-api/history?channel=%23\(channelName)&before=22222222-2222-4222-8222-222222222222"), headers: bearer(readKey))
