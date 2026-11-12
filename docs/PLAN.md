@@ -54,16 +54,17 @@ parity, and this round does not widen them.
 The user cancelled the Computer setup and authorized a new architecture
 optimization round; the user's separate Computer home is not touched. The Lead
 created `integrate-architecture-1` from trunk `03132e6b`; Task 14 is integrated
-at merge `13960787`. Runtime is still `ab04`; no optimization candidate is deployed.
+at `13960787`, Task 13 at `dcbb5a05`. Runtime is still `ab04`; no optimization
+candidate is deployed.
 
 Active slices, all unshipped:
 
-- **Task 13, snapshot encoding.** In implementation on `arch-snapshot-encoding`
-  (test-pg worktree), not yet accepted or integrated. Design counts are 28 encodes
-  per transaction, 42 effects-only and 14 with the proposed canonical
-  post-wiring committed cache. The implementation seeds the comparison base
-  from wired live owners at activation and advances it only on confirmed
-  commit; effects-only commits reuse pending snapshots.
+- **Task 13, snapshot encoding.** Reviewed `9762745e` integrated. Actual real-PG
+  proof measures 14 pending encodes per transaction versus the old 28/42 paths;
+  post-wiring reads preserve revisions, thrown operations retain durable edits,
+  rollback/effects/restart and failed-CAS fail-closed behavior pass. The targeted
+  PG run also passes both existing cancellation/supervisor fail-closed cases.
+  Canonical bytes seed from wired owners; only confirmed commits advance them.
 - **Task 14, production Auth/OAuth/Integrations composition.** Reviewed commits
   `37ce070d` and `363b714e` integrated with the same retained owners. The actual
   mounts consume `ProductionFeatureGraph`; 2 targeted graph tests, 71 related
@@ -75,9 +76,14 @@ Active slices, all unshipped:
   get short committed phases around storage I/O; legacy paths stay unchanged.
   Required proof includes real-PG progress while storage blocks, revocation,
   original errors and retaining objects after unknown commits. Not yet accepted.
+- **Task 19, transfer preparation budget.** Standalone FIFO concurrency limiter
+  in implementation; cancellation must not leak permits. The classified-path
+  hook follows Task 17 and preserves independent business progress.
+- **Web baseline.** Fresh ab04 capture: 5/5 authenticated pages at HTTP 200,
+  zero runtime exceptions, only the accepted D5 feedback 404; screenshots reviewed.
 
-The 28/42/14 values are encode-call counts from the control flow, not shipped
-latency/throughput or acceptance measurements.
+The 28/42/14 values are codec-call counts verified by targeted real-PG tests,
+not shipped end-to-end latency/throughput measurements.
 
 ## Completion criteria
 
