@@ -815,6 +815,39 @@ the fallback 404 is the truthful unmounted result.
 configured. Register the raw-body route before the JSON parser, verify the Svix
 signature, and add the delivery/verification acceptance rail.
 
+### D38. Pinned Web avatar-cache overlay is a controlled release patch
+
+**What.** The avatar Web release is built from the pinned `@botiverse/raft-web`
+`v1.21.23-source.1` archive plus one reviewed overlay, `avatar-member-cache`.
+The pinned reference checkout and the vendor origin are not modified, and no
+commit is pushed to them. Release bytes are replayed by exporting the pinned base,
+applying the allowlisted patch, and building that tree; manifest-driven provenance
+is in [WEB-PATCHES.md](WEB-PATCHES.md), including the archive/lockfile/patch
+hashes, allowlisted files, toolchain versions and build/stage evidence.
+
+The overlay changes `authStore` and `useChannelMembers` plus two behavior tests.
+After a successful avatar upload or profile update it reloads the existing server
+roster and notifies existing channel-member cache listeners. It also discards a
+coalesced roster request that began before the write, so the reload issues a fresh
+GET and late old responses cannot win. It adds no server route, WebSocket frame or
+image transform. Other clients see the new avatar on their next roster read; there
+is no global real-time avatar notification.
+**Why.** The pinned Web caches mounted rosters as membership snapshots and does
+not refresh them after the signed-in user's own avatar/profile write. The backend
+projection supplies current roster fields, but an already-open channel would still
+render the cached row without this client invalidation. A server-only change
+cannot force the mounted client to refetch, and inventing a WebSocket notification
+would add a protocol the pinned server does not provide.
+**D23 boundary.** Uploaded avatar bytes and MIME handling remain the original-byte
+storage/serving path in D23. This overlay does not add resize/re-encode, change
+stored bytes or replace the fixed upstream image pipeline.
+**Upstream.** Pinned `@botiverse/raft-web` `v1.21.23-source.1`
+`authStore`/`useChannelMembers`; channel and server member roster payloads;
+[WEB-PATCHES.md](WEB-PATCHES.md).
+**Re-evaluate.** When a pinned Web base contains an upstream cache refresh, replace
+the overlay with that base and rebuild from the unpatched archive. Reopen if a
+global roster-notification protocol is adopted.
+
 ## Maintaining this list
 
 1. Add an entry only after the excluded assertion is understood and the
