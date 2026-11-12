@@ -25,6 +25,17 @@ dependency replacements separately for each implementation. Preserve the source
 oracle and run installations/builds in a separate data-disk export. A source or
 configuration change invalidates affected evidence until re-executed.
 
+Bind the executable client implementation and its runtime closure. Hashing a
+small launcher that imports an unhashed bundle is insufficient. For a bundled
+Node CLI, retain the entry, implementation bundle, package module metadata,
+resolved Node ELF, interpreter and transitive shared libraries; inspect actual
+external imports instead of assuming the bundle is self-contained. Record
+symlink resolution and disable unbound preloads/caches. A hash-checked launch
+adapter must reject any changed dependency before running the official program.
+Keep a real-version positive control and a corrupted-implementation negative
+control. A newly completed closure creates a new baseline: rerun affected flows;
+do not amend old PASS rows or silently requalify a historical run.
+
 Use independent databases, storage roots/buckets, Redis namespaces, ports,
 credentials and test identities. Setup must verify resource ownership. Do not mirror
 writes to shared production data. Default development tooling may start tunnels,
