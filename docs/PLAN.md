@@ -1,9 +1,8 @@
 # Delivery plan and current status
 
-Current status only. Fixed defects live in their commits; deliberate differences
-in [DEVIATIONS.md](DEVIATIONS.md), [PARITY.tsv](PARITY.tsv) and
-[ARCHITECTURE.md](ARCHITECTURE.md). This file tracks rollout and qualification;
-the architecture and guardrail detail live in `ARCHITECTURE.md`.
+Current status only. Fixed defects live in commits; differences are in
+[DEVIATIONS.md](DEVIATIONS.md) and [PARITY.tsv](PARITY.tsv), architecture and
+guardrails in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Objective
 
@@ -18,7 +17,6 @@ complete user path.
 `ab04cacf8e0cb45252eb379f08bcc7274242d11d`. Build took 374 s; stage, verify,
 `pg_dump`, upgrade and gateway restore all passed and deployment exited 0. Private
 and public `/api/version` both answer `a6bf8699` at `1.21.23`; `/health` answers 200.
-
 The upgrade took a 260,806-byte `pg_dump`; its SHA-256 matches the recorded
 checksum. The ab04 release, its dump and launch spec remain rollback.
 
@@ -27,7 +25,6 @@ checksum. The ab04 release, its dump and launch spec remain rollback.
 The product source and full-gate input are frozen at `61bf4aa6`. Full `make gate`
 passed all five steps: 3,274 sharded test entries in six shards with one known
 Kimi isolated retry, plus E2E, smoke, architecture and parity-check.
-
 The only later change is `f8882121` in `scripts/test-pg.sh`, which enabled the
 queued-restart PG case and tightened its skip detection. Product and full-gate
 inputs are unchanged, as recorded by the source-equivalence proof; the deployed
@@ -36,11 +33,11 @@ change.
 
 ## PostgreSQL qualification
 
-The PostgreSQL runner listed 60 entries. The main pass actually executed 55. The
-queued-restart entry was then enabled and passed its isolated 1/1 run. The four
-remaining entries are intentional standalone cases: the native stage-seed manual
-helper, the snapshot child-process case covered by its parent restart test, and
-two E2E-only entries already executed by the full gate.
+The PostgreSQL runner listed 60 entries; the main pass executed 55. The
+queued-restart entry then passed its isolated 1/1 run. Four entries are
+intentional standalone cases: the native stage-seed helper, the snapshot
+child-process case (covered by its parent test), and two E2E-only entries
+already run by the full gate.
 
 Thus 56 of 60 listed entries actually ran against PostgreSQL. The 60-entry list
 is not a claim that 60 tests executed. The runner keeps a fresh database per
@@ -64,16 +61,23 @@ byte- and revision-identical. Only `agents_runtime` and
 - `machines_and_computers`: machine-reported detection, status-version and
   runtime-model metadata refresh; additive catalog entries only.
 
-Owner, identity, session families, the same 10 credential keys, attachments,
-agent-machine bindings, and the other 12 rows (11 domain names, including both
-notifications roots) are preserved. No read path moved a business revision.
+Owner, identity, session families, the same 10 credential keys, attachments and
+agent-machine bindings are preserved. The other 12 unchanged bindings span 11
+domains (10 business plus auth; notifications has two); no business revision
+moved.
 
-## Acceptance and monitoring
+## API, attachment and monitoring
 
-The 14-case API campaign is running under Root's sole campaign. It is not
-complete, so no PASS is claimed yet. Attachment `HEAD` verification, the
-authenticated Web check and the 600 s normal-operation monitor are still pending.
-The final result will be recorded after those complete.
+The actual 14-check API campaign passed 14 PASS, 0 FAIL/BLOCKED/SKIP in 240.4 s,
+including two nonce attachment reads and Main/Computer/Agent keep-session
+recovery (`acceptance-full.json`). The actual attachment probe passed 20/20
+checks against real R2 bytes: GET/HEAD, 206/416, preview, 401/400/404 denials,
+empty HEAD bodies and Content-Length
+(`attachment-probe/results/attachment-probe-20261112T051833Z.json`).
+
+The 600 s normal-operation monitor is running after browser-session restoration;
+the earlier pre-connection failure was not a site failure. Browser screenshots and
+monitor completion remain; no HEALTHY claim yet. Final push follows.
 
 ## Route and module limits
 
@@ -84,17 +88,13 @@ exclusions) and 27 extra, with 0 reachable Class C. `PARITY.tsv` has 406 modules
 
 ## Completion criteria
 
-This rollout is complete only when the 14-case API campaign passes, attachment
-`HEAD` and the authenticated Web are verified, the 600 s normal-operation monitor
-is healthy, and the durable-state audit remains expected. The ab04 rollback
-release and dump must stay intact. No performance or new acceptance result is
-claimed before those checks finish.
+This rollout is complete when the 600 s monitor is healthy, browser screenshots
+are verified, and the durable-state audit remains expected. The ab04 rollback
+release and dump must stay intact. No performance result is claimed.
 
 ## Evidence
 
-The round root
-`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/`
-holds the frozen candidate, gate summary, PostgreSQL execution audit and queued
-supplement, deployment log, OIDC pre/post-deploy probes, durable-state audit and
-acceptance logs. All artifacts stay on the data disk; domains, IPs and credentials
-stay out of Git.
+The round root `/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/`
+holds the frozen candidate, gate summary, PostgreSQL audit, deployment log, OIDC
+probes, durable audit and acceptance logs. Artifacts stay on the data disk;
+domains, IPs and credentials stay out of Git.
