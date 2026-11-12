@@ -13,134 +13,88 @@ complete user path.
 
 ## Current deployment
 
-`57b6775fe5d90e4f1f48b21ceefa7b2e3c33a545` is deployed, preserving the
-architecture rollout and adding native Markdown parsing. The change was merged
-into `deploy-linux-docker` first, then `main` was fast-forwarded to the same merge;
-both branches were pushed before deployment. Documentation-only follow-ups do
-not change the installed product SHA.
+`57b6775fe5d90e4f1f48b21ceefa7b2e3c33a545` is deployed with native Markdown.
+Build 427 s, stage, verification, `pg_dump`, upgrade and gateway passed; version
+is `57b6775f` at `1.21.23`, health 200. The 282,914-byte dump is SHA-verified;
+`a6bf8699` remains rollback. Web remains `d4`; no avatar overlay is activated.
 
-Build (427 s), stage, verification, `pg_dump`, upgrade and gateway restoration
-passed. Private/public version endpoints report `57b6775f` at `1.21.23`; health
-is 200. The 282,914-byte pre-upgrade dump has a verified SHA-256. The previous
-`a6bf8699` release, launch spec and manifest remain available for rollback.
+## Native Markdown
 
-## Qualified source and gate
+`88cfc840` is integrated and deployed. Pinned MD4C replaces JavaScriptCore;
+parser/sanitizer matrices, focused mention/startup tests and 14 public canary
+cases passed; the gate at `57b6775f` passed five steps with 3,277 entries and no
+production process maps JSC. No full browser/agent/attachment rerun is claimed.
 
-The architecture/native integration at `57b6775f` passes all five `make gate`
-steps: 3,277 sharded test entries, E2E, smoke, architecture and parity-check.
-The existing Kimi race test passed its isolated retry; final failure list is
-empty. Evidence: `.build/gate-logs/20261112T093150Z/summary.txt`.
+## Avatar defect
 
-## Native Markdown rollout
+Two confirmed causes keep a new avatar stale in an open channel: Swift channel
+roster human rows omit `avatarUrl`, `gravatarHash`, `displayName`, `description`
+and related fields, and the Web channel overlay replaces the server row with that
+incomplete payload; the pinned Web `authStore` updates only the signed-in user
+after a successful avatar/profile write, without reloading the server roster or
+invalidating channel-member caches, and previews prefer the cached sender row.
 
-The native parser change `88cfc840` is integrated and deployed. It replaces
-JavaScriptCore with pinned MD4C and documented source-range/GFM adaptations.
-JS remains an offline oracle under `Tools/MarkdownParser/reference`; production
-resources carry the combined native MIT notices. Each parser invocation owns
-its scratch, with no global parsing lock.
+## Final source candidate
 
-Qualification passed 9,189 identical raw-range/surface comparisons, 17,492
-ASan/UBSan/leak-check inputs, focused human/agent and raw/typed HTTP mention
-cases, and the process-map startup test. The map test rejects the old JSC
-executable. Staged and deployed native processes have no JavaScriptCore mapping.
+Backend `c84588c6` (including `db99367b`) is frozen and real-merged as
+`f92ced289e9cff2d683053afb6233015c40bcfe7`, along with native `1a60`, Web overlay
+`1225166d` and docs `2a0a2194`. Seven review items are clear; the last A/B
+boundary verification remains, with Source frozen.
 
-The public API canary passed all 14 parser cases, including code/link/image
-exclusions, reference forms, GFM boundaries, Unicode, entity targets, and
-original persisted source. It used a synthetic unknown handle and a new channel
-with owner-only membership and zero agents before every send. The channel was
-soft-deleted; 14 synthetic message rows and a fresh login session remain.
-No browser or full agent/attachment acceptance was rerun for this parser rollout.
+Root `make gate` is RUNNING on the exact f92 tree; no gate PASS is claimed.
+Backend local focused 1 DTO + 11 HTTP and affected 26 are final-green; the 214
+broad WIP run predates final A/B and is not f92 evidence. No full test-PG gate is
+planned: no PG schema, runtime-adapter or transaction change.
 
-At upgrade checkpoints before canary traffic, 12 of 14 aggregate rows preserve
-revision, codec and payload checksum; no aggregate was added or removed. Only
-`agents_runtime` and `machines_and_computers` changed. Their payloads were not
-extracted, so this audit does not claim lifecycle-only differences or field-level
-preservation inside them. Gateway bytes match the saved pre-upgrade copy.
-Evidence: `durable-audit.json` in the current rollout artifact directory.
+## Web overlay
 
-Three matching debug startup checkpoints have median RSS 95.4 MiB (JSC) versus
-64.0 MiB (native), before database state or user traffic. An isolated parser
-driver after 16,623 parses reports 108.8 versus 20.0 MiB. Live snapshots were
-160.6 MiB before deployment and 97.7 MiB after the API canary; the old process
-was long-running and the new one fresh, so this is not a controlled savings
-estimate. Commands are in `Tools/MarkdownParser/README.md`.
+The client overlay is an allowlisted patch against the pinned
+`v1.21.23-source.1` base, changing `authStore`, `useChannelMembers` and two
+behavior tests (6 cache-invalidation + 2 roster-race). A successful write reloads
+server members and invalidates all channel-member caches. The pinned reference is
+untouched; archive/patch replay, source proof, lockfile, Node 24, pnpm 12.11.2 and
+safe-stage CSS are verified; Root hash-verified the 210-file candidate and staged
+it at release `587a197b…/web-assets`.
+Nothing is activated: old `d4` remains active with 19 old immutable chunks from
+its verified manifest; CSS unchanged. No server route/WS is added; other clients
+refresh on next roster read. D23 bytes/MIME and upstream image pipeline unchanged.
 
-## Prior architecture qualification
+## Validation
 
-The following PostgreSQL/OIDC/API/attachment/browser evidence belongs to the
-previous `a6bf8699` rollout. It is retained as qualification of the architecture
-source preserved in this merge; it is not a claim those campaigns ran again
-against `57b6775f`.
+The isolated E2E RED on old `a6bf` + old `d4` Web ran 33 assertions: 5/5 predicted
+failures, 0 unexpected, report
+`/mnt/data/raft-swift-development/tmp/avatar-channel-fix-20261112/acceptance/RED-RESULT.md`.
+It confirms missing channel avatar/hash/gravatar and the old UI fallback; it is
+not green and does not prove full refresh. GREEN on f92 and production read-only
+API/UI/monitor remain pending. The isolated stack uses in-memory ledger/avatar
+bytes and PG health only; it proves no SQL/S3 durability.
 
-### PostgreSQL qualification
+## Residuals
 
-The PostgreSQL runner listed 60 entries; the main pass executed 55. The
-queued-restart entry then passed its isolated 1/1 run. Four entries are
-intentional standalone cases: the native stage-seed helper, the snapshot
-child-process case (covered by its parent test), and two E2E-only entries
-already run by the full gate.
+Saved-item and comment avatars and unknown `joinedAt` remain unfixed. The server
+store's `loadMembers` coalescing retains the same race for non-primary channel
+search/favorites consumers. No cross-device real-time avatar sync is promised.
 
-Thus 56 of 60 listed entries actually ran against PostgreSQL. The 60-entry list
-is not a claim that 60 tests executed. The runner keeps a fresh database per
-case, continues after a failure, and preserves its logs and cleanup behavior.
+## Prior architecture
 
-### Live OIDC composition
-
-The post-deploy probe passed 12 requests and 189 checks on both the loopback and
-public entrances; both report SHA `a6bf8699` and the issuer/endpoint/cache fields
-match. Report:
-`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/composition-probe/probe-20261112T050926Z-postdeploy-a6bf8699ccda.json`.
-
-### Durable-state audit
-
-Verdict: `EXPECTED_LIFECYCLE_WRITES`. Twelve of fourteen durable rows are
-byte- and revision-identical. Only `agents_runtime` and
-`machines_and_computers` changed:
-
-- `agents_runtime`: reconnect epochs, order-only Set re-encodes and two synthetic
-  onboarding notices/dispatches, with no queued user work or permission change.
-- `machines_and_computers`: machine-reported detection, status-version and
-  runtime-model metadata refresh; additive catalog entries only.
-
-Owner, identity, sessions, 10 credential keys, attachments and agent-machine
-bindings are preserved. The other 12 unchanged bindings span 11 domains (10
-business plus auth; notifications has two); no business revision moved.
-
-### API, attachment and monitoring
-
-The 14-check API campaign passed 14 PASS, 0 FAIL/BLOCKED/SKIP in 240.4 s with
-two nonce attachment reads and Main/Computer/Agent keep-session recovery
-(`acceptance-full.json`). The attachment probe passed 20/20 over real R2 bytes:
-GET/HEAD, 206/416, preview, 401/400/404, empty HEAD and Content-Length
-(`attachment-probe/results/attachment-probe-20261112T051833Z.json`).
-
-The 600 s monitor completed exit 0 in 600.349 s: 10 rounds x 5 pages, 50/50
-authenticated HTTP 200 pages, 0 runtime exceptions, 0 confirmed alerts, all home
-versions `a6bf8699`. Only accepted D5 `/api/product-feedback/tickets` 404
-remains. One first cold-start load fluctuation did not recur; no alert or
-throughput/latency claim. Root reviewed the four independent home (Computers)/
-channel/Tasks/members views as normal. Evidence: `final-validation.json`, `monitor-report.json`.
+The `a6bf8699` rollout remains prior evidence and rollback; its campaigns did not
+rerun against `57b6775f`. Detail stays in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Route and module limits
 
-The agreed limits are unchanged: route baseline C0 has 644 upstream versus 611
-Swift routes, 583 exact, 1 variant, 57 raw missing (5 false positives, 52
-exclusions) and 27 extra, with 0 reachable Class C. `PARITY.tsv` has 406 modules,
-230 mapped. These are explicit limits, not full parity.
+The agreed limits are unchanged: C0 has 644 upstream versus 611 Swift routes, 583
+exact, 1 variant, 57 raw missing (5 false positives, 52 exclusions) and 27 extra,
+with 0 reachable Class C. `PARITY.tsv` has 406 modules, 230 mapped.
 
 ## Completion criteria
 
-The native parser is merged, published, deployed and verified through public
-message APIs. The previous release and pre-upgrade dump remain intact.
-Future architecture debt is in [ARCHITECTURE.md](ARCHITECTURE.md).
+Complete only after f92 passes gate/final E2E, the staged Web activates with full
+CSS/provenance, deployment takes a verified backup, and read-only production
+API/UI monitoring passes. Compile artifact/binary/deploy SHA remain Root's;
+`57b6775f`/rollback stay intact. No owner avatar mutation, performance or
+cross-device claim.
 
 ## Evidence
 
-Current native rollout evidence is under
-`/mnt/data/raft-swift-development/artifacts/native-markdown-release-20261112/`:
-`integration-gate.log`, `deploy-57b6775f.log`, `canary-live.json`, and the
-before/after service snapshots. Release build/stage verification is under
-`/mnt/data/raft-swift-development/qualified-artifacts/main-57b6775f-v1/`.
-Prior architecture evidence remains under
-`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/`.
-Artifacts stay on disk; domains/IPs/credentials stay out of Git.
+Avatar evidence: `/mnt/data/raft-swift-development/tmp/avatar-channel-fix-20261112/`
+and `/mnt/data/raft-swift-development/tmp/avatar-web-overlay-20261112/`; no domains/IPs/credentials in Git.
