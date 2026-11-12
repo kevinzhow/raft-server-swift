@@ -1,0 +1,44 @@
+{
+  "format": 1,
+  "webVersion": "1.21.23",
+  "pinnedBase": {
+    "tag": "v1.21.23-source.1",
+    "commit": "db5e399f017d584e49597e3a28757645d6807893",
+    "archiveCommand": "git archive --format=tar db5e399f017d584e49597e3a28757645d6807893",
+    "archiveSHA256": "2edac193691e58be8403dc20a9ab9ee89870dd0e930f5a4533603942a899fda7",
+    "lockfileSHA256": "848dd51eb7b8b99c561445e258be5525d6f3fa9ae23980ff14af55aa2fa80aff"
+  },
+  "overlay": {
+    "patch": "web/patches/v1.21.23-source.1/avatar-member-cache.patch",
+    "patchSHA256": "e8be6ecbf9b1ae87e738eb21547ddc1afb38d0cfef34266d3072d39e97fd429a",
+    "changedFiles": {
+      "packages/web/src/store/authStore.ts": {
+        "fromBaseSHA256": "ed7dbed4cfd700a75a2be908dd4acc1895de31d985f65c36844ee5db236a5f0c",
+        "afterPatchSHA256": "8ac950ad5b4130d7a77b18d0676eb0e8710bc1667c7df6af073df57636769865",
+        "change": "modified"
+      },
+      "packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts": {
+        "fromBaseSHA256": null,
+        "afterPatchSHA256": "2428c4001169151ff06a21f02ba3705412ba5a2383285edf9c04c31f67295c2d",
+        "change": "added"
+      }
+    },
+    "allowlistedSourceChanges": [
+      "packages/web/src/store/authStore.ts",
+      "packages/web/tests/avatarProfileMemberCacheInvalidation.behavior.test.ts"
+    ],
+    "lockfileUnchanged": true,
+    "sourceCommit": "edafc723cf6c21938acd3c232a6e5f773f3b4c6c",
+    "sourceCommitNote": "Local Web-area commit for review; the reproducible deliverable is this patch against the pinned base, not the local commit."
+  },
+  "build": {
+    "sameOriginAPI": true,
+    "viteApiURL": "",
+    "deploymentEnvironment": "production",
+    "identity": {
+      "commitSha": "pinned base commit",
+      "releaseBranch": "v1.21.23-source.1+overlay.<patch-sha-prefix>",
+      "releaseId": "generated per build; recorded in build-status.json"
+    }
+  }
+}
