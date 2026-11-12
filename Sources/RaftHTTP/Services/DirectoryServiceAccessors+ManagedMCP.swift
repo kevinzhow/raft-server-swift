@@ -81,7 +81,8 @@ extension EmailLoginDirectory {
             oauth: oauth,
             channels: serversAndChannelsStore,
             messages: messagesAndThreadsStore,
-            profiles: authProfileStore
+            profiles: authProfileStore,
+            flags: agentsRuntimeStore
         )
     }
 

@@ -7,8 +7,14 @@ import Foundation
 /// the local parent projection for a joint thread.
 struct AgentChannelAccessQuery: Sendable {
     let channels: ServersAndChannelsStore
-    let messages: MessagesAndThreadsStore
+    let messages: MessagesAndThreadsStore?
     let oauth: OAuthLedger
+
+    init(channels: ServersAndChannelsStore, messages: MessagesAndThreadsStore? = nil, oauth: OAuthLedger) {
+        self.channels = channels
+        self.messages = messages
+        self.oauth = oauth
+    }
 
     func canAccess(channelId: String, serverId: String, agentId: String) -> Bool {
         var visited: Set<String> = []
@@ -23,13 +29,17 @@ struct AgentChannelAccessQuery: Sendable {
             case "thread":
                 if let parentId = channel.parentChannelId, visit(parentId) { return true }
                 guard let parentMessageId = channel.parentMessageId,
-                      let parentChannelId = messages.humanMessageRows.first(where: { $0.id == parentMessageId })?.channelId
+                      let parentChannelId = messages?.humanMessageRows.first(where: { $0.id == parentMessageId })?.channelId
                 else { return false }
                 return visit(parentChannelId)
             default:
+                // The canonical agent membership wins over retained posting
+                // projections (including stale rows from older removals). Human
+                // membership with the same UUID never authorizes an agent.
+                if oauth.channelInfo(id: id) != nil {
+                    return oauth.channelAgentIds(channelId: id).contains(agentId)
+                }
                 return channel.memberIds.contains(agentId)
-                    || oauth.channelAgentIds(channelId: id).contains(agentId)
-                    || oauth.isChannelParticipant(channelId: id, userId: agentId)
             }
         }
         if visit(channelId) { return true }

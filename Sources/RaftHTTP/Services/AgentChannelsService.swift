@@ -336,6 +336,7 @@ public struct AgentChannelsService: Sendable {
             if remove {
                 let wasMember = oauth.channelAgentIds(channelId: channelId).contains(target)
                 oauth.removeChannelAgent(channelId: channelId, agentId: target)
+                _ = channels.removeAgentMember(channelId: channelId, agentId: target)
                 return AgentChannelMemberWriteResponse(
                     change: .removed(wasMember: wasMember), memberType: "agent", memberName: agentName
                 )

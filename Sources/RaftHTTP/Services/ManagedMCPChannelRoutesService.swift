@@ -17,6 +17,7 @@ public struct ManagedMCPChannelRoutesService: Sendable {
     private let channels: ServersAndChannelsStore
     private let messages: MessagesAndThreadsStore
     private let profiles: AuthProfileStore
+    private let flags: AgentsRuntimeStore
 
     init(
         sessionUserId: @escaping @Sendable (String?) -> String?,
@@ -24,7 +25,8 @@ public struct ManagedMCPChannelRoutesService: Sendable {
         oauth: OAuthLedger,
         channels: ServersAndChannelsStore,
         messages: MessagesAndThreadsStore,
-        profiles: AuthProfileStore
+        profiles: AuthProfileStore,
+        flags: AgentsRuntimeStore
     ) {
         self.sessionUserId = sessionUserId
         self.channelActorCanSee = channelActorCanSee
@@ -32,6 +34,7 @@ public struct ManagedMCPChannelRoutesService: Sendable {
         self.channels = channels
         self.messages = messages
         self.profiles = profiles
+        self.flags = flags
     }
 
     private func validChannelName(_ name: String) -> Bool {
@@ -145,6 +148,19 @@ public struct ManagedMCPChannelRoutesService: Sendable {
         guard let object = body, let name = object.name, validChannelName(name), name != "all" else {
             throw ManagedMCPOAuthError.invalidChannel
         }
+        if let visibility = object.visibility, !["public", "private", "joint"].contains(visibility) {
+            throw ChannelCreationError.invalidVisibility
+        }
+        let selectedAgents = Set(object.agentIds)
+        let selectedUsers = Set(object.userIds)
+        for id in selectedAgents {
+            guard let agent = oauth.agentRuntimeInfo(id: id), agent.serverId == serverId, !agent.deleted else {
+                throw ChannelCreationError.agentOutsideServer
+            }
+        }
+        for id in selectedUsers where oauth.memberRole(serverId: serverId, userId: id) == nil {
+            throw ChannelCreationError.userOutsideServer
+        }
         if object.visibility == "joint" {
             guard let targetSlug = object.targetServerSlug?.trimmingCharacters(in: .whitespacesAndNewlines),
                   let targetServerId = oauth.serverIdForSlug(targetSlug),
@@ -177,11 +193,22 @@ public struct ManagedMCPChannelRoutesService: Sendable {
         if let canUnarchive = channels.channelNameCollision(serverId: serverId, name: name, userId: userId) {
             throw ManagedMCPOAuthError.channelNameExists(name: name, canUnarchive: canUnarchive)
         }
+        let kind = object.visibility == "private" ? "private" : "channel"
         let channelId = oauth.createChannel(
-            serverId: serverId, name: name, creatorUserId: userId, description: object.description
+            serverId: serverId, name: name, creatorUserId: userId, type: kind, description: object.description
         )
-        channels.insertOwnedChannel(channelId: channelId, serverId: serverId, userId: userId, name: name)
-        return .created(id: channelId, name: name)
+        for id in selectedUsers.union([userId]) { oauth.addChannelHuman(channelId: channelId, userId: id) }
+        for id in selectedAgents { oauth.addChannelAgent(channelId: channelId, agentId: id) }
+        channels.insertOwnedChannel(channelId: channelId, serverId: serverId, userId: userId,
+            name: name, kind: kind, userIds: selectedUsers, agentIds: selectedAgents)
+        let receiptsEnabled = flags.evaluateFeatureFlag(
+            key: "read_receipts_v0", userId: "", serverId: serverId, platform: nil,
+            client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
+        ).enabled
+        return .created(try ChannelRowFacts(oauth: oauth, messages: messages).createdRegularChannel(
+            channelId: channelId, userId: userId, serverRole: role,
+            snapshot: channels.state, readReceiptsEnabled: receiptsEnabled
+        ))
     }
 
     // MARK: - POST /api/channels/:id/joint-invites

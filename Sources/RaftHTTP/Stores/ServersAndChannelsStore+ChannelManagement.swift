@@ -369,12 +369,18 @@ extension ServersAndChannelsStore {
         }
     }
 
-    /// Records a freshly created public channel with its creator as member.
-    func insertOwnedChannel(channelId: String, serverId: String, userId: String, name: String) {
+    /// Records the requested visibility and complete initial membership together.
+    func insertOwnedChannel(
+        channelId: String, serverId: String, userId: String, name: String,
+        kind: String = "channel", userIds: Set<String> = [], agentIds: Set<String> = []
+    ) {
         mutex.withLock { storage in
             storage.postableChannels[channelId] = PostableChannel(
-                serverId: serverId, memberIds: [userId], name: name
+                serverId: serverId, memberIds: userIds.union(agentIds).union([userId]), kind: kind, name: name
             )
+            storage.channelHumanRoles["\(channelId)\n\(userId)"] = "admin"
+            storage.guestVisibleChannels[channelId] = false
+            storage.guestJoinableChannels[channelId] = false
         }
     }
 

@@ -476,6 +476,7 @@ public struct ManagedMCPAssignmentsService: Sendable {
             throw ChannelMembershipError.forbidden
         }
         oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
+        _ = channels.removeAgentMember(channelId: channelId, agentId: agentId)
         return OkResponse()
     }
 

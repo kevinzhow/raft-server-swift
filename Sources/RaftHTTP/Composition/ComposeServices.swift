@@ -314,7 +314,8 @@ func composeServices(
         oauth: oauth,
         channels: channels,
         messages: messages,
-        profiles: profiles
+        profiles: profiles,
+        flags: agents
     )
     // The base has no user transport. A host derives its own fixed Hub binding.
     let channelMessaging = ChannelMessagingService(

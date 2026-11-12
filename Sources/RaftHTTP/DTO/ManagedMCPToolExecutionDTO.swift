@@ -662,25 +662,7 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
         fields.append(OrderedJSONField("maxReadSeq", maxReadSeq))
         fields.append(OrderedJSONField("readStateVersion", readStateVersion))
         fields.append(OrderedJSONField("readState", readState.json))
-        switch peerReadState {
-        case .summary(let peerCount, let buckets)?:
-            fields.append(OrderedJSONField("peerReadSummary", .object([
-                OrderedJSONField("peerCount", peerCount),
-                OrderedJSONField("readCountAtSeq", .array(buckets.map {
-                    .object([OrderedJSONField("seq", $0.seq), OrderedJSONField("count", $0.count)])
-                })),
-            ])))
-        case .states(let peers)?:
-            fields.append(OrderedJSONField("peerReadStates", .array(peers.map {
-                .object([
-                    OrderedJSONField("peerKind", "agent"),
-                    OrderedJSONField("peerId", $0.peerId),
-                    OrderedJSONField("maxReadSeq", $0.maxReadSeq),
-                ])
-            })))
-        case nil:
-            break
-        }
+        fields += peerReadState?.jsonFields ?? []
         fields.append(OrderedJSONField("activityMuteSupported", activityMuteSupported))
         fields.append(OrderedJSONField("channelRole", channelRole))
         fields.append(OrderedJSONField("channelAdminBasis", optional: channelAdminBasis))
