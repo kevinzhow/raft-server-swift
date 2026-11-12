@@ -16,12 +16,13 @@ version-alignment method: stable rules, separate version/runtime facts, conserva
 upgrade differences and review queues, fresh evidence rules and an executable
 synthetic upgrade rehearsal. See [PARITY-UPGRADES.md](PARITY-UPGRADES.md).
 
-Stage: the download repair is merged and qualified. Both isolated production
-bootstrap paths have run, and paired initial scenarios found real contract and
-privacy defects. Further live write acceptance is paused; the Swift candidate
-is stopped while its area owner develops HTTP regressions and repairs. No new
-slice is release-qualified and no deployment has occurred in this campaign.
-Existing `locked` entries and prior gates do not establish complete user paths.
+Stage: reviewed source and reusable tooling are integrated. The first complete
+integration gate stopped in sharded tests at four reproducible assertion failures;
+the source owner is checking their old header/auth/golden expectations against the
+pinned specification. Further live acceptance stays paused and the isolated Swift
+runtime remains stopped. No new slice is release-qualified and no deployment has
+occurred in this campaign. Existing `locked` entries and prior gates do not
+establish complete user paths.
 
 ## Baselines and executed evidence
 
@@ -60,8 +61,14 @@ sample to 35 rules. Both channel creation and GET readback must establish the
 private type before dependent writes proceed. It also requires restart receipts,
 checks running source/tool/CLI identities, preserves failed observations and
 separates execution, completion and release eligibility. The latest focused
-Python runs passed 38 pilot/evidence tests and 20 inventory tests. Integration
-gates for the new tooling and source repairs remain pending.
+Python checks on the integrated tree pass: 60 pilot/evidence/upgrade-planner tests
+and 20 inventory tests. Source area `ab39a7c1` and tooling `421959d5` were joined by
+real merges at `6a8f2450`; the source/test/package objects match the independently
+reviewed area. The first integration gate discovered 3,303 test entries (not an
+executed/non-skipped total). Four failures remained after isolated retry:
+integrations/app-access bytes, idless Agent upload headers, realtime Agent auth
+bytes and wake-hint missing-auth shape. The known Kimi timing test passed its
+isolated retry. Remaining gate steps and real-PG qualification have not run.
 
 ## Current deployment
 
@@ -73,35 +80,34 @@ avatar overlay D38, with the existing D23 original-image policy. Prior avatar
 read-only/browser evidence does not qualify this attachment batch. Retain the
 `57b6775f` release, pre-upgrade dump and documented rollback assets.
 
-## Confirmed defects and immediate work
+## Source repairs and immediate qualification work
 
-- Private creation: the ordinary Swift channel path ignores `visibility: private`.
-  V2's creation response omitted type, and its setup did not verify readback.
-  Its post-removal 200 cannot alone prove a leak from an established private
-  channel. New independent HTTP red tests lock private creation and readback.
-- Membership removal: human and Agent member-removal paths leave posting
-  membership after deleting the other membership source. Shared access ORs the
-  sources. Independent HTTP red tests with a genuinely private channel reproduce
-  continued reads; the self-leave control denies correctly. Repair creation,
-  canonical read authority and every affected removal path together.
-- Upload metadata: all three Swift 200 envelopes contain only `id` and `filename`,
-  omitting official MIME, size, dimensions and preview fields.
-- Agent downloads: bytes match, but MIME/charset, disposition, cache and nosniff
-  protocol assertions differ from the pinned source.
-- Agent principal/identity: missing Agent auth returns the human-session error;
-  the real CLI rejects the successful credential's root identity payload.
+The delivered source addresses the v2 privacy/contract findings: requested private
+creation and selected members, canonical removal/read authority, complete upload
+and history metadata, Agent byte/header presentation, missing/wrong-principal
+errors and the root identity required by the real CLI. Ordinary create now has its
+full 37-field birth envelope and conditional read-receipt projection.
 
-One area owner handles these source fixes in the attachment worktree. Its first
-candidate passed 305 affected tests and a further 25-test creation/projection
-increment. Independent review then found an Agent legacy-fallback permission leak,
-double filename repair, inconsistent creator guest-management permissions and
-same-UUID human/Agent removal interference. The legacy-fallback fix has a separate
-red-to-green HTTP witness; the other findings and final re-review remain pending.
+Independent review also required typed legacy membership without posting rows,
+single filename repair, consistent object-aware create/detail/list/mutation
+capabilities, same-UUID Human/Agent isolation and tombstone checks at every
+parent. These boundaries have direct public-HTTP red/green controls, including
+positive bytes. Six removal/leave paths preserve the other principal's typed
+membership. Visibility retains the source's additional current Human membership
+prerequisite even for a server owner.
 
-The old runtime stays stopped and its unchanged binary snapshot and raw evidence
-are retained. Do not resume live writes or replace the candidate until focused,
-affected and independent-review evidence supports a new explicit baseline.
-Membership/persistence changes also require real-PG qualification before landing.
+The broad affected run covered 608 tests, exposing nine old functions/ten
+instances with 17 issues, including the omitted visibility prerequisite. Its
+reviewed five-line restoration and seven strict fixture/golden corrections pass
+a 24-test correction run. Final boundary checks, architecture and parity pass;
+scoped independent review found no remaining actionable source issue. Exact
+review fingerprints were checked before integration.
+
+The immediate work is to resolve the four full-gate assertion failures against
+the pinned source, preserve exact response/header/frame checks, then rerun the
+integration gate followed by the real-PG gate. These are qualification steps;
+source regressions or a review conclusion cannot substitute for a new live run.
+The old runtime, original binary snapshot and raw evidence remain retained.
 
 ## Inventory and remaining verification scope
 
@@ -141,12 +147,13 @@ not qualify URL generation or the old implementation's user flows.
 
 ## Completion conditions and next steps
 
-Finish the privacy fixes first, then the remaining confirmed payload/protocol and
-CLI defects. Review and integrate source/tooling branches with real merge commits;
-run the integration gate and required PG gate sequentially in the warm area.
+Correct and integrate the full-gate findings without weakening strict source-backed
+assertions, then run the integration gate and required PG gate sequentially in the
+warm area. Freeze the resulting artifact/configuration identities before startup.
 Execute a new-baseline paired sample, actual CLI output, same-object revocation
-witnesses and retained-data restart without reseeding. Demonstrate the known-old
-corruption with the same byte assertion, retaining a text positive control.
+witnesses and retained-data restart without reseeding. The known-old corruption
+counterexample already uses the same byte assertion and retains text/human
+positive controls.
 
 Every required result needs current evidence and matching source/configuration.
 NOT_RUN/BLOCKED prevents that declared scope's completion. Separate streaming,
