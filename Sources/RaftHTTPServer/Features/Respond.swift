@@ -1,4 +1,5 @@
 import Foundation
+import HTTPTypes
 import RaftHTTP
 import Vapor
 
@@ -14,10 +15,27 @@ import Vapor
 //   respond(_:)                         bare 204 (`NoContentResponse`)
 //   respond(status:headers:_:)          204 with a custom header policy
 //   respond(status:headers:rawJSON:)    body the domain already rendered
+//   respond(_:)                         raw bytes (`BinaryBodyResponse`)
 //
 // Errors are not a separate overload: every `DomainError` carries its exact
 // body (`errorBody`, or the default `{"error": …}`), and the legacy
 // `DomainErrorWithBody` Codable shape keeps its sorted encoding.
+
+/// A binary success body with the same domain-error projection as JSON replies.
+func respond(_ call: () async throws -> BinaryBodyResponse) async throws -> Response {
+    do {
+        let payload = try await call()
+        var headers = HTTPFields()
+        for (name, value) in resolvedHeaders(payload.headers, contentLength: payload.bytes.count) {
+            if let field = HTTPField.Name(name) { headers[field] = value }
+        }
+        return Response(status: .ok, headers: headers, body: .init(data: payload.bytes))
+    } catch let error as any DomainError {
+        return domainErrorResponse(error)
+    } catch let error as any DomainErrorWithBody {
+        return try richBodyErrorResponse(error)
+    }
+}
 
 /// A plain `Encodable` success body.
 ///

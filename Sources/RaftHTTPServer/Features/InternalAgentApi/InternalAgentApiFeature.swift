@@ -367,29 +367,17 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
         }
         agentApi.get("attachments", ":attachmentId") { request async throws -> Response in
             if let refusal = try await agentApiContractRefusal(.attachmentDownload, request, services: services) { return refusal }
-            // The refusal projects through `respond`. The byte reply is the one
-            // shape `respond` cannot express: `Content-Length` is the stored
-            // byte count while the body is the lossily decoded text, and the
-            // `Content-Type` is the attachment's own.
-            var stored: AgentAttachmentDownload?
-            let refusal = try await respond { () throws -> OkResponse in
-                stored = try await services.emailAccounts.agentAttachments.download(
+            return try await respond {
+                let stored = try await services.emailAccounts.agentAttachments.download(
                     authorization: request.headers[.authorization],
                     attachmentId: request.parameters.get("attachmentId") ?? ""
                 )
-                return OkResponse()
-            }
-            guard let stored else { return refusal }
-            return routeResponse(HTTPReply(
-                status: 200,
-                headers: [
+                return BinaryBodyResponse(bytes: stored.bytes, headers: .exact([
                     "Content-Type": stored.mimeType,
-                    "Content-Length": String(stored.bytes.count),
                     "Cache-Control": "private, no-store",
                     "Content-Disposition": "attachment; filename=\"\(stored.filename)\"; filename*=UTF-8''\(stored.encodedFilename)",
-                ],
-                body: String(decoding: stored.bytes, as: UTF8.self)
-            ))
+                ]))
+            }
         }
         agentApi.get("attachments", ":attachmentId", "url") { request async throws -> Response in
             if let refusal = try await agentApiContractRefusal(.attachmentDownloadUrl, request, services: services) { return refusal }

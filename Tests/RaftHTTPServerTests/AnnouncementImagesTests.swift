@@ -10,6 +10,8 @@ import VaporTesting
 @Test func announcementImagesRequireAPublishedStartedAnnouncement() async throws {
     let accounts = EmailLoginDirectory()
     let imageId = "00000000-0000-4000-8000-00000000a101"
+    let bytes = try #require(Data(base64Encoded:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
     let announcementId = accounts.addAnnouncementForTesting(
         title: "Image",
         pages: ["{\"body\":\"Body\"}"],
@@ -22,7 +24,7 @@ import VaporTesting
         id: imageId,
         announcementId: announcementId,
         contentType: "image/png",
-        bytes: Data([1, 2, 3])
+        bytes: bytes
     )
 
     try await withApp { app in
@@ -56,7 +58,8 @@ import VaporTesting
             #expect(published.headers[.contentType] == "image/png")
             #expect(published.headers[HTTPField.Name("Cache-Control")!] == "public, max-age=31536000, immutable")
             #expect(published.headers[HTTPField.Name("Cross-Origin-Resource-Policy")!] == "cross-origin")
-            #expect(Data((published.body.string ?? "").utf8) == Data([1, 2, 3]))
+            #expect(published.headers[.contentLength] == String(bytes.count))
+            #expect(published.body.data == bytes)
 
             accounts.setAnnouncementStateForTesting(
                 id: announcementId,

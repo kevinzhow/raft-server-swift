@@ -8,14 +8,8 @@ import Foundation
 
 // MARK: - Assets (non-JSON bodies)
 
-/// A stored asset (external avatar, announcement image) or a text body with
-/// its own header set.
-///
-/// The retired handlers answered `String(decoding: bytes, as: UTF8.self)` with
-/// the asset's own `Content-Type` and cache headers; the body therefore enters
-/// the canonical `respond` as `OrderedJSON.raw`, the escape hatch for text the
-/// domain already rendered. `Content-Length` is recomputed from that text,
-/// exactly as the retired reply path did.
+/// A rendered text body with its own header set. Binary assets use
+/// `BinaryBodyResponse` and never enter the JSON/text adapter.
 public struct ManagedMCPAssetResponse: JSONBodyConvertible {
     public let headers: ResponseHeaders
     let text: String

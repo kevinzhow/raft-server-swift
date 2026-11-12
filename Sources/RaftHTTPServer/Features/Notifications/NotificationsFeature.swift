@@ -61,7 +61,7 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             }
         }
         announcements.get("images", ":imageId") { request async throws -> Response in
-            try await respond(headers: { $0.headers }) {
+            try await respond {
                 try services.emailAccounts.managedMCPOAuth.announcementImage(
                     id: request.parameters.get("imageId") ?? ""
                 )
@@ -90,7 +90,7 @@ public struct NotificationsFeature: RouteCollection, Sendable {
             ))
         }
         externalAvatars.get(":file") { request async throws -> Response in
-            try await respond(headers: { $0.headers }) {
+            try await respond {
                 try services.emailAccounts.managedMCPOAuth.externalAvatar(
                     file: request.parameters.get("file") ?? ""
                 )

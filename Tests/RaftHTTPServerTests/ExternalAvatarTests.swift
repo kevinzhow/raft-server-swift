@@ -10,7 +10,7 @@ import VaporTesting
 @Test func externalAvatarServesOnlyActiveMaterializedArtifacts() async throws {
     let accounts = EmailLoginDirectory()
     let artifactId = "00000000-0000-4000-8000-00000000b101"
-    let bytes = Data([1, 2, 3])
+    let bytes = Data((0...255).map { UInt8($0) })
     let digest = String(repeating: "0", count: 64)
     accounts.addExternalAvatarForTesting(
         id: artifactId,
@@ -42,7 +42,8 @@ import VaporTesting
             #expect(response.headers[HTTPField.Name("Content-Disposition")!] == "inline")
             #expect(response.headers[HTTPField.Name("Cache-Control")!] == "public, no-cache, must-revalidate")
             #expect(response.headers[HTTPField.Name("ETag")!] == "\"sha256-\(digest)\"")
-            #expect(Data((response.body.string ?? "").utf8) == bytes)
+            #expect(response.headers[.contentLength] == String(bytes.count))
+            #expect(response.body.data == bytes)
 
             #expect(try await client.get(URI(string: "/api/external-avatars/not-a-uuid.webp")).status == .notFound)
             #expect(try await client.get(URI(string: "/api/external-avatars/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.webp")).status == .notFound)
