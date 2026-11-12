@@ -2,7 +2,8 @@
 
 Current status only. Fixed defects live in their commits; deliberate differences
 in [DEVIATIONS.md](DEVIATIONS.md), [PARITY.tsv](PARITY.tsv) and
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md). This file tracks rollout and qualification;
+the architecture and guardrail detail live in `ARCHITECTURE.md`.
 
 ## Objective
 
@@ -11,102 +12,89 @@ HTTP/socket contract, fixed Web/CLI consumers, PostgreSQL persistence, the
 daemon/Computer path and deployment. Parity tests evidence the contract, not a
 complete user path.
 
-## Delivered runtime baseline
+## Current deployment
 
-Production runs `ab04cacf` from the real upgrade off `b23b2516`; `/health` and
-`/api/version` answer 200 at `1.21.23`/`ab04cacf`. The runtime remains
-`ab04cacf8e0cb45252eb379f08bcc7274242d11d` through this documentation round;
-the release selector stays immutable at `ab04`. The b23 release, its
-175,278-byte dump (checksum `b6599ade…`) and the 223,640-byte public backup
-remain rollback; gateway config `1b0fd817…` and manifest `c4ebd84a…` are pinned.
+`a6bf8699ccdae20b91b4a7d59a6c2e6a4983fcb2` is deployed from the real upgrade off
+`ab04cacf8e0cb45252eb379f08bcc7274242d11d`. Build took 374 s; stage, verify,
+`pg_dump`, upgrade and gateway restore all passed and deployment exited 0. Private
+and public `/api/version` both answer `a6bf8699` at `1.21.23`; `/health` answers 200.
 
-The qualified source landed by no-ff merge
-`d244fe30d8840f56fe679c37e229538069179964`; later documentation commits leave
-`Sources/` and `Tests/` unchanged. `ab04` carries Engine.IO v4 polling and
-ordered responses; its commits remain the behavior record.
+The upgrade took a 260,806-byte `pg_dump`; its SHA-256 matches the recorded
+checksum. The ab04 release, its dump and launch spec remain rollback.
 
-## ab04 final evidence
+## Qualified source and gate
 
-This qualifies `ab04` only, not the current round.
+The product source and full-gate input are frozen at `61bf4aa6`. Full `make gate`
+passed all five steps: 3,274 sharded test entries in six shards with one known
+Kimi isolated retry, plus E2E, smoke, architecture and parity-check.
 
-- **Gate and persistence.** All five gate steps PASS with 3,250 tests in 6
-  shards and empty `failures[]`; serial `make test-pg` PASS with 49 cases.
-- **Deployment and acceptance.** Build/stage/verify, `pg_dump`, upgrade and
-  restore ended `UPGRADE OK`/`DEPLOY OK`; 14-check acceptance passed 14 PASS,
-  0 FAIL/BLOCKED/SKIP in 204.7 s including attachment, restart and keep-session.
-- **Web and soak.** Five authenticated pages returned HTTP 200 with only the
-  known D5 404; origin/public reports each passed 36/36; the 600 s monitor
-  finalized `HEALTHY` with 10 rounds and zero monitored regressions.
-- **State and cleanup.** Durable-state review found lifecycle writes, not
-  corruption, with owner data and business lists intact; cleanup executed the
-  18 READY objects with 0 failures, and `B-ccf41374` remains the one KEEP.
+The only later change is `f8882121` in `scripts/test-pg.sh`, which enabled the
+queued-restart PG case and tightened its skip detection. Product and full-gate
+inputs are unchanged, as recorded by the source-equivalence proof; the deployed
+`a6bf8699` tree includes that runner-only correction, not a product-source
+change.
+
+## PostgreSQL qualification
+
+The PostgreSQL runner listed 60 entries. The main pass actually executed 55. The
+queued-restart entry was then enabled and passed its isolated 1/1 run. The four
+remaining entries are intentional standalone cases: the native stage-seed manual
+helper, the snapshot child-process case covered by its parent restart test, and
+two E2E-only entries already executed by the full gate.
+
+Thus 56 of 60 listed entries actually ran against PostgreSQL. The 60-entry list
+is not a claim that 60 tests executed. The runner keeps a fresh database per
+case, continues after a failure, and preserves its logs and cleanup behavior.
+
+## Live OIDC composition
+
+The post-deploy probe passed 12 requests and 189 checks on both the loopback and
+public entrances; both report SHA `a6bf8699` and the issuer/endpoint/cache fields
+match. Report:
+`/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/composition-probe/probe-20261112T050926Z-postdeploy-a6bf8699ccda.json`.
+
+## Durable-state audit
+
+Verdict: `EXPECTED_LIFECYCLE_WRITES`. Twelve of fourteen durable rows are
+byte- and revision-identical. Only `agents_runtime` and
+`machines_and_computers` changed:
+
+- `agents_runtime`: reconnect epochs, order-only Set re-encodes and two synthetic
+  onboarding notices/dispatches, with no queued user work or permission change.
+- `machines_and_computers`: machine-reported detection, status-version and
+  runtime-model metadata refresh; additive catalog entries only.
+
+Owner, identity, session families, the same 10 credential keys, attachments,
+agent-machine bindings, and the other 12 rows (11 domain names, including both
+notifications roots) are preserved. No read path moved a business revision.
+
+## Acceptance and monitoring
+
+The 14-case API campaign is running under Root's sole campaign. It is not
+complete, so no PASS is claimed yet. Attachment `HEAD` verification, the
+authenticated Web check and the 600 s normal-operation monitor are still pending.
+The final result will be recorded after those complete.
 
 ## Route and module limits
 
-The original agreed limits remain binding: route baseline C0 has 644 upstream
-versus 611 Swift routes, 583 exact, 1 variant, 57 raw missing (5 false
-positives, 52 exclusions) and 27 extra, with 0 reachable Class C.
-`PARITY.tsv` has 406 modules, 230 mapped. These are explicit limits, not full
-parity, and this round does not widen them.
-
-## Current architecture optimization round
-
-The user cancelled the Computer setup and authorized a new architecture
-optimization round; the user's separate Computer home is not touched. The Lead
-created `integrate-architecture-1` from trunk `03132e6b`; all source slices are
-reviewed and integrated. Documentation sync precedes the frozen-candidate full
-gate and serial PG gate. Runtime is still `ab04`; no candidate is deployed.
-
-Active slices, all unshipped:
-
-- **Task 13, snapshot encoding.** Reviewed `9762745e` integrated. Actual real-PG
-  proof measures 14 pending encodes per transaction versus the old 28/42 paths;
-  post-wiring reads preserve revisions, thrown operations retain durable edits,
-  rollback/effects/restart and failed-CAS fail-closed behavior pass. The targeted
-  PG run also passes both existing cancellation/supervisor fail-closed cases.
-  Canonical bytes seed from wired owners; only confirmed commits advance them.
-- **Task 14, production Auth/OAuth/Integrations composition.** Reviewed commits
-  `37ce070d` and `363b714e` integrated with the same retained owners. The actual
-  mounts consume `ProductionFeatureGraph`; 2 targeted graph tests, 71 related
-  regressions and the later 19-test OAuth run passed (overlapping runs, not a
-  unique-test total). OAuth proof includes scoped discovery, tenant isolation,
-  exact issuer/endpoint/cache fields and live deployment updates.
-- **Task 15/17, attachment I/O.** Reviewed `44ff3bb0` and `da5993cf` integrated.
-  Selected raw UUID bodies/previews and human upload use short committed phases;
-  legacy paths stay unchanged. All 9 targeted real-PG cases pass: independent
-  writes while get/put blocks, post-I/O revocation/binding refusal, cleanup,
-  shielded cancellation, lost-writer retention, internal legacy upload, non-UUID
-  errors and a full transfer budget. Lost-writer evidence is a post-callback
-  connection failure, not a successful COMMIT with a lost acknowledgement.
-- **Task 19, transfer preparation budget.** Reviewed `df5fd5cc` integrated and
-  wired by Task 17; 6 focused tests pass, including cancellation/grant stress.
-  Four preparations may run while unrelated business writes remain independent.
-  The budget does not cap slow-client response buffers or the overall heap.
-- **Web baseline.** Fresh ab04 capture: 5/5 authenticated pages at HTTP 200,
-  zero runtime exceptions, only the accepted D5 feedback 404; screenshots reviewed.
-
-The 28/42/14 values are codec-call counts verified by targeted real-PG tests,
-not shipped end-to-end latency/throughput measurements.
+The agreed limits are unchanged: route baseline C0 has 644 upstream versus 611
+Swift routes, 583 exact, 1 variant, 57 raw missing (5 false positives, 52
+exclusions) and 27 extra, with 0 reachable Class C. `PARITY.tsv` has 406 modules,
+230 mapped. These are explicit limits, not full parity.
 
 ## Completion criteria
 
-Each accepted source slice passes its focused tests. The Lead then runs
-`make gate` on the integration commit, followed by serial `make test-pg`;
-integration uses real merge commits. This round is complete only when every
-accepted slice is integrated into `integrate-architecture-1`; gate and test-pg
-pass on that commit; deployment takes the quick `pg_dump` and keeps rollback
-intact; and actual use-case API checks plus the authenticated Web are verified
-on the affected boundaries. Evidence must be current, with no domain, IP or
-credential in Git. Until then no performance or new acceptance result is claimed.
+This rollout is complete only when the 14-case API campaign passes, attachment
+`HEAD` and the authenticated Web are verified, the 600 s normal-operation monitor
+is healthy, and the durable-state audit remains expected. The ab04 rollback
+release and dump must stay intact. No performance or new acceptance result is
+claimed before those checks finish.
 
 ## Evidence
 
-The round baseline root
+The round root
 `/mnt/data/raft-swift-development/tmp/architecture-optimization-20261112/`
-holds `baseline-runtime.json` (health 200, version `ab04`, both units active,
-integration clean) and `architecture-baseline.log` (22 PASS); these baseline
-the round only. The ab04 final root
-`/mnt/data/raft-swift-development/tmp/qualification-engineio-v4/` and cleanup
-root `/mnt/data/raft-swift-development/tmp/stage-cleanup-execution-ab04cacf/`
-remain historical evidence. All artifacts stay on the data disk; domains, IPs
-and credentials stay out of Git.
+holds the frozen candidate, gate summary, PostgreSQL execution audit and queued
+supplement, deployment log, OIDC pre/post-deploy probes, durable-state audit and
+acceptance logs. All artifacts stay on the data disk; domains, IPs and credentials
+stay out of Git.
