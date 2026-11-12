@@ -11,6 +11,7 @@ import PostgresNIO
 import RaftObjectStorage
 import RaftPersistence
 import Synchronization
+import TestSupport
 import Testing
 import Vapor
 import VaporTesting
@@ -44,24 +45,34 @@ private actor AttachmentStorageGate: AttachmentObjectStoring {
 
     private var objects: [String: Data] = [:]
     private var block: Block?
-    private var entered = false
-    private var enteredWaiter: CheckedContinuation<Void, Never>?
-    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    private var enteredCount = 0
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
     func blockNext(_ block: Block) {
         self.block = block
-        entered = false
+        enteredCount = 0
     }
 
     func waitUntilEntered() async {
-        if entered { return }
-        await withCheckedContinuation { enteredWaiter = $0 }
+        while enteredCount < 1 {
+            await withCheckedContinuation { enteredWaiters.append($0) }
+        }
     }
+
+    func waitUntilEntered(count: Int) async {
+        while enteredCount < count {
+            await withCheckedContinuation { enteredWaiters.append($0) }
+        }
+    }
+
+    func enteredOperations() -> Int { enteredCount }
 
     func release() {
         block = nil
-        releaseWaiter?.resume()
-        releaseWaiter = nil
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
     }
 
     func objectCount() -> Int { objects.count }
@@ -88,11 +99,12 @@ private actor AttachmentStorageGate: AttachmentObjectStoring {
     }
 
     private func suspend() async {
-        entered = true
-        enteredWaiter?.resume()
-        enteredWaiter = nil
+        enteredCount += 1
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
         if block != nil {
-            await withCheckedContinuation { releaseWaiter = $0 }
+            await withCheckedContinuation { releaseWaiters.append($0) }
         }
     }
 }
@@ -178,7 +190,6 @@ private func makeAttachmentPGFixture(
         configuration: configuration, bindings: bindings
     )
     do {
-        try await runtime.activate()
         let control = try await PostgresConnection.connect(
             configuration: try postgresConfiguration(from: databaseURL), id: 0, logger: logger
         )
@@ -213,11 +224,33 @@ private func withAttachmentPGFixture(
     try? await fixture.control.close()
 }
 
-private func configureAttachmentApp(_ app: Application, fixture: AttachmentPGFixture) {
+private func configureAttachmentApp(
+    _ app: Application, fixture: AttachmentPGFixture
+) async throws {
     configure(app, services: FallbackServices(
         nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {},
         emailAccounts: fixture.accounts, persistence: fixture.runtime
     ))
+    // Route/feature registration allocates its stores before the one-way
+    // production policy is enabled, exactly like the process entrypoint.
+    try await fixture.runtime.activate()
+}
+
+/// Waits for gated storage entries with a deadline. A regression that keeps
+/// only one transfer inside the old writer FIFO must fail promptly instead of
+/// parking the suite on an actor continuation; releasing the gate first lets
+/// the caller's HTTP tasks unwind.
+private func awaitStorageEntry(
+    _ storage: AttachmentStorageGate, count: Int = 1, seconds: Double = 10
+) async throws {
+    do {
+        try await withTestDeadline("attachment storage entry", seconds: seconds) {
+            await storage.waitUntilEntered(count: count)
+        }
+    } catch {
+        await storage.release()
+        throw error
+    }
 }
 
 private func completesBeforeDeadline(
@@ -263,7 +296,7 @@ private func multipartUpload(
         try await withAttachmentPGFixture(seedAttachment: boundedHTML, logger: logger) { fixture in
             let attachmentId = try #require(fixture.attachmentId)
             try await withApp { app in
-                configureAttachmentApp(app, fixture: fixture)
+                try await configureAttachmentApp(app, fixture: fixture)
                 try await app.testing { client in
                     await fixture.storage.blockNext(.get)
                     let reading = Task {
@@ -272,7 +305,7 @@ private func multipartUpload(
                             to: URI(string: "/api/attachments/\(attachmentId)")
                         )
                     }
-                    await fixture.storage.waitUntilEntered()
+                    try await awaitStorageEntry(fixture.storage)
 
                     let committed = await completesBeforeDeadline(seconds: 5) {
                         try await fixture.runtime.execute {
@@ -306,7 +339,7 @@ private func multipartUpload(
         try await withAttachmentPGFixture(seedAttachment: boundedHTML, logger: logger) { fixture in
             let attachmentId = try #require(fixture.attachmentId)
             try await withApp { app in
-                configureAttachmentApp(app, fixture: fixture)
+                try await configureAttachmentApp(app, fixture: fixture)
                 try await app.testing { client in
                     await fixture.storage.blockNext(.get)
                     let reading = Task {
@@ -315,7 +348,7 @@ private func multipartUpload(
                             to: URI(string: "/api/attachments/\(attachmentId)")
                         )
                     }
-                    await fixture.storage.waitUntilEntered()
+                    try await awaitStorageEntry(fixture.storage)
 
                     let changed = await completesBeforeDeadline(seconds: 5) {
                         try await fixture.runtime.execute {
@@ -348,7 +381,7 @@ private func multipartUpload(
         try await withAttachmentPGFixture(logger: logger) { fixture in
             let (body, boundary) = multipartUpload(channelId: fixture.channel, bytes: boundedHTML)
             try await withApp { app in
-                configureAttachmentApp(app, fixture: fixture)
+                try await configureAttachmentApp(app, fixture: fixture)
                 try await app.testing { client in
                     await fixture.storage.blockNext(.put)
                     var headers = fixture.userHeaders
@@ -358,7 +391,7 @@ private func multipartUpload(
                             $0.body = .init(data: body)
                         }
                     }
-                    await fixture.storage.waitUntilEntered()
+                    try await awaitStorageEntry(fixture.storage)
 
                     let committed = await completesBeforeDeadline(seconds: 5) {
                         try await fixture.runtime.execute {
@@ -389,12 +422,54 @@ private func multipartUpload(
     }
 
     @Test(.enabled(if: attachmentBoundedPGEnabled), .timeLimit(.minutes(2)))
+    func fullTransferBudgetQueuesWithoutHoldingTheBusinessWriter() async throws {
+        let logger = Logger(label: "raft.attachment-bounded-budget")
+        try await withAttachmentPGFixture(seedAttachment: boundedHTML, logger: logger) { fixture in
+            let attachmentId = try #require(fixture.attachmentId)
+            try await withApp { app in
+                try await configureAttachmentApp(app, fixture: fixture)
+                try await app.testing { client in
+                    await fixture.storage.blockNext(.get)
+                    let path = try #require(URI(string: "/api/attachments/\(attachmentId)"))
+                    let reads = (0..<5).map { _ in
+                        Task { try await client.send(.get, headers: fixture.userHeaders, to: path) }
+                    }
+                    try await awaitStorageEntry(fixture.storage, count: 4)
+                    let enteredBeforeRelease = await fixture.storage.enteredOperations()
+                    #expect(enteredBeforeRelease == 4)
+                    // The fifth request must queue on the shared cap-4 budget,
+                    // not enter storage. A short settle keeps this observation
+                    // from racing the fifth request's own setup.
+                    try await Task.sleep(for: .milliseconds(300))
+                    let enteredWhileFull = await fixture.storage.enteredOperations()
+                    #expect(enteredWhileFull == 4,
+                            "the fifth classified GET entered storage past the cap-4 budget")
+
+                    let committed = await completesBeforeDeadline(seconds: 5) {
+                        try await fixture.runtime.execute {
+                            appendBoundedEvent(fixture.accounts, type: "while-transfer-budget-full")
+                        }
+                    }
+                    #expect(committed, "runtime.execute blocked behind the full transfer budget")
+
+                    await fixture.storage.release()
+                    for read in reads {
+                        let response = try await read.value
+                        #expect(response.status == .ok)
+                        #expect(response.body.data == boundedHTML)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test(.enabled(if: attachmentBoundedPGEnabled), .timeLimit(.minutes(2)))
     func refusedPostPutAdmissionDeletesTheObjectAndLeavesNoRow() async throws {
         let logger = Logger(label: "raft.attachment-bounded-refused")
         try await withAttachmentPGFixture(logger: logger) { fixture in
             let (body, boundary) = multipartUpload(channelId: fixture.channel, bytes: boundedHTML)
             try await withApp { app in
-                configureAttachmentApp(app, fixture: fixture)
+                try await configureAttachmentApp(app, fixture: fixture)
                 try await app.testing { client in
                     await fixture.storage.blockNext(.put)
                     var headers = fixture.userHeaders
@@ -404,7 +479,7 @@ private func multipartUpload(
                             $0.body = .init(data: body)
                         }
                     }
-                    await fixture.storage.waitUntilEntered()
+                    try await awaitStorageEntry(fixture.storage)
 
                     let revoked = await completesBeforeDeadline(seconds: 5) {
                         try await fixture.runtime.execute {
@@ -433,6 +508,7 @@ private func multipartUpload(
     func cancelledFencedCommitStillPublishesAndRetainsTheObject() async throws {
         let logger = Logger(label: "raft.attachment-bounded-cancelled")
         try await withAttachmentPGFixture(logger: logger) { fixture in
+            try await fixture.runtime.activate()
             let port = RuntimeAttachmentTransactionPort(runtime: fixture.runtime)
             await fixture.storage.blockNext(.put)
             let uploading = Task {
@@ -444,7 +520,7 @@ private func multipartUpload(
                     transaction: .bounded(port)
                 )
             }
-            await fixture.storage.waitUntilEntered()
+            try await awaitStorageEntry(fixture.storage)
 
             let lockID = try firstFencedLockID(fixture.bindings)
             try await execute(
@@ -478,9 +554,10 @@ private func multipartUpload(
     }
 
     @Test(.enabled(if: attachmentBoundedPGEnabled), .timeLimit(.minutes(2)))
-    func unknownCommitRetainsTheObjectAndFailsClosed() async throws {
+    func lostWriterDuringFencedCommitRetainsTheObjectAndFailsClosed() async throws {
         let logger = Logger(label: "raft.attachment-bounded-unknown")
         try await withAttachmentPGFixture(logger: logger) { fixture in
+            try await fixture.runtime.activate()
             let port = RuntimeAttachmentTransactionPort(runtime: fixture.runtime)
             await fixture.storage.blockNext(.put)
             let uploading = Task {
@@ -492,7 +569,7 @@ private func multipartUpload(
                     transaction: .bounded(port)
                 )
             }
-            await fixture.storage.waitUntilEntered()
+            try await awaitStorageEntry(fixture.storage)
 
             let lockID = try firstFencedLockID(fixture.bindings)
             try await execute(
@@ -509,6 +586,10 @@ private func multipartUpload(
             _ = try await scalar(
                 fixture.control, "SELECT pg_terminate_backend(\(writer))", logger: logger
             )
+            // A post-callback writer connection failure maps to .outcomeUnknown.
+            // This proves conservative retention for a lost/ambiguous fenced
+            // commit; it does not prove a successful COMMIT whose acknowledgement
+            // was lost.
             switch await uploading.result {
             case .success:
                 Issue.record("an unknown SQL commit claimed success")
@@ -533,7 +614,7 @@ private func multipartUpload(
                 channelId: fixture.channel, filename: "agent-note.txt", bytes: Data("agent upload".utf8)
             )
             try await withApp { app in
-                configureAttachmentApp(app, fixture: fixture)
+                try await configureAttachmentApp(app, fixture: fixture)
                 try await app.testing { client in
                     var headers = HTTPFields()
                     headers[.authorization] = "Bearer \(agentKey)"
@@ -567,14 +648,15 @@ private func multipartUpload(
         let logger = Logger(label: "raft.attachment-bounded-nonuuid")
         try await withAttachmentPGFixture(logger: logger) { fixture in
             try await withApp { app in
-                configureAttachmentApp(app, fixture: fixture)
+                try await configureAttachmentApp(app, fixture: fixture)
                 try await app.testing { client in
                     let response = try await client.send(
                         .get, headers: fixture.userHeaders,
                         to: URI(string: "/api/attachments/not-a-uuid")
                     )
                     #expect(response.status == .badRequest)
-                    #expect(response.body.string == #"{"error":"Invalid attachment id"}"#)
+                    #expect(response.body.string
+                        == #"{"code":"invalid_attachment_id","error":"Invalid attachment id"}"#)
                 }
             }
         }

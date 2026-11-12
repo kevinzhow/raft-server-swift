@@ -69,7 +69,12 @@ struct BusinessPersistenceMiddleware: Middleware {
                     try await AttachmentTransactionScope.$port.withValue(
                         RuntimeAttachmentTransactionPort(runtime: runtime)
                     ) {
-                        try await next.respond(to: request)
+                        // Transfer preparation (multipart collection, object I/O
+                        // and response building) has its own four-operation
+                        // budget, independent of the business writer FIFO.
+                        try await AttachmentTransferBudget.shared.withPermit {
+                            try await next.respond(to: request)
+                        }
                     }
                 }
             }
