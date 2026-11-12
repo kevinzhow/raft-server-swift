@@ -23,7 +23,7 @@ struct KnowledgeFeature: RouteCollection, Sendable {
     }
 
     func register(routes: any RoutesBuilder) {
-        let knowledge = routes.grouped("internal", "agent-api", "knowledge")
+        let knowledge = routes.grouped("internal", "agent-api", "knowledge").grouped(AgentCredentialHeaderMiddleware())
         knowledge.get { request -> Response in
             routeResponse(Self.getReply(request: request, services: services))
         }

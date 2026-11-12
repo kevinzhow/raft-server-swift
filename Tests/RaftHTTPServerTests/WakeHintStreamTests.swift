@@ -208,13 +208,13 @@ private final class WakeBuffer: @unchecked Sendable {
             let unauthenticated = try await open(HTTPFields())
             #expect(unauthenticated.status == .unauthorized)
             #expect((unauthenticated.headers[.contentType] ?? "").contains("text/event-stream") == false)
-            let unauthenticatedBody = (try? JSONSerialization.jsonObject(with: Data((unauthenticated.body.string ?? "").utf8))) as? [String: Any] ?? [:]
-            #expect(unauthenticatedBody["code"] as? String == "auth_required")
+            #expect(unauthenticated.body.string == #"{"error":"Missing agent credential"}"#)
 
             var machineHeaders = HTTPFields()
             machineHeaders[.authorization] = "Bearer \(f.machineKey)"
             let machine = try await open(machineHeaders)
             #expect(machine.status == .unauthorized)
+            #expect(machine.body.string == #"{"error":"Invalid authentication: agent credential required","code":"invalid_principal"}"#)
             #expect((machine.body.string ?? "").contains("text/event-stream") == false)
 
             var badCursor = HTTPFields()

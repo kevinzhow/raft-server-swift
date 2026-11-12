@@ -529,11 +529,11 @@ private let featureReplySnapshots: [String] = [
     POST agent-api/upload
     401
     cache-control: private, no-store
-    content-length: 59
+    content-length: 36
     content-type: application/json; charset=utf-8
     x-robots-tag: noindex, nofollow
 
-    {"error":"Invalid or expired token","code":"auth_required"}
+    {"error":"Missing agent credential"}
     """#,
 ]
 
@@ -541,11 +541,11 @@ private let knowledgeReplySnapshots: [String] = [
     #"""
     noauth
     401
-    content-length: 59
+    content-length: 36
     content-type: application/json; charset=utf-8
     x-robots-tag: noindex, nofollow
 
-    {"error":"Invalid or expired token","code":"auth_required"}
+    {"error":"Missing agent credential"}
     """#,
     #"""
     readonly

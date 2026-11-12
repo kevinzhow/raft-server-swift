@@ -420,23 +420,8 @@ struct AgentTaskCredentials: Sendable {
     /// `canAgentAccessChannel`: a public channel is open, a thread borrows its
     /// parent's access, and every other type needs an agent membership.
     private func canAgentAccess(channelId: String, channel: PostableChannel, agentId: String) -> Bool {
-        var seen: Set<String> = []
-        var currentId = channelId
-        var current = channel
-        for _ in 0..<8 {
-            guard seen.insert(currentId).inserted, current.deletedAt == nil else { return false }
-            if current.memberIds.contains(agentId) || oauth.channelAgentIds(channelId: currentId).contains(agentId) {
-                return true
-            }
-            if current.kind == "channel" { return true }
-            guard current.kind == "thread", let parentId = current.parentChannelId,
-                  let parent = channels.postableChannel(id: parentId) else {
-                return false
-            }
-            currentId = parentId
-            current = parent
-        }
-        return false
+        AgentChannelAccessQuery(channels: channels, oauth: oauth)
+            .canAccess(channelId: channelId, serverId: channel.serverId, agentId: agentId)
     }
 
     // MARK: - DM targets

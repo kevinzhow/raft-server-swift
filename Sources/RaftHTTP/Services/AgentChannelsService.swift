@@ -336,6 +336,8 @@ public struct AgentChannelsService: Sendable {
             if remove {
                 let wasMember = oauth.channelAgentIds(channelId: channelId).contains(target)
                 oauth.removeChannelAgent(channelId: channelId, agentId: target)
+                _ = channels.projectTypedMembership(channelId: channelId, memberId: target,
+                    humanMember: oauth.isChannelParticipant(channelId: channelId, userId: target), agentMember: false)
                 return AgentChannelMemberWriteResponse(
                     change: .removed(wasMember: wasMember), memberType: "agent", memberName: agentName
                 )
@@ -364,8 +366,9 @@ public struct AgentChannelsService: Sendable {
         }
         if remove {
             let wasMember = oauth.channelHumanIds(channelId: channelId).contains(target)
-            channels.removeMember(channelId: channelId, memberId: target)
-            _ = oauth.removeChannelHuman(channelId: channelId, userId: target)
+            oauth.removeChannelHuman(channelId: channelId, userId: target)
+            _ = channels.projectTypedMembership(channelId: channelId, memberId: target,
+                humanMember: false, agentMember: oauth.channelAgentIds(channelId: channelId).contains(target))
             return AgentChannelMemberWriteResponse(
                 change: .removed(wasMember: wasMember), memberType: "human", memberName: userName
             )

@@ -117,7 +117,8 @@ private let defaultsJSON = #"{"enabled":true,"threshold_bytes":65536,"interval_s
             ) { request in
                 request.body = .init(string: "not json")
             }
-            let anonymousBody = #"{"error":"Missing or invalid Authorization header","code":"auth_required"}"#
+            // Shared requireAgentCredentialAuth, middleware/auth.ts:734-742.
+            let anonymousBody = #"{"error":"Missing agent credential"}"#
             #expect(anonymous.status == .unauthorized)
             #expect(anonymous.body.string == anonymousBody)
 

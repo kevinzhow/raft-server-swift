@@ -107,7 +107,7 @@ public struct ManagedMCPOAuthService: Sendable {
         if visit(channelId) { return true }
         guard dependencies.channels.postableChannel(id: channelId) == nil else { return false }
         return LedgerChannelReadFallback.canReadHuman(
-            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: dependencies.channels)
     }
 
     private func requireUser(_ authorization: String?) throws -> String {

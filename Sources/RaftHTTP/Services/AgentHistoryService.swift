@@ -385,13 +385,19 @@ public struct AgentHistoryService: Sendable {
     /// fallback the pinned server applies to a stored attachment.
     private func attachments(for message: OAuthLedger.HistoryMessage) -> [AgentHistoryMessage.Attachment] {
         guard let stored = messages.humanMessageRows.first(where: { $0.id == message.id }) else { return [] }
+        let commentsVisible = channels.postableChannel(id: stored.channelId).map {
+            agents.evaluateFeatureFlag(key: "attachment_comments_v0", userId: "", serverId: $0.serverId,
+                platform: nil, client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)).enabled
+        } ?? false
+        let comments = messages.state.attachmentCommentRecords
         return messages.orderedAttachmentRows(for: stored).compactMap { entry in
-            guard let row = entry.row, row.channelId == stored.channelId else { return nil }
+            guard let row = entry.row, row.messageId == stored.id else { return nil }
+            let metadata = CanonicalMessagePayload.Attachment(row)
             return AgentHistoryMessage.Attachment(
-                id: row.id,
-                filename: row.filename,
-                mimeType: ChannelFileRules.resolveAttachmentMimeType(filename: row.filename, stored: row.mimeType),
-                sizeBytes: row.sizeBytes
+                id: metadata.id, filename: metadata.filename, mimeType: metadata.mimeType,
+                sizeBytes: metadata.sizeBytes, width: metadata.width, height: metadata.height,
+                thumbnailUrl: metadata.thumbnailUrl,
+                commentCount: commentsVisible ? (comments[row.id]?.filter { $0.hostMessageId == stored.id }.count ?? 0) : 0
             )
         }
     }

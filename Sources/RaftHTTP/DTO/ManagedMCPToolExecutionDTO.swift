@@ -580,10 +580,10 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
     public var readStateVersion: Int
     public var readState: ChannelReadStateFrontier
     public var activityMuteSupported: Bool
-    public var channelRole: String
+    public var channelRole: String?
     public var channelAdminBasis: String?
     public var capabilities: Capabilities
-    public var channelAuthorityRevision: Int
+    public var channelAuthorityRevision: Int?
     public var peerReadState: PeerReadState?
 
     public init(
@@ -601,10 +601,10 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
         readStateVersion: Int,
         readState: ChannelReadStateFrontier,
         activityMuteSupported: Bool,
-        channelRole: String,
+        channelRole: String?,
         channelAdminBasis: String?,
         capabilities: Capabilities,
-        channelAuthorityRevision: Int,
+        channelAuthorityRevision: Int?,
         peerReadState: PeerReadState?
     ) {
         self.id = id
@@ -662,30 +662,12 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
         fields.append(OrderedJSONField("maxReadSeq", maxReadSeq))
         fields.append(OrderedJSONField("readStateVersion", readStateVersion))
         fields.append(OrderedJSONField("readState", readState.json))
-        switch peerReadState {
-        case .summary(let peerCount, let buckets)?:
-            fields.append(OrderedJSONField("peerReadSummary", .object([
-                OrderedJSONField("peerCount", peerCount),
-                OrderedJSONField("readCountAtSeq", .array(buckets.map {
-                    .object([OrderedJSONField("seq", $0.seq), OrderedJSONField("count", $0.count)])
-                })),
-            ])))
-        case .states(let peers)?:
-            fields.append(OrderedJSONField("peerReadStates", .array(peers.map {
-                .object([
-                    OrderedJSONField("peerKind", "agent"),
-                    OrderedJSONField("peerId", $0.peerId),
-                    OrderedJSONField("maxReadSeq", $0.maxReadSeq),
-                ])
-            })))
-        case nil:
-            break
-        }
+        fields += peerReadState?.jsonFields ?? []
         fields.append(OrderedJSONField("activityMuteSupported", activityMuteSupported))
-        fields.append(OrderedJSONField("channelRole", channelRole))
+        fields.append(OrderedJSONField("channelRole", optional: channelRole))
         fields.append(OrderedJSONField("channelAdminBasis", optional: channelAdminBasis))
         fields.append(OrderedJSONField("channelCapabilities", capabilities.json))
-        fields.append(OrderedJSONField("channelAuthorityRevision", channelAuthorityRevision))
+        fields.append(OrderedJSONField("channelAuthorityRevision", optional: channelAuthorityRevision))
         return .object(fields)
     }
 }

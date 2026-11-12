@@ -139,11 +139,15 @@ private func channelsEntryProbe(
                 )
                 #expect(created.status == .ok)
                 let channelId = try #require(try channelsEntryJSON(created)["id"] as? String)
-                #expect(created.body.string == "{\"id\":\"\(channelId)\",\"name\":\"entry-room\",\"joined\":true,\"activityMuteSupported\":true,\"activityMuted\":false,\"muteFromSeq\":null,\"prefsVersion\":0,\"maxReadSeq\":0,\"readStateVersion\":0}")
+                let createdAt = try #require(try channelsEntryJSON(created)["createdAt"] as? String)
+                let expectedCreated = """
+                {"id":"\(channelId)","serverId":"\(serverId)","name":"entry-room","description":"stored detail","type":"channel","guestVisible":false,"guestJoinable":false,"parentMessageId":null,"parentChannelId":null,"createdAt":"\(createdAt)","archivedAt":null,"archivedByUserId":null,"archivedByAgentId":null,"deletedAt":null,"joined":true,"jointChannelId":null,"jointRole":null,"jointPeerServerId":null,"jointPeerServerName":null,"jointPeerServerSlug":null,"jointPeerStatus":null,"jointServers":[],"jointPendingInvites":[],"jointBillingLocked":null,"channelRole":"admin","channelAdminBasis":"both","channelCapabilities":{"editChannelMetadata":true,"archiveChannels":true,"deleteChannels":true,"changeChannelVisibility":true,"manageGuestAccess":true,"federateChannels":true,"addChannelMembers":true,"removeChannelMembers":true,"changeChannelMemberRoles":true},"channelAuthorityRevision":1,"activityMuted":false,"muteFromSeq":null,"prefsVersion":0,"maxReadSeq":0,"readStateVersion":0,"readState":{"kind":"absent"},"activityMuteSupported":true,"jointInvites":[],"jointInvite":null}
+                """
+                #expect(created.body.string == expectedCreated)
                 // No test join precedes this probe: fixed user delivery must
                 // already have granted A's sessions the actual new channel room.
                 let creationProbe = try await channelsEntryProbe(socketA, hub: hubA, channelId: channelId)
-                let createdFrame = "42[\"channel:updated\",{\"channel\":{\"description\":null,\"id\":\"\(channelId)\",\"joined\":true,\"name\":\"entry-room\"}}]"
+                let createdFrame = "42[\"channel:updated\",{\"channel\":{\"description\":\"stored detail\",\"id\":\"\(channelId)\",\"joined\":true,\"name\":\"entry-room\"}}]"
                 #expect(try await channelsEntryFrames(socketA, hub: hubA, userId: ownerId, start: createStartA) == [createdFrame, creationProbe])
                 #expect(try await channelsEntryFrames(socketB, hub: hubB, userId: ownerId, start: createStartB) == [])
 
@@ -152,7 +156,7 @@ private func channelsEntryProbe(
                     $0.body = .init(string: renameBody)
                 }
                 #expect(denied.status == .forbidden)
-                #expect(denied.body.string == #"{"error":"Forbidden"}"#)
+                #expect(denied.body.string == #"{"error":"You do not have permission to update channels"}"#)
                 scene.channels.setMemberRole(serverId: serverId, userId: memberId, role: "admin")
                 let renamed = try await client.send(.patch, headers: memberHeaders, to: URI(string: "/api/channels/\(channelId)")) {
                     $0.body = .init(string: renameBody)
@@ -166,7 +170,9 @@ private func channelsEntryProbe(
                 let detailBody = try channelsEntryJSON(detail)
                 #expect(detailBody["id"] as? String == channelId)
                 #expect(detailBody["name"] as? String == "entry-renamed")
-                #expect(detailBody["channelRole"] as? String == "admin")
+                #expect(detailBody["channelRole"] is NSNull)
+                #expect(detailBody["channelAuthorityRevision"] is NSNull)
+                #expect(detailBody["joined"] as? Bool == false)
                 #expect(detailBody["channelAdminBasis"] as? String == "server_role")
                 let capabilities = try #require(detailBody["channelCapabilities"] as? [String: Any])
                 #expect(capabilities["manageGuestAccess"] as? Bool == true)

@@ -297,7 +297,8 @@ public struct ChannelMembershipService: Sendable {
         }
         try requireNotArchived(channelId)
         oauth.removeChannelAgent(channelId: channelId, agentId: agentId)
-        let kind = channels.removeAgentMember(channelId: channelId, agentId: agentId)
+        let kind = channels.projectTypedMembership(channelId: channelId, memberId: agentId,
+            humanMember: oauth.isChannelParticipant(channelId: channelId, userId: agentId), agentMember: false)
         if kind == "private" || kind == "joint" {
             let humans = oauth.channelHumanIds(channelId: channelId)
             let agents = oauth.channelAgentIds(channelId: channelId)

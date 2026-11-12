@@ -13,7 +13,7 @@ import Vapor
 /// in this file.
 extension InternalAgentApiFeature {
     func registerIntegrationAppRoutes(routes: any RoutesBuilder) {
-        let agentApi = routes.grouped("internal", "agent-api")
+        let agentApi = routes.grouped("internal", "agent-api").grouped(AgentCredentialHeaderMiddleware())
 
         agentApi.post("integrations", "app", "logo") { request async throws -> Response in
             let (_, denial) = agentApiGate(request, capability: "read", grant: nil)
