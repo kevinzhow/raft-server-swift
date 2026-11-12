@@ -111,7 +111,7 @@ func attachmentUploadAndAgentDownloadPublishThePinnedWireContract(kind: String) 
 }
 
 /// requireAgentCredentialAuth is a shared precondition, not a human auth envelope.
-@Test(arguments: [nil, "Basic ignored", "bearer ignored"] as [String?])
+@Test(arguments: [nil, "Basic ignored", "bearer ignored", "Bearer", "Bearer "] as [String?])
 func attachmentAgentSurfaceMissingCredentialUsesPinnedMiddlewareBody(authorization: String?) async throws {
     try await withApp { app in
         configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}))
@@ -129,6 +129,45 @@ func attachmentAgentSurfaceMissingCredentialUsesPinnedMiddlewareBody(authorizati
             let integration = try await client.send(.post, headers: headers, to: "/internal/agent-api/integrations/app/manage")
             #expect(integration.status == .unauthorized)
             #expect(integration.body.string == #"{"error":"Missing agent credential"}"#)
+        }
+    }
+}
+
+/// auth.ts:739-755 classifies Bearer principals by isAgentApiKey before
+/// handlers; other valid principal classes must not become a human auth error.
+@Test func attachmentAgentSurfaceRejectsWrongPrincipalBeforeHandlers() async throws {
+    let accounts = EmailLoginDirectory()
+    let owner = UUID().uuidString.lowercased()
+    let server = UUID().uuidString.lowercased()
+    accounts.addAccount(id: owner, email: "principal-owner@slock.test", password: "password123")
+    accounts.markEmailVerified(userId: owner)
+    accounts.oauth.addOwnedServer(id: server, slug: "principal", name: "Principal", ownerId: owner)
+    let agent = accounts.oauth.createAgent(serverId: server, name: "principal-agent")
+    let key = accounts.mintAgentCredential(agentId: agent, scopes: ["read"], name: "principal-agent")
+    let jwt = accounts.mintAccessTokenForTesting(userId: owner)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: accounts))
+        try await app.testing { client in
+            #expect(try await client.get("/internal/agent-api/", headers: attachmentWireHeaders("Bearer \(key)")).status == .ok)
+            for principal in [jwt, "sk_computer_fixture", "sk_machine_fixture", "sk_daemon_fixture", "opaque-principal"] {
+                let headers = attachmentWireHeaders("Bearer \(principal)")
+                for path in ["/internal/agent-api/", "/internal/agent-api/history?channel=%23missing",
+                             "/internal/agent-api/attachments/11111111-1111-4111-8111-111111111111",
+                             "/internal/agent-api/attachments/11111111-1111-4111-8111-111111111111/url",
+                             "/internal/agent-api/knowledge", "/internal/agent-api/knowledge/search?q=attachments"] {
+                    let response = try await client.get(URI(string: path), headers: headers)
+                    #expect(response.status == .unauthorized)
+                    #expect(response.body.string == #"{"error":"Invalid authentication: agent credential required","code":"invalid_principal"}"#)
+                }
+                let integration = try await client.send(.post, headers: headers, to: "/internal/agent-api/integrations/app/manage")
+                #expect(integration.status == .unauthorized)
+                #expect(integration.body.string == #"{"error":"Invalid authentication: agent credential required","code":"invalid_principal"}"#)
+            }
+            // The class check must not impose length/encoding constraints or
+            // replace existing credential validity/capability/grant checks.
+            let unknown = try await client.get("/internal/agent-api/", headers: attachmentWireHeaders("Bearer sk_agent_nope"))
+            #expect(unknown.status == .unauthorized)
+            #expect(try attachmentWireObject(unknown)["code"] as? String != "invalid_principal")
         }
     }
 }

@@ -8,6 +8,9 @@ struct AgentCredentialHeaderMiddleware: Middleware {
         guard let authorization = request.headers[.authorization], authorization.hasPrefix("Bearer ") else {
             return domainErrorResponse(AgentCredentialAuthError.missingCredential)
         }
+        guard authorization.dropFirst("Bearer ".count).hasPrefix("sk_agent_") else {
+            return domainErrorResponse(AgentCredentialAuthError.invalidPrincipal)
+        }
         return try await next.respond(to: request)
     }
 }
