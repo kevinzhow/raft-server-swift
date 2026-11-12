@@ -13,7 +13,7 @@ func composeServices() -> ServiceContainer {
     let cards = ManagedMCPAndCardsStore()
     let feedback = FeedbackStore()
     let oauth = OAuthLedger()
-    return composeServices(
+    return composeProductionFeatureGraph(
         profiles: profiles,
         notifications: notifications,
         productEvents: productEvents,
@@ -27,6 +27,80 @@ func composeServices() -> ServiceContainer {
         cards: cards,
         feedback: feedback,
         oauth: oauth
+    ).services
+}
+
+/// The production Feature graph over one retained owner set. The onboarding
+/// briefing is constructed once here and shared with the invite acknowledgment,
+/// so a host cannot accidentally bind a second owner set to one Feature.
+func composeProductionFeatureGraph(
+    profiles: AuthProfileStore,
+    notifications: NotificationsStore,
+    productEvents: ProductEventStore,
+    inboxFacts: InboxFactStore,
+    threadFollows: ThreadFollowStore,
+    messages: MessagesAndThreadsStore,
+    agents: AgentsRuntimeStore,
+    tasks: TasksAndRemindersStore,
+    machines: MachinesAndComputersStore,
+    channels: ServersAndChannelsStore,
+    cards: ManagedMCPAndCardsStore,
+    feedback: FeedbackStore,
+    oauth: OAuthLedger
+) -> ProductionFeatureGraph {
+    let onboardingBriefing = composeOnboardingBriefing(
+        profiles: profiles,
+        agents: agents,
+        machines: machines,
+        channels: channels,
+        messages: messages,
+        oauth: oauth
+    )
+    return ProductionFeatureGraph(
+        services: composeServices(
+            profiles: profiles,
+            notifications: notifications,
+            productEvents: productEvents,
+            inboxFacts: inboxFacts,
+            threadFollows: threadFollows,
+            messages: messages,
+            agents: agents,
+            tasks: tasks,
+            machines: machines,
+            channels: channels,
+            cards: cards,
+            feedback: feedback,
+            oauth: oauth,
+            onboardingBriefing: onboardingBriefing
+        ),
+        onboardingBriefing: onboardingBriefing
+    )
+}
+
+/// The owner onboarding briefing used by the Auth feature and the invite
+/// acknowledgment. Producer-bound execution keeps the production worker as the
+/// only transport; this value does not acquire persistence or a transport.
+func composeOnboardingBriefing(
+    profiles: AuthProfileStore,
+    agents: AgentsRuntimeStore,
+    machines: MachinesAndComputersStore,
+    channels: ServersAndChannelsStore,
+    messages: MessagesAndThreadsStore,
+    oauth: OAuthLedger
+) -> OnboardingBriefingService {
+    OnboardingBriefingService(
+        channels: channels,
+        profiles: profiles,
+        agents: agents,
+        messages: messages,
+        oauth: oauth,
+        execution: AgentExecutionService(
+            producerTransactionAgents: agents,
+            machines: machines,
+            oauth: oauth,
+            channels: channels,
+            messages: messages
+        )
     )
 }
 
@@ -45,8 +119,17 @@ func composeServices(
     channels: ServersAndChannelsStore,
     cards: ManagedMCPAndCardsStore,
     feedback: FeedbackStore,
-    oauth: OAuthLedger
+    oauth: OAuthLedger,
+    onboardingBriefing: OnboardingBriefingService? = nil
 ) -> ServiceContainer {
+    let briefing = onboardingBriefing ?? composeOnboardingBriefing(
+        profiles: profiles,
+        agents: agents,
+        machines: machines,
+        channels: channels,
+        messages: messages,
+        oauth: oauth
+    )
     let ledger = MessageLedgerPort(oauth: oauth)
     let ownership = AssistantOwnershipQuery(agents: agents, oauth: oauth)
     let suppression = MessageSuppressionService(messages: messages, oauth: oauth)
@@ -506,7 +589,10 @@ func composeServices(
         dependencies: JoinLinksAndInvitesDependencies(
             sessionUserId: lifecycle.sessionUserId,
             emitRealtime: realtime.emit,
-            setupAccountFacts: AuthProfileSetupAccountFacts(accounts: profiles)
+            setupAccountFacts: AuthProfileSetupAccountFacts(accounts: profiles),
+            triggerOnboardingBriefing: { serverId, ownerId in
+                _ = await briefing.trigger(serverId: serverId, requestedByOwnerId: ownerId)
+            }
         )
     )
     let threads = composeThreads(
