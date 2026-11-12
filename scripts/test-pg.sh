@@ -182,6 +182,7 @@ BASE_ENV=(
     "RAFT_OPENER_NOTICE_PG_ACCEPTANCE=1"
     "RAFT_AGENT_OFFLINE_QUEUE_PG_ACCEPTANCE=1"
     "RAFT_MACHINE_QUERY_PG_ACCEPTANCE=1"
+    "RAFT_QUEUED_RESTART_PG_ACCEPTANCE=1"
     "RAFT_BUSINESS_PERSISTENCE_PG_ACCEPTANCE=1"
     "RAFT_BUSINESS_PERSISTENCE_PG_ACCEPTANCE_REDIS_URL=$REDIS_ROOT/1"
     "RAFT_BUSINESS_PERSISTENCE_PG_ACCEPTANCE_SERVER_BIN=$SERVER_BIN"
@@ -207,6 +208,7 @@ case_env() {
         "RAFT_MENTION_DELIVERY_TEST_DATABASE_URL=$url"
         "RAFT_OPENER_NOTICE_TEST_DATABASE_URL=$url"
         "RAFT_AGENT_OFFLINE_QUEUE_TEST_DATABASE_URL=$url"
+        "RAFT_QUEUED_RESTART_TEST_DATABASE_URL=$url"
         "RAFT_BUSINESS_PERSISTENCE_PG_ACCEPTANCE_DATABASE_URL=$url"
         "RAFT_EMAIL_SHUTDOWN_PG_ACCEPTANCE_DATABASE_URL=$url"
         "RAFT_ONBOARDING_PG_ACCEPTANCE_DATABASE_URL=$url"
@@ -214,6 +216,15 @@ case_env() {
 }
 
 mkdir -p "$LOG_DIR/tmp"
+
+# Critical acceptance names are matched case-insensitively so a lowercase
+# postgres... case cannot evade the older uppercase Postgres guard.
+is_critical_startup_test() {
+    local lower="${1,,}"
+    [[ "$lower" == *postgres* || "$lower" == *onboarding* || "$lower" == *emailshutdown* \
+        || "$lower" == *businesspersistence* || "$lower" == *productionmachine* \
+        || "$lower" == *mention* || "$lower" == *openerledger* ]]
+}
 
 # Run every listed startup test in its own runner process, oldest first. A
 # failing test is recorded and the run continues.
@@ -233,14 +244,23 @@ run_gated_startup_tests() {
             "$RUNNER_DIR/RaftServerStartupTests-test-runner" \
             --testing-library swift-testing --no-parallel \
             --filter "^${escaped}(/|$)" >"$log" 2>&1; then
-            # A gated acceptance test must actually run: enabled(if:) skipping
-            # because an environment variable is missing is a gate failure.
-            if [[ "$test_id" =~ (Postgres|Onboarding|EmailShutdown|BusinessPersistence|ProductionMachine|Mention|OpenerLedger) ]] \
-                && ! grep -qE 'Test run with [1-9]' "$log"; then
-                failed=$((failed + 1))
-                printf 'FAIL %s (gated test did not run; log %s)\n' "$test_id" "$log"
-                tail -n 8 "$log" | sed 's/^/    /'
+            # A gated acceptance test must actually run. Swift Testing reports a
+            # skipped test as a positive test-run total, so the total alone is
+            # not proof that the critical case executed.
+            if is_critical_startup_test "$test_id"; then
+                if grep -qE 'Test .* skipped\.' "$log"; then
+                    failed=$((failed + 1))
+                    printf 'FAIL %s (critical gated test was skipped; log %s)\n' "$test_id" "$log"
+                    tail -n 8 "$log" | sed 's/^/    /'
+                elif ! grep -qE 'Test run with [1-9]' "$log"; then
+                    failed=$((failed + 1))
+                    printf 'FAIL %s (gated test did not run; log %s)\n' "$test_id" "$log"
+                    tail -n 8 "$log" | sed 's/^/    /'
+                else
+                    printf 'PASS %s\n' "$test_id"
+                fi
             else
+                # Standalone helper, native-seed and E2E-only skips stay allowed.
                 printf 'PASS %s\n' "$test_id"
             fi
         else
