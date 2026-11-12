@@ -135,8 +135,9 @@ already-qualified CSS by concatenation is not used.
   from content-hash propagation, 5 changed metadata files (`index.html`,
   `.vite` manifests, `desktop-manifest.json`, `_headers`); total bytes differ
   only by the overlay JS delta.
-- Status: **private build candidate only, not qualified for deployment.** Root
-  owns integration gate, release metadata, static publish and activation.
+- Status: **qualified and active** with Main `1b456511` at Web release
+  `587a197b…`/index `ee169020…`. The old `d4` release, its 19 immutable lazy-import
+  chunks and the Caddy inode remain; hashes and proof steps above are unchanged.
 
 Logs and stage artifacts live on the data disk under a private evidence
 directory, never in Git.
