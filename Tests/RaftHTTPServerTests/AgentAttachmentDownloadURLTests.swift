@@ -107,9 +107,45 @@ func agentAttachmentDownloadPreservesEveryByteAndContentLength(empty: Bool) asyn
             #expect(response.body.data == bytes)
             #expect(response.headers[.contentLength] == String(bytes.count))
             #expect(response.headers[.contentType] == "application/octet-stream")
-            #expect(response.headers[.cacheControl] == "private, no-store")
+            #expect(response.headers[.cacheControl] == "private, immutable, max-age=31536000")
             #expect(response.headers[.contentDisposition] ==
                 "attachment; filename=\"binary payload.bin\"; filename*=UTF-8''binary%20payload.bin")
+        }
+    }
+}
+
+/// Agent streaming uses attachments.ts presentation helpers without accepting
+/// the human endpoint's Range selection (internalAgentApi.ts:4890-4917).
+@Test(arguments: ["uppercase", "existing-charset", "json", "unicode-image", "empty-mime"])
+func agentAttachmentPresentationMatchesPinnedMimeAndFilenameRules(profile: String) async throws {
+    let filename = profile == "unicode-image" ? "café \"review\".png" : "legacy.txt"
+    let mime: String
+    let expectedType: String
+    switch profile {
+    case "uppercase": mime = "TEXT/PLAIN"; expectedType = "TEXT/PLAIN; charset=utf-8"
+    case "existing-charset": mime = "text/plain; CHARSET=ISO-8859-1"; expectedType = mime
+    case "json": mime = "application/problem+json"; expectedType = "application/problem+json; charset=utf-8"
+    case "unicode-image": mime = "image/png"; expectedType = mime
+    default: mime = ""; expectedType = "application/octet-stream"
+    }
+    let bytes = Data([0, 255, 1, 128, 13])
+    let f = makeAgentAttachmentFixture(suffix: "805", bytes: bytes, filename: filename, mimeType: mime)
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            var headers = HTTPFields()
+            headers[.authorization] = "Bearer \(f.readKey)"
+            headers[.range] = "bytes=1-2"
+            let response = try await client.get(URI(string: "/internal/agent-api/attachments/\(f.visibleId)"), headers: headers)
+            #expect(response.status == .ok)
+            #expect(response.body.data == bytes)
+            #expect(response.headers[.contentLength] == String(bytes.count))
+            #expect(response.headers[.contentRange] == nil)
+            #expect(response.headers[.contentType] == expectedType)
+            let expectedDisposition = profile == "unicode-image"
+                ? "inline; filename=\"caf_ _review_.png\"; filename*=UTF-8''caf%C3%A9%20%22review%22.png"
+                : "attachment; filename=\"legacy.txt\"; filename*=UTF-8''legacy.txt"
+            #expect(response.headers[.contentDisposition] == expectedDisposition)
         }
     }
 }

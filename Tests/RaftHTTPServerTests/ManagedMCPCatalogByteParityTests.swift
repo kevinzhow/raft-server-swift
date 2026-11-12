@@ -334,7 +334,7 @@ private func jsonField(_ body: String, _ key: String) -> String {
             #expect(text(hidden) == "{\"error\":\"Channel not found or not visible\"}")
             let noAuth = try await client.get("/internal/agent-api/history?channel=%23\(channelName)")
             #expect(noAuth.status == .unauthorized)
-            #expect(text(noAuth) == "{\"error\":\"Missing or invalid Authorization header\",\"code\":\"auth_required\"}")
+            #expect(text(noAuth) == "{\"error\":\"Missing agent credential\"}")
             let badAnchor = try await client.get(URI(string: "/internal/agent-api/history?channel=%23\(channelName)&around=zzzz"), headers: bearer(readKey))
             #expect(text(badAnchor) == "{\"error\":\"Message anchor must be a seq, full UUID, or 8-character short id in #\(channelName): zzzz\",\"errorCode\":\"INVALID_ARG\"}")
             let missingAnchor = try await client.get(URI(string: "/internal/agent-api/history?channel=%23\(channelName)&before=22222222-2222-4222-8222-222222222222"), headers: bearer(readKey))

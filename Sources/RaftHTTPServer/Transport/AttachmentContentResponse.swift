@@ -48,7 +48,7 @@ enum AttachmentContentResponse {
         let preview = desktopQuery(request.url.query, "disposition") == "inline" && previewableMedia(mime)
         let download = desktopQuery(request.url.query, "disposition") == "attachment"
             || desktopQuery(request.url.query, "download") == "1"
-        let inline = !download && (preview || previewableImages.contains(mime))
+        let inline = !download && (preview || AttachmentPresentationRules.isPreviewableImage(mime))
         var headers = HTTPFields()
         headers[.cacheControl] = "private, immutable, max-age=31536000"
         headers[.contentType] = responseContentType(mime)
@@ -66,7 +66,6 @@ enum AttachmentContentResponse {
         return Response(status: status, headers: headers, body: .init(data: bytes))
     }
 
-    private static let previewableImages: Set<String> = ["image/jpeg", "image/png", "image/gif", "image/webp"]
     // attachments.ts FILENAME_MIME_MAP; do not use a platform MIME registry whose
     // additional extensions would change the pinned fallback contract.
     private static func resolvedMime(filename: String, stored: String?) -> String {
@@ -81,30 +80,15 @@ enum AttachmentContentResponse {
     }
 
     private static func responseContentType(_ mime: String) -> String {
-        if mime.range(of: #"\bcharset="#, options: .regularExpression) != nil { return mime }
-        if mime.hasPrefix("text/") || ["application/json", "application/ld+json", "application/xml"].contains(mime)
-            || mime.hasSuffix("+json") || mime.hasSuffix("+xml") { return mime + "; charset=utf-8" }
-        return mime
+        AttachmentPresentationRules.contentType(mime)
     }
 
     private static func normalizedFilename(_ name: String) -> String {
-        let scalars = name.unicodeScalars
-        guard scalars.contains(where: { $0.value > 127 }), scalars.allSatisfy({ $0.value <= 255 }),
-              let repaired = String(data: Data(scalars.map { UInt8($0.value) }), encoding: .utf8),
-              !repaired.contains("\u{FFFD}") else { return name }
-        return repaired
+        AttachmentPresentationRules.normalizedFilename(name)
     }
 
     private static func disposition(filename: String, inline: Bool) -> String {
-        let ascii = filename.utf16.map { unit -> UInt8 in
-            if unit == 10 || unit == 13 { return 32 }
-            if unit == 34 || unit == 92 || unit < 32 || unit > 126 { return 95 }
-            return UInt8(unit)
-        }
-        let fallback = String(decoding: ascii, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~")
-        let encoded = filename.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
-        return "\(inline ? "inline" : "attachment"); filename=\"\(fallback.isEmpty ? "download" : fallback)\"; filename*=UTF-8''\(encoded)"
+        AttachmentPresentationRules.disposition(filename: filename, inline: inline)
     }
 
     private static func framePolicy(_ configured: [String]) -> String {

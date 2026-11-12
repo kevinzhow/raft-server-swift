@@ -64,11 +64,12 @@ private func makeService(
 }
 
 @Test func agentsLifecycleSuccessBodiesKeepTheLegacyMemberOrder() {
-    #expect(
-        AgentApiCredentialResponse(agentId: "a", credentialId: "c", serverId: "s", scopes: ["read", "send"])
-            .jsonBody.render()
-            == #"{"agentId":"a","credentialId":"c","serverId":"s","scopes":["read","send"]}"#
-    )
+    // Full identity fields and role matrix are asserted through the published
+    // route in AttachmentWireContractTests (upstream internalAgentApi.ts:2386).
+    let identity = AgentApiCredentialResponse(agentId: "a", credentialId: "c", serverId: "s", scopes: ["read", "send"],
+        agentName: "reader", agentDisplayName: nil, serverRole: nil).jsonBody.render()
+    #expect(identity.hasPrefix(#"{"agentId":"a","agentName":"reader","agentDisplayName":null,"serverId":"s","serverRole":null,"serverCapabilities":{"viewChannel":false,"#))
+    #expect(identity.hasSuffix(#"},"credentialId":"c","scopes":["read","send"]}"#))
     #expect(
         AgentAttachmentUploadResponse(id: "i", filename: "f.txt", mimeType: nil, sizeBytes: 3).jsonBody.render()
             == #"{"id":"i","filename":"f.txt","mimeType":null,"sizeBytes":3,"thumbnailUrl":null}"#
@@ -76,7 +77,7 @@ private func makeService(
     #expect(
         AttachmentUploadListResponse(attachments: [.init(id: "1", filename: "a"), .init(id: "2", filename: "b")])
             .jsonBody.render()
-            == #"{"attachments":[{"id":"1","filename":"a"},{"id":"2","filename":"b"}]}"#
+            == #"{"attachments":[{"id":"1","filename":"a","mimeType":"application/octet-stream","sizeBytes":null,"width":null,"height":null,"thumbnailUrl":null,"rasterPreviewUrl":null},{"id":"2","filename":"b","mimeType":"application/octet-stream","sizeBytes":null,"width":null,"height":null,"thumbnailUrl":null,"rasterPreviewUrl":null}]}"#
     )
     #expect(
         AttachmentUploadCapabilitiesResponse(maxBytes: 52_428_800).jsonBody.render()

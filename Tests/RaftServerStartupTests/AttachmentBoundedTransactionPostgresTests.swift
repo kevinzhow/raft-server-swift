@@ -406,7 +406,15 @@ private func multipartUpload(
                     let object = try JSONSerialization.jsonObject(with: response.body.data ?? Data())
                         as? [String: Any]
                     let rows = try #require(object?["attachments"] as? [[String: Any]])
-                    let id = try #require(rows.first?["id"] as? String)
+                    let row = try #require(rows.first)
+                    let id = try #require(row["id"] as? String)
+                    // The production bounded path publishes the same upstream
+                    // attachments.ts:656-676 envelope as the legacy HTTP fixture.
+                    #expect(Set(row.keys) == ["id", "filename", "mimeType", "sizeBytes", "width", "height", "thumbnailUrl", "rasterPreviewUrl"])
+                    #expect(row["filename"] as? String == "bounded.txt")
+                    #expect(row["mimeType"] as? String == "text/plain")
+                    #expect(row["sizeBytes"] as? Int == boundedHTML.count)
+                    for key in ["width", "height", "thumbnailUrl", "rasterPreviewUrl"] { #expect(row[key] is NSNull) }
 
                     let published = try fixture.runtime.withCommittedReadView {
                         fixture.accounts.messagesAndThreadsStore.withState { state in

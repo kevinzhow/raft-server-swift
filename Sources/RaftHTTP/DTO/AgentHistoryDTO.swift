@@ -13,12 +13,21 @@ public struct AgentHistoryMessage: Sendable, Equatable {
         public var filename: String
         public var mimeType: String
         public var sizeBytes: Int?
+        public var width: Int?
+        public var height: Int?
+        public var thumbnailUrl: String?
+        public var commentCount: Int
 
-        public init(id: String, filename: String, mimeType: String, sizeBytes: Int?) {
+        public init(id: String, filename: String, mimeType: String, sizeBytes: Int?,
+                    width: Int? = nil, height: Int? = nil, thumbnailUrl: String? = nil, commentCount: Int = 0) {
             self.id = id
             self.filename = filename
             self.mimeType = mimeType
             self.sizeBytes = sizeBytes
+            self.width = width
+            self.height = height
+            self.thumbnailUrl = thumbnailUrl
+            self.commentCount = commentCount
         }
 
         var jsonBody: OrderedJSON {
@@ -26,7 +35,11 @@ public struct AgentHistoryMessage: Sendable, Equatable {
             body.append("id", id)
             body.append("filename", filename)
             body.append("mimeType", mimeType)
-            body.append("sizeBytes", ifPresent: sizeBytes)
+            body.append("sizeBytes", optional: sizeBytes)
+            body.append("width", optional: width)
+            body.append("height", optional: height)
+            body.append("thumbnailUrl", optional: thumbnailUrl)
+            body.append("commentCount", commentCount)
             return body.json
         }
     }

@@ -258,7 +258,9 @@ extension AgentsLifecycleService {
                 }
             }
         }
-        return AttachmentUploadListResponse(attachments: zip(ids, files).map { .init(id: $0.0, filename: $0.1.filename) })
+        return AttachmentUploadListResponse(attachments: zip(ids, files).map {
+            .init(id: $0.0, filename: $0.1.filename, mimeType: $0.1.mimeType, sizeBytes: $0.1.bytes.count)
+        })
     }
 
     /// Bounded upload: admit/capture, object writes, re-admit/compare, rows.
@@ -329,7 +331,9 @@ extension AgentsLifecycleService {
                     }
                 }
                 return .ready(AttachmentUploadListResponse(
-                    attachments: zip(ids, files).map { .init(id: $0.0, filename: $0.1.filename) }
+                    attachments: zip(ids, files).map {
+                        .init(id: $0.0, filename: $0.1.filename, mimeType: $0.1.mimeType, sizeBytes: $0.1.bytes.count)
+                    }
                 ))
             } catch let error as any DomainError {
                 return .refused(error)

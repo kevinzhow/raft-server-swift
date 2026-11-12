@@ -75,7 +75,7 @@ func agentHistoryListsAttachmentMetadataAndDownloadUsesTheAgentCredential(binary
                     headers: agentHistoryHeaders(readKey))
                 #expect(download.status == .ok)
                 #expect(download.body.data == bytes)
-                #expect(download.headers[.contentType] == mime)
+                #expect(download.headers[.contentType] == (binary ? mime : "text/plain; charset=utf-8"))
                 #expect(download.headers[.contentLength] == String(bytes.count))
             }
         }

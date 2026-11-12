@@ -33,7 +33,7 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
 
     public func register(routes: any RoutesBuilder) {
         let app = routes
-        let agentApi = app.grouped("internal", "agent-api")
+        let agentApi = app.grouped("internal", "agent-api").grouped(AgentCredentialHeaderMiddleware())
 
         agentApi.delete("reminders", ":reminderId") { request async throws -> Response in
             if let refusal = try await agentApiContractRefusal(.reminderCancel, request, services: services) { return refusal }
@@ -373,9 +373,11 @@ public struct InternalAgentApiFeature: RouteCollection, Sendable {
                     attachmentId: request.parameters.get("attachmentId") ?? ""
                 )
                 return BinaryBodyResponse(bytes: stored.bytes, headers: .exact([
-                    "Content-Type": stored.mimeType,
-                    "Cache-Control": "private, no-store",
-                    "Content-Disposition": "attachment; filename=\"\(stored.filename)\"; filename*=UTF-8''\(stored.encodedFilename)",
+                    "Content-Type": AttachmentPresentationRules.contentType(stored.mimeType),
+                    "Cache-Control": "private, immutable, max-age=31536000",
+                    "X-Content-Type-Options": "nosniff",
+                    "Content-Disposition": AttachmentPresentationRules.defaultDisposition(
+                        filename: stored.filename, mimeType: stored.mimeType),
                 ]))
             }
         }

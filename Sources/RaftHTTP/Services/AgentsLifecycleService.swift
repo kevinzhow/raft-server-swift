@@ -159,7 +159,7 @@ public struct AgentsLifecycleService: Sendable {
     /// check and before the agent lookup, as upstream does.
     public func agentApiIdentity(authorization: String?) throws -> AgentApiCredentialResponse {
         guard let token = Self.bearerToken(authorization) else {
-            throw AgentsLifecycleError.invalidOrExpiredToken
+            throw AgentCredentialAuthError.missingCredential
         }
         guard let credential = agents.agentCredentials[token], credential.revokedAt == nil else {
             throw AgentsLifecycleError.invalidOrExpiredToken
@@ -172,7 +172,10 @@ public struct AgentsLifecycleService: Sendable {
             agentId: credential.agentId,
             credentialId: credential.id,
             serverId: agent.serverId,
-            scopes: credential.scopes.sorted()
+            scopes: credential.scopes.sorted(),
+            agentName: agent.name,
+            agentDisplayName: agent.displayName,
+            serverRole: oauth.agentRole(serverId: agent.serverId, agentId: agent.id)
         )
     }
 
@@ -269,7 +272,9 @@ public struct AgentsLifecycleService: Sendable {
                     mimeType: file.mimeType,
                     sizeBytes: file.sizeBytes
                 ),
-                filename: file.filename
+                filename: file.filename,
+                mimeType: file.mimeType,
+                sizeBytes: file.sizeBytes
             )
         }
         return AttachmentUploadListResponse(attachments: rows)
@@ -314,7 +319,7 @@ public struct AgentsLifecycleService: Sendable {
             mimeType: mimeType,
             sizeBytes: sizeBytes
         )
-        return AttachmentUploadListResponse(attachments: [.init(id: id, filename: filename)])
+        return AttachmentUploadListResponse(attachments: [.init(id: id, filename: filename, mimeType: mimeType, sizeBytes: sizeBytes)])
     }
 
     /// `POST /api/attachments/upload-sessions`: direct uploads are not offered,

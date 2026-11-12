@@ -79,7 +79,8 @@ public struct AgentAttachmentsService: Sendable {
         if let size = attachment.sizeBytes, bytes.count != size { throw AttachmentContentError.downloadFailed }
         return AgentAttachmentDownload(
             bytes: bytes, mimeType: attachment.mimeType ?? "application/octet-stream",
-            filename: attachment.filename, encodedFilename: ChannelFileRules.rfc5987Encode(attachment.filename)
+            filename: attachment.filename, encodedFilename: AttachmentPresentationRules.encodedFilename(
+                AttachmentPresentationRules.normalizedFilename(attachment.filename))
         )
     }
 
@@ -96,10 +97,10 @@ public struct AgentAttachmentsService: Sendable {
         let storageKey = attachment.storageKey ?? (ext.isEmpty ? "\(identity.serverId)/\(attachmentId)" : "\(identity.serverId)/\(attachmentId).\(ext)")
         let filename = attachment.filename
         let mimeType = attachment.mimeType ?? "application/octet-stream"
-        let disposition = "attachment; filename=\"\(filename)\"; filename*=UTF-8''\(ChannelFileRules.rfc5987Encode(filename))"
+        let disposition = AttachmentPresentationRules.defaultDisposition(filename: filename, mimeType: mimeType)
         let url: String
         do {
-            url = try presign(storageKey, 300, disposition, mimeType)
+            url = try presign(storageKey, 300, disposition, AttachmentPresentationRules.contentType(mimeType))
         } catch {
             throw AgentAttachmentsError.mintFailed
         }
@@ -118,7 +119,7 @@ public struct AgentAttachmentsService: Sendable {
         case .success(let agentId, let serverId):
             return (agentId, serverId)
         case .missingAuthorization:
-            throw FeedbackLocatorError.missingAuthorization
+            throw AgentCredentialAuthError.missingCredential
         case .invalidAccessToken:
             throw FeedbackLocatorError.invalidAccessToken
         case .capabilityNotAuthorized(let capability):
