@@ -45,6 +45,6 @@ struct AgentChannelAccessQuery: Sendable {
         if visit(channelId) { return true }
         guard channels.postableChannels[channelId] == nil else { return false }
         return LedgerChannelReadFallback.canReadAgent(
-            channelId: channelId, serverId: serverId, agentId: agentId, oauth: oauth)
+            channelId: channelId, serverId: serverId, agentId: agentId, oauth: oauth, channels: channels)
     }
 }

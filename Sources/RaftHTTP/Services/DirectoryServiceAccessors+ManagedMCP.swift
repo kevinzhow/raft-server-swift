@@ -76,7 +76,7 @@ extension EmailLoginDirectory {
                     .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
                 guard serversAndChannelsStore.postableChannel(id: channelId) == nil else { return false }
                 return LedgerChannelReadFallback.canReadHuman(
-                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: serversAndChannelsStore)
             },
             oauth: oauth,
             channels: serversAndChannelsStore,

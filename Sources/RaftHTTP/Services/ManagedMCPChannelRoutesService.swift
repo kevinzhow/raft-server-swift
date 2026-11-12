@@ -56,10 +56,25 @@ public struct ManagedMCPChannelRoutesService: Sendable {
         guard oauth.channelArchivedAt(id: channelId) == nil else { throw ManagedMCPOAuthError.channelArchived }
         guard channelActorCanSee(channelId, userId) else { throw ManagedMCPOAuthError.channelNotFound }
         guard let object = body else { throw ManagedMCPOAuthError.invalidChannelUpdate }
+        var requestedVisibility: String?
+        if let raw = object["visibility"] {
+            guard let visibility = raw.legacyString, ["private", "public"].contains(visibility) else {
+                throw ManagedMCPOAuthError.invalidChannelVisibility
+            }
+            if oauth.allChannelId(serverId: serverId) == channelId { throw ManagedMCPOAuthError.allChannelVisibilityManaged }
+            requestedVisibility = visibility
+        }
+        guard let authority = HumanChannelAuthorizationQuery(oauth: oauth).resolve(
+            channelId: channelId, serverId: serverId, userId: userId, snapshot: channels.state
+        ) else { throw ManagedMCPOAuthError.channelNotFound }
+        var required: [String] = []
+        if object["name"] != nil || object["description"] != nil { required.append("editChannelMetadata") }
+        if object["visibility"] != nil { required.append("changeChannelVisibility") }
+        if object["guestVisible"] != nil || object["guestJoinable"] != nil { required.append("manageGuestAccess") }
+        guard required.allSatisfy({ authority.allows($0) }) else {
+            throw ChannelMutationAuthorizationError.capabilityRequired
+        }
         if object["guestVisible"] != nil || object["guestJoinable"] != nil {
-            guard let role = oauth.memberRole(serverId: serverId, userId: userId),
-                  role == "owner" || role == "admin"
-            else { throw ManagedMCPOAuthError.forbidden }
             let flags = channels.applyGuestFlags(
                 channelId: channelId,
                 visible: object["guestVisible"]?.legacyBool,
@@ -67,19 +82,7 @@ public struct ManagedMCPChannelRoutesService: Sendable {
             )
             return .guestFlags(id: channelId, guestVisible: flags.visible, guestJoinable: flags.joinable)
         }
-        if let rawVisibility = object["visibility"] {
-            guard let visibility = rawVisibility.legacyString, ["private", "public"].contains(visibility) else {
-                throw ManagedMCPOAuthError.invalidChannelVisibility
-            }
-            if oauth.allChannelId(serverId: serverId) == channelId {
-                throw ManagedMCPOAuthError.allChannelVisibilityManaged
-            }
-            guard let role = oauth.memberRole(serverId: serverId, userId: userId),
-                  role == "owner" || role == "admin"
-            else { throw ManagedMCPOAuthError.forbidden }
-            guard channels.isPostableMember(channelId: channelId, userId: userId)
-                || oauth.isChannelParticipant(channelId: channelId, userId: userId)
-            else { throw ManagedMCPOAuthError.channelMembershipRequired }
+        if let visibility = requestedVisibility {
             let kind = visibility == "private" ? "private" : "channel"
             _ = oauth.setChannelType(id: channelId, type: kind)
             let change = channels.applyChannelVisibility(channelId: channelId, kind: kind)
@@ -88,12 +91,10 @@ public struct ManagedMCPChannelRoutesService: Sendable {
             }
             return .visibility(id: channelId, visibility: visibility)
         }
-        let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
-        let actorChannelRole = channels.channelHumanRole(channelId: channelId, userId: userId)
         let jointLinks = channels.jointLinkIds(channelId: channelId)
         let actorName = profiles.account(userId: userId)?.name ?? "Someone"
-        guard actorChannelRole == "admin" || serverRole == "owner" || serverRole == "admin" else {
-            throw ManagedMCPOAuthError.forbidden
+        if required.isEmpty, !authority.allows("editChannelMetadata") {
+            throw ChannelMutationAuthorizationError.capabilityRequired
         }
         if !jointLinks.isEmpty {
             if object["archived"] != nil { throw ManagedMCPOAuthError.jointChannelAdminLimited }
@@ -206,7 +207,7 @@ public struct ManagedMCPChannelRoutesService: Sendable {
             client: FeatureFlagClientFacts(os: nil, buildNumber: nil, buildType: nil)
         ).enabled
         return .created(try ChannelRowFacts(oauth: oauth, messages: messages).createdRegularChannel(
-            channelId: channelId, userId: userId, serverRole: role,
+            channelId: channelId, userId: userId,
             snapshot: channels.state, readReceiptsEnabled: receiptsEnabled
         ))
     }

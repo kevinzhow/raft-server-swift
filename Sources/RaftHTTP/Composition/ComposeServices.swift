@@ -309,7 +309,7 @@ func composeServices(
                 .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
             guard channels.postableChannel(id: channelId) == nil else { return false }
             return LedgerChannelReadFallback.canReadHuman(
-                channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+                channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: channels)
         },
         oauth: oauth,
         channels: channels,

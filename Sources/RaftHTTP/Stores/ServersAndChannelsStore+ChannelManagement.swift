@@ -64,11 +64,16 @@ extension ServersAndChannelsStore {
         }
     }
 
-    /// Removes one agent from the posting set and answers the channel kind, in
-    /// one critical section.
-    func removeAgentMember(channelId: String, agentId: String) -> String {
+    /// Refresh one UUID's union projection after a typed canonical membership
+    /// change. Removing an Agent must not erase a remaining human (or reverse).
+    func projectTypedMembership(channelId: String, memberId: String, humanMember: Bool, agentMember: Bool) -> String {
         mutex.withLock { storage in
-            storage.postableChannels[channelId]?.memberIds.remove(agentId)
+            if humanMember || agentMember {
+                storage.postableChannels[channelId]?.memberIds.insert(memberId)
+            } else {
+                storage.postableChannels[channelId]?.memberIds.remove(memberId)
+            }
+            if !humanMember { storage.channelHumanRoles.removeValue(forKey: "\(channelId)\n\(memberId)") }
             return storage.postableChannels[channelId]?.kind ?? "channel"
         }
     }

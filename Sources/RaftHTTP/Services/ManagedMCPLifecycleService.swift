@@ -73,7 +73,7 @@ public struct ManagedMCPLifecycleService: Sendable {
         if visit(channelId) { return true }
         guard channels.postableChannel(id: channelId) == nil else { return false }
         return LedgerChannelReadFallback.canReadHuman(
-            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: channels)
     }
 
     // MARK: - POST /api/channels/:id/conversation-read-all
@@ -330,7 +330,6 @@ public struct ManagedMCPLifecycleService: Sendable {
         let snapshot = channels.state
         let rowFacts = ChannelRowFacts(oauth: oauth, messages: messages)
         let includeArchived = archived == "include"
-        let serverAdmin = role == "owner" || role == "admin"
         let rows = oauth.channelsForServer(serverId: serverId, userId: userId, includeArchived: includeArchived)
             // Upstream `listChannels` only lists `channel`, `private` and
             // `joint`; DMs have their own directory and threads hydrate through
@@ -338,11 +337,11 @@ public struct ManagedMCPLifecycleService: Sendable {
             .filter { ["channel", "private", "joint"].contains($0.type) }
             .filter { includeArchived || oauth.channelArchivedAt(id: $0.id) == nil }
             .filter { role != "guest" || (facts.guestVisible[$0.id] ?? true) }
-            .map { channel -> ManagedMCPChannelListResponse.Row in
+            .compactMap { channel -> ManagedMCPChannelListResponse.Row? in
+                guard let authority = HumanChannelAuthorizationQuery(oauth: oauth).resolve(
+                    channelId: channel.id, serverId: serverId, userId: userId, snapshot: snapshot
+                ) else { return nil }
                 let displayPrefs = oauth.channelDisplayPrefs(channelId: channel.id, userId: userId)
-                let localRole = facts.humanRoles["\(channel.id)\n\(userId)"]
-                let capability = localRole == "admin" || serverAdmin
-                let basis: String? = localRole == "admin" ? "channel_role" : (serverAdmin ? "server_role" : nil)
                 let readState = rowFacts.readState(channelId: channel.id, userId: userId)
                 // Upstream reports a mute only while it has a mute frontier.
                 let muted = channel.activityMuted && channel.muteFromSeq != nil
@@ -364,12 +363,7 @@ public struct ManagedMCPLifecycleService: Sendable {
                     maxReadSeq: readState.maxReadSeq,
                     readStateVersion: readState.readStateVersion,
                     readState: readState,
-                    channelRole: basis == nil ? "member" : "admin",
-                    channelAdminBasis: basis,
-                    capability: capability,
-                    isJoint: facts.jointLocalChannelIds.contains(channel.id),
-                    serverAdmin: serverAdmin,
-                    channelAuthorityRevision: snapshot.channelAuthorityRevisions[channel.id] ?? 1
+                    authority: authority
                 )
             }
         return ManagedMCPChannelListResponse(rows: rows)

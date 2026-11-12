@@ -95,7 +95,7 @@ public struct ManagedMCPToolExecutionService: Sendable {
             .authority(channelId: channelId, serverId: serverId, userId: userId) != nil { return true }
         guard channels.postableChannel(id: channelId) == nil else { return false }
         return LedgerChannelReadFallback.canReadHuman(
-            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth)
+            channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: channels)
     }
 
     /// The agent credential must carry the capability; a missing one is the
@@ -596,21 +596,14 @@ public struct ManagedMCPToolExecutionService: Sendable {
         } ?? visibility.actorCanSee(channelId: channelId, userId: userId)
         guard canSee else { throw ChannelMembershipError.channelNotFound }
         let snapshot = channels.state
-        let joined = channel.name == "all"
-            || snapshot.postableChannels[channelId]?.memberIds.contains(userId) == true
-            || oauth.channelHumanIds(channelId: channelId).contains(userId)
+        guard let authority = HumanChannelAuthorizationQuery(oauth: oauth).resolve(
+            channelId: channelId, serverId: serverId, userId: userId, snapshot: snapshot
+        ) else { throw ChannelMembershipError.channelNotFound }
+        let joined = channel.name == "all" || authority.joined
         let receiptsEnabled = snapshot.readReceiptsServers.contains(serverId)
         let peerSeqs = oauth.channelAgentIds(channelId: channelId).map { agentId in
             (agentId, messages.agentChannelReadSeq(channelId: channelId, agentId: agentId))
         }
-        let serverRole = oauth.memberRole(serverId: serverId, userId: userId) ?? "member"
-        let localRole = snapshot.channelHumanRoles["\(channelId)\n\(userId)"]
-        let authorityRevision = snapshot.channelAuthorityRevisions[channelId] ?? 1
-        let basis: String? = localRole == "admin" ? "channel_role"
-            : ((serverRole == "owner" || serverRole == "admin") ? "server_role" : nil)
-        let serverAdmin = serverRole == "owner" || serverRole == "admin"
-        let capability = basis != nil
-        let isJoint = snapshot.jointProjections.contains { $0.localChannelId == channelId }
         var peerReadState: ChannelDetailResponse.PeerReadState?
         if receiptsEnabled {
             if peerSeqs.count > 50 {
@@ -677,20 +670,10 @@ public struct ManagedMCPToolExecutionService: Sendable {
             readStateVersion: readState.readStateVersion,
             readState: readState,
             activityMuteSupported: ChannelActivityMuteSupport.supports(type),
-            channelRole: basis == nil ? "member" : "admin",
-            channelAdminBasis: basis,
-            capabilities: .init(
-                editChannelMetadata: capability,
-                archiveChannels: capability && !isJoint,
-                addChannelMembers: capability && !isJoint,
-                removeChannelMembers: capability && !isJoint,
-                changeChannelMemberRoles: capability,
-                manageGuestAccess: serverAdmin && !isJoint,
-                deleteChannels: serverAdmin,
-                changeChannelVisibility: serverAdmin,
-                federateChannels: serverAdmin
-            ),
-            channelAuthorityRevision: authorityRevision,
+            channelRole: authority.channelRole,
+            channelAdminBasis: authority.basis,
+            capabilities: authority.capabilities,
+            channelAuthorityRevision: authority.authorityRevision,
             peerReadState: peerReadState
         )
     }

@@ -580,10 +580,10 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
     public var readStateVersion: Int
     public var readState: ChannelReadStateFrontier
     public var activityMuteSupported: Bool
-    public var channelRole: String
+    public var channelRole: String?
     public var channelAdminBasis: String?
     public var capabilities: Capabilities
-    public var channelAuthorityRevision: Int
+    public var channelAuthorityRevision: Int?
     public var peerReadState: PeerReadState?
 
     public init(
@@ -601,10 +601,10 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
         readStateVersion: Int,
         readState: ChannelReadStateFrontier,
         activityMuteSupported: Bool,
-        channelRole: String,
+        channelRole: String?,
         channelAdminBasis: String?,
         capabilities: Capabilities,
-        channelAuthorityRevision: Int,
+        channelAuthorityRevision: Int?,
         peerReadState: PeerReadState?
     ) {
         self.id = id
@@ -664,10 +664,10 @@ public struct ChannelDetailResponse: JSONBodyConvertible, Sendable, Equatable {
         fields.append(OrderedJSONField("readState", readState.json))
         fields += peerReadState?.jsonFields ?? []
         fields.append(OrderedJSONField("activityMuteSupported", activityMuteSupported))
-        fields.append(OrderedJSONField("channelRole", channelRole))
+        fields.append(OrderedJSONField("channelRole", optional: channelRole))
         fields.append(OrderedJSONField("channelAdminBasis", optional: channelAdminBasis))
         fields.append(OrderedJSONField("channelCapabilities", capabilities.json))
-        fields.append(OrderedJSONField("channelAuthorityRevision", channelAuthorityRevision))
+        fields.append(OrderedJSONField("channelAuthorityRevision", optional: channelAuthorityRevision))
         return .object(fields)
     }
 }

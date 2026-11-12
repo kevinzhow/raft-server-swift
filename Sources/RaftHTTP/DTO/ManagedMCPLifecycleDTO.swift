@@ -265,29 +265,13 @@ public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
         let maxReadSeq: Int
         let readStateVersion: Int
         let readState: ChannelReadStateFrontier
-        let channelRole: String
-        let channelAdminBasis: String?
-        let capability: Bool
-        let isJoint: Bool
-        let serverAdmin: Bool
-        let channelAuthorityRevision: Int
+        let authority: HumanChannelAuthorization
     }
 
     let rows: [Row]
 
     public var jsonBody: OrderedJSON {
         .array(rows.map { row in
-            let caps = OrderedJSON.object([
-                OrderedJSONField("editChannelMetadata", row.capability),
-                OrderedJSONField("archiveChannels", row.capability && !row.isJoint),
-                OrderedJSONField("addChannelMembers", row.capability && !row.isJoint),
-                OrderedJSONField("removeChannelMembers", row.capability && !row.isJoint),
-                OrderedJSONField("changeChannelMemberRoles", row.capability),
-                OrderedJSONField("manageGuestAccess", row.serverAdmin && !row.isJoint),
-                OrderedJSONField("deleteChannels", row.serverAdmin),
-                OrderedJSONField("changeChannelVisibility", row.serverAdmin),
-                OrderedJSONField("federateChannels", row.serverAdmin),
-            ])
             return .object([
                 OrderedJSONField("id", row.id),
                 OrderedJSONField("serverId", row.serverId),
@@ -307,10 +291,10 @@ public struct ManagedMCPChannelListResponse: JSONBodyConvertible {
                 OrderedJSONField("readStateVersion", row.readStateVersion),
                 OrderedJSONField("readState", row.readState.json),
                 OrderedJSONField("lastMessageAt", optional: row.lastMessageAt.map(RuntimeUsageISO.string)),
-                OrderedJSONField("channelRole", row.channelRole),
-                OrderedJSONField("channelAdminBasis", optional: row.channelAdminBasis),
-                OrderedJSONField("channelCapabilities", caps),
-                OrderedJSONField("channelAuthorityRevision", row.channelAuthorityRevision),
+                OrderedJSONField("channelRole", optional: row.authority.channelRole),
+                OrderedJSONField("channelAdminBasis", optional: row.authority.basis),
+                OrderedJSONField("channelCapabilities", row.authority.capabilities.json),
+                OrderedJSONField("channelAuthorityRevision", optional: row.authority.authorityRevision),
             ])
         })
     }

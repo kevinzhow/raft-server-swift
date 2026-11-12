@@ -5,7 +5,7 @@ extension ChannelRowFacts {
     /// read-frontier and peer DTOs keep create hydration aligned with readers;
     /// permission grants follow shared/channelPermissions.ts:145-211.
     func createdRegularChannel(
-        channelId: String, userId: String, serverRole: String,
+        channelId: String, userId: String,
         snapshot: ServersAndChannelsStore.State, readReceiptsEnabled: Bool
     ) throws -> RegularChannelCreatedResponse {
         guard let row = oauth.channelInfo(id: channelId),
@@ -13,17 +13,10 @@ extension ChannelRowFacts {
             throw ManagedMCPOAuthError.channelNotFound
         }
         let kind = oauth.channelType(id: channelId) ?? posting.kind
-        let joined = oauth.channelHumanIds(channelId: channelId).contains(userId)
-        let localRole = snapshot.channelHumanRoles["\(channelId)\n\(userId)"] ?? "member"
-        let inherited = serverRole == "owner" || serverRole == "admin"
-        let localAdmin = joined && localRole == "admin" && ["owner", "admin", "member"].contains(serverRole)
-        let basis: String? = inherited && localAdmin ? "both" : inherited ? "server_role" : localAdmin ? "channel_role" : nil
-        let localCapabilities: Set<String> = [
-            "editChannelMetadata", "archiveChannels", "removeChannelMembers", "changeChannelMemberRoles", "manageGuestAccess",
-        ]
-        func allows(_ key: String) -> Bool {
-            ServerRoleCapabilities.allows(key, role: serverRole) || (localAdmin && localCapabilities.contains(key))
-        }
+        guard let authority = HumanChannelAuthorizationQuery(oauth: oauth).resolve(
+            channelId: channelId, serverId: row.serverId, userId: userId, snapshot: snapshot
+        ) else { throw ManagedMCPOAuthError.channelNotFound }
+        let joined = authority.joined
         let frontier = readState(channelId: channelId, userId: userId)
         let display = oauth.channelDisplayPrefs(channelId: channelId, userId: userId)
         let prefs = oauth.notificationPrefs(channelId: channelId, userId: userId)
@@ -32,16 +25,9 @@ extension ChannelRowFacts {
             createdAt: oauth.channelCreatedAt(id: channelId).map(RuntimeUsageISO.string), directPeer: nil,
             joined: joined, collapseLongMessages: display.collapseLongMessages, displayPrefsVersion: display.prefsVersion,
             maxReadSeq: frontier.maxReadSeq, readStateVersion: frontier.readStateVersion, readState: frontier,
-            activityMuteSupported: ChannelActivityMuteSupport.supports(kind), channelRole: localRole,
-            channelAdminBasis: basis,
-            capabilities: .init(
-                editChannelMetadata: allows("editChannelMetadata"), archiveChannels: allows("archiveChannels"),
-                addChannelMembers: inherited || (serverRole == "member" && joined),
-                removeChannelMembers: allows("removeChannelMembers"), changeChannelMemberRoles: allows("changeChannelMemberRoles"),
-                manageGuestAccess: allows("manageGuestAccess"), deleteChannels: allows("deleteChannels"),
-                changeChannelVisibility: allows("changeChannelVisibility"), federateChannels: allows("federateChannels")
-            ),
-            channelAuthorityRevision: snapshot.channelAuthorityRevisions[channelId] ?? 1,
+            activityMuteSupported: ChannelActivityMuteSupport.supports(kind), channelRole: authority.channelRole,
+            channelAdminBasis: authority.basis, capabilities: authority.capabilities,
+            channelAuthorityRevision: authority.authorityRevision,
             peerReadState: readReceiptsEnabled && joined ? createdPeerReadState(channelId: channelId) : nil
         )
         return RegularChannelCreatedResponse(

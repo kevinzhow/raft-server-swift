@@ -73,11 +73,50 @@ func attachmentCanonicalAuthorityRejectsRetainedPostingMembership(humanUUIDColli
             let witness = try await client.get(URI(string: "/internal/agent-api/attachments/\(id)"), headers: currentHeaders)
             #expect(witness.status == .ok)
             #expect(witness.body.data == bytes)
-            if postingRowPresent {
-                let human = try await client.get(URI(string: "/api/attachments/\(id)"), headers: f.headers)
-                #expect(human.status == .ok)
-                #expect(human.body.data == bytes)
+            let human = try await client.get(URI(string: "/api/attachments/\(id)"), headers: f.headers)
+            #expect(human.status == .ok)
+            #expect(human.body.data == bytes)
+        }
+    }
+}
+
+/// Ledger-only threads still inherit a live parent. A retained OAuth record
+/// must not override an existing parent posting tombstone after HTTP deletion.
+@Test(arguments: ["channel", "private"], [false, true])
+func attachmentLegacyThreadFallbackHonorsParentTombstones(parentKind: String, deletedParent: Bool) async throws {
+    let f = AttachmentAuthorityAccounts()
+    let parent = f.accounts.oauth.createChannel(serverId: f.server, name: "legacy-parent", creatorUserId: f.owner, type: parentKind)
+    f.accounts.oauth.addChannelHuman(channelId: parent, userId: f.owner)
+    f.accounts.addPostableChannel(serverId: f.server, channelId: parent, memberId: f.owner, kind: parentKind, name: "legacy-parent")
+    let agent = f.accounts.oauth.createAgent(serverId: f.server, name: "legacy-thread-reader")
+    f.accounts.oauth.addChannelAgent(channelId: parent, agentId: agent)
+    let key = f.accounts.mintAgentCredential(agentId: agent, scopes: ["read"], name: "legacy-thread-reader")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let payload = try JSONSerialization.data(withJSONObject: ["channelId": parent, "content": "real legacy thread anchor"])
+            let host = try await client.send(.post, headers: f.headers, to: "/api/messages") { $0.body = .init(data: payload) }
+            #expect(host.status == .ok)
+            let message = try #require(try JSONSerialization.jsonObject(with: host.body.data ?? Data()) as? [String: Any])
+            let thread = f.accounts.oauth.createThreadChannel(parentChannelId: parent, parentMessageId: try #require(message["id"] as? String))
+            let attachment = UUID().uuidString.lowercased()
+            let bytes = Data("parent guarded legacy bytes".utf8)
+            f.accounts.addAgentAttachmentForTesting(channelId: thread, id: attachment, uploaderId: f.owner,
+                filename: "legacy.bin", mimeType: "application/octet-stream", sizeBytes: bytes.count, bytes: bytes)
+            if deletedParent {
+                #expect(try await client.delete(URI(string: "/api/channels/\(parent)"), headers: f.headers).status == .ok)
             }
+            var agentHeaders = HTTPFields()
+            agentHeaders[.authorization] = "Bearer \(key)"
+            for (path, headers) in [("/api/attachments/\(attachment)", f.headers),
+                                    ("/internal/agent-api/attachments/\(attachment)", agentHeaders)] {
+                let response = try await client.get(URI(string: path), headers: headers)
+                #expect(response.status == (deletedParent ? .notFound : .ok))
+                if deletedParent { #expect(response.body.data?.range(of: bytes) == nil) }
+                else { #expect(response.body.data == bytes) }
+            }
+            let url = try await client.get(URI(string: "/internal/agent-api/attachments/\(attachment)/url"), headers: agentHeaders)
+            #expect(url.status == (deletedParent ? .notFound : .conflict))
         }
     }
 }

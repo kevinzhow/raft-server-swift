@@ -98,7 +98,73 @@ func channelCreatePublishesTheCompletePinnedEnvelope(profile: String) async thro
             #expect(formatter.date(from: createdAt) != nil)
             let detail = try await client.get(URI(string: "/api/channels/\(id)"), headers: f.headers)
             #expect(detail.status == .ok)
-            #expect(try channelCreateObject(detail)["createdAt"] as? String == createdAt)
+            let detailed = try channelCreateObject(detail)
+            #expect(detailed["createdAt"] as? String == createdAt)
+            #expect(detailed["channelCapabilities"] as? [String: Bool] == expectedCapabilities)
+            #expect(detailed["channelAdminBasis"] as? String == body["channelAdminBasis"] as? String)
+            let listed = try await client.get("/api/channels", headers: f.headers)
+            #expect(listed.status == .ok)
+            let rows = try #require(try JSONSerialization.jsonObject(with: listed.body.data ?? Data()) as? [[String: Any]])
+            let listedChannel = try #require(rows.first { $0["id"] as? String == id })
+            #expect(listedChannel["channelCapabilities"] as? [String: Bool] == expectedCapabilities)
+            #expect(listedChannel["channelAdminBasis"] as? String == body["channelAdminBasis"] as? String)
+        }
+    }
+}
+
+/// channels.ts:2501-2517 authorizes every requested field before mutation;
+/// channelPermissions.ts:188-193 grants guest management to a current local admin.
+@Test func channelCreatorCapabilitiesAuthorizeEachRequestedMutation() async throws {
+    let f = ChannelCreateContractAccounts(role: "member")
+    let other = UUID().uuidString.lowercased()
+    f.accounts.addAccount(id: other, email: "ordinary-channel-member@slock.test", password: "password123")
+    f.accounts.markEmailVerified(userId: other)
+    f.accounts.oauth.addMember(serverId: f.server, userId: other, role: "member")
+    var ordinary = f.headers
+    ordinary[.authorization] = "Bearer \(f.accounts.mintAccessTokenForTesting(userId: other))"
+    let ordinaryHeaders = ordinary
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            let created = try await client.send(.post, headers: f.headers, to: "/api/channels") {
+                $0.body = .init(string: #"{"name":"creator-managed","visibility":"public"}"#)
+            }
+            #expect(created.status == .ok)
+            let body = try channelCreateObject(created)
+            let id = try #require(body["id"] as? String)
+            #expect((body["channelCapabilities"] as? [String: Bool])?["manageGuestAccess"] == true)
+            let path = URI(string: "/api/channels/\(id)")
+            let accepted = try await client.send(.patch, headers: f.headers, to: path) {
+                $0.body = .init(string: #"{"guestVisible":true,"guestJoinable":true}"#)
+            }
+            #expect(accepted.status == .ok)
+            #expect(try channelCreateObject(accepted)["guestVisible"] as? Bool == true)
+            #expect(try channelCreateObject(accepted)["guestJoinable"] as? Bool == true)
+            let rejected = try await client.send(.patch, headers: f.headers, to: path) {
+                $0.body = .init(string: #"{"guestVisible":false,"visibility":"private"}"#)
+            }
+            #expect(rejected.status == .forbidden)
+            #expect(rejected.body.string == #"{"error":"You do not have permission to update channels"}"#)
+            let unchanged = try await client.send(.patch, headers: f.headers, to: path) {
+                $0.body = .init(string: #"{"guestJoinable":true}"#)
+            }
+            #expect(unchanged.status == .ok)
+            #expect(try channelCreateObject(unchanged)["guestVisible"] as? Bool == true)
+            let detail = try await client.get(path, headers: f.headers)
+            let detailBody = try channelCreateObject(detail)
+            #expect(detailBody["type"] as? String == "channel")
+            #expect((detailBody["channelCapabilities"] as? [String: Bool])?["manageGuestAccess"] == true)
+            let outsider = try await client.send(.patch, headers: ordinaryHeaders, to: path) {
+                $0.body = .init(string: #"{"guestVisible":false}"#)
+            }
+            #expect(outsider.status == .forbidden)
+            #expect(outsider.body.string == #"{"error":"You do not have permission to update channels"}"#)
+            let renamed = try await client.send(.patch, headers: f.headers, to: path) {
+                $0.body = .init(string: #"{"name":"creator-renamed"}"#)
+            }
+            #expect(renamed.status == .ok)
+            #expect(try channelCreateObject(renamed)["name"] as? String == "creator-renamed")
+            #expect(try await client.delete(path, headers: f.headers).status == .forbidden)
         }
     }
 }

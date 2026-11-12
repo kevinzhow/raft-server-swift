@@ -354,6 +354,38 @@ public struct AgentsLifecycleService: Sendable {
 
     // MARK: - Attachment and channel visibility
 
+    /// Canonical human membership and parent authority take precedence over an
+    /// untyped posting union. Return nil only for the retained posting-only
+    /// compatibility representation, which has no canonical authority path.
+    private func canonicalAttachmentHumanAccess(channelId: String, serverId: String?, userId: String,
+                                               messageLinked: Bool) -> Bool? {
+        guard let serverId else { return false }
+        let snapshot = channels.state
+        var pending = [channelId]
+        var seen: Set<String> = []
+        var canonical = false
+        while let id = pending.popLast(), seen.count < 64 {
+            guard seen.insert(id).inserted else { continue }
+            if oauth.channelInfo(id: id) != nil { canonical = true; break }
+            for link in snapshot.jointProjections where link.localChannelId == id || link.canonicalChannelId == id {
+                pending.append(link.localChannelId)
+            }
+            if let row = snapshot.postableChannels[id], row.kind == "thread" {
+                if let parent = row.parentChannelId { pending.append(parent) }
+                if let messageId = row.parentMessageId,
+                   let parent = messages.humanMessageRows.first(where: { $0.id == messageId })?.channelId {
+                    pending.append(parent)
+                }
+            }
+        }
+        guard canonical else { return nil }
+        if HumanChannelReadAccessQuery(channels: channels, messages: messages, oauth: oauth, flags: agents)
+            .authority(channelId: channelId, serverId: serverId, userId: userId,
+                       origin: messageLinked ? .storedMessage : .localChannel) != nil { return true }
+        guard snapshot.postableChannels[channelId] == nil, oauth.channelInfo(id: channelId) != nil else { return false }
+        return LedgerChannelReadFallback.canReadHuman(channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: channels)
+    }
+
     /// Visibility for callers that only follow the message into its own channel
     /// (no joint-channel projection).
     func canSeeAttachmentIgnoringJoint(userId: String, serverId: String?, attachment: ChannelAttachment) -> Bool {
@@ -362,6 +394,8 @@ public struct AgentsLifecycleService: Sendable {
         let effectiveChannelId = attachment.messageId.flatMap { messageId in
             rows.first { $0.id == messageId }?.channelId
         } ?? attachment.channelId
+        if let canonical = canonicalAttachmentHumanAccess(channelId: effectiveChannelId, serverId: serverId, userId: userId,
+                                                         messageLinked: attachment.messageId != nil) { return canonical }
         if let channel = channelRows[effectiveChannelId],
            channel.serverId == serverId,
            channel.deletedAt == nil {
@@ -382,6 +416,8 @@ public struct AgentsLifecycleService: Sendable {
         let effectiveChannelId = attachment.messageId.flatMap { messageId in
             rows.first { $0.id == messageId }?.channelId
         } ?? attachment.channelId
+        if let canonical = canonicalAttachmentHumanAccess(channelId: effectiveChannelId, serverId: serverId, userId: userId,
+                                                         messageLinked: attachment.messageId != nil) { return canonical }
         if let channel = channelRows[effectiveChannelId],
            channel.serverId == serverId,
            channel.deletedAt == nil {
@@ -446,7 +482,7 @@ public struct AgentsLifecycleService: Sendable {
         let readable = readAccess.authority(channelId: channelId, serverId: serverId, userId: userId) != nil
             || (channels.postableChannel(id: channelId) == nil
                 && LedgerChannelReadFallback.canReadHuman(
-                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth))
+                    channelId: channelId, serverId: serverId, userId: userId, oauth: oauth, channels: channels))
         guard readable else {
             if readAccess.hasPriorRelationship(channelId: channelId, serverId: serverId, userId: userId) {
                 throw AgentsLifecycleError.forbidden
