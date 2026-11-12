@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from env import load as load_deploy_env  # noqa: E402
+from markdown_runtime import resource_profile  # noqa: E402
 
 _CONFIG = load_deploy_env()
 DEV = Path(_CONFIG["DEV_ROOT"])
@@ -50,7 +51,7 @@ REPO = Path(_CONFIG["SOURCE_REPO"])
 SWIFT = Path(_CONFIG["SWIFT"])
 SDK = Path(_CONFIG["SWIFT_SDK"])
 SWIFT_LIB = SDK / "usr/lib/swift/linux"
-JSC = Path(_CONFIG["JSC_LIBRARY"])
+JSC = Path(_CONFIG["JSC_LIBRARY"]) if _CONFIG["JSC_LIBRARY"] else None
 
 DEPLOYED_COMMIT = _CONFIG["BASELINE_COMMIT"]
 RELEASE_ROOT_PREFIX = Path(_CONFIG["RELEASE_ROOT_PREFIX"])
@@ -154,9 +155,9 @@ def resolve_needed(name: str, obj: Path, rpaths: list[str]) -> Path | None:
     if name.startswith("/"):
         candidates.append(Path(name))
     else:
-        # LD_LIBRARY_PATH in the prior ldd-based method was SWIFT_LIB:JSC.parent.
         candidates.append(SWIFT_LIB / name)
-        candidates.append(JSC.parent / name)
+        if JSC is not None:
+            candidates.append(JSC.parent / name)
         for rpath in rpaths:
             for segment in rpath.split(":"):
                 if not segment:
@@ -181,9 +182,11 @@ def resolve_needed(name: str, obj: Path, rpaths: list[str]) -> Path | None:
 
 
 class Closure:
-    def __init__(self, binary: Path, allowed_host: dict[str, str]):
+    def __init__(self, binary: Path, allowed_host: dict[str, str], extra_roots: tuple[Path, ...] = ()):
         self.binary = binary
         self.allowed_host = allowed_host
+        self.roots = [binary.resolve(strict=True)] + sorted(SWIFT_LIB.glob("*.so*"))
+        self.roots += [path.resolve(strict=True) for path in extra_roots]
         self.files: dict[str, Path] = {}
         self.links: dict[str, str] = {}
         self.host: dict[str, dict[str, str]] = {}
@@ -223,10 +226,7 @@ class Closure:
         return Path("lib/native") / actual.name
 
     def build(self) -> None:
-        roots = [self.binary.resolve(strict=True)]
-        roots += sorted(SWIFT_LIB.glob("*.so*"))
-        roots.append(JSC.resolve(strict=True))
-        queue = collections.deque(roots)
+        queue = collections.deque(self.roots)
         while queue:
             source = queue.popleft()
             actual = source.resolve(strict=True)
@@ -518,18 +518,14 @@ def run(commit_argument: str, log: Logger) -> dict[str, object]:
     require(sha256(binary) == proof["binarySHA256"], "built binary hash does not match the build proof")
     bundle = products / BUNDLE_NAME
     require(bundle.is_dir(), f"resource bundle missing: {bundle}")
-    expected_bundle_names = {
-        "Info.plist",
-        "raft-markdown-parser.js",
-        "raft-markdown-parser.LICENSE.txt",
-        "raft-markdown-parser.provenance.json",
-        # Owner opener v2 Team Mode artifact (pinned upstream bytes, added in 94aab87).
-        "owner-opener-team-mode.html",
-    }
-    require(
-        {item.name for item in bundle.iterdir()} == expected_bundle_names,
-        f"unexpected resource bundle contents: {sorted(item.name for item in bundle.iterdir())}",
-    )
+    try:
+        parser_profile = resource_profile(set(bundle_inventory(bundle)))
+    except ValueError as error:
+        raise StageError(str(error)) from error
+    extra_roots: tuple[Path, ...] = ()
+    if parser_profile == "javascriptcore":
+        require(JSC is not None and JSC.is_file(), "JSC_LIBRARY is required for a historical JavaScript parser release")
+        extra_roots = (JSC,)
 
     log(f"[stage-main] commit {full} (short {short})")
     log(f"[stage-main] binary {binary} ({proof['binarySHA256']})")
@@ -543,7 +539,7 @@ def run(commit_argument: str, log: Logger) -> dict[str, object]:
     # ------------------------------------------------------------------
     host_platform = load_json(HOST_PLATFORM)["files"]
     allowed_host = {str(Path(path).resolve(strict=True)): info["sha256"] for path, info in host_platform.items()}
-    closure = Closure(binary, allowed_host)
+    closure = Closure(binary, allowed_host, extra_roots)
     log("[stage-main] computing recursive DT_NEEDED closure (readelf only)")
     closure.build()
     log(
@@ -718,7 +714,7 @@ def run(commit_argument: str, log: Logger) -> dict[str, object]:
         artifact_dir / "elf-graph.json",
         {
             "gitCommit": full,
-            "roots": [str(binary)] + [str(path) for path in sorted(SWIFT_LIB.glob("*.so*"))] + [str(JSC.resolve(strict=True))],
+            "roots": [str(path) for path in closure.roots],
             "objects": closure.graph,
         },
     )
@@ -757,6 +753,7 @@ def run(commit_argument: str, log: Logger) -> dict[str, object]:
             "difference": runtime_closure["difference"],
         },
         "bundle": {
+            "markdownParserRuntime": parser_profile,
             "fileCount": len(staged_bundle),
             "bytes": bundle_bytes,
             "changed": bundle_changed,

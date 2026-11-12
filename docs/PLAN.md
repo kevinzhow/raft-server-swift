@@ -30,6 +30,27 @@ queued-restart PG case and tightened skip detection. Product/full-gate inputs ar
 unchanged (source-equivalence proof); deployed `a6bf8699` includes that runner-only
 correction, not a product-source change.
 
+## Native Markdown rollout
+
+The native parser change `88cfc840` is being integrated with the latest deployment
+trunk before merging to `main`. It replaces JavaScriptCore with pinned MD4C and
+documented source-range/GFM adaptations. JS remains an offline oracle under
+`Tools/MarkdownParser/reference`; production resources carry the combined native
+MIT notices. Each parser invocation owns its scratch, with no global parsing lock.
+
+Standalone qualification passed 9,189 identical raw-range/surface comparisons,
+17,492 ASan/UBSan/leak-check inputs, targeted human/agent and raw/typed HTTP
+mention cases, and the process-map startup test. The map test rejects the old
+JSC executable. The latest architecture/native integration passes all five
+full-gate steps, with evidence at
+`.build/gate-logs/20261112T093150Z/summary.txt`. Production remains `a6bf8699`
+until the verified upgrade completes.
+
+Three matching debug startup checkpoints have median RSS 95.4 MiB (JSC) versus
+64.0 MiB (native), before database state or user traffic. An isolated parser
+driver after 16,623 parses reports 108.8 versus 20.0 MiB. Neither is production
+steady-state memory; commands are in `Tools/MarkdownParser/README.md`.
+
 ## PostgreSQL qualification
 
 The PostgreSQL runner listed 60 entries; the main pass executed 55. The
