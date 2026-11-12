@@ -30,7 +30,11 @@ public enum AttachmentPresentationRules {
     }
 
     public static func disposition(filename: String, inline: Bool) -> String {
-        let filename = normalizedFilename(filename)
+        disposition(normalizedFilename: normalizedFilename(filename), inline: inline)
+    }
+
+    /// Format a filename that the caller already repaired for MIME resolution.
+    public static func disposition(normalizedFilename filename: String, inline: Bool) -> String {
         let ascii = filename.utf16.map { unit -> UInt8 in
             if unit == 10 || unit == 13 { return 32 }
             if unit == 34 || unit == 92 || unit < 32 || unit > 126 { return 95 }

@@ -88,7 +88,7 @@ enum AttachmentContentResponse {
     }
 
     private static func disposition(filename: String, inline: Bool) -> String {
-        AttachmentPresentationRules.disposition(filename: filename, inline: inline)
+        AttachmentPresentationRules.disposition(normalizedFilename: filename, inline: inline)
     }
 
     private static func framePolicy(_ configured: [String]) -> String {

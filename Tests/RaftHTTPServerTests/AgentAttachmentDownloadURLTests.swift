@@ -32,6 +32,7 @@ private struct AgentAttachmentFixture {
     let privateId: String
     let readKey: String
     let sendKey: String
+    let ownerKey: String
 }
 
 private func makeAgentAttachmentFixture(
@@ -84,7 +85,8 @@ private func makeAgentAttachmentFixture(
         visibleId: visibleId,
         privateId: privateId,
         readKey: readKey,
-        sendKey: sendKey
+        sendKey: sendKey,
+        ownerKey: accounts.mintAccessTokenForTesting(userId: ownerId)
     )
 }
 
@@ -146,6 +148,30 @@ func agentAttachmentPresentationMatchesPinnedMimeAndFilenameRules(profile: Strin
                 ? "inline; filename=\"caf_ _review_.png\"; filename*=UTF-8''caf%C3%A9%20%22review%22.png"
                 : "attachment; filename=\"legacy.txt\"; filename*=UTF-8''legacy.txt"
             #expect(response.headers[.contentDisposition] == expectedDisposition)
+        }
+    }
+}
+
+/// attachments.ts:492-499 repairs a stored filename once. Repair is not
+/// idempotent for doubly encoded input, so both published transports must agree.
+@Test func attachmentPresentationNormalizesStoredFilenameExactlyOnceForHumanAndAgent() async throws {
+    let filename = "\u{00C3}\u{0083}\u{00C2}\u{00A9}.txt"
+    let bytes = Data("one filename repair".utf8)
+    let f = makeAgentAttachmentFixture(suffix: "806", bytes: bytes, filename: filename, mimeType: "text/plain")
+    try await withApp { app in
+        configure(app, services: FallbackServices(nodeEnv: "test", tracker: DbLivenessTracker(ping: {}), pingDatabase: {}, emailAccounts: f.accounts))
+        try await app.testing { client in
+            for (path, key) in [("/api/attachments/\(f.visibleId)", f.ownerKey),
+                                ("/internal/agent-api/attachments/\(f.visibleId)", f.readKey)] {
+                var headers = HTTPFields()
+                headers[.authorization] = "Bearer \(key)"
+                headers[HTTPField.Name("X-Server-Id")!] = f.serverId
+                let response = try await client.get(URI(string: path), headers: headers)
+                #expect(response.status == .ok)
+                #expect(response.body.data == bytes)
+                #expect(response.headers[.contentDisposition] ==
+                    "attachment; filename=\"__.txt\"; filename*=UTF-8''%C3%83%C2%A9.txt")
+            }
         }
     }
 }
