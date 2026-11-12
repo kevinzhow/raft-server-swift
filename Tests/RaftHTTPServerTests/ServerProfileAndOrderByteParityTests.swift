@@ -203,7 +203,7 @@ import VaporTesting
             let ownerList = try await client.send(.get, headers: scopedHeaders, to: "/api/servers/\(serverA)/members")
             assertStandard(
                 ownerList,
-                body: "[{\"userId\":\"\(ownerId)\",\"role\":\"owner\",\"name\":\"bytes-owner\",\"displayName\":\"bytes-owner\",\"email\":\"bytes-owner@slock.test\",\"avatarUrl\":null},{\"userId\":\"\(memberId)\",\"role\":\"member\",\"name\":\"bytes-member\",\"displayName\":\"bytes-member\",\"email\":\"bytes-member@slock.test\",\"avatarUrl\":null}]"
+                body: "[{\"userId\":\"\(ownerId)\",\"name\":\"bytes-owner\",\"displayName\":null,\"description\":null,\"avatarUrl\":null,\"role\":\"owner\",\"email\":\"bytes-owner@slock.test\",\"gravatarHash\":\"51b2037b2857ea0b9697552ec8a999195124b2991f500c82e5de584cd8a2d05a\"},{\"userId\":\"\(memberId)\",\"name\":\"bytes-member\",\"displayName\":null,\"description\":null,\"avatarUrl\":null,\"role\":\"member\",\"email\":\"bytes-member@slock.test\",\"gravatarHash\":\"8dc42dc957afa99951eb2dd95c32b5867d193c6aef8fc9c3f3b0535b87422000\"}]"
             )
             let memberList = try await client.send(.get, headers: scopedMemberHeaders, to: "/api/servers/\(serverA)/members")
             #expect(memberList.body.string?.contains(ownerId) == false)

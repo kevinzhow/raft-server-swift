@@ -250,59 +250,175 @@ public struct ChannelAgentsResponse: JSONBodyConvertible, Sendable, Equatable {
 
 /// One human row of a channel roster.
 ///
-/// Published order: `id`, `name`, `serverRole`, `effectiveChannelRole`,
-/// `channelAdminBasis` (`null` for a plain member), `canChangeChannelRole`.
-public struct ChannelHumanRowDTO: Sendable, Equatable {
+/// Pinned `channelService.getChannelHumansRawForChannels` selects the account
+/// row: `id`, `serverId`, `serverName`, `serverSlug`, `name`, `displayName`,
+/// `description`, `avatarUrl`, `role` (server membership role), `serverRole`,
+/// `channelRole`, then appends `gravatarHash = sha256(trim(lower(email)))`.
+/// `routes/channels.ts` spreads that row and appends the effective channel role
+/// triple, so the published order is the account row then `effectiveChannelRole`,
+/// `channelAdminBasis` and `canChangeChannelRole`.
+///
+/// A Guest viewer receives the bounded roster (`id`, `name`, `displayName`,
+/// `avatarUrl`, `gravatarHash`, `effectiveChannelRole`, `canChangeChannelRole`);
+/// the absent description/server/role members are omitted. `displayName` and
+/// `avatarUrl` always publish (JSON null when absent), as the pinned guest
+/// branch does. A joint row additionally publishes `servers` between
+/// `gravatarHash` and the role triple (`channelService.ts:5955-6034`,
+/// `routes/channels.ts:3606-3621`). An enabled virtual `#all` audience row has no
+/// stored `channelRole`: its `gravatarHash` precedes `serverRole`, matching
+/// `getServerAudienceHumans` + the role projection. The profile fields the
+/// account row carries are the Web's message-author identity authority
+/// (`ChatPanel.memberById` overlays the server roster with this row).
+/// One server a joint-channel human participates through, viewed server first
+/// then by name/id (pinned `orderChannelMemberServers`).
+public struct ChannelMemberServerDTO: Sendable, Equatable {
     public var id: String
     public var name: String
-    public var serverRole: String
-    public var effectiveChannelRole: String
-    public var channelAdminBasis: String?
-    public var canChangeChannelRole: Bool
+    public var slug: String
 
-    public init(
-        id: String,
-        name: String,
-        serverRole: String,
-        effectiveChannelRole: String,
-        channelAdminBasis: String?,
-        canChangeChannelRole: Bool
-    ) {
+    public init(id: String, name: String, slug: String) {
         self.id = id
         self.name = name
-        self.serverRole = serverRole
-        self.effectiveChannelRole = effectiveChannelRole
-        self.channelAdminBasis = channelAdminBasis
-        self.canChangeChannelRole = canChangeChannelRole
+        self.slug = slug
     }
 
     var json: OrderedJSON {
         .object([
             OrderedJSONField("id", id),
             OrderedJSONField("name", name),
-            OrderedJSONField("serverRole", serverRole),
-            OrderedJSONField("effectiveChannelRole", effectiveChannelRole),
-            OrderedJSONField("channelAdminBasis", optional: channelAdminBasis),
-            OrderedJSONField("canChangeChannelRole", canChangeChannelRole),
+            OrderedJSONField("slug", slug),
         ])
     }
 }
 
-/// `200` body of `GET /api/channels/:channelId/members`: `agents`, `humans`.
+public struct ChannelHumanRowDTO: Sendable, Equatable {
+    public var id: String
+    public var serverId: String?
+    public var serverName: String?
+    public var serverSlug: String?
+    public var name: String
+    public var displayName: String?
+    public var description: String?
+    public var avatarUrl: String?
+    public var role: String?
+    public var serverRole: String?
+    public var channelRole: String?
+    public var gravatarHash: String
+    /// Joint-channel projections only; nil for ordinary channels and `#all`.
+    public var servers: [ChannelMemberServerDTO]?
+    /// The enabled virtual `#all` audience row order has no `channelRole` and
+    /// places `gravatarHash` before `serverRole`.
+    public var virtualAllAudience: Bool
+    public var effectiveChannelRole: String
+    public var channelAdminBasis: String?
+    public var canChangeChannelRole: Bool
+
+    public init(
+        id: String,
+        serverId: String? = nil,
+        serverName: String? = nil,
+        serverSlug: String? = nil,
+        name: String,
+        displayName: String? = nil,
+        description: String? = nil,
+        avatarUrl: String? = nil,
+        role: String? = nil,
+        serverRole: String? = nil,
+        channelRole: String? = nil,
+        gravatarHash: String,
+        servers: [ChannelMemberServerDTO]? = nil,
+        virtualAllAudience: Bool = false,
+        effectiveChannelRole: String,
+        channelAdminBasis: String? = nil,
+        canChangeChannelRole: Bool
+    ) {
+        self.id = id
+        self.serverId = serverId
+        self.serverName = serverName
+        self.serverSlug = serverSlug
+        self.name = name
+        self.displayName = displayName
+        self.description = description
+        self.avatarUrl = avatarUrl
+        self.role = role
+        self.serverRole = serverRole
+        self.channelRole = channelRole
+        self.gravatarHash = gravatarHash
+        self.servers = servers
+        self.virtualAllAudience = virtualAllAudience
+        self.effectiveChannelRole = effectiveChannelRole
+        self.channelAdminBasis = channelAdminBasis
+        self.canChangeChannelRole = canChangeChannelRole
+    }
+
+    var json: OrderedJSON {
+        // The Guest row is bounded: it carries only the identity fields the
+        // pinned guest branch publishes. The presence of `serverId` marks the
+        // ordinary (unbounded) row; its absent profile/role members are then
+        // published as JSON null exactly like the pinned role projection.
+        var body = OrderedJSONObject()
+        body.append("id", id)
+        if let serverId { body.append("serverId", serverId) }
+        if let serverName { body.append("serverName", serverName) }
+        if let serverSlug { body.append("serverSlug", serverSlug) }
+        body.append("name", name)
+        body.append("displayName", optional: displayName)
+        if serverId != nil {
+            body.append("description", optional: description)
+        }
+        body.append("avatarUrl", optional: avatarUrl)
+        if let role { body.append("role", role) }
+        if virtualAllAudience {
+            // Pinned `getServerAudienceHumans` row: role, gravatarHash, then the
+            // projectMemberRole additions; no channelRole member exists.
+            body.append("gravatarHash", gravatarHash)
+            if let serverRole { body.append("serverRole", serverRole) }
+        } else {
+            if let serverRole { body.append("serverRole", serverRole) }
+            if let channelRole { body.append("channelRole", channelRole) }
+            body.append("gravatarHash", gravatarHash)
+            if let servers {
+                body.append("servers", .array(servers.map(\.json)))
+            }
+        }
+        body.append("effectiveChannelRole", effectiveChannelRole)
+        if serverId != nil {
+            body.append("channelAdminBasis", optional: channelAdminBasis)
+        }
+        body.append("canChangeChannelRole", canChangeChannelRole)
+        return body.json
+    }
+}
+
+/// `200` body of `GET /api/channels/:channelId/members`: `agents`, `humans`
+/// and, for a non-Guest viewer, `externalMembers`.
+///
+/// The pinned non-Guest response carries `externalMembers`; the Slack external
+/// member projection is not ported (see `docs/DEVIATIONS.md`), so this
+/// deployment publishes the empty array. The pinned Guest branch answers only
+/// `{agents, humans}` (`routes/channels.ts:3631-3655`), so a Guest response
+/// omits the key entirely.
 public struct ChannelMembersResponse: JSONBodyConvertible, Sendable, Equatable {
     public var agents: [ChannelAgentRowDTO]
     public var humans: [ChannelHumanRowDTO]
+    public var externalMembers: [OrderedJSON]?
 
-    public init(agents: [ChannelAgentRowDTO], humans: [ChannelHumanRowDTO]) {
+    public init(
+        agents: [ChannelAgentRowDTO],
+        humans: [ChannelHumanRowDTO],
+        externalMembers: [OrderedJSON]? = nil
+    ) {
         self.agents = agents
         self.humans = humans
+        self.externalMembers = externalMembers
     }
 
     public var jsonBody: OrderedJSON {
-        .object([
-            OrderedJSONField("agents", .array(agents.map(\.json))),
-            OrderedJSONField("humans", .array(humans.map(\.json))),
-        ])
+        var body = OrderedJSONObject()
+        body.append("agents", .array(agents.map(\.json)))
+        body.append("humans", .array(humans.map(\.json)))
+        if let externalMembers { body.append("externalMembers", .array(externalMembers)) }
+        return body.json
     }
 }
 
