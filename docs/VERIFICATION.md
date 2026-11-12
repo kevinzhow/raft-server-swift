@@ -99,6 +99,78 @@ hashes, state reads and minimal failing inputs. Secrets, auth-bearing headers an
 signed URLs belong only in private local evidence, never shared reports or Git.
 Every normalization/ignore rule needs a reviewed scope and version.
 
+## Reuse across upstream releases
+
+The reusable unit is a reviewed behavior rule plus its executable scenario and
+configuration preconditions. A route count, a captured response or an old PASS is
+not that unit. The [upgrade guide](PARITY-UPGRADES.md) describes how to apply this
+contract to a new pinned release without replacing the current oracle in place.
+
+Keep four layers separate:
+
+| Layer | Retained information | Changes on upgrade |
+| --- | --- | --- |
+| Version facts | Source/tag/tree, source manifest, dependency locks, inventories, client and artifact identities | Produce a new immutable set for each candidate version |
+| Behavior rules | Stable behavior IDs, operation links, expected fields/state/events/errors, explicit source dependencies and profiles | Review source and consumers; revise only rules whose specification changes; preserve the old rule pack |
+| Execution adapters | Private endpoints, resource ownership, setup/lifecycle, storage and trust configuration | Re-provision or configure the isolated target while keeping the same logical scenario |
+| Evidence | Exact inputs, observations, process/client/tool identities, state witnesses and gate results | Create a fresh run; never relabel old results as new-version execution |
+
+`operation_id` currently identifies the raw HTTP method and effective path.
+Parameter names and constraints remain in the inventory; normalized path matching
+is only a discovery aid. A route rename/removal requires explicit compatibility
+review, even when a new shape looks similar. `behavior_id` identifies the logical
+obligation across releases. A source line moving does not create a new behavior;
+a semantic split needs an explicit ID/mapping decision. Registration locations
+and line/offset-based registration IDs are provenance, not stable cross-release
+identity.
+
+For each upgrade, produce separate entry, source and rule differences. An unchanged
+route can call a changed authorization helper, serializer, feature evaluator or
+storage service. Shared schemas, the real Web/CLI consumer, dependency locks and
+bootstrap configuration are part of this review. Unknown or unmapped changes
+widen review; they cannot justify narrowing it. Static impact analysis produces a
+review and rerun queue. It does not prove that behavior is unchanged and it does
+not emit behavioral PASS results.
+
+Apply the same extractor and comparison-tool version to both source snapshots.
+If the extractor changes, regenerate both inventories before attributing a delta
+to upstream. Preserve unresolved registrations, scanner exclusions and missing
+transport/profile coverage on both sides. Zero new entries with an unresolved
+candidate still present does not close the inventory.
+
+The common core flow is rerun on both implementations for a new source/runtime
+baseline. Use the impact queue to prioritize deeper contract review and additional
+profiles, not to carry old execution forward. The evidence model binds every PASS
+to the current baseline and valid private evidence; source, rule, adapter, tool,
+client, configuration or artifact changes require a fresh affected run. A bounded
+same-baseline restart retry retains attempt history. A changed baseline uses a
+new run directory.
+
+A future rule pack must record, before execution:
+
+- Its pinned upstream reference and declared required behavior/profile denominator.
+- Full required/nested fields, missing/null semantics, headers/bytes, principal and
+  tenant authority, authoritative state, effects and restart obligations.
+- Source and consumer dependencies, exact scenario/test links, scoped normalization
+  rules, and intentional differences with their version/re-evaluation conditions.
+- Actual service presence, capability discovery and admission flags separately.
+  A disabled flag does not imply an absent service or disabled recovery.
+
+Promote each reproduced defect into two protections: a product regression through
+its public surface, and a verifier regression if the observation exposed a false
+PASS, missing evidence or incorrect classification. Keep fault checks for byte
+corruption, incomplete payloads, wrong principal/namespace, missing restart
+witnesses and stale evidence. An upgrade rehearsal must show that these changes
+enter the review/rerun queue without changing the active pinned specification.
+Synthetic rehearsal results validate the method only; they are not release or
+runtime-acceptance evidence.
+
+The current implementation supplies the inventory generator, reviewed attachment
+rule pack, private transport/evidence model and streaming pilot. Environment
+provisioning and restarts remain operator-owned; enabled presign/session and
+managed-Agent profiles are not implemented by the streaming pilot. Reuse preserves
+these limits until new scenarios and real evidence extend the declared scope.
+
 ## First attachment batch
 
 The initial flow is ordinary multipart upload -> message association -> Agent

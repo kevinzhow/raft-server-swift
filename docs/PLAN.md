@@ -11,7 +11,10 @@ Verify the Swift reimplementation against `raft-source` tag `v1.21.23-source.1`
 with separate entry, behavior and real-client evidence. The first attachment
 sample covers privacy prerequisites, multipart upload, message association,
 history, human/Agent downloads, real CLI output, permission removal and
-retained-data restart. Whole-service entry inventory runs alongside the sample.
+retained-data restart. Whole-service entry inventory runs alongside the sample. The deliverable also includes a reusable
+version-alignment method: stable rules, separate version/runtime facts, conservative
+upgrade differences and review queues, fresh evidence rules and an executable
+synthetic upgrade rehearsal. See [PARITY-UPGRADES.md](PARITY-UPGRADES.md).
 
 Stage: the download repair is merged and qualified. Both isolated production
 bootstrap paths have run, and paired initial scenarios found real contract and
@@ -120,6 +123,11 @@ bootstrap retains a Durable recovery service with different gate/refusal behavio
 Swift production has no installed presigner; changing S3 environment values cannot
 make encrypted originals into plaintext signed downloads. D5/D22 do not automatically
 exclude these real capability profiles, which remain open functional scope.
+The upgrade planner and how-to are implemented without changing the active pinned
+oracle. Its 22 planner regressions and the 38 existing verifier regressions pass;
+a replay through the actual CLI detects all 8 synthetic upgrade controls while
+retaining `NOT_RUN` queue states and false acceptance/release flags. These plans
+cannot inherit old PASS results or authorize a release.
 
 A verified pre-repair `1b456511` release supplied the actual binary corruption
 counterexample. Its full closure and host dependencies were rechecked; a separate

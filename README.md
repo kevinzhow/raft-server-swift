@@ -6,7 +6,7 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 ## Status
 
-This is an active reimplementation undergoing production delivery validation; production activation is pending. The locked upstream assertion coverage below does not establish a complete Web/CLI user path. Current delivery evidence and remaining gates are recorded in [docs/PLAN.md](docs/PLAN.md).
+This is an active reimplementation undergoing behavior and runtime validation. Installed and candidate versions are tracked separately in [docs/PLAN.md](docs/PLAN.md). The locked upstream assertion coverage below does not establish a complete Web/CLI user path.
 
 - **406 upstream parity modules tracked** in [docs/PARITY.tsv](docs/PARITY.tsv). The legacy machine-on-behalf attested-send module is partial because credential-route tests do not establish its freshness and E1 behavior. The normal CLI and official Computer use credential `sendV2` with legacy fallback disabled. Current weighted coverage and runtime qualifications are recorded in [docs/PLAN.md](docs/PLAN.md); locked modules do not establish a complete client or production path.
 - The Swift regression suite runs alongside a **26-check real-process smoke suite** (`./scripts/smoke-server.sh`) and a separate two-server/daemon startup gate (`make test-e2e`). Smoke proves those specific live flows; the locked assertions and parity ledger provide broader coverage.
@@ -15,6 +15,15 @@ This is an active reimplementation undergoing production delivery validation; pr
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
 - Deliberate differences from upstream and adjudicated exclusions live in [docs/DEVIATIONS.md](docs/DEVIATIONS.md). Per-slice locked behavior is recorded in the commit message body, not in a separate append-only log.
 - Work is organized in domain architecture slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the target layering is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the working contract is [AGENTS.md](AGENTS.md).
+
+## Behavior verification and version upgrades
+
+[VERIFICATION.md](docs/VERIFICATION.md) defines the repeatable behavior-verification
+method: version facts, reviewed rules, private execution adapters and immutable
+evidence remain separate. [How to align a new upstream release](docs/PARITY-UPGRADES.md)
+walks through source/entry/rule differences, the conservative review queue, fresh
+paired runs and release gates. The attachment sample is the first reusable rule
+pack and scenario; its passing scope must not be read as whole-service parity.
 
 ## Architecture & Current Focus
 
@@ -238,7 +247,7 @@ deploy/swift-production/  release build/stage/verify/upgrade tools
 AGENTS.md                working contract and hard constraints
 ```
 
-There is no `.github/` CI configuration or license file at this time. State is in-memory and resets on restart.
+There is no `.github/` CI configuration or license file at this time. Development state is in memory; production retains snapshots and durable effects in PostgreSQL under the production configuration.
 
 ## Working on the port
 
