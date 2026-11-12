@@ -62,6 +62,11 @@ public struct ManagedMCPChannelRoutesService: Sendable {
                 throw ManagedMCPOAuthError.invalidChannelVisibility
             }
             if oauth.allChannelId(serverId: serverId) == channelId { throw ManagedMCPOAuthError.allChannelVisibilityManaged }
+            // channels.ts:2472-2483 requires membership in addition to the
+            // change-visibility capability, including for a server owner.
+            guard oauth.isChannelParticipant(channelId: channelId, userId: userId) else {
+                throw ManagedMCPOAuthError.channelMembershipRequired
+            }
             requestedVisibility = visibility
         }
         guard let authority = HumanChannelAuthorizationQuery(oauth: oauth).resolve(
