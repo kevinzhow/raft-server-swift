@@ -102,11 +102,8 @@ let package = Package(
         ),
         .target(
             name: "CRaftMarkdown",
-            publicHeadersPath: "include",
-            linkerSettings: [
-                .linkedLibrary("dl", .when(platforms: [.linux])),
-                .linkedLibrary("pthread"),
-            ]
+            exclude: ["vendor/LICENSE.md", "vendor/PROVENANCE.json", "vendor/README.md", "vendor/UPSTREAM.patch"],
+            publicHeadersPath: "include"
         ),
         .target(
             name: "RaftObjectStorage",
@@ -142,9 +139,7 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources/owner-opener-team-mode.html"),
-                .copy("Resources/raft-markdown-parser.js"),
-                .copy("Resources/raft-markdown-parser.LICENSE.txt"),
-                .copy("Resources/raft-markdown-parser.provenance.json"),
+                .copy("Resources/MD4C.LICENSE.txt"),
             ]
         ),
         .target(

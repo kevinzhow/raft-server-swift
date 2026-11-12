@@ -22,9 +22,9 @@ Checks:
      LD_LIBRARY_PATH pointing only at the staged runtime, and free loopback
      ports. Check /livez, /health, /api/version.
   5. Read /proc/<pid>/maps and require every mapped .so to resolve either inside
-     the staged release or to the deployed host-platform allowlist. Require JSC
-     to be mapped from the staged runtime (startup parses the bundled Markdown
-     parser, so a ready server also proves the bundle was read).
+     the staged release or to the deployed host-platform allowlist. Historical
+     JS parser bundles additionally require JSC from the staged runtime;
+     native Markdown is compiled into the executable.
   6. Stop with SIGTERM and record the exit code.
 
 No file under /mnt/data/services is written. The environment file under
@@ -55,6 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from env import load as load_deploy_env  # noqa: E402
+from markdown_runtime import check_parser_mapping, resource_profile  # noqa: E402
 
 _CONFIG = load_deploy_env()
 DEV = Path(_CONFIG["DEV_ROOT"])
@@ -284,6 +285,19 @@ def run(stagedir: Path, log: Logger) -> dict[str, object]:
         require(observed["files"] == manifest.get("files"), "staged files do not match the manifest")
         require(observed["symlinks"] == manifest.get("symlinks"), "staged symlinks do not match the manifest")
         checks["inventoryEquality"] = "passed"
+        try:
+            parser_profile = resource_profile({
+                name[len(BUNDLE_NAME) + 1:]
+                for name in observed["files"]
+                if name.startswith(BUNDLE_NAME + "/")
+            })
+        except ValueError as error:
+            raise VerifyError(str(error)) from error
+        require(
+            not any(name.startswith(BUNDLE_NAME + "/") for name in observed["symlinks"]),
+            "symlink in resource bundle",
+        )
+        checks["markdownParserRuntime"] = parser_profile
         checks["fileCount"] = len(observed["files"])
         checks["symlinkCount"] = len(observed["symlinks"])
         log(
@@ -538,10 +552,10 @@ def run(stagedir: Path, log: Logger) -> dict[str, object]:
             any(item["name"] == "libswiftCore.so" for item in staged_mappings),
             "libswiftCore.so is not mapped from the staged runtime",
         )
-        require(
-            any(item["name"].startswith("libjavascriptcoregtk-4.1.so.") for item in staged_mappings),
-            "JavaScriptCore is not mapped from the staged runtime",
-        )
+        try:
+            jsc_mapped = check_parser_mapping(parser_profile, mapped)
+        except ValueError as error:
+            raise VerifyError(str(error)) from error
         require(
             any(item["path"] == str((release / "RaftServer").resolve(strict=True)) for item in staged_mappings),
             "staged RaftServer is not mapped",
@@ -551,16 +565,16 @@ def run(stagedir: Path, log: Logger) -> dict[str, object]:
             "mappedFileCount": len(mapped),
             "stagedFileCount": len(staged_mappings),
             "hostPlatformFileCount": len([item for item in mapped if item["kind"] == "host-platform"]),
-            "javascriptCoreMappedFromStaged": True,
+            "javascriptCoreMappedFromStaged": jsc_mapped,
             "swiftCoreMappedFromStaged": True,
             "markdownParserBundleMapped": bundle_mapped,
             "markdownParserBundlePresent": (release / BUNDLE_NAME / "raft-markdown-parser.js").is_file(),
-            "markdownParserStartupValidationImpliedByReady": True,
+            "markdownParserStartupValidationImpliedByReady": parser_profile == "javascriptcore",
         }
         result["runtime"]["mappedFiles"] = mapped
         log(
             f"[verify] /proc/{proc.pid}/maps: {len(mapped)} unique mapped files, "
-            f"{len(staged_mappings)} from staged release, JSC mapped"
+            f"{len(staged_mappings)} from staged release, parser={parser_profile}, JSC mapped={jsc_mapped}"
         )
 
         # ------------------------------------------------------------------

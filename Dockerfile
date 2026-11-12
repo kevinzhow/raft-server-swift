@@ -12,7 +12,7 @@ RUN swift build -c release --product RaftServer -j 4 --force-resolved-versions \
 FROM ubuntu:26.04 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl libatomic1 libstdc++6 libgcc-s1 zlib1g libjavascriptcoregtk-4.1-0 \
+        ca-certificates curl libatomic1 libstdc++6 libgcc-s1 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 raft \
     && useradd --uid 10001 --gid 10001 --home-dir /tmp --no-create-home --shell /usr/sbin/nologin raft

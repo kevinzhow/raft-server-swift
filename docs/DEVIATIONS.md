@@ -375,7 +375,7 @@ and `/api/integration-logos/<clientId>/<sha256-prefix>.webp`). The filename hash
 is the SHA-256 prefix of the stored bytes; the `.webp` suffix is retained for
 consumer and OAuth `picture` URL compatibility.
 **Why.** Upstream uses `sharp` to decode and re-encode. The Swift release
-closure contains only the Swift runtime and JavaScriptCore; ImageMagick and
+closure has no packaged image encoder; ImageMagick and
 `libwebp` exist on the development host but are not in the verified release
 closure, so depending on them would make the production artifact unverified.
 **Upstream.** `services/avatarService.ts` (`storeProfileAvatar`),

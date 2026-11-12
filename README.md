@@ -33,7 +33,7 @@ Development mode retains business state in memory. Production mode restores the 
 | Target | Responsibility |
 | --- | --- |
 | `RaftHTTP` | Framework-independent Services, authoritative domain Stores, OAuth, Codable DTOs, retained snapshots and transaction coordination, public pages, route dispatch, and the JSON fallback. |
-| `CRaftMarkdown` | JavaScriptCore C bridge for the pinned mature Markdown grammar and original-source ranges. |
+| `CRaftMarkdown` | Pinned native MD4C parser with original UTF16 source ranges for message mentions. |
 | `RaftHTTPServer` | Vapor mount (`FallbackApplication.swift`): registers the `Features/` `RouteCollection` modules, applies middleware, and turns unmatched paths into the JSON 404. |
 | `RaftShared` | Shared value types, including `JSONValue`, used by the HTTP layer and tests. |
 | `RaftServer` | Executable entrypoint (`@main`): reads configuration, wires `FallbackServices`, starts the background liveness tracker, opens the `/daemon/connect` listener, and runs the Vapor app. |
@@ -46,7 +46,6 @@ Development mode retains business state in memory. Production mode restores the 
 ## Requirements
 
 - Linux x86_64.
-- JavaScriptCore 4.1 runtime (`libjavascriptcoregtk-4.1.so.0`), supplied by `libjavascriptcoregtk-4.1-0` on Ubuntu. The Docker runtime installs this dependency.
 - **Swift 6.4.1**, pinned by `make`:
 
   ```text
@@ -58,7 +57,9 @@ Development mode retains business state in memory. Production mode restores the 
 
 ## Build and test
 
-Message Markdown uses the pinned mdast/GFM grammar through the in-process `CRaftMarkdown` bridge. The source entry is [Tools/MarkdownParser/entry.mjs](Tools/MarkdownParser/entry.mjs); [the resource provenance](Sources/RaftHTTP/Resources/raft-markdown-parser.provenance.json) records the exact packages, source hashes and build options. Distribute `raft-server-swift_RaftHTTP.bundle` beside the Linux `RaftServer` executable, including the parser, provenance and licenses. Startup loads and executes the packaged parser before opening listeners.
+Message Markdown uses vendored MD4C through `CRaftMarkdown`, compiled into the executable. A narrow source-range extension preserves original UTF16 offsets, the disabled-indented-code profile and message mention handling; parser scratch is released after each invocation. Startup executes a native parser self-check before opening listeners. JavaScriptCore and a JS parser bundle are no longer production dependencies. Distribute `raft-server-swift_RaftHTTP.bundle` beside the Linux executable for the HTML resource and MD4C license notice.
+
+The pinned mdast/GFM parser remains an offline behavior oracle under [Tools/MarkdownParser/reference/](Tools/MarkdownParser/reference/). [Parser comparison tools](Tools/MarkdownParser/README.md) run deterministic, malformed-input, Unicode and optional CommonMark cases against both implementations; Node is required only for this development check. Native dependency licenses and patch provenance live under [Sources/CRaftMarkdown/vendor/](Sources/CRaftMarkdown/vendor/).
 
 ```bash
 make check FILTER=<regex>                                    # incremental build + only matching tests (fast loop)

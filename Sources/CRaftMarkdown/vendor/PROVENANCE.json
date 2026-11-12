@@ -1,0 +1,88 @@
+{
+  "format": 1,
+  "dependency": "MD4C",
+  "upstreamRepository": "https://github.com/mity/md4c",
+  "upstreamRef": "release-0.5.2",
+  "license": "MIT",
+  "files": [
+    {
+      "path": "md4c.c",
+      "upstreamURL": "https://raw.githubusercontent.com/mity/md4c/release-0.5.2/src/md4c.c",
+      "upstreamSHA256": "52e39843b96b64d0281bf795128bcc88c9c4dc52d7436737e9f4306648dc4590",
+      "localSHA256": "38ab3337669654c0cbee9eed2ee28c6ba3b6144003246ddb94d6a2752ce7f77b"
+    },
+    {
+      "path": "md4c.h",
+      "upstreamURL": "https://raw.githubusercontent.com/mity/md4c/release-0.5.2/src/md4c.h",
+      "upstreamSHA256": "4efd19bf7ec270691d5b4189f496886e421768a814b5e817eb945aa85e859f18",
+      "localSHA256": "6ae405a31cc0c56e40649c9b6648658d4fb9b3188b2890e72b966c6f028c0d66"
+    },
+    {
+      "path": "entity.c",
+      "upstreamURL": "https://raw.githubusercontent.com/mity/md4c/release-0.5.2/src/entity.c",
+      "upstreamSHA256": "69d9362cd3b61261c3ed9d9f226ae1c66a3209f9db03805b1d114841ee3a6c1f",
+      "localSHA256": "69d9362cd3b61261c3ed9d9f226ae1c66a3209f9db03805b1d114841ee3a6c1f"
+    },
+    {
+      "path": "entity.h",
+      "upstreamURL": "https://raw.githubusercontent.com/mity/md4c/release-0.5.2/src/entity.h",
+      "upstreamSHA256": "7d021cb683c0e7643df6ce0db51d75f8cbc313be9ec754cb4dc18c40ebaa400b",
+      "localSHA256": "7d021cb683c0e7643df6ce0db51d75f8cbc313be9ec754cb4dc18c40ebaa400b"
+    }
+  ],
+  "upstreamLicense": {
+    "url": "https://raw.githubusercontent.com/mity/md4c/release-0.5.2/LICENSE.md",
+    "sha256": "d30937367d5413e7eaa218b1640b8946ff76fd34d97152f6979fd96169d5d0fc",
+    "preservedVerbatimAsPrefix": "LICENSE.md"
+  },
+  "entityTable": {
+    "origin": "Unmodified release-0.5.2 src/entity.c; generated upstream by scripts/build_entity_map.py",
+    "regeneratedLocally": false
+  },
+  "patch": {
+    "path": "UPSTREAM.patch",
+    "format": "unified diff against original source files listed above",
+    "sha256": "1b17ca1bb70c5fdcb6ab6e5b44130ed00388752b9074539908ef029b834dd8c4",
+    "description": "README.md"
+  },
+  "adaptedAlgorithm": {
+    "dependency": "micromark-extension-gfm-autolink-literal",
+    "version": "2.1.0",
+    "sourceURL": "https://raw.githubusercontent.com/micromark/micromark-extension-gfm-autolink-literal/2.1.0/dev/lib/syntax.js",
+    "sourceSHA256": "d965cd8b4c3825815ccf6b1f7ff52dd0932bcb46cadd87c73a5b982f8c376626",
+    "functions": [
+      "tokenizeDomain",
+      "tokenizePath",
+      "tokenizeTrail",
+      "tokenizeEmailAutolink",
+      "tokenizeEmailDomainDotTrail",
+      "previousWww",
+      "previousProtocol",
+      "previousEmail",
+      "previousUnbalanced"
+    ],
+    "license": "MIT",
+    "licenseURL": "https://raw.githubusercontent.com/micromark/micromark-extension-gfm-autolink-literal/2.1.0/license",
+    "licenseSHA256": "536804b3adbff17dbbb9ed0d2bf9655b78f07640278581e37e3d7475282d5e61",
+    "noticePreservedVerbatimIn": "LICENSE.md",
+    "localImplementation": [
+      "md_gfm_url_end",
+      "md_gfm_unbalanced",
+      "md_gfm_atext",
+      "md_gfm_resolve_email",
+      "md_gfm_resolve_url"
+    ]
+  },
+  "build": {
+    "encoding": "Original UTF16, with C11 uint16_t portability on Unix",
+    "flags": [
+      "MD_FLAG_PERMISSIVEURLAUTOLINKS",
+      "MD_FLAG_PERMISSIVEEMAILAUTOLINKS",
+      "MD_FLAG_PERMISSIVEWWWAUTOLINKS",
+      "MD_FLAG_TABLES",
+      "MD_FLAG_STRIKETHROUGH",
+      "MD_FLAG_TASKLISTS",
+      "MD_FLAG_NOINDENTEDCODEBLOCKS"
+    ]
+  }
+}

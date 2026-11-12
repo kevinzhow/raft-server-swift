@@ -1,6 +1,5 @@
 import CRaftMarkdown
 import Foundation
-import Synchronization
 
 /// Immutable original-source runs from one mature parser invocation. The bridge
 /// supplies UTF16 ranges from the pinned parser, never cooked text or store facts.
@@ -23,53 +22,24 @@ enum MessageMentionParsingError: DomainError {
     var errorMessage: String { "Failed to parse message mentions" }
 }
 
-/// One offline parser context. The checked mutex serializes the synchronous C
-/// context and keeps its non-Sendable handle inside a single protected value.
+/// Native parser scratch belongs to this invocation. Requests share no parser
+/// context or lock; the parser returns ranges into the unchanged UTF16 source.
 enum MessageMentionMarkdown {
-    private static let runtime = Mutex(RuntimeState())
-
     static func parse(_ source: String) throws -> MessageMentionSurface {
+        var error: CInt = 0
+        guard let context = raft_markdown_create(&error), error == 0 else {
+            throw MessageMentionParsingError.unavailable
+        }
+        defer { raft_markdown_destroy(context) }
         let input = Array(source.utf16)
-        let json = try runtime.withLock { state in
-            let context = try state.load()
-            var allocation: UnsafeMutablePointer<CChar>?
-            var size = 0
-            let result = input.withUnsafeBufferPointer { buffer in
-                raft_markdown_parse(context, buffer.baseAddress, buffer.count, &allocation, &size)
-            }
-            defer { if let allocation { raft_markdown_free(allocation) } }
-            guard result == 0, let allocation, size > 0 else { throw MessageMentionParsingError.unavailable }
-            return Data(bytes: allocation, count: size)
+        var allocation: UnsafeMutablePointer<CChar>?
+        var size = 0
+        let result = input.withUnsafeBufferPointer { buffer in
+            raft_markdown_parse(context, buffer.baseAddress, buffer.count, &allocation, &size)
         }
-        return try decode(json, source: source)
-    }
-
-    private final class RuntimeState {
-        private var context: OpaquePointer?
-
-        func load() throws -> OpaquePointer {
-            if let context { return context }
-            guard let url = Bundle.module.url(forResource: "raft-markdown-parser", withExtension: "js") else {
-                throw MessageMentionParsingError.unavailable
-            }
-            let bundle: Data
-            do { bundle = try Data(contentsOf: url) }
-            catch { throw MessageMentionParsingError.unavailable }
-            var error: CInt = 0
-            let created = bundle.withUnsafeBytes { bytes in
-                raft_markdown_create(bytes.bindMemory(to: CChar.self).baseAddress, bytes.count, &error)
-            }
-            guard let created, error == 0 else {
-                if let created { raft_markdown_destroy(created) }
-                throw MessageMentionParsingError.unavailable
-            }
-            context = created
-            return created
-        }
-
-        deinit {
-            if let context { raft_markdown_destroy(context) }
-        }
+        defer { if let allocation { raft_markdown_free(allocation) } }
+        guard result == 0, let allocation, size > 0 else { throw MessageMentionParsingError.unavailable }
+        return try decode(Data(bytes: allocation, count: size), source: source)
     }
 
     private struct ParsedRange: Decodable {

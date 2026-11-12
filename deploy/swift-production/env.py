@@ -22,13 +22,14 @@ REQUIRED = (
     "SOURCE_REPO",
     "SWIFT",
     "SWIFT_SDK",
-    "JSC_LIBRARY",
     "PRODUCTION_ROOT",
     "RELEASE_ROOT_PREFIX",
     "BASELINE_COMMIT",
     "HOST_PLATFORM_PROOF",
 )
 OPTIONAL_DEFAULTS = {
+    # Only needed when staging a historical release with a JS parser bundle.
+    "JSC_LIBRARY": "",
     "LAUNCHER": "",
     "GATEWAY_FILE": "",
     "GATEWAY_CLOSED_PROFILE": "",
