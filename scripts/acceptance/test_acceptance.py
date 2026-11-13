@@ -7,13 +7,20 @@ These tests do not start a server and do not call the deployment.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 from acceptance import (
     Acceptance,
+    Corruption,
     Failure,
+    Outage,
+    Skip,
+    main,
     find_correlated_reply,
     make_attachment_read_case,
 )
@@ -173,6 +180,234 @@ class AttachmentReadRunnerTests(unittest.TestCase):
         with mock.patch("acceptance.time.sleep", return_value=None):
             with self.assertRaises(Failure):
                 fake.check_attachment_read()
+
+
+class AcceptanceCompletionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.out = Path(temporary.name) / "report.json"
+        self.print_patch = mock.patch("builtins.print")
+        self.print_patch.start()
+        self.addCleanup(self.print_patch.stop)
+
+    def runner(self, **changes) -> Acceptance:
+        options = dict(
+            base_url="http://acceptance.invalid", socket_url=None, http_timeout=1,
+            full=False, dry_run=False, restart_main=False,
+            restart_computer=False, restart_agent=None, pg_container=None,
+            database=None, out=str(self.out),
+        )
+        options.update(changes)
+        return Acceptance(SimpleNamespace(**options))
+
+    def passing_scope(self, runner: Acceptance) -> None:
+        for name, _ in runner.plan():
+            runner.record(name, "PASS", "offline control")
+
+    def test_readonly_scope_completes_with_nine_excluded_skips(self) -> None:
+        runner = self.runner()
+        self.passing_scope(runner)
+        for name in ("dm-reply", "mention-reply", "task", "attachment", "attachment-read",
+                     "thread", "restart-main", "restart-computer", "restart-agent"):
+            runner.record(name, "SKIP", "outside read-only scope")
+        report = runner.write_report()
+        self.assertEqual(len(report["required_checks"]), 5)
+        self.assertEqual(report["counts"], {"PASS": 5, "SKIP": 9})
+        self.assertTrue(report["execution_ok"])
+        self.assertTrue(report["acceptance_complete"])
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["completion_issues"], [])
+
+    def test_required_nonpass_is_incomplete_even_with_no_failures(self) -> None:
+        for status in ("SKIP", "BLOCKED", "DRY-RUN", "UNKNOWN"):
+            with self.subTest(status=status):
+                runner = self.runner()
+                self.passing_scope(runner)
+                runner.results[-1]["status"] = status
+                report = runner.write_report()
+                self.assertTrue(report["execution_ok"])
+                self.assertFalse(report["acceptance_complete"])
+                self.assertFalse(report["passed"])
+                self.assertEqual(report["counts"].get("FAIL", 0), 0)
+                self.assertTrue(report["completion_issues"])
+
+    def test_missing_required_result_does_not_complete(self) -> None:
+        runner = self.runner()
+        self.passing_scope(runner)
+        runner.results.pop()
+        report = runner.write_report()
+        self.assertFalse(report["acceptance_complete"])
+        self.assertFalse(report["passed"])
+        self.assertIn("read-only-sweep", str(report["completion_issues"]))
+
+    def test_duplicate_required_pass_does_not_complete(self) -> None:
+        runner = self.runner()
+        self.passing_scope(runner)
+        runner.record("read-only-sweep", "PASS", "duplicate control")
+        report = runner.write_report()
+        self.assertFalse(report["acceptance_complete"])
+        self.assertFalse(report["passed"])
+        self.assertIn("duplicate", str(report["completion_issues"]).lower())
+
+    def test_full_scope_and_requested_restarts_are_required(self) -> None:
+        runner = self.runner(full=True, restart_main=True, restart_computer=True,
+                             restart_agent="keep-session")
+        self.passing_scope(runner)
+        report = runner.write_report()
+        self.assertEqual(len(report["required_checks"]), 14)
+        self.assertTrue(report["acceptance_complete"])
+        runner.results[-1]["status"] = "SKIP"
+        self.assertFalse(runner.write_report()["acceptance_complete"])
+
+    def test_empty_results_cannot_complete(self) -> None:
+        report = self.runner().write_report()
+        self.assertFalse(report["acceptance_complete"])
+        self.assertFalse(report["passed"])
+
+    def test_dryrun_cannot_qualify_even_if_rows_claim_pass(self) -> None:
+        runner = self.runner(dry_run=True)
+        self.passing_scope(runner)
+        report = runner.write_report()
+        self.assertTrue(report["execution_ok"])
+        self.assertFalse(report["acceptance_complete"])
+        self.assertFalse(report["passed"])
+
+    def test_behavior_failure_continues_but_outage_and_corruption_stop(self) -> None:
+        runner = self.runner()
+        runner.run("defect", mock.Mock(side_effect=Failure("contract mismatch")))
+        follow = mock.Mock(return_value={"detail": "continued"})
+        runner.run("independent", follow)
+        follow.assert_called_once()
+        self.assertIsNone(runner.stopped)
+        self.assertTrue(runner.write_report()["execution_ok"])
+        self.assertFalse(runner.write_report()["passed"])
+        for error in (Outage("health unavailable"), Corruption("revision moved")):
+            with self.subTest(error=type(error).__name__):
+                stopped = self.runner()
+                stopped.run("stop", mock.Mock(side_effect=error))
+                blocked = mock.Mock()
+                stopped.run("later", blocked)
+                blocked.assert_not_called()
+                self.assertEqual(stopped.results[-1]["status"], "BLOCKED")
+                report = stopped.write_report()
+                self.assertFalse(report["execution_ok"])
+                self.assertFalse(report["passed"])
+
+    def test_missing_pg_is_skip_without_claiming_zero_unchanged(self) -> None:
+        runner = self.runner()
+        runner.context = {"access_token": "offline-token", "server_id": "server"}
+        runner.http = mock.Mock()
+        runner.http.request.return_value.status = 200
+        runner.run("read-only-sweep", runner.check_readonly_sweep)
+        result = runner.results[-1]
+        self.assertEqual(result["status"], "SKIP")
+        self.assertNotIn("unchanged", result["detail"])
+        self.assertNotIn("revision_rows", result.get("data", {}))
+        runner.http.request.assert_not_called()
+        self.assertFalse(runner.write_report()["acceptance_complete"])
+
+    def test_missing_after_snapshot_is_skip_not_zero_row_pass(self) -> None:
+        for missing in (None, Skip("snapshot unavailable")):
+            with self.subTest(missing=missing):
+                runner = self.runner()
+                runner.context = {"access_token": "offline-token", "server_id": "server"}
+                runner.http = mock.Mock()
+                runner.http.request.return_value.status = 200
+                runner.db_snapshot = mock.Mock(side_effect=[["messages|root|1"], missing])
+                runner.run("read-only-sweep", runner.check_readonly_sweep)
+                self.assertEqual(runner.results[-1]["status"], "SKIP")
+                self.assertNotIn("revision_rows", runner.results[-1].get("data", {}))
+
+    def test_snapshot_revision_change_is_still_corruption(self) -> None:
+        runner = self.runner()
+        runner.context = {"access_token": "offline-token", "server_id": "server"}
+        runner.http = mock.Mock()
+        runner.http.request.return_value.status = 200
+        runner.db_snapshot = mock.Mock(side_effect=[["messages|root|1"], ["messages|root|2"]])
+        runner.run("read-only-sweep", runner.check_readonly_sweep)
+        self.assertEqual(runner.results[-1]["status"], "FAIL")
+        self.assertIn("corruption", runner.stopped)
+
+    def test_readonly_http_refusal_is_not_functional_success(self) -> None:
+        for status in (401, 403, 404):
+            with self.subTest(status=status):
+                runner = self.runner()
+                runner.context = {"access_token": "offline-token", "server_id": "server"}
+                runner.http = mock.Mock()
+                runner.http.request.return_value.status = status
+                runner.db_snapshot = mock.Mock(return_value=["messages|root|1"])
+                runner.run("read-only-sweep", runner.check_readonly_sweep)
+                self.assertEqual(runner.results[-1]["status"], "FAIL")
+                self.assertIn(str(status), runner.results[-1]["detail"])
+                self.assertIsNone(runner.stopped)
+
+    def test_scope_status_checks_do_not_hide_corruption_or_treat_api_500_as_outage(self) -> None:
+        for status, changed in ((500, False), (401, True)):
+            with self.subTest(status=status, changed=changed):
+                runner = self.runner()
+                runner.context = {"access_token": "offline-token", "server_id": "server"}
+                runner.http = mock.Mock()
+                runner.http.request.side_effect = lambda method, path, **kw: SimpleNamespace(
+                    status=status if path == "/api/channels" else 200)
+                before = ["messages|root|1"]
+                after = ["messages|root|2"] if changed else before
+                runner.db_snapshot = mock.Mock(side_effect=[before, after])
+                runner.run("read-only-sweep", runner.check_readonly_sweep)
+                self.assertEqual(runner.results[-1]["status"], "FAIL")
+                if changed:
+                    self.assertIn("corruption", runner.stopped)
+                else:
+                    self.assertIsNone(runner.stopped)
+                    independent = mock.Mock(return_value={})
+                    runner.run("independent", independent)
+                    independent.assert_called_once()
+
+    def test_sweep_health_503_still_stops_as_outage(self) -> None:
+        runner = self.runner()
+        runner.context = {"access_token": "offline-token", "server_id": "server"}
+        runner.http = mock.Mock()
+        runner.http.request.return_value.status = 503
+        runner.db_snapshot = mock.Mock(return_value=["messages|root|1"])
+        runner.run("read-only-sweep", runner.check_readonly_sweep)
+        self.assertEqual(runner.results[-1]["status"], "FAIL")
+        self.assertIn("outage", runner.stopped)
+
+    def test_unchanged_snapshot_is_real_pass(self) -> None:
+        runner = self.runner()
+        runner.context = {"access_token": "offline-token", "server_id": "server"}
+        runner.http = mock.Mock()
+        runner.http.request.return_value.status = 200
+        runner.db_snapshot = mock.Mock(return_value=["messages|root|1"])
+        runner.run("read-only-sweep", runner.check_readonly_sweep)
+        result = runner.results[-1]
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["data"]["revision_rows"], 1)
+        self.assertEqual(len(result["data"]["read_only_statuses"]), 7)
+
+    def main_args(self) -> list[str]:
+        return ["--env-file", str(self.out.parent / "absent.env"), "--base-url",
+                "http://acceptance.invalid", "--out", str(self.out)]
+
+    def test_dryrun_cli_exits_zero_without_network_or_product_pass(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch("acceptance.HTTPClient.request", side_effect=AssertionError("network")):
+            self.assertEqual(main(self.main_args() + ["--dry-run"]), 0)
+        report = json.loads(self.out.read_text())
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["acceptance_complete"])
+        self.assertEqual(report["counts"], {"DRY-RUN": 5})
+
+    def test_cli_required_skip_returns_nonzero(self) -> None:
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch.object(Acceptance, "check_health", return_value={}), \
+             mock.patch.object(Acceptance, "check_login", side_effect=Skip("no credentials")), \
+             mock.patch("acceptance.HTTPClient.request", side_effect=AssertionError("network")):
+            self.assertEqual(main(self.main_args()), 1)
+        report = json.loads(self.out.read_text())
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["acceptance_complete"])
+        self.assertEqual(report["counts"].get("FAIL", 0), 0)
 
 
 if __name__ == "__main__":

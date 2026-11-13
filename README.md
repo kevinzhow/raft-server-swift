@@ -6,15 +6,15 @@ The specification is observable behavior: HTTP status codes, JSON bodies, respon
 
 ## Status
 
-This is an active reimplementation undergoing behavior and runtime validation. Installed and candidate versions are tracked separately in [docs/PLAN.md](docs/PLAN.md). The locked upstream assertion coverage below does not establish a complete Web/CLI user path.
+This is an active reimplementation undergoing behavior and runtime validation. Installed and candidate versions are tracked separately in [docs/PLAN.md](docs/PLAN.md). The historical module dispositions below do not establish a complete Web/CLI user path.
 
-- **406 upstream parity modules tracked** in [docs/PARITY.tsv](docs/PARITY.tsv). The legacy machine-on-behalf attested-send module is partial because credential-route tests do not establish its freshness and E1 behavior. The normal CLI and official Computer use credential `sendV2` with legacy fallback disabled. Current weighted coverage and runtime qualifications are recorded in [docs/PLAN.md](docs/PLAN.md); locked modules do not establish a complete client or production path.
+- **406 upstream parity modules tracked** in [the historical ledger](docs/PARITY.tsv), with 230 modules naming historical test paths and 176 unknown mappings (223 unique named files). Locked is a historical disposition, including approved exclusions; it is not executed-case or runtime coverage. The twenty-family census, current gaps and scoped qualifications are recorded in [the plan](docs/PLAN.md).
 - The Swift regression suite runs alongside a **26-check real-process smoke suite** (`./scripts/smoke-server.sh`) and a separate two-server/daemon startup gate (`make test-e2e`). Smoke proves those specific live flows; the locked assertions and parity ledger provide broader coverage.
 - The HTTP surface uses **16 `RouteCollection` modules**, Vapor-free services, domain stores, and typed request/response contracts. The old directory owner root is **28 lines**; its global lock and all field forwarding accessors are deleted. Remaining factory extensions, broad constructors and Feature ledger calls still need explicit composition. The complete non-daemon source closure, including Generated, has no explicit unchecked conformance; daemon-only boundaries remain under review. Current counts and scanner limits live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The database is optional.** Without `DATABASE_URL` the process keeps the in-memory store and `/health` stays at `503 {"status":"error","detail":"database unreachable"}`; with `DATABASE_URL` (B2, PostgresNIO) `/health` runs `SELECT 1` and returns `200 {"status":"ok"}`.
 - The executable starts the Vapor HTTP app, the SwiftNIO `/daemon/connect` listener on `DAEMON_CONNECT_PORT` (default `8081`; `0` disables it), and the socket.io listener on `SOCKET_PORT` (default `8082`; `0` disables it). `RaftDaemon` performs the daemon-side handshake against that listener.
 - Deliberate differences from upstream and adjudicated exclusions live in [docs/DEVIATIONS.md](docs/DEVIATIONS.md). Per-slice locked behavior is recorded in the commit message body, not in a separate append-only log.
-- Work is organized in domain architecture slices rather than per-assertion commits. The phase order and the upstream route/frame coverage metric live in [docs/PLAN.md](docs/PLAN.md); the target layering is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the working contract is [AGENTS.md](AGENTS.md).
+- Work is organized in domain architecture slices rather than per-assertion commits. The phase order, current scoped evidence and remaining work live in [docs/PLAN.md](docs/PLAN.md); the target layering is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the working contract is [AGENTS.md](AGENTS.md).
 
 ## Behavior verification and version upgrades
 
@@ -81,14 +81,14 @@ make pg-up / pg-down / pg-url                                # local Postgres fo
 make parity                                                  # upstream coverage ledger (docs/PARITY.tsv)
 make parity-check                                            # validate parity status and case accounting
 make architecture                                            # enforced layering, file-size, and test-seam rules
-make deploy COMMIT=<sha>                                     # build -> stage -> verify -> upgrade
+VERIFY_QUALIFICATION=<integration-gate-receipt> make deploy COMMIT=<sha>                                     # build -> stage -> verify -> upgrade
 ./scripts/smoke-server.sh                                    # 26-check real-process end-to-end smoke
 /mnt/data/opt/swift-6.4.1-RELEASE-ubuntu26.04/usr/bin/swift test --filter <TestName>
 ```
 
 `make check FILTER=...` is the development loop; `make test-sharded` runs the same suite as parallel `<Target>-test-runner` processes (each with its own `TMPDIR`) after one `swift build --build-tests`, avoiding SwiftPM's `.build` lock, and retries a failed test once in isolation. `make gate` runs the sharded suite, real-process e2e, smoke, architecture and parity-check fail-fast, with one log directory. `make test-pg` starts one throwaway PostgreSQL 17 + Redis container pair on free loopback ports, runs every env-gated real-PG acceptance suite, and removes the containers.
 
-`make parity` reads `docs/PARITY.tsv` and prints upstream route/frame status and weighted case coverage. The ledger's sixth column names the Swift test file(s) that lock each module (derived from the locking commit; blank means unknown). `make parity-check` validates the ledger, its case accounting and the named test files. A passing ledger check does not establish production readiness.
+`make parity` reads the historical ledger and reports dispositions and lexical test declarations inside locked modules. It never reports a product coverage percentage. `make parity-check` validates commit/path links and rejects upstream modules without a disposition; blank test mappings remain unknown. Every feature change must follow [the mandatory completion workflow](docs/FEATURE-VERIFICATION.md): current plan before `make check`, raw qualification in `make gate`, and an immutable integration receipt before normal deployment.
 
 `make architecture` runs `scripts/check_architecture.py`, which enforces the `Feature -> Service -> Store` layering, rejects forbidden Vapor imports in `RaftHTTP`, guards against mega-files, and ratchets down test-only entry points. `./scripts/smoke-server.sh` builds the debug server and asserts the 26 published behaviors over real loopback ports.
 
@@ -103,7 +103,7 @@ paths, hosts and ports come from a git-ignored `local.env`; copy
 address is committed.
 
 ```bash
-make deploy COMMIT=<sha>
+VERIFY_QUALIFICATION=<integration-gate-receipt> make deploy COMMIT=<sha>
 ```
 
 The upgrade takes the quick `pg_dump` backup, closes the public gateway, swaps
@@ -135,7 +135,7 @@ active.
 | `RaftServerStartupTests` | Real process startup, HTTP health, daemon/socket.io transports, independent server processes and opt-in owned PostgreSQL acceptance. |
 | `RaftRealtimeTests` | Engine.IO/Socket.IO frames, room joins, guest isolation, platform scope, membership and family revocation. |
 
-Use `make parity` for the locked upstream modules and weighted assertion coverage; use the actual gate results for the current source revision.
+Use `make parity` for historical module dispositions; use the mandatory change plan, raw qualification and integration gate for current scoped evidence.
 
 ## Run
 

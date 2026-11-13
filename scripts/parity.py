@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""Report upstream route/frame coverage from the checked-in parity ledger.
+"""Validate historical upstream-module dispositions in the parity ledger.
 
-The ledger ``docs/PARITY.tsv`` records, for each upstream test module, whether
-the Swift port has not started (``pending``), has started (``partial``), or
-locks the module's asserted behaviors (``locked``). Only ``locked`` rows with a
-real commit count toward the weighted case coverage, so a slice cannot inflate
-the number without landing.
+``docs/PARITY.tsv`` records pending/partial/locked module dispositions, including
+reviewed exclusions and deliberate subsystem boundaries. A locked commit and a
+named test file are historical links. They do not prove production wiring,
+consumer completeness, current execution, or a complete user journey.
 
-The optional ``tests`` column names the Swift test file(s) that lock the module.
-It is derived from the test files added by the locking commit and is best-effort,
-not a proof of coverage: a large module locked over several commits names the
-final locking file(s). Blank means unknown.
-
-Module names are derived from the upstream checkout, case counts are counted
-from the Node test files, and the ledger is the only place status lives.
+The optional tests column is a best-effort historical mapping. Blank means
+unknown. Counts of declarations inside locked modules must not be presented as
+executed cases or runtime parity coverage. New upstream modules require an
+explicit ledger disposition; feature qualification uses the completion guard.
 """
 
 from __future__ import annotations
@@ -169,6 +165,8 @@ def report(
         if row["module"] not in known:
             problems.append(f"unknown upstream module {row['module']!r}")
             continue
+        if row["area"] != by_module[row["module"]][0]:
+            problems.append(f"{row['module']}: area does not match the upstream module")
         if row["status"] == "locked" and not commit_exists(row["commit"]):
             problems.append(f"{row['module']}: locked needs an existing commit, got {row['commit']!r}")
         if row["status"] == "partial" and row["commit"] not in ("-", ""):
@@ -188,7 +186,8 @@ def report(
     print(f"ledger          : {manifest_path()} ({len(rows)} modules listed)")
     print()
 
-    header = f"{'area':<8}{'modules':>8}{'listed':>8}{'locked':>8}{'partial':>9}{'pending':>9}{'cases':>8}{'locked cases':>14}{'coverage':>10}"
+    print("Historical module dispositions; these are not current runtime results.")
+    header = f"{'area':<8}{'modules':>8}{'listed':>8}{'locked':>8}{'partial':>9}{'pending':>9}{'decls':>8}{'in locked':>14}"
     print(header)
     print("-" * len(header))
     for area_name in ("route", "socket", "daemon"):
@@ -199,10 +198,9 @@ def report(
         locked_cases = sum(by_module[row["module"]][1] for row in locked_rows)
         partial_rows = [row for row in area_rows if row["status"] == "partial"]
         pending_rows = [row for row in area_rows if row["status"] == "pending"]
-        coverage = f"{100 * locked_cases / total_cases:.1f}%" if total_cases and area_name != "daemon" else "n/a"
         print(
             f"{area_name:<8}{len(entries):>8}{len(area_rows):>8}{len(locked_rows):>8}"
-            f"{len(partial_rows):>9}{len(pending_rows):>9}{total_cases:>8}{locked_cases:>14}{coverage:>10}"
+            f"{len(partial_rows):>9}{len(pending_rows):>9}{total_cases:>8}{locked_cases:>14}"
         )
 
     print()
@@ -211,12 +209,14 @@ def report(
         by_module[row["module"]][1] for row in rows if row["area"] == "route" and row["status"] == "locked"
     )
     mapped = sum(1 for row in rows if row["tests"])
-    print(f"route coverage    : {locked_route_cases}/{route_cases} cases locked (partial modules are not credited)")
-    print(f"test mapping      : {mapped}/{len(rows)} modules name at least one locking Swift test file")
+    print(f"route declarations: {locked_route_cases}/{route_cases} inside historically locked modules (not executed cases)")
+    print(f"test mapping      : {mapped}/{len(rows)} modules name at least one historical Swift test file")
+    print("runtime acceptance: NOT_ESTABLISHED by this ledger; use the change-scoped completion guard")
 
     if unlisted:
         print()
-        print(f"unlisted modules  : {len(unlisted)} (add them to the ledger; unlisted counts as pending)")
+        print(f"unlisted modules  : {len(unlisted)} (an explicit disposition is required)")
+        problems.append(f"{len(unlisted)} upstream modules have no ledger disposition")
     unlocked_route = sorted(
         (
             (by_module[row["module"]][1], row["status"], row["module"])

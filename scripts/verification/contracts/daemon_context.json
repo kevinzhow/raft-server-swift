@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "family": "daemon_context",
+  "version": "census-draft-1",
+  "review_state": "DRAFT_NOT_QUALIFIABLE",
+  "scope_boundary": "Historical family register only. Before changing behavior, review affected operations/consumers and declare complete scoped obligations. This is not a product PASS.",
+  "source_refs": [],
+  "production": {},
+  "consumers": [],
+  "profiles": [],
+  "obligations": [],
+  "dimensions": {},
+  "legacy_modules": [
+    "activity/activitySink",
+    "activity/agentActivityProducer",
+    "agentInboxProjection",
+    "chatBridgeRequest",
+    "codexToolArgumentParseSignature",
+    "contextGeneration",
+    "historyFormatting",
+    "sessionTranscriptReader.redaction",
+    "skillFrontmatter",
+    "standingPromptRefresh",
+    "task695ContinueOnErrorProbe",
+    "wakeBriefingPanel"
+  ]
+}
