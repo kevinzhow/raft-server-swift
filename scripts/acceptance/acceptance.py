@@ -51,7 +51,8 @@ Configuration comes from the local deployment env file (git-ignored):
 Run ``--dry-run`` to print every check without touching the network. The
 default mode is read-only: message-sending checks require ``--full``.
 
-Exit status is non-zero when any check FAILS or the run aborts.
+Exit status is non-zero unless every required check in the active plan passes.
+A dry-run exits zero after writing its plan, but never qualifies acceptance.
 """
 
 from __future__ import annotations
@@ -391,23 +392,29 @@ class Acceptance:
 
     def check_readonly_sweep(self) -> dict:
         before = self.db_snapshot()
+        if before is None:
+            raise Skip("no database revision snapshot configured; persistence invariance is unverified")
         requests = ["/health", "/api/version", "/api/servers", "/api/channels", "/api/channels/dm", "/api/agents", "/api/auth/me"]
         statuses: dict[str, int] = {}
         for path in requests:
             result = self.http.request("GET", path, headers=self.auth_headers(self.context.get("server_id")))
             statuses[path] = result.status
-            if result.status >= 500:
+            if path == "/health" and result.status == 503:
                 raise Outage(f"read-only GET {path} -> {result.status}")
         after = self.db_snapshot()
-        if before is not None and after is not None and before != after:
-            changed = sorted(set(after) - set(before))
-            raise Corruption(f"read-only sweep changed {len(changed)} durable revision rows")
-        detail = "read-only sweep ok"
-        if before is None:
-            detail += " (database revision check skipped: no PG container configured)"
-        else:
-            detail += f"; {len(before)} durable rows unchanged"
-        return {"detail": detail, "read_only_statuses": statuses, "revision_rows": len(before or [])}
+        if after is None:
+            raise Skip("after-sweep database revision snapshot unavailable; persistence invariance is unverified")
+        if before != after:
+            changed = sorted(set(after) ^ set(before))
+            raise Corruption(f"read-only sweep changed {len(changed)} durable revision entries")
+        refused = [f"{path} -> {status}" for path, status in statuses.items() if status != 200]
+        if refused:
+            raise Failure("read-only GETs require HTTP 200: " + "; ".join(refused))
+        return {
+            "detail": f"read-only sweep ok; {len(before)} durable rows unchanged",
+            "read_only_statuses": statuses,
+            "revision_rows": len(before),
+        }
 
     def server_agents(self) -> list[dict]:
         result = self.http.request("GET", "/api/agents", headers=self.auth_headers(self.context["server_id"]))
@@ -881,8 +888,37 @@ class Acceptance:
 
     def write_report(self) -> dict:
         counts: dict[str, int] = {}
+        by_check: dict[str, list[dict]] = {}
         for entry in self.results:
             counts[entry["status"]] = counts.get(entry["status"], 0) + 1
+            by_check.setdefault(entry["check"], []).append(entry)
+        required_checks = [name for name, _ in self.plan()]
+        completion_issues: list[dict] = []
+        if self.options.dry_run:
+            completion_issues.append({"reason": "dry_run"})
+        if self.stopped:
+            completion_issues.append({"reason": "run_stopped", "detail": self.stopped})
+        if not required_checks:
+            completion_issues.append({"reason": "empty_required_plan"})
+        if len(required_checks) != len(set(required_checks)):
+            completion_issues.append({"reason": "duplicate_required_plan"})
+        for check in dict.fromkeys(required_checks):
+            entries = by_check.get(check, [])
+            if not entries:
+                completion_issues.append({"check": check, "reason": "missing_result"})
+            elif len(entries) != 1:
+                completion_issues.append({"check": check, "reason": "duplicate_results"})
+            elif entries[0]["status"] != "PASS":
+                completion_issues.append({
+                    "check": check, "reason": "required_nonpass", "status": entries[0]["status"],
+                })
+        if counts.get("FAIL", 0):
+            completion_issues.append({"reason": "recorded_failure"})
+        # Execution can finish normally while a behavior fails or an obligation
+        # is blocked/skipped. Only the active plan's exact PASS set qualifies.
+        # Read-only mutation/restart SKIPs are outside that required set.
+        execution_ok = self.stopped is None
+        acceptance_complete = not completion_issues
         report = {
             "schemaVersion": 1,
             "startedAt": self.started_at,
@@ -894,7 +930,11 @@ class Acceptance:
             "socketUrl": self.socket_url,
             "stopped": self.stopped,
             "counts": counts,
-            "passed": not self.stopped and counts.get("FAIL", 0) == 0,
+            "required_checks": required_checks,
+            "execution_ok": execution_ok,
+            "acceptance_complete": acceptance_complete,
+            "completion_issues": completion_issues,
+            "passed": acceptance_complete,
             "results": self.results,
         }
         path = Path(self.options.out)
@@ -990,7 +1030,7 @@ def main(argv: list[str]) -> int:
     acceptance.run("owner-login", acceptance.check_login)
     acceptance.run("owner-refresh", acceptance.check_refresh, needs=("access_token",))
     acceptance.run("servers", acceptance.check_servers, needs=("access_token",))
-    acceptance.run("read-only-sweep", acceptance.check_readonly_sweep, needs=("access_token",))
+    acceptance.run("read-only-sweep", acceptance.check_readonly_sweep, needs=("access_token", "server_id"))
     if options.full:
         acceptance.run("dm-reply", acceptance.check_dm, needs=("server_id",))
         acceptance.run("mention-reply", acceptance.check_mention, needs=("server_id",))

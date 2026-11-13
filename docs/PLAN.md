@@ -8,10 +8,27 @@ module history in [PARITY.tsv](PARITY.tsv), architecture and guardrails in
 ## Objective and stage
 
 Verify Swift against `raft-source` tag `v1.21.23-source.1` with separate entry,
-behavior, real-client and lifecycle evidence. Deliver a reusable attachment
-sample and an upgrade method that keeps version facts, portable rules, private
-environment adapters and immutable evidence separate. See
-[PARITY-UPGRADES.md](PARITY-UPGRADES.md).
+behavior, real-client and lifecycle evidence. Current priority is the whole-repo
+omission census and mandatory feature-completion system described in
+[FEATURE-VERIFICATION.md](FEATURE-VERIFICATION.md). The reusable attachment sample
+and [upgrade method](PARITY-UPGRADES.md) remain scoped evidence.
+
+The census registers all **406 historical modules in 20 mutually exclusive
+families**. There are 29 source-confirmed discrepancy/capability-gap records,
+two runtime-confirmed records (including the existing off-profile discrepancy),
+12 re-verification risk groups and ten reviewed-deviation boundary groups. These
+include previously known issues; they are not 53 new bugs. Only recorded source
+ranges were read; inventoried modules do not become PASS. There are 230 modules
+with historical test mappings, 176 unknown mappings, and 223 unique named files.
+
+The completion system now requires a current change plan, source/consumer
+contract, raw typed producer/state/consumer assertions and source/build/process/
+client/configuration binding. Its initial family contracts are non-qualifiable
+drafts. `make check` enforces preflight; `make gate` includes tool adversarial
+controls and scoped qualification; normal deployment consumes the full gate
+receipt. Global debt remains visible and whole-family/global completion stays
+false. This round changes tooling and process; it does not fix or deploy the
+individual business gaps.
 
 The first **35-rule streaming attachment sample is complete**: upstream 35 PASS,
 Swift 35 PASS, paired 35 PASS; no FAIL, BLOCKED, NOT_RUN or invalid PASS evidence
@@ -134,19 +151,28 @@ preview/Web behavior, enabled sessions, storage failures, cancellation/concurren
 and managed execution. Targeted backend controls do not promote those whole
 groups to PASS.
 
-1. **ATTACHMENT-012, next storage/session owner assigned:** actual global-off
-   Human/Agent status is Node403 `UPLOAD_FORBIDDEN` versus Swift404
-   `UPLOAD_SESSION_NOT_FOUND`. Both capabilities and active empty-list controls
-   match. Separate service presence, global admission, server gate and recovery;
-   do not fix only an error string. This is a defect, not an intentional deviation.
-2. **ATTACHMENT-011:** production encrypted S3 installs no real presigner. A
-   test-injected closure does not qualify real 302/URL/TTL/expiry or safe-follow
-   behavior. Use actual production wiring and isolated storage on both targets.
-3. Execute enabled session transfer/complete/cancel/recovery profiles with their
-   own denominator and current evidence. Neither global-off nor streaming PASS
-   qualifies these paths. D5/D22 do not automatically exclude them.
-4. Resolve inventory unknowns by authentication/tenant/lifecycle risk, then extend
-   the common scenario method to DM, mention, Task and thread flows.
+1. **B00, mandatory verification system:** complete independent review and
+   adversarial validation of the new change/contract/raw/runtime gates, then keep
+   them mandatory for every later slice. No module count or green helper suite
+   replaces the declared producer/consumer/state obligations.
+2. **B01, authorization and read-state effects:** session TTL, Agent grant/scopes,
+   consume=false and server-scoped frontier. Use public positive/refusal controls
+   and actual before/after authority, not pre-granted fixtures.
+3. **B02/B03, human activity and canonical state:** ordinary message producer to
+   Activity plus the complete Web consumer; rename mirrors, archive query and
+   read-mutation execution. Reevaluate exact deviation/consumer conflicts.
+4. **B04/B07, real ports and integrations:** Skills, bootstrap admission/token,
+   translation/provider, MCP draft tools, workspace analytics consent and feedback
+   binary transport. Missing provider stays explicit, never fabricated success.
+5. **B05, storage profiles:** ATTACHMENT-012 global-off Node403 UPLOAD_FORBIDDEN
+   versus Swift404 UPLOAD_SESSION_NOT_FOUND; ATTACHMENT-011 real presigner; enabled
+   sessions, quota accounting and unsent Files admission. Streaming35 stays valid
+   within its existing scope and does not qualify these profiles.
+6. **B06/B08/B09, daemon/product/entry closure:** decide official Computer versus
+   Swift daemon scope first, then real duplex/runner stop and retained recovery;
+   content loaders and remaining source/consumer flows; unresolved registrations,
+   middleware, independent listeners and HEAD/OPTIONS. Inventory-only modules
+   remain planned unknowns until their actual scoped flows are executed.
 
 ## Reuse and completion rules
 

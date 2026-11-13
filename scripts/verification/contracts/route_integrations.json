@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "family": "route_integrations",
+  "version": "census-draft-1",
+  "review_state": "DRAFT_NOT_QUALIFIABLE",
+  "scope_boundary": "Historical family register only. Before changing behavior, review affected operations/consumers and declare complete scoped obligations. This is not a product PASS.",
+  "source_refs": [],
+  "production": {},
+  "consumers": [],
+  "profiles": [],
+  "obligations": [],
+  "dimensions": {},
+  "legacy_modules": [
+    "agentAppAccess.api",
+    "appAdmin.removed.api",
+    "appAgentReminderMessages.api",
+    "appAgentReminderMessages.realPg",
+    "appLogin.api",
+    "appSetup.api",
+    "integrations.api",
+    "integrations.appPermissionReview.api",
+    "managedMcp.api",
+    "managedMcpAgentErrors",
+    "providerConnections.api",
+    "providerProbeEnforcement.api",
+    "providerProbes.api",
+    "slackBridge.api",
+    "slackBridgedAgentMention"
+  ]
+}

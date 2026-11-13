@@ -54,6 +54,32 @@ both launch their own build, so run them sequentially in the same worktree. A
 separate warm build area is fine as long as it stays on the data disk. All build
 artifacts, logs, caches and temporary files stay on the data disk and outside Git.
 
+## Mandatory feature completion
+
+- Every observable feature repair/addition follows
+  [FEATURE-VERIFICATION.md](docs/FEATURE-VERIFICATION.md). Review the producer,
+  authoritative state, fixed Web/CLI consumer fields, authorization, configuration
+  and restart obligations before claiming completion. Historical `locked` is not
+  a current user-path qualification.
+- Review/update the affected contract in `scripts/verification/contracts/` and
+  mapping in `scripts/verification/families.json`. Initial census contracts are
+  drafts, not approvals. Unknown paths or weakened/removed obligations require
+  review; do not bypass them with an empty scope or `BASE=HEAD`.
+- Regenerate a current plan with `make verification-plan VERIFY_PLAN=<artifact>`
+  after edits. `VERIFY_PLAN=<artifact> make check FILTER=...` enforces preflight.
+  A plan permits development; required results remain NOT_RUN until executed.
+- Handoff uses `make verification-handoff` with current `VERIFY_PLAN`,
+  `VERIFY_BASELINE`, `VERIFY_REPORT` and `VERIFY_EVIDENCE_ROOT`. Complete evidence
+  must contain raw producer-to-consumer/object/state assertions, not a seeded GET,
+  helper-only test, status-only comparison, empty provider or hand-written PASS.
+- `make gate` runs verification preflight/self-tests and final scoped
+  qualification as well as the Swift gates. Normal deployment requires its
+  immutable receipt through `VERIFY_QUALIFICATION`; a handoff alone is not the
+  full integration gate. Keep all proof artifacts private/outside Git.
+- Report exact contract/behavior/profile IDs. Synthetic tests never qualify the
+  product; omitted, skipped, blocked or stale required evidence never completes.
+  Existing global census debt remains visible without becoming unrelated PASS.
+
 ## Acceptance
 
 - Scripted first: `scripts/acceptance/acceptance.py` runs the API checks against
@@ -75,7 +101,7 @@ Environment-specific values live in `deploy/swift-production/local.env`
 (git-ignored; copy `local.env.example`). Never commit that file.
 
 ```bash
-make deploy COMMIT=<sha>
+VERIFY_QUALIFICATION=<integration-gate-receipt> make deploy COMMIT=<sha>
 ```
 
 This resolves the full commit and runs build → stage → verify → upgrade. The
