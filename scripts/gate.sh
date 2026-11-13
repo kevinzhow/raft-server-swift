@@ -72,11 +72,27 @@ run_step() {
     STEP=""
 }
 
+python3 "$SCRIPT_DIR/verification/run_completion.py" gate-start --repo "$REPO_ROOT" --out "$LOG_DIR/context.json" >"$LOG_DIR/context.log" 2>&1
+run_step verification-preflight make -C "$REPO_ROOT" verification-preflight
+run_step verification-selftest make -C "$REPO_ROOT" verification-selftest
 run_step test-sharded "$SCRIPT_DIR/test-sharded.py" --shards "$SHARDS" --logs "$LOG_DIR/sharded"
 run_step test-e2e make -C "$REPO_ROOT" test-e2e
 run_step smoke "$SCRIPT_DIR/smoke-server.sh"
 run_step architecture make -C "$REPO_ROOT" architecture
 run_step parity-check make -C "$REPO_ROOT" parity-check
+
+# Preserve these seven completed steps. The qualification receipt hashes this
+# immutable input; the final human summary also includes the qualification step.
+{
+    printf 'gate %s\n' "$STAMP"
+    for line in "${STEP_TIMES[@]}"; do printf '%s\n' "$line"; done
+} >"$LOG_DIR/integration-steps.txt"
+python3 "$SCRIPT_DIR/verification/run_completion.py" gate-finish --repo "$REPO_ROOT" \
+    --context "$LOG_DIR/context.json" --steps "$LOG_DIR/integration-steps.txt" \
+    --out "$LOG_DIR/integration-steps.json" >"$LOG_DIR/context-finish.log" 2>&1
+run_step completion-qualification python3 "$SCRIPT_DIR/verification/run_completion.py" handoff \
+    --repo "$REPO_ROOT" --gate-summary "$LOG_DIR/integration-steps.json" \
+    --out "$LOG_DIR/completion-qualification.json"
 
 printf '\nGATE PASS %s\n' "$LOG_DIR/summary.txt"
 printf '%-16s %-5s %s\n' STEP RESULT LOG

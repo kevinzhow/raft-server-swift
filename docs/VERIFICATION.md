@@ -6,6 +6,12 @@ belong in [PLAN.md](PLAN.md). Deliberate differences belong in
 [DEVIATIONS.md](DEVIATIONS.md). The historical [PARITY.tsv](PARITY.tsv) remains a
 module/locking-test ledger, not a complete behavior or runtime-acceptance result.
 
+Every feature repair/addition must use the executable
+[feature completion workflow](FEATURE-VERIFICATION.md). `make check` enforces its
+current change plan; `make gate` includes raw qualification and normal deployment
+requires the full integration receipt. The frozen attachment pilot remains its
+own bounded sample, not the general completion engine.
+
 ## Three independent questions
 
 | Question | Evidence |

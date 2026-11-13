@@ -1,0 +1,461 @@
+{
+  "schema_version": 1,
+  "policy_version": "mandatory-completion-v1",
+  "families": [
+    {
+      "id": "route_identity",
+      "label": "身份、认证、OAuth/OIDC",
+      "parent_module_count": 23,
+      "paths": [
+        "Sources/***Auth*.swift",
+        "Tests/***Auth*.swift",
+        "Sources/***Login*.swift",
+        "Tests/***Login*.swift",
+        "Sources/***Session*.swift",
+        "Tests/***Session*.swift",
+        "Sources/***Identity*.swift",
+        "Tests/***Identity*.swift",
+        "Sources/***OAuth*.swift",
+        "Tests/***OAuth*.swift",
+        "Sources/***Oidc*.swift",
+        "Tests/***Oidc*.swift",
+        "Sources/***OIDC*.swift",
+        "Tests/***OIDC*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_identity.json"
+    },
+    {
+      "id": "route_channels",
+      "label": "服务器、频道、成员、联合频道与RBAC",
+      "parent_module_count": 32,
+      "paths": [
+        "Sources/***Channel*.swift",
+        "Tests/***Channel*.swift",
+        "Sources/***ServerRole*.swift",
+        "Tests/***ServerRole*.swift",
+        "Sources/***ServerMember*.swift",
+        "Tests/***ServerMember*.swift",
+        "Sources/***Membership*.swift",
+        "Tests/***Membership*.swift",
+        "Sources/***Visibility*.swift",
+        "Tests/***Visibility*.swift",
+        "Sources/***RBAC*.swift",
+        "Tests/***RBAC*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_channels.json"
+    },
+    {
+      "id": "route_agents",
+      "label": "Agent生命周期、迁移、外部Agent与runtime provider",
+      "parent_module_count": 15,
+      "paths": [
+        "Sources/***AgentsFeature*.swift",
+        "Tests/***AgentsFeature*.swift",
+        "Sources/***AgentMachine*.swift",
+        "Tests/***AgentMachine*.swift",
+        "Sources/***AgentsRuntime*.swift",
+        "Tests/***AgentsRuntime*.swift",
+        "Sources/***AgentsApi*.swift",
+        "Tests/***AgentsApi*.swift",
+        "Sources/***AgentPrivate*.swift",
+        "Tests/***AgentPrivate*.swift",
+        "Sources/***RuntimeConfig*.swift",
+        "Tests/***RuntimeConfig*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_agents.json"
+    },
+    {
+      "id": "route_agent_api",
+      "label": "Agent凭据API及knowledge（跨功能）",
+      "parent_module_count": 40,
+      "paths": [
+        "Sources/***InternalAgentApi*.swift",
+        "Tests/***InternalAgentApi*.swift",
+        "Sources/***AgentHistory*.swift",
+        "Tests/***AgentHistory*.swift",
+        "Sources/***AgentCredential*.swift",
+        "Tests/***AgentCredential*.swift",
+        "Sources/***AgentTask*.swift",
+        "Tests/***AgentTask*.swift",
+        "Sources/***AgentGrant*.swift",
+        "Tests/***AgentGrant*.swift",
+        "Sources/***Knowledge*.swift",
+        "Tests/***Knowledge*.swift",
+        "Sources/***AgentAttachments*.swift",
+        "Tests/***AgentAttachments*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_agent_api.json"
+    },
+    {
+      "id": "route_computer_legacy",
+      "label": "Computer、daemon接入与legacy internal",
+      "parent_module_count": 20,
+      "paths": [
+        "Sources/***Computer*.swift",
+        "Tests/***Computer*.swift",
+        "Sources/***Machine*.swift",
+        "Tests/***Machine*.swift",
+        "Sources/***DaemonConnect*.swift",
+        "Tests/***DaemonConnect*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_computer_legacy.json"
+    },
+    {
+      "id": "route_messages",
+      "label": "消息、历史、mention、收件箱、读状态、搜索与通知",
+      "parent_module_count": 20,
+      "paths": [
+        "Sources/***Message*.swift",
+        "Tests/***Message*.swift",
+        "Sources/***Inbox*.swift",
+        "Tests/***Inbox*.swift",
+        "Sources/***ReadState*.swift",
+        "Tests/***ReadState*.swift",
+        "Sources/***ReadMutation*.swift",
+        "Tests/***ReadMutation*.swift",
+        "Sources/***Mention*.swift",
+        "Tests/***Mention*.swift",
+        "Sources/***Notification*.swift",
+        "Tests/***Notification*.swift",
+        "Sources/***Reaction*.swift",
+        "Tests/***Reaction*.swift",
+        "Sources/***Translation*.swift",
+        "Tests/***Translation*.swift",
+        "Sources/***PublicSearch*.swift",
+        "Tests/***PublicSearch*.swift",
+        "Sources/***SystemAttention*.swift",
+        "Tests/***SystemAttention*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_messages.json"
+    },
+    {
+      "id": "route_tasks",
+      "label": "Task与action card",
+      "parent_module_count": 11,
+      "paths": [
+        "Sources/***Task*.swift",
+        "Tests/***Task*.swift",
+        "Sources/***ActionCard*.swift",
+        "Tests/***ActionCard*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_tasks.json"
+    },
+    {
+      "id": "route_assets",
+      "label": "附件、预览、图片与共享文件",
+      "parent_module_count": 10,
+      "paths": [
+        "Sources/***Attachment*.swift",
+        "Tests/***Attachment*.swift",
+        "Sources/***Avatar*.swift",
+        "Tests/***Avatar*.swift",
+        "Sources/***Asset*.swift",
+        "Tests/***Asset*.swift",
+        "Sources/***Preview*.swift",
+        "Tests/***Preview*.swift",
+        "Sources/***SharedFile*.swift",
+        "Tests/***SharedFile*.swift",
+        "Sources/***ChannelFiles*.swift",
+        "Tests/***ChannelFiles*.swift",
+        "Sources/***Announcement*.swift",
+        "Tests/***Announcement*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_assets.json"
+    },
+    {
+      "id": "route_integrations",
+      "label": "App、集成、MCP、provider连接与Slack",
+      "parent_module_count": 15,
+      "paths": [
+        "Sources/***MCP*.swift",
+        "Tests/***MCP*.swift",
+        "Sources/***Mcp*.swift",
+        "Tests/***Mcp*.swift",
+        "Sources/***Integration*.swift",
+        "Tests/***Integration*.swift",
+        "Sources/***ProviderConnection*.swift",
+        "Tests/***ProviderConnection*.swift",
+        "Sources/***Slack*.swift",
+        "Tests/***Slack*.swift",
+        "Sources/***AppInstallation*.swift",
+        "Tests/***AppInstallation*.swift",
+        "Sources/***InstallationChannel*.swift",
+        "Tests/***InstallationChannel*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_integrations.json"
+    },
+    {
+      "id": "route_product_feedback",
+      "label": "公告、发行说明、产品事件与反馈",
+      "parent_module_count": 11,
+      "paths": [
+        "Sources/***ReleaseNote*.swift",
+        "Tests/***ReleaseNote*.swift",
+        "Sources/***Announcement*.swift",
+        "Tests/***Announcement*.swift",
+        "Sources/***Feedback*.swift",
+        "Tests/***Feedback*.swift",
+        "Sources/***ProductEvent*.swift",
+        "Tests/***ProductEvent*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_product_feedback.json"
+    },
+    {
+      "id": "route_operations",
+      "label": "系统、错误契约、feature flags、下载分发、billing与bench",
+      "parent_module_count": 20,
+      "paths": [
+        "Sources/***Health*.swift",
+        "Tests/***Health*.swift",
+        "Sources/***Version*.swift",
+        "Tests/***Version*.swift",
+        "Sources/***FeatureFlag*.swift",
+        "Tests/***FeatureFlag*.swift",
+        "Sources/***Billing*.swift",
+        "Tests/***Billing*.swift",
+        "Sources/***Quota*.swift",
+        "Tests/***Quota*.swift",
+        "Sources/***Download*.swift",
+        "Tests/***Download*.swift",
+        "Sources/***Error*.swift",
+        "Tests/***Error*.swift",
+        "Sources/***Bench*.swift",
+        "Tests/***Bench*.swift",
+        "Sources/***ProductAnalytics*.swift",
+        "Tests/***ProductAnalytics*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_operations.json"
+    },
+    {
+      "id": "socket",
+      "label": "Socket.IO协议、房间、注意力与可见性",
+      "parent_module_count": 7,
+      "paths": [
+        "Sources/***Socket*.swift",
+        "Tests/***Socket*.swift",
+        "Sources/***Realtime*.swift",
+        "Tests/***Realtime*.swift",
+        "Sources/***Room*.swift",
+        "Tests/***Room*.swift",
+        "Sources/***Attention*.swift",
+        "Tests/***Attention*.swift"
+      ],
+      "contract": "scripts/verification/contracts/socket.json"
+    },
+    {
+      "id": "route_socket",
+      "label": "HTTP侧socket撤权与发送受众",
+      "parent_module_count": 2,
+      "paths": [
+        "Sources/***Socket*.swift",
+        "Tests/***Socket*.swift",
+        "Sources/***Realtime*.swift",
+        "Tests/***Realtime*.swift",
+        "Sources/***Audience*.swift",
+        "Tests/***Audience*.swift",
+        "Sources/***Eviction*.swift",
+        "Tests/***Eviction*.swift"
+      ],
+      "contract": "scripts/verification/contracts/route_socket.json"
+    },
+    {
+      "id": "daemon_drivers",
+      "label": "Daemon runtime drivers/CLI/SDK适配",
+      "parent_module_count": 49,
+      "paths": [
+        "Sources/RaftDaemonClient/***Driver*.swift",
+        "Tests/RaftDaemonClientTests/***Driver*.swift",
+        "Sources/RaftDaemonClient/***Launch*.swift",
+        "Tests/RaftDaemonClientTests/***Launch*.swift",
+        "Sources/RaftDaemonClient/***Spawn*.swift",
+        "Tests/RaftDaemonClientTests/***Spawn*.swift",
+        "Sources/RaftDaemonClient/***ChatBridge*.swift",
+        "Tests/RaftDaemonClientTests/***ChatBridge*.swift",
+        "Sources/RaftDaemonClient/***NodeHost*.swift",
+        "Tests/RaftDaemonClientTests/***NodeHost*.swift",
+        "Sources/RaftDaemonClient/***Oar*.swift",
+        "Tests/RaftDaemonClientTests/***Oar*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_drivers.json"
+    },
+    {
+      "id": "daemon_lifecycle",
+      "label": "Daemon进程生命周期、投递、状态机与turn状态",
+      "parent_module_count": 41,
+      "paths": [
+        "Sources/RaftDaemonClient/***DaemonClient*.swift",
+        "Tests/RaftDaemonClientTests/***DaemonClient*.swift",
+        "Sources/RaftDaemonClient/***Reconnect*.swift",
+        "Tests/RaftDaemonClientTests/***Reconnect*.swift",
+        "Sources/RaftDaemonClient/***Connection*.swift",
+        "Tests/RaftDaemonClientTests/***Connection*.swift",
+        "Sources/RaftDaemonClient/***Receipt*.swift",
+        "Tests/RaftDaemonClientTests/***Receipt*.swift",
+        "Sources/RaftDaemonClient/***Command*.swift",
+        "Tests/RaftDaemonClientTests/***Command*.swift",
+        "Sources/RaftDaemonClient/***Delivery*.swift",
+        "Tests/RaftDaemonClientTests/***Delivery*.swift",
+        "Sources/RaftDaemonClient/***Process*.swift",
+        "Tests/RaftDaemonClientTests/***Process*.swift",
+        "Sources/RaftDaemonClient/***Coordinator*.swift",
+        "Tests/RaftDaemonClientTests/***Coordinator*.swift",
+        "Sources/RaftDaemonClient/***Runner*.swift",
+        "Tests/RaftDaemonClientTests/***Runner*.swift",
+        "Sources/RaftDaemonClient/***Turn*.swift",
+        "Tests/RaftDaemonClientTests/***Turn*.swift",
+        "Sources/RaftDaemonClient/***Inbox*.swift",
+        "Tests/RaftDaemonClientTests/***Inbox*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_lifecycle.json"
+    },
+    {
+      "id": "daemon_apps",
+      "label": "Daemon App、凭据代理、registry与App storage",
+      "parent_module_count": 16,
+      "paths": [
+        "Sources/RaftDaemonClient/***App*.swift",
+        "Tests/RaftDaemonClientTests/***App*.swift",
+        "Sources/RaftDaemonClient/***Registry*.swift",
+        "Tests/RaftDaemonClientTests/***Registry*.swift",
+        "Sources/RaftDaemonClient/***Reminder*.swift",
+        "Tests/RaftDaemonClientTests/***Reminder*.swift",
+        "Sources/RaftDaemonClient/***Cleaner*.swift",
+        "Tests/RaftDaemonClientTests/***Cleaner*.swift",
+        "Sources/RaftDaemonClient/***CredentialProxy*.swift",
+        "Tests/RaftDaemonClientTests/***CredentialProxy*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_apps.json"
+    },
+    {
+      "id": "daemon_environment",
+      "label": "Daemon环境、连接、workspace、迁移与本地存储",
+      "parent_module_count": 24,
+      "paths": [
+        "Sources/RaftDaemonClient/***Workspace*.swift",
+        "Tests/RaftDaemonClientTests/***Workspace*.swift",
+        "Sources/RaftDaemonClient/***Migration*.swift",
+        "Tests/RaftDaemonClientTests/***Migration*.swift",
+        "Sources/RaftDaemonClient/***Environment*.swift",
+        "Tests/RaftDaemonClientTests/***Environment*.swift",
+        "Sources/RaftDaemonClient/***LocalStore*.swift",
+        "Tests/RaftDaemonClientTests/***LocalStore*.swift",
+        "Sources/RaftDaemonClient/***DaemonState*.swift",
+        "Tests/RaftDaemonClientTests/***DaemonState*.swift",
+        "Sources/RaftDaemonClient/***AgentConfig*.swift",
+        "Tests/RaftDaemonClientTests/***AgentConfig*.swift",
+        "Sources/RaftDaemonClient/***MachineConfig*.swift",
+        "Tests/RaftDaemonClientTests/***MachineConfig*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_environment.json"
+    },
+    {
+      "id": "daemon_provider",
+      "label": "Daemon provider、模型、账户用量与runtime版本",
+      "parent_module_count": 18,
+      "paths": [
+        "Sources/RaftDaemonClient/***Provider*.swift",
+        "Tests/RaftDaemonClientTests/***Provider*.swift",
+        "Sources/RaftDaemonClient/***RuntimeModel*.swift",
+        "Tests/RaftDaemonClientTests/***RuntimeModel*.swift",
+        "Sources/RaftDaemonClient/***RuntimeAccount*.swift",
+        "Tests/RaftDaemonClientTests/***RuntimeAccount*.swift",
+        "Sources/RaftDaemonClient/***Usage*.swift",
+        "Tests/RaftDaemonClientTests/***Usage*.swift",
+        "Sources/RaftDaemonClient/***ModelSource*.swift",
+        "Tests/RaftDaemonClientTests/***ModelSource*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_provider.json"
+    },
+    {
+      "id": "daemon_observability",
+      "label": "Daemon反馈、trace、诊断与日志",
+      "parent_module_count": 20,
+      "paths": [
+        "Sources/RaftDaemonClient/***Trace*.swift",
+        "Tests/RaftDaemonClientTests/***Trace*.swift",
+        "Sources/RaftDaemonClient/***Diagnostic*.swift",
+        "Tests/RaftDaemonClientTests/***Diagnostic*.swift",
+        "Sources/RaftDaemonClient/***Feedback*.swift",
+        "Tests/RaftDaemonClientTests/***Feedback*.swift",
+        "Sources/RaftDaemonClient/***Log*.swift",
+        "Tests/RaftDaemonClientTests/***Log*.swift",
+        "Sources/RaftDaemonClient/***Error*.swift",
+        "Tests/RaftDaemonClientTests/***Error*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_observability.json"
+    },
+    {
+      "id": "daemon_context",
+      "label": "Daemon内容投影、prompt、transcript与上下文helpers",
+      "parent_module_count": 12,
+      "paths": [
+        "Sources/RaftDaemonClient/***Context*.swift",
+        "Tests/RaftDaemonClientTests/***Context*.swift",
+        "Sources/RaftDaemonClient/***Prompt*.swift",
+        "Tests/RaftDaemonClientTests/***Prompt*.swift",
+        "Sources/RaftDaemonClient/***Transcript*.swift",
+        "Tests/RaftDaemonClientTests/***Transcript*.swift",
+        "Sources/RaftDaemonClient/***Projection*.swift",
+        "Tests/RaftDaemonClientTests/***Projection*.swift",
+        "Sources/RaftDaemonClient/***RuntimeInput*.swift",
+        "Tests/RaftDaemonClientTests/***RuntimeInput*.swift",
+        "Sources/RaftDaemonClient/***Activity*.swift",
+        "Tests/RaftDaemonClientTests/***Activity*.swift",
+        "Sources/RaftDaemon/**",
+        "Tests/RaftServerStartupTests/*Daemon*"
+      ],
+      "contract": "scripts/verification/contracts/daemon_context.json"
+    }
+  ],
+  "shared_paths": [
+    "Package.swift",
+    "Package.resolved",
+    "Sources/RaftHTTP/Composition/**",
+    "Sources/RaftHTTP/OAuthLedger.swift",
+    "Sources/RaftHTTPServer/FallbackApplication.swift",
+    "Sources/RaftServer/**",
+    "Sources/RaftStore/**",
+    "Sources/RaftHTTP/Support/OrderedJSON*"
+  ],
+  "global_debt": [
+    {
+      "kind": "historical_locked_not_runtime_evidence",
+      "modules": 406,
+      "families": 20,
+      "unknown_test_mapping_modules": 176,
+      "note": "230 mapped modules,223 unique named test files. None is a whole-family runtime qualification."
+    },
+    {
+      "kind": "entry_inventory_incomplete",
+      "operation_candidates": 646,
+      "unresolved_registrations": 92,
+      "unmatched_shape_candidates": 61,
+      "independent_boundaries": [
+        "middleware",
+        "daemon_connect",
+        "socket_io",
+        "implicit_head_options"
+      ]
+    },
+    {
+      "kind": "scoped_existing_evidence",
+      "scope": "attachments.streaming.core35",
+      "paired_pass": 35,
+      "all_profile_acceptance": false,
+      "note": "Not reusable for unrelated changes; keep source/client/runtime/config binding and raw assertions."
+    }
+  ],
+  "mapping_limit": "Conservative filename map. Unknown files block. Shared changes widen impact. Review and extend the map instead of treating an unknown path as tooling."
+}
